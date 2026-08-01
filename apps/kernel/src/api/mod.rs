@@ -34,21 +34,21 @@ use uuid::Uuid;
 
 use crate::{
     contract::{
-        ApiErrorEnvelope, ChangeServerOwnerPasswordRequest, ConnectionId, CreateDocumentRequest,
-        CreateServerSessionRequest, CreateWorkspaceResourceBatchItem,
+        ApiErrorEnvelope, AppConfigSnapshotDto, ChangeServerOwnerPasswordRequest, ConnectionId,
+        CreateDocumentRequest, CreateServerSessionRequest, CreateWorkspaceResourceBatchItem,
         CreateWorkspaceResourceBatchRequest, CreateWorkspaceResourceBatchResponse,
         CreateWorkspaceResourceQuery, CreatedDocumentDto, DeleteDocumentRequest,
         DocumentContentDto, DocumentContents, DocumentEntryDto, DocumentHistoryPageDto,
         DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode,
         ErrorDetails, EventSequence, GapReason, InitializeServerOwnerRequest, InstanceId,
         ListDocumentsQuery, ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest,
-        PageQuery, PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion,
-        ReadyHealthResponse, ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind,
-        ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
-        SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto,
-        SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto,
-        SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto,
-        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest, PatchSyncConfigRequest,
+        ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope, RequestId,
+        ResourceEntryDto, ResourceKind, ResourceRefDto, RestoreDocumentHistoryRequest, Revision,
+        SearchPageDto, SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame,
+        ServerSessionDto, SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto,
+        SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto,
+        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
         UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
@@ -593,6 +593,7 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         | "/api/v1/workspace"
         | "/api/v1/inventory"
         | "/api/v1/search"
+        | "/api/v1/app-config"
         | "/api/v1/sync/status"
         | "/api/v1/events" => &[Method::GET],
         "/api/v1/auth/initialize" | "/api/v1/auth/logout" => &[Method::POST],
@@ -600,6 +601,7 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         "/api/v1/auth/password" => &[Method::PATCH],
         "/api/v1/documents" => &[Method::GET, Method::POST],
         "/api/v1/settings" | "/api/v1/sync/config" => &[Method::GET, Method::PATCH],
+        "/api/v1/app-config/state" => &[Method::PATCH],
         "/api/v1/sync/connection-test" | "/api/v1/sync/runs" => &[Method::POST],
         _ => match path.split('/').collect::<Vec<_>>().as_slice() {
             ["", "api", "v1", "resources", resource_id] if !resource_id.is_empty() => {
@@ -804,6 +806,8 @@ impl std::error::Error for OpenApiExportError {}
         SearchPageDto,
         SettingsSnapshotDto,
         PatchSettingsRequest,
+        AppConfigSnapshotDto,
+        PatchAppConfigStateRequest,
         SyncConfigViewDto,
         PatchSyncConfigRequest,
         TestSyncConnectionRequest,
@@ -826,6 +830,7 @@ impl std::error::Error for OpenApiExportError {}
         DocumentMovedEvent,
         DocumentDeletedEvent,
         SettingsChangedEvent,
+        AppConfigStateChangedEvent,
         SyncConfigChangedEvent,
         SyncStatusChangedEvent,
         DomainEvent,
@@ -1029,6 +1034,24 @@ struct SettingsChangedEvent {
 #[serde(rename_all = "kebab-case")]
 enum SettingsChangedKind {
     SettingsChanged,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct AppConfigStateChangedEvent {
+    #[serde(rename = "type")]
+    event_type: AppConfigStateChangedKind,
+    workspace_id: crate::contract::WorkspaceId,
+    workspace_generation: crate::contract::WorkspaceGeneration,
+    revision: Revision,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum AppConfigStateChangedKind {
+    AppConfigStateChanged,
 }
 
 #[allow(dead_code)]
@@ -1283,6 +1306,22 @@ fn install_paths(document: &mut serde_json::Value) {
             "patchSettings",
             "200",
             "SettingsSnapshotDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/app-config",
+            "getAppConfig",
+            "200",
+            "AppConfigSnapshotDto",
+            true,
+        ),
+        (
+            "patch",
+            "/api/v1/app-config/state",
+            "patchAppConfigState",
+            "200",
+            "AppConfigSnapshotDto",
             true,
         ),
         (
@@ -1660,6 +1699,13 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
     ] {
         set_request_body(document, path, method, schema, 1024 * 1024);
     }
+    set_request_body(
+        document,
+        "/api/v1/app-config/state",
+        "patch",
+        "PatchAppConfigStateRequest",
+        64 * 1024 * 1024,
+    );
 }
 
 fn operation_mut<'a>(
@@ -2014,6 +2060,25 @@ fn install_operation_errors(document: &mut serde_json::Value) {
     );
     add_errors_with(
         document,
+        "/api/v1/app-config",
+        "get",
+        TRANSPORT,
+        &["app_config_unavailable"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/app-config/state",
+        "patch",
+        TRANSPORT,
+        &[
+            "resource_too_large",
+            "invalid_app_config_state",
+            "workspace_generation_stale",
+            "app_config_unavailable",
+        ],
+    );
+    add_errors_with(
+        document,
         "/api/v1/sync/config",
         "get",
         TRANSPORT,
@@ -2178,15 +2243,20 @@ fn error_status(code: &str) -> u16 {
         | "already_initialized"
         | "revision_conflict"
         | "settings_revision_conflict"
+        | "workspace_generation_stale"
         | "sync_config_revision_conflict" => 409,
         "document_too_large" | "resource_too_large" => 413,
-        "document_invalid_encoding" | "invalid_settings_field" | "sync_config_invalid" => 422,
+        "document_invalid_encoding"
+        | "invalid_settings_field"
+        | "invalid_app_config_state"
+        | "sync_config_invalid" => 422,
         "workspace_locked" => 423,
         "authentication_rate_limited" => 429,
         "kernel_not_ready"
         | "authentication_unavailable"
         | "workspace_unavailable"
         | "settings_unavailable"
+        | "app_config_unavailable"
         | "sync_not_ready"
         | "sync_run_unavailable" => 503,
         "internal_error" => 500,

@@ -412,6 +412,7 @@ async fn send_gap_and_close(
             ReloadScope::Workspace,
             ReloadScope::Documents,
             ReloadScope::Settings,
+            ReloadScope::AppConfig,
             ReloadScope::SyncConfig,
             ReloadScope::SyncStatus,
         ],

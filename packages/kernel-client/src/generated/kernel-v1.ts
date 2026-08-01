@@ -1,4 +1,36 @@
 export interface paths {
+    "/api/v1/app-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAppConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/app-config/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["patchAppConfigState"];
+        trace?: never;
+    };
     "/api/v1/auth/initialize": {
         parameters: {
             query?: never;
@@ -459,6 +491,57 @@ export interface components {
         };
         /** @enum {string} */
         ApiVersion: "v1";
+        AppConfigLocalStateDto: {
+            fileTreeSort: components["schemas"]["StoredFileTreeSortDto"];
+            pandocPath: components["schemas"]["Nullable_String"];
+            recentMarkdownFiles: components["schemas"]["RecentMarkdownFileDto"][];
+            revision: components["schemas"]["Revision"];
+            uiLayout: components["schemas"]["StoredWorkspaceLayoutDto"];
+        };
+        AppConfigSnapshotDto: {
+            /** Format: int32 */
+            appConfigVersion: number;
+            localState: components["schemas"]["AppConfigLocalStateDto"];
+            settings: components["schemas"]["SettingsSnapshotDto"];
+            workspace: components["schemas"]["AppConfigWorkspaceDto"];
+        };
+        AppConfigStateChangedEvent: {
+            revision: components["schemas"]["Revision"];
+            type: components["schemas"]["AppConfigStateChangedKind"];
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+            workspaceId: components["schemas"]["WorkspaceId"];
+        };
+        /** @enum {string} */
+        AppConfigStateChangedKind: "app-config-state-changed";
+        AppConfigStateOperationDto: {
+            patch: components["schemas"]["WorkspaceLayoutPatchDto"];
+            /** @enum {string} */
+            type: "patch-ui-layout";
+            windowLabel: components["schemas"]["WindowLabel"];
+        } | {
+            file: components["schemas"]["RecentMarkdownFileDto"];
+            /** @enum {string} */
+            type: "remember-recent-file";
+        } | {
+            path: components["schemas"]["WorkspaceRelativePath"];
+            /** @enum {string} */
+            type: "remove-recent-file";
+        } | {
+            /** @enum {string} */
+            type: "clear-recent-files";
+        } | {
+            sort: components["schemas"]["StoredFileTreeSortDto"];
+            /** @enum {string} */
+            type: "set-file-tree-sort";
+        } | {
+            path: components["schemas"]["Nullable_String"];
+            /** @enum {string} */
+            type: "set-pandoc-path";
+        };
+        AppConfigWorkspaceDto: {
+            generation: components["schemas"]["WorkspaceGeneration"];
+            id: components["schemas"]["WorkspaceId"];
+        };
         AuthenticateFrame: {
             credential: string;
             protocolVersion: components["schemas"]["ProtocolVersion"];
@@ -653,6 +736,12 @@ export interface components {
             /** @enum {string} */
             type: "settings-changed";
         } | {
+            revision: components["schemas"]["Revision"];
+            /** @enum {string} */
+            type: "app-config-state-changed";
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+            workspaceId: components["schemas"]["WorkspaceId"];
+        } | {
             config: components["schemas"]["SyncConfigViewDto"];
             /** @enum {string} */
             type: "sync-config-changed";
@@ -662,7 +751,7 @@ export interface components {
             type: "sync-status-changed";
         };
         /** @enum {string} */
-        ErrorCode: "invalid_request" | "invalid_workspace_path" | "invalid_document_name" | "unauthorized" | "initialization_required" | "already_initialized" | "invalid_credentials" | "csrf_rejected" | "authentication_rate_limited" | "authentication_unavailable" | "host_not_allowed" | "origin_not_allowed" | "kernel_not_ready" | "workspace_unavailable" | "workspace_locked" | "document_not_found" | "resource_not_found" | "document_already_exists" | "document_too_large" | "resource_too_large" | "document_invalid_encoding" | "revision_conflict" | "settings_revision_conflict" | "sync_config_revision_conflict" | "invalid_settings_field" | "settings_unavailable" | "sync_config_absent" | "sync_config_invalid" | "sync_not_ready" | "sync_run_unavailable" | "internal_error";
+        ErrorCode: "invalid_request" | "invalid_workspace_path" | "invalid_document_name" | "unauthorized" | "initialization_required" | "already_initialized" | "invalid_credentials" | "csrf_rejected" | "authentication_rate_limited" | "authentication_unavailable" | "host_not_allowed" | "origin_not_allowed" | "kernel_not_ready" | "workspace_unavailable" | "workspace_locked" | "document_not_found" | "resource_not_found" | "document_already_exists" | "document_too_large" | "resource_too_large" | "document_invalid_encoding" | "revision_conflict" | "settings_revision_conflict" | "workspace_generation_stale" | "sync_config_revision_conflict" | "invalid_settings_field" | "invalid_app_config_state" | "settings_unavailable" | "app_config_unavailable" | "sync_config_absent" | "sync_config_invalid" | "sync_not_ready" | "sync_run_unavailable" | "internal_error";
         ErrorDetails: {
             currentRevision?: components["schemas"]["Revision"];
             /** @enum {string} */
@@ -704,6 +793,10 @@ export interface components {
         /** @enum {string} */
         FileDocumentKind: "file";
         FileDocumentName: components["schemas"]["DocumentName"];
+        /** @enum {string} */
+        FileTreeSortDirection: "ascending" | "descending";
+        /** @enum {string} */
+        FileTreeSortKey: "createdAt" | "modifiedAt" | "name";
         /** Format: double */
         FiniteNumber: number;
         FontFamilyValueDto: {
@@ -773,6 +866,10 @@ export interface components {
         Nullable_Rfc3339Utc: null | string;
         Nullable_RunId: null | string;
         Nullable_SafeInteger: null | number;
+        Nullable_StoredWorkspaceSplitGroupDto: null | {
+            primaryFilePath: components["schemas"]["WorkspaceRelativePath"];
+            sideFilePath: components["schemas"]["WorkspaceRelativePath"];
+        };
         Nullable_String: null | string;
         Nullable_SyncSafeErrorDto: null | {
             category?: string;
@@ -797,12 +894,17 @@ export interface components {
             uploadedFiles: components["schemas"]["SafeUnsignedInteger"];
         };
         Nullable_SyncTrigger: null | ("app-launch" | "interval" | "manual" | "save" | "settings-exit");
+        Nullable_WorkspaceRelativePath: null | string;
         PageCursor: string;
         /** Format: int32 */
         PageLimit: number;
         PageQuery: {
             cursor?: components["schemas"]["PageCursor"];
             limit?: components["schemas"]["PageLimit"];
+        };
+        PatchAppConfigStateRequest: {
+            operations: components["schemas"]["AppConfigStateOperationDto"][];
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
         };
         PatchSettingsRequest: {
             expectedRevision: components["schemas"]["Revision"];
@@ -835,8 +937,12 @@ export interface components {
         ReadySequence: number;
         /** @enum {string} */
         ReadyStatus: "ready";
+        RecentMarkdownFileDto: {
+            name: string;
+            path: components["schemas"]["WorkspaceRelativePath"];
+        };
         /** @enum {string} */
-        ReloadScope: "workspace" | "documents" | "settings" | "sync-config" | "sync-status";
+        ReloadScope: "workspace" | "documents" | "settings" | "app-config" | "sync-config" | "sync-status";
         /** Format: uuid */
         RequestId: string;
         /** Format: int32 */
@@ -870,6 +976,11 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "settings";
+        } | {
+            /** @enum {string} */
+            kind: "app-config";
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+            workspaceId: components["schemas"]["WorkspaceId"];
         } | {
             /** @enum {string} */
             kind: "sync-config";
@@ -1036,6 +1147,40 @@ export interface components {
         SnapshotRequired: true;
         /** @enum {string} */
         StartupState: "starting" | "needs-owner" | "needs-workspace-initialization" | "needs-cloud-binding" | "ready" | "recoverable-error" | "fatal-error";
+        StoredFileTreeSortDto: {
+            direction: components["schemas"]["FileTreeSortDirection"];
+            key: components["schemas"]["FileTreeSortKey"];
+        };
+        StoredWorkspaceDraftDto: {
+            content: components["schemas"]["DocumentContents"];
+            id: string;
+            name: string;
+            path: components["schemas"]["Nullable_WorkspaceRelativePath"];
+        };
+        StoredWorkspaceLayoutDto: {
+            openWindows: components["schemas"]["StoredWorkspaceWindowDto"][];
+            /** Format: int32 */
+            schemaVersion: number;
+            windowStates: {
+                [key: string]: components["schemas"]["StoredWorkspaceWindowStateDto"];
+            };
+        };
+        StoredWorkspaceWindowDto: {
+            filePath: components["schemas"]["Nullable_WorkspaceRelativePath"];
+            label: components["schemas"]["WindowLabel"];
+            openFilePaths: components["schemas"]["WorkspaceRelativePath"][];
+        };
+        StoredWorkspaceWindowStateDto: {
+            activeDraftId: components["schemas"]["Nullable_String"];
+            draftTabs: components["schemas"]["StoredWorkspaceDraftDto"][];
+            filePath: components["schemas"]["Nullable_WorkspaceRelativePath"];
+            fileTreeAssetsVisible: boolean;
+            fileTreeOpen: boolean;
+            folderName: components["schemas"]["Nullable_String"];
+            folderPath: components["schemas"]["Nullable_WorkspaceRelativePath"];
+            openFilePaths: components["schemas"]["WorkspaceRelativePath"][];
+            sideBySideGroup: components["schemas"]["Nullable_StoredWorkspaceSplitGroupDto"];
+        };
         /** @enum {string} */
         SyncCompletionState: "idle" | "attempting" | "failed" | "succeeded";
         SyncConfigChangedEvent: {
@@ -1176,6 +1321,7 @@ export interface components {
             serverUrl: components["schemas"]["SafeEndpointViewDto"];
             username: string;
         };
+        WindowLabel: string;
         WorkspaceChangedEvent: {
             type: components["schemas"]["WorkspaceChangedKind"];
             workspace: components["schemas"]["WorkspaceDto"];
@@ -1205,6 +1351,18 @@ export interface components {
             items: components["schemas"]["WorkspaceInventoryEntryDto"][];
             nextCursor: components["schemas"]["Nullable_PageCursor"];
         };
+        WorkspaceLayoutPatchDto: {
+            activeDraftId?: components["schemas"]["Nullable_String"];
+            draftTabs?: components["schemas"]["StoredWorkspaceDraftDto"][];
+            filePath?: components["schemas"]["Nullable_WorkspaceRelativePath"];
+            fileTreeAssetsVisible?: boolean;
+            fileTreeOpen?: boolean;
+            folderName?: components["schemas"]["Nullable_String"];
+            folderPath?: components["schemas"]["Nullable_WorkspaceRelativePath"];
+            openFilePaths?: components["schemas"]["WorkspaceRelativePath"][];
+            openWindows?: components["schemas"]["StoredWorkspaceWindowDto"][];
+            sideBySideGroup?: components["schemas"]["Nullable_StoredWorkspaceSplitGroupDto"];
+        };
         /** @enum {string} */
         WorkspaceReadiness: "ready" | "initializing" | "unavailable" | "locked";
         WorkspaceRelativePath: string;
@@ -1217,6 +1375,208 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAppConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppConfigSnapshotDto"];
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "app_config_unavailable" | "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    patchAppConfigState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchAppConfigStateRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppConfigSnapshotDto"];
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "workspace_generation_stale";
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "resource_too_large";
+                    };
+                };
+            };
+            /** @description Error */
+            422: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_app_config_state";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "app_config_unavailable" | "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
     initializeServerOwner: {
         parameters: {
             query?: never;

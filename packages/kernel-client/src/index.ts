@@ -2,6 +2,7 @@ export {
   createKernelClient,
   type CreateKernelClientOptions,
   type KernelAuthenticationClient,
+  type KernelAppConfigClient,
   type KernelClient,
   type KernelCreateResourceRequest,
   type KernelCreateResourceBatchRequest,

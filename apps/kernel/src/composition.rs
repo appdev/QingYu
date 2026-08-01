@@ -8,6 +8,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
+    app_config::AppConfigService,
     config::KernelConfig,
     contract::{
         ApiVersion, HostProfile, InstanceId, ReadyHealthResponse, ReadyStatus,
@@ -35,7 +36,10 @@ use crate::{
         sync_scheduler::KernelSyncScheduler,
         workspace::WorkspaceService,
     },
-    settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
+    settings::{
+        service::{SettingsRuntimeCoordinator, SettingsService},
+        storage::AtomicJsonSettingsStore,
+    },
     storage::DurableFileStore,
     sync::{config::SyncConfigStore, executor::ProductionSyncExecutor},
     workspace::{
@@ -352,9 +356,12 @@ pub(crate) async fn install_fixed_kernel_services(
         .await
         .map_err(|_| FixedKernelCompositionError::WorkspaceService)?,
     );
-    let settings_service = Arc::new(SettingsService::new(
-        settings_store,
+    let settings_coordinator = Arc::new(SettingsRuntimeCoordinator::new(
         runtime.event_broker().clone(),
+    ));
+    let settings_service = Arc::new(SettingsService::with_coordinator(
+        settings_store.clone(),
+        settings_coordinator.clone(),
     ));
     let sync_store = SyncConfigStore::new(
         DurableFileStore::at_config(runtime.config_root(), runtime.launch_epoch())
@@ -376,6 +383,14 @@ pub(crate) async fn install_fixed_kernel_services(
     let workspace = runtime
         .active_workspace_snapshot()
         .map_err(|_| FixedKernelCompositionError::WorkspaceSnapshot)?;
+    let app_config_service = Arc::new(AppConfigService::new(
+        settings_store,
+        settings_service.clone(),
+        settings_coordinator,
+        workspace.workspace().id,
+        workspace.workspace().generation.clone(),
+        runtime.event_broker().clone(),
+    ));
     let documents_root = open_or_create_child(
         &runtime
             .instance_data_root()
@@ -432,6 +447,9 @@ pub(crate) async fn install_fixed_kernel_services(
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_settings_api_service(settings_service)
+        .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
+    runtime
+        .install_app_config_api_service(app_config_service)
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_sync_api_service(sync_service.clone())

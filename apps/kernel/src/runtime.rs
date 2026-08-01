@@ -14,18 +14,18 @@ use uuid::Uuid;
 use crate::{
     config::{KernelConfig, KernelLaunchEpoch},
     contract::{
-        CreateDocumentRequest, CreateWorkspaceResourceBatchRequest,
+        AppConfigSnapshotDto, CreateDocumentRequest, CreateWorkspaceResourceBatchRequest,
         CreateWorkspaceResourceBatchResponse, CreateWorkspaceResourceQuery, CreatedDocumentDto,
         DeleteDocumentRequest, DocumentContentDto, DocumentHistoryPageDto,
         DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, ErrorCode, ErrorDetails,
         HostProfile, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
-        MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
-        ReadyHealthResponse, ResourceId, ResourceKind, RestoreDocumentHistoryRequest, Revision,
-        Rfc3339Utc, RunId, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
-        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto,
-        SyncStatusDto, SyncTrigger, SystemVersionResponse, TestSyncConnectionRequest,
-        TriggerSyncRunRequest, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
-        WorkspaceInventoryPageDto,
+        MoveDocumentRequest, PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest,
+        PatchSyncConfigRequest, ReadyHealthResponse, ResourceId, ResourceKind,
+        RestoreDocumentHistoryRequest, Revision, Rfc3339Utc, RunId, SearchPageDto,
+        SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId, SyncConfigViewDto,
+        SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto, SyncTrigger,
+        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto, WorkspaceInventoryPageDto,
     },
     error::{safe_error_envelope, safe_message_for_error_code},
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
@@ -54,6 +54,7 @@ pub struct KernelRuntime {
     documents_api: OnceLock<Arc<dyn DocumentsApiService>>,
     resources_api: OnceLock<Arc<dyn ResourcesApiService>>,
     settings_api: OnceLock<Arc<dyn SettingsApiService>>,
+    app_config_api: OnceLock<Arc<dyn AppConfigApiService>>,
     sync_api: OnceLock<Arc<dyn SyncApiService>>,
     instance_authority: Arc<ActiveInstanceAuthority>,
 }
@@ -100,6 +101,7 @@ impl KernelRuntime {
             documents_api: OnceLock::new(),
             resources_api: OnceLock::new(),
             settings_api: OnceLock::new(),
+            app_config_api: OnceLock::new(),
             sync_api: OnceLock::new(),
             instance_authority,
         }))
@@ -1385,6 +1387,15 @@ impl KernelRuntime {
             .map_err(|_| ApiServiceAlreadyInstalled)
     }
 
+    pub fn install_app_config_api_service(
+        &self,
+        service: Arc<dyn AppConfigApiService>,
+    ) -> Result<(), ApiServiceAlreadyInstalled> {
+        self.app_config_api
+            .set(service)
+            .map_err(|_| ApiServiceAlreadyInstalled)
+    }
+
     pub fn install_sync_api_service(
         &self,
         service: Arc<dyn SyncApiService>,
@@ -1412,6 +1423,10 @@ impl KernelRuntime {
 
     pub(crate) fn settings_api_service(&self) -> Option<&Arc<dyn SettingsApiService>> {
         self.settings_api.get()
+    }
+
+    pub(crate) fn app_config_api_service(&self) -> Option<&Arc<dyn AppConfigApiService>> {
+        self.app_config_api.get()
     }
 
     pub(crate) fn sync_api_service(&self) -> Option<&Arc<dyn SyncApiService>> {
@@ -2667,6 +2682,15 @@ pub trait SettingsApiService: Send + Sync {
         &self,
         request: PatchSettingsRequest,
     ) -> Result<SettingsSnapshotDto, ServiceFailure>;
+}
+
+#[async_trait]
+pub trait AppConfigApiService: Send + Sync {
+    async fn get_app_config(&self) -> Result<AppConfigSnapshotDto, ServiceFailure>;
+    async fn patch_app_config_state(
+        &self,
+        request: PatchAppConfigStateRequest,
+    ) -> Result<AppConfigSnapshotDto, ServiceFailure>;
 }
 
 #[async_trait]

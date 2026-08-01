@@ -52,7 +52,7 @@ describe("createKernelClient", () => {
     });
   });
 
-  it("maps the six API groups to all frozen HTTP operations", async () => {
+  it("maps the seven API groups to all frozen HTTP operations", async () => {
     const calls: Array<{ url: URL; init: RequestInit }> = [];
     const fetch: FetchLike = async (url, init = {}) => {
       calls.push({ url: new URL(url), init });
@@ -163,6 +163,14 @@ describe("createKernelClient", () => {
       },
       { signal },
     );
+    await client.appConfig.get({ signal });
+    await client.appConfig.patchState(
+      {
+        workspaceGeneration: "generation-1",
+        operations: [{ type: "clear-recent-files" }],
+      },
+      { signal },
+    );
     await client.sync.getConfig({ signal });
     await client.sync.patchConfig(
       { expectedRevision: "sync-1", changes: { enabled: true } },
@@ -200,6 +208,8 @@ describe("createKernelClient", () => {
       "POST /api/v1/documents/document%2F1/history/snapshot%2F1/restore",
       "GET /api/v1/settings",
       "PATCH /api/v1/settings",
+      "GET /api/v1/app-config",
+      "PATCH /api/v1/app-config/state",
       "GET /api/v1/sync/config",
       "PATCH /api/v1/sync/config",
       "POST /api/v1/sync/connection-test",
@@ -222,9 +232,81 @@ describe("createKernelClient", () => {
     expect(JSON.parse(String(calls[19]?.init.body))).toMatchObject({
       expectedRevision: "settings-1",
     });
-    expect(JSON.parse(String(calls[25]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[21]?.init.body))).toEqual({
+      workspaceGeneration: "generation-1",
+      operations: [{ type: "clear-recent-files" }],
+    });
+    expect(JSON.parse(String(calls[27]?.init.body))).toMatchObject({
       expectedConfigRevision: "sync-3",
     });
+  });
+
+  it("adds browser CSRF only to the AppConfig mutation", async () => {
+    const calls: Array<{ url: URL; init: RequestInit }> = [];
+    const client = createKernelClient({
+      baseUrl: "https://notes.example",
+      fetch: async (url, init = {}) => {
+        calls.push({ url: new URL(url), init });
+        return jsonResponse(APP_CONFIG);
+      },
+      auth: {
+        kind: "browser-session",
+        browserOrigin: "https://notes.example",
+        getCsrfToken: () => "csrf-proof",
+      },
+    });
+
+    await client.appConfig.get();
+    await client.appConfig.patchState({
+      workspaceGeneration: "generation-1",
+      operations: [{ type: "clear-recent-files" }],
+    });
+
+    expect(calls.map(({ url, init }) => `${init.method} ${url.pathname}`)).toEqual([
+      "GET /api/v1/app-config",
+      "PATCH /api/v1/app-config/state",
+    ]);
+    expect(new Headers(calls[0]?.init.headers).has("x-csrf-token")).toBe(false);
+    expect(new Headers(calls[1]?.init.headers).get("x-csrf-token")).toBe("csrf-proof");
+    expect(new Headers(calls[1]?.init.headers).has("authorization")).toBe(false);
+  });
+
+  it("rejects malformed or extra nested AppConfig response fields", async () => {
+    const invalidSnapshots = [
+      { ...APP_CONFIG, appConfigVersion: 2 },
+      {
+        ...APP_CONFIG,
+        localState: {
+          ...APP_CONFIG.localState,
+          uiLayout: { ...APP_CONFIG.localState.uiLayout, extra: true },
+        },
+      },
+      {
+        ...APP_CONFIG,
+        localState: {
+          ...APP_CONFIG.localState,
+          fileTreeSort: { key: "unknown", direction: "ascending" },
+        },
+      },
+      {
+        ...APP_CONFIG,
+        localState: {
+          ...APP_CONFIG.localState,
+          recentMarkdownFiles: [{ name: "Secret", path: "../secret.md" }],
+        },
+      },
+    ];
+    for (const snapshot of invalidSnapshots) {
+      const client = createKernelClient({
+        baseUrl: "http://127.0.0.1:6608",
+        fetch: async () => jsonResponse(snapshot),
+        auth: { kind: "native-bearer", getCredential: () => "credential-1" },
+      });
+
+      await expect(client.appConfig.get()).rejects.toMatchObject({
+        kind: "invalid-http-response",
+      });
+    }
   });
 
   it("keeps base URL, credential provider, and fetch injection instance-local", async () => {
@@ -605,6 +687,12 @@ function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
         expectedRevision: "settings-1",
         values: [{ key: "language", value: { type: "string", value: "fr" } }],
       }),
+    () => client.appConfig.get(),
+    () =>
+      client.appConfig.patchState({
+        workspaceGeneration: "generation-1",
+        operations: [{ type: "clear-recent-files" }],
+      }),
     () => client.sync.getConfig(),
     () => client.sync.patchConfig({ expectedRevision: "sync-1", changes: { enabled: true } }),
     () =>
@@ -648,6 +736,18 @@ const HISTORY_SNAPSHOT = {
   snapshotId: UUID,
 };
 const SETTINGS = { revision: "settings-1", values: [] };
+const APP_CONFIG = {
+  appConfigVersion: 1,
+  settings: SETTINGS,
+  workspace: { id: UUID, generation: "generation-1" },
+  localState: {
+    revision: "app-config-1",
+    uiLayout: { schemaVersion: 1, windowStates: {}, openWindows: [] },
+    recentMarkdownFiles: [],
+    fileTreeSort: { key: "name", direction: "ascending" },
+    pandocPath: null,
+  },
+};
 const SYNC_CONFIG = {
   configured: true,
   enabled: true,
@@ -709,6 +809,9 @@ function operationResponseWithoutRequestId(path: string, method: string) {
   }
   if (path.includes("/documents/")) return Response.json(path.endsWith("/move") ? ENTRY : CONTENT);
   if (path === "/api/v1/settings") return Response.json(SETTINGS);
+  if (path === "/api/v1/app-config" || path === "/api/v1/app-config/state") {
+    return Response.json(APP_CONFIG);
+  }
   if (path === "/api/v1/sync/config") return Response.json(SYNC_CONFIG);
   if (path === "/api/v1/sync/connection-test") return Response.json({ checkedTarget: "s3", configRevision: "sync-1", provider: "s3" });
   if (path === "/api/v1/sync/status") return Response.json({ activeRunId: null, completionState: "idle", configRevision: "sync-1", error: null, lastAttemptAt: null, lastSuccessfulSyncAt: null, lastTrigger: null, provider: "s3", summary: null });

@@ -53,6 +53,196 @@ export {
   isSyncStatus,
 };
 
+export function isAppConfigSnapshot(
+  value: unknown,
+): value is Schemas["AppConfigSnapshotDto"] {
+  if (
+    !isRecord(value) ||
+    value.appConfigVersion !== 1 ||
+    !isSettingsSnapshot(value.settings) ||
+    !isRecord(value.workspace) ||
+    !isUuid(value.workspace.id) ||
+    !isNonEmptyString(value.workspace.generation) ||
+    !exact(value.workspace, ["generation", "id"]) ||
+    !isAppConfigLocalState(value.localState)
+  ) {
+    return false;
+  }
+  return exact(value, ["appConfigVersion", "localState", "settings", "workspace"]);
+}
+
+function isAppConfigLocalState(value: unknown) {
+  if (!isRecord(value)) return false;
+  const recentPaths = new Set<string>();
+  return (
+    isRevision(value.revision) &&
+    isStoredWorkspaceLayout(value.uiLayout) &&
+    Array.isArray(value.recentMarkdownFiles) &&
+    value.recentMarkdownFiles.length <= 10 &&
+    value.recentMarkdownFiles.every((file) => {
+      if (!isRecord(file) || !isCanonicalString(file.name, 255) || !isMarkdownPath(file.path)) {
+        return false;
+      }
+      if (recentPaths.has(file.path)) return false;
+      recentPaths.add(file.path);
+      return exact(file, ["name", "path"]);
+    }) &&
+    isStoredFileTreeSort(value.fileTreeSort) &&
+    (value.pandocPath === null || isCanonicalString(value.pandocPath, 500)) &&
+    exact(value, [
+      "fileTreeSort",
+      "pandocPath",
+      "recentMarkdownFiles",
+      "revision",
+      "uiLayout",
+    ])
+  );
+}
+
+function isStoredWorkspaceLayout(value: unknown) {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    !isRecord(value.windowStates) ||
+    !Array.isArray(value.openWindows)
+  ) {
+    return false;
+  }
+  let aggregateDraftBytes = 0;
+  for (const [label, state] of Object.entries(value.windowStates)) {
+    if (!isWindowLabel(label) || !isStoredWorkspaceWindowState(state)) return false;
+    for (const draft of state.draftTabs) {
+      aggregateDraftBytes += new TextEncoder().encode(draft.content).length;
+      if (aggregateDraftBytes > 48 * 1024 * 1024) return false;
+    }
+  }
+  const labels = new Set<string>();
+  return (
+    value.openWindows.every((window) => {
+      if (!isStoredWorkspaceWindow(window) || labels.has(window.label)) return false;
+      labels.add(window.label);
+      return true;
+    }) &&
+    exact(value, ["openWindows", "schemaVersion", "windowStates"])
+  );
+}
+
+function isStoredWorkspaceWindowState(
+  value: unknown,
+): value is Schemas["StoredWorkspaceWindowStateDto"] {
+  if (!isRecord(value) || !Array.isArray(value.draftTabs)) return false;
+  const draftIds = new Set<string>();
+  const draftsAreValid = value.draftTabs.every((draft) => {
+    if (!isStoredWorkspaceDraft(draft) || draftIds.has(draft.id)) return false;
+    draftIds.add(draft.id);
+    return true;
+  });
+  return (
+    draftsAreValid &&
+    (value.activeDraftId === null ||
+      (isCanonicalString(value.activeDraftId, 128) && draftIds.has(value.activeDraftId))) &&
+    typeof value.fileTreeAssetsVisible === "boolean" &&
+    (value.filePath === null || isMarkdownPath(value.filePath)) &&
+    typeof value.fileTreeOpen === "boolean" &&
+    (value.folderName === null || isCanonicalString(value.folderName, 255)) &&
+    (value.folderPath === null || isWorkspaceRelativePath(value.folderPath)) &&
+    isUniqueMarkdownPaths(value.openFilePaths) &&
+    (value.sideBySideGroup === null || isStoredWorkspaceSplitGroup(value.sideBySideGroup)) &&
+    exact(value, [
+      "activeDraftId",
+      "draftTabs",
+      "filePath",
+      "fileTreeAssetsVisible",
+      "fileTreeOpen",
+      "folderName",
+      "folderPath",
+      "openFilePaths",
+      "sideBySideGroup",
+    ])
+  );
+}
+
+function isStoredWorkspaceDraft(
+  value: unknown,
+): value is Schemas["StoredWorkspaceDraftDto"] {
+  return (
+    isRecord(value) &&
+    isContents(value.content) &&
+    isCanonicalString(value.id, 128) &&
+    isCanonicalString(value.name, 255) &&
+    (value.path === null || isMarkdownPath(value.path)) &&
+    exact(value, ["content", "id", "name", "path"])
+  );
+}
+
+function isStoredWorkspaceSplitGroup(value: unknown) {
+  return (
+    isRecord(value) &&
+    isMarkdownPath(value.primaryFilePath) &&
+    isMarkdownPath(value.sideFilePath) &&
+    value.primaryFilePath !== value.sideFilePath &&
+    exact(value, ["primaryFilePath", "sideFilePath"])
+  );
+}
+
+function isStoredWorkspaceWindow(
+  value: unknown,
+): value is Schemas["StoredWorkspaceWindowDto"] {
+  return (
+    isRecord(value) &&
+    (value.filePath === null || isMarkdownPath(value.filePath)) &&
+    isWindowLabel(value.label) &&
+    isUniqueMarkdownPaths(value.openFilePaths) &&
+    exact(value, ["filePath", "label", "openFilePaths"])
+  );
+}
+
+function isStoredFileTreeSort(value: unknown) {
+  return (
+    isRecord(value) &&
+    (value.key === "createdAt" || value.key === "modifiedAt" || value.key === "name") &&
+    (value.direction === "ascending" || value.direction === "descending") &&
+    exact(value, ["direction", "key"])
+  );
+}
+
+function isUniqueMarkdownPaths(value: unknown) {
+  if (!Array.isArray(value) || !value.every(isMarkdownPath)) return false;
+  return new Set(value).size === value.length;
+}
+
+function isMarkdownPath(value: unknown): value is string {
+  return isWorkspaceRelativePath(value) && /\.(?:md|markdown)$/iu.test(value);
+}
+
+function isWindowLabel(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    value !== "" &&
+    !hasControl(value) &&
+    new TextEncoder().encode(value).length <= 128
+  );
+}
+
+function isCanonicalString(value: unknown, maxCharacters: number): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    value !== "" &&
+    !hasControl(value) &&
+    Array.from(value).length <= maxCharacters
+  );
+}
+
+function hasControl(value: string) {
+  return /\p{Cc}/u.test(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
+}
+
 export function isDocumentPage(value: unknown): value is Schemas["DocumentPageDto"] {
   return page(value, isDocumentEntry);
 }

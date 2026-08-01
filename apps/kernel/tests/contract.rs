@@ -2,18 +2,18 @@ use qingyu_kernel::config::KernelConfig;
 use qingyu_kernel::contract::{
     ApiErrorEnvelope, ApiVersion, AuthenticateFrame, CreateDocumentRequest, CredentialChange,
     DeletionPolicy, DocumentContentDto, DocumentContents, DocumentId, DocumentKind,
-    DocumentPageDto, ErrorCode, ErrorDetails, EventSequence, FontFamilyValueDto, FrameErrorCode,
-    HostProfile, InstanceId, ListWorkspaceInventoryQuery, LiveHealthResponse, LiveStatus,
-    MoveDocumentRequest, Nullable, PageCursor, PageCursorContext, PageQuery, PatchSettingsRequest,
-    PositiveSafeInteger, ProtocolVersion, ReadySequence, ResourceEntryDto, ResourceId,
-    ResourceKind, ResourceName, Revision, Rfc3339Utc, SafeInteger, SafeUnsignedInteger,
-    SearchMatchDto, SearchWorkspaceQuery, ServerFrame, SettingEntryDto, SettingKey,
-    SettingValueDto, SnapshotRequired, StartupState, SyncConfigChangesDto, SyncMode, SyncProvider,
-    SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
-    SyncSafeHttpMethod, SyncSafeProviderErrorCode, ValidationField, ValidationIssueCode,
-    ValidationIssueDto, ValidationIssues, WireIdentityKey, WorkspaceDto, WorkspaceGeneration,
-    WorkspaceId, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto, WorkspaceReadiness,
-    WorkspaceRelativePath,
+    DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails, EventSequence, FontFamilyValueDto,
+    FrameErrorCode, HostProfile, InstanceId, ListWorkspaceInventoryQuery, LiveHealthResponse,
+    LiveStatus, MoveDocumentRequest, Nullable, PageCursor, PageCursorContext, PageQuery,
+    PatchSettingsRequest, PositiveSafeInteger, ProtocolVersion, ReadySequence, ReloadScope,
+    ResourceEntryDto, ResourceId, ResourceKind, ResourceName, ResourceRefDto, Revision, Rfc3339Utc,
+    SafeInteger, SafeUnsignedInteger, SearchMatchDto, SearchWorkspaceQuery, ServerFrame,
+    SettingEntryDto, SettingKey, SettingValueDto, SnapshotRequired, StartupState,
+    SyncConfigChangesDto, SyncMode, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
+    SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeHttpMethod, SyncSafeProviderErrorCode,
+    ValidationField, ValidationIssueCode, ValidationIssueDto, ValidationIssues, WireIdentityKey,
+    WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceInventoryEntryDto,
+    WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
 };
 use qingyu_kernel::error::{http_status_for_error_code, safe_error_envelope};
 use serde_json::json;
@@ -987,15 +987,18 @@ fn error_codes_have_a_complete_stable_http_mapping() {
         (ErrorCode::DocumentAlreadyExists, 409),
         (ErrorCode::RevisionConflict, 409),
         (ErrorCode::SettingsRevisionConflict, 409),
+        (ErrorCode::WorkspaceGenerationStale, 409),
         (ErrorCode::SyncConfigRevisionConflict, 409),
         (ErrorCode::DocumentTooLarge, 413),
         (ErrorCode::DocumentInvalidEncoding, 422),
         (ErrorCode::InvalidSettingsField, 422),
+        (ErrorCode::InvalidAppConfigState, 422),
         (ErrorCode::SyncConfigInvalid, 422),
         (ErrorCode::WorkspaceLocked, 423),
         (ErrorCode::KernelNotReady, 503),
         (ErrorCode::WorkspaceUnavailable, 503),
         (ErrorCode::SettingsUnavailable, 503),
+        (ErrorCode::AppConfigUnavailable, 503),
         (ErrorCode::SyncNotReady, 503),
         (ErrorCode::SyncRunUnavailable, 503),
         (ErrorCode::InternalError, 500),
@@ -1200,4 +1203,60 @@ fn authenticate_and_server_error_frames_are_strict_and_redacted() {
             "message": "Invalid event frame."
         })
     );
+}
+
+#[test]
+fn app_config_event_and_reload_scope_are_exact_and_redacted() {
+    let workspace_id = WorkspaceId::new(Uuid::from_u128(1));
+    let workspace_generation = WorkspaceGeneration::parse("generation-1").unwrap();
+    let revision = Revision::parse("app-config-1").unwrap();
+    let frame = ServerFrame::Event {
+        protocol_version: ProtocolVersion::new(1).unwrap(),
+        connection_id: qingyu_kernel::contract::ConnectionId::new(Uuid::from_u128(2)),
+        sequence: EventSequence::new(1).unwrap(),
+        resource: ResourceRefDto::AppConfig {
+            workspace_id,
+            workspace_generation: workspace_generation.clone(),
+        },
+        revision: revision.clone(),
+        event: Box::new(DomainEvent::AppConfigStateChanged {
+            workspace_id,
+            workspace_generation,
+            revision,
+        }),
+    };
+    let value = serde_json::to_value(frame).unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "type": "event",
+            "protocolVersion": 1,
+            "connectionId": Uuid::from_u128(2),
+            "sequence": 1,
+            "resource": {
+                "kind": "app-config",
+                "workspaceId": Uuid::from_u128(1),
+                "workspaceGeneration": "generation-1"
+            },
+            "revision": "app-config-1",
+            "event": {
+                "type": "app-config-state-changed",
+                "workspaceId": Uuid::from_u128(1),
+                "workspaceGeneration": "generation-1",
+                "revision": "app-config-1"
+            }
+        })
+    );
+    for forbidden in ["draftTabs", "filePath", "uiLayout", "pandocPath"] {
+        assert!(!value.to_string().contains(forbidden));
+    }
+
+    let mut extra = value;
+    extra["event"]["filePath"] = json!("secret.md");
+    assert!(serde_json::from_value::<ServerFrame>(extra).is_err());
+    assert_eq!(
+        serde_json::to_value(ReloadScope::AppConfig).unwrap(),
+        json!("app-config")
+    );
+    assert!(serde_json::from_value::<ReloadScope>(json!("app-config-extra")).is_err());
 }

@@ -74,6 +74,8 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
     ("get", "/api/v1/search", "searchWorkspace"),
     ("get", "/api/v1/settings", "getSettings"),
     ("patch", "/api/v1/settings", "patchSettings"),
+    ("get", "/api/v1/app-config", "getAppConfig"),
+    ("patch", "/api/v1/app-config/state", "patchAppConfigState"),
     ("get", "/api/v1/sync/config", "getSyncConfig"),
     ("patch", "/api/v1/sync/config", "patchSyncConfig"),
     ("post", "/api/v1/sync/connection-test", "testSyncConnection"),
@@ -106,9 +108,12 @@ const ERROR_CODES: &[&str] = &[
     "document_invalid_encoding",
     "revision_conflict",
     "settings_revision_conflict",
+    "workspace_generation_stale",
     "sync_config_revision_conflict",
     "invalid_settings_field",
+    "invalid_app_config_state",
     "settings_unavailable",
+    "app_config_unavailable",
     "sync_config_absent",
     "sync_config_invalid",
     "sync_not_ready",
@@ -130,6 +135,7 @@ const WS_COMPONENTS: &[&str] = &[
     "DocumentMovedEvent",
     "DocumentDeletedEvent",
     "SettingsChangedEvent",
+    "AppConfigStateChangedEvent",
     "SyncConfigChangedEvent",
     "SyncStatusChangedEvent",
     "DomainEvent",
@@ -256,7 +262,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_thirty_three_http_operations() {
+fn openapi_has_exactly_the_frozen_thirty_five_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -268,7 +274,7 @@ fn openapi_has_exactly_the_frozen_thirty_three_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 33);
+    assert_eq!(expected.len(), 35);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -640,6 +646,12 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
             ["application/json"]["schema"]["$ref"],
         "#/components/schemas/PatchSettingsRequest"
     );
+    let app_config_patch = &document["paths"]["/api/v1/app-config/state"]["patch"];
+    assert_eq!(
+        app_config_patch["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/PatchAppConfigStateRequest"
+    );
+    assert_eq!(app_config_patch["x-body-limit-bytes"], 64 * 1024 * 1024);
     let document_parameters = document["paths"]["/api/v1/documents/{documentId}"]["put"]
         ["parameters"]
         .as_array()
@@ -758,6 +770,21 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
             "settings_revision_conflict",
             "settings_unavailable",
             "unauthorized",
+        ])
+    );
+    assert_eq!(
+        operation_error_codes(&app_config_patch["responses"]),
+        BTreeSet::from([
+            "app_config_unavailable",
+            "authentication_unavailable",
+            "csrf_rejected",
+            "host_not_allowed",
+            "internal_error",
+            "invalid_app_config_state",
+            "origin_not_allowed",
+            "resource_too_large",
+            "unauthorized",
+            "workspace_generation_stale",
         ])
     );
 }

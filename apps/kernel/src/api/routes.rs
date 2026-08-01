@@ -5,7 +5,7 @@ use axum::{
     extract::{rejection::PathRejection, Path, Query, Request, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use http_body_util::LengthLimitError;
@@ -17,9 +17,9 @@ use crate::{
         ApiVersion, CreateDocumentRequest, CreateWorkspaceResourceBatchRequest,
         CreateWorkspaceResourceQuery, DocumentContents, DocumentId, DocumentName, ErrorCode,
         ErrorDetails, FileDocumentName, ListDocumentsQuery, ListWorkspaceInventoryQuery,
-        LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, ResourceId, ResourceKind,
-        RunId, SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
-        WorkspaceRelativePath,
+        LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, PatchAppConfigStateRequest,
+        ResourceId, ResourceKind, RunId, SearchWorkspaceQuery, SnapshotId, StartupState,
+        UpdateDocumentRequest, WorkspaceRelativePath,
     },
     runtime::ServiceFailure,
 };
@@ -29,6 +29,7 @@ use super::{api_error, is_api_path, resource_body, runtime, ws, ApiState};
 const STANDARD_JSON_BODY_LIMIT: usize = 1024 * 1024;
 const AUTH_JSON_BODY_LIMIT: usize = 16 * 1024;
 const DOCUMENT_JSON_BODY_LIMIT: usize = 100 * 1024 * 1024;
+const APP_CONFIG_JSON_BODY_LIMIT: usize = 64 * 1024 * 1024;
 const RESOURCE_BODY_LIMIT: usize = crate::resources::MAX_RESOURCE_BODY_BYTES;
 
 #[derive(Clone, Copy)]
@@ -52,6 +53,8 @@ enum ServiceOperation {
     SearchWorkspace,
     GetSettings,
     PatchSettings,
+    GetAppConfig,
+    PatchAppConfigState,
     GetSyncConfig,
     PatchSyncConfig,
     TestSyncConnection,
@@ -107,6 +110,8 @@ pub(crate) fn router() -> Router<ApiState> {
         )
         .route("/api/v1/search", get(search_workspace))
         .route("/api/v1/settings", get(get_settings).patch(patch_settings))
+        .route("/api/v1/app-config", get(get_app_config))
+        .route("/api/v1/app-config/state", patch(patch_app_config_state))
         .route(
             "/api/v1/sync/config",
             get(get_sync_config).patch(patch_sync_config),
@@ -502,6 +507,32 @@ async fn patch_settings(State(state): State<ApiState>, request: Request<Body>) -
     )
 }
 
+async fn get_app_config(State(state): State<ApiState>) -> Response {
+    let Some(service) = runtime(&state).app_config_api_service() else {
+        return unavailable(ServiceOperation::GetAppConfig);
+    };
+    service_response(
+        service.get_app_config().await,
+        StatusCode::OK,
+        ServiceOperation::GetAppConfig,
+    )
+}
+
+async fn patch_app_config_state(State(state): State<ApiState>, request: Request<Body>) -> Response {
+    let request = match parse_app_config_json(request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(service) = runtime(&state).app_config_api_service() else {
+        return unavailable(ServiceOperation::PatchAppConfigState);
+    };
+    service_response(
+        service.patch_app_config_state(request).await,
+        StatusCode::OK,
+        ServiceOperation::PatchAppConfigState,
+    )
+}
+
 async fn get_sync_config(State(state): State<ApiState>) -> Response {
     let Some(service) = runtime(&state).sync_api_service() else {
         return unavailable(ServiceOperation::GetSyncConfig);
@@ -591,6 +622,18 @@ where
     T: DeserializeOwned,
 {
     parse_json(request, STANDARD_JSON_BODY_LIMIT, ErrorCode::InvalidRequest).await
+}
+
+async fn parse_app_config_json(
+    request: Request<Body>,
+) -> Result<PatchAppConfigStateRequest, Response> {
+    let bytes = read_json_body(
+        request,
+        APP_CONFIG_JSON_BODY_LIMIT,
+        ErrorCode::ResourceTooLarge,
+    )
+    .await?;
+    serde_json::from_slice(&bytes).map_err(|_| api_error(ErrorCode::InvalidAppConfigState, None))
 }
 
 async fn parse_sensitive_standard_json<T>(request: Request<Body>) -> Result<T, Response>
@@ -991,6 +1034,13 @@ impl ServiceOperation {
                 E::SettingsRevisionConflict,
                 E::InvalidSettingsField,
             ],
+            Self::GetAppConfig => &[E::AppConfigUnavailable],
+            Self::PatchAppConfigState => &[
+                E::ResourceTooLarge,
+                E::InvalidAppConfigState,
+                E::WorkspaceGenerationStale,
+                E::AppConfigUnavailable,
+            ],
             Self::GetSyncConfig => &[E::SyncConfigAbsent, E::SyncConfigInvalid],
             Self::PatchSyncConfig | Self::TestSyncConnection => &[
                 E::InvalidRequest,
@@ -1030,6 +1080,7 @@ impl ServiceOperation {
             | Self::RestoreDocumentHistory
             | Self::SearchWorkspace => ErrorCode::KernelNotReady,
             Self::GetSettings | Self::PatchSettings => ErrorCode::SettingsUnavailable,
+            Self::GetAppConfig | Self::PatchAppConfigState => ErrorCode::AppConfigUnavailable,
             Self::GetSyncConfig => ErrorCode::SyncConfigAbsent,
             Self::PatchSyncConfig
             | Self::TestSyncConnection

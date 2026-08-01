@@ -4,6 +4,7 @@ import {
   type KernelHttpTransportOptions,
 } from "./transport.ts";
 import {
+  isAppConfigSnapshot,
   isCreatedDocument,
   isDocumentContent,
   isDocumentEntry,
@@ -180,6 +181,14 @@ export interface KernelSettingsClient {
   ): Promise<Schemas["SettingsSnapshotDto"]>;
 }
 
+export interface KernelAppConfigClient {
+  get(options?: KernelRequestOptions): Promise<Schemas["AppConfigSnapshotDto"]>;
+  patchState(
+    request: Schemas["PatchAppConfigStateRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["AppConfigSnapshotDto"]>;
+}
+
 export interface KernelSyncClient {
   getConfig(options?: KernelRequestOptions): Promise<Schemas["SyncConfigViewDto"]>;
   patchConfig(
@@ -208,6 +217,7 @@ export interface KernelClient {
   readonly resources: KernelResourcesClient;
   readonly documents: KernelDocumentsClient;
   readonly settings: KernelSettingsClient;
+  readonly appConfig: KernelAppConfigClient;
   readonly sync: KernelSyncClient;
 }
 
@@ -438,6 +448,21 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           body: request,
           signal: requestOptions?.signal,
         }, { status: 200, validate: isSettingsSnapshot }),
+    },
+    appConfig: {
+      get: (requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/app-config",
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isAppConfigSnapshot }),
+      patchState: (request, requestOptions) =>
+        transport.request({
+          method: "PATCH",
+          path: "/api/v1/app-config/state",
+          body: request,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isAppConfigSnapshot }),
     },
     sync: {
       getConfig: (requestOptions) =>

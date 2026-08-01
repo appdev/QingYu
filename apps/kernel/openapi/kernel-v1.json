@@ -30,6 +30,220 @@
         ],
         "type": "string"
       },
+      "AppConfigLocalStateDto": {
+        "additionalProperties": false,
+        "properties": {
+          "fileTreeSort": {
+            "$ref": "#/components/schemas/StoredFileTreeSortDto"
+          },
+          "pandocPath": {
+            "$ref": "#/components/schemas/Nullable_String"
+          },
+          "recentMarkdownFiles": {
+            "items": {
+              "$ref": "#/components/schemas/RecentMarkdownFileDto"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "uiLayout": {
+            "$ref": "#/components/schemas/StoredWorkspaceLayoutDto"
+          }
+        },
+        "required": [
+          "revision",
+          "uiLayout",
+          "recentMarkdownFiles",
+          "fileTreeSort",
+          "pandocPath"
+        ],
+        "type": "object"
+      },
+      "AppConfigSnapshotDto": {
+        "additionalProperties": false,
+        "properties": {
+          "appConfigVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "localState": {
+            "$ref": "#/components/schemas/AppConfigLocalStateDto"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/SettingsSnapshotDto"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/AppConfigWorkspaceDto"
+          }
+        },
+        "required": [
+          "appConfigVersion",
+          "settings",
+          "workspace",
+          "localState"
+        ],
+        "type": "object"
+      },
+      "AppConfigStateChangedEvent": {
+        "properties": {
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AppConfigStateChangedKind"
+          },
+          "workspaceGeneration": {
+            "$ref": "#/components/schemas/WorkspaceGeneration"
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "type",
+          "workspaceId",
+          "workspaceGeneration",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "AppConfigStateChangedKind": {
+        "enum": [
+          "app-config-state-changed"
+        ],
+        "type": "string"
+      },
+      "AppConfigStateOperationDto": {
+        "oneOf": [
+          {
+            "properties": {
+              "patch": {
+                "$ref": "#/components/schemas/WorkspaceLayoutPatchDto"
+              },
+              "type": {
+                "enum": [
+                  "patch-ui-layout"
+                ],
+                "type": "string"
+              },
+              "windowLabel": {
+                "$ref": "#/components/schemas/WindowLabel"
+              }
+            },
+            "required": [
+              "windowLabel",
+              "patch",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "file": {
+                "$ref": "#/components/schemas/RecentMarkdownFileDto"
+              },
+              "type": {
+                "enum": [
+                  "remember-recent-file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "file",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "path": {
+                "$ref": "#/components/schemas/WorkspaceRelativePath"
+              },
+              "type": {
+                "enum": [
+                  "remove-recent-file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "clear-recent-files"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "sort": {
+                "$ref": "#/components/schemas/StoredFileTreeSortDto"
+              },
+              "type": {
+                "enum": [
+                  "set-file-tree-sort"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "sort",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "path": {
+                "$ref": "#/components/schemas/Nullable_String"
+              },
+              "type": {
+                "enum": [
+                  "set-pandoc-path"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AppConfigWorkspaceDto": {
+        "additionalProperties": false,
+        "properties": {
+          "generation": {
+            "$ref": "#/components/schemas/WorkspaceGeneration"
+          },
+          "id": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          }
+        },
+        "required": [
+          "id",
+          "generation"
+        ],
+        "type": "object"
+      },
       "AuthenticateFrame": {
         "properties": {
           "credential": {
@@ -828,6 +1042,32 @@
           },
           {
             "properties": {
+              "revision": {
+                "$ref": "#/components/schemas/Revision"
+              },
+              "type": {
+                "enum": [
+                  "app-config-state-changed"
+                ],
+                "type": "string"
+              },
+              "workspaceGeneration": {
+                "$ref": "#/components/schemas/WorkspaceGeneration"
+              },
+              "workspaceId": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "workspaceGeneration",
+              "revision",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "config": {
                 "$ref": "#/components/schemas/SyncConfigViewDto"
               },
@@ -889,9 +1129,12 @@
           "document_invalid_encoding",
           "revision_conflict",
           "settings_revision_conflict",
+          "workspace_generation_stale",
           "sync_config_revision_conflict",
           "invalid_settings_field",
+          "invalid_app_config_state",
           "settings_unavailable",
+          "app_config_unavailable",
           "sync_config_absent",
           "sync_config_invalid",
           "sync_not_ready",
@@ -1058,6 +1301,21 @@
       },
       "FileDocumentName": {
         "$ref": "#/components/schemas/DocumentName"
+      },
+      "FileTreeSortDirection": {
+        "enum": [
+          "ascending",
+          "descending"
+        ],
+        "type": "string"
+      },
+      "FileTreeSortKey": {
+        "enum": [
+          "createdAt",
+          "modifiedAt",
+          "name"
+        ],
+        "type": "string"
       },
       "FiniteNumber": {
         "format": "double",
@@ -1349,6 +1607,29 @@
           }
         ]
       },
+      "Nullable_StoredWorkspaceSplitGroupDto": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "primaryFilePath": {
+                "$ref": "#/components/schemas/WorkspaceRelativePath"
+              },
+              "sideFilePath": {
+                "$ref": "#/components/schemas/WorkspaceRelativePath"
+              }
+            },
+            "required": [
+              "primaryFilePath",
+              "sideFilePath"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Nullable_String": {
         "oneOf": [
           {
@@ -1470,6 +1751,16 @@
           }
         ]
       },
+      "Nullable_WorkspaceRelativePath": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "string"
+          }
+        ]
+      },
       "PageCursor": {
         "type": "string"
       },
@@ -1488,6 +1779,25 @@
             "$ref": "#/components/schemas/PageLimit"
           }
         },
+        "type": "object"
+      },
+      "PatchAppConfigStateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/AppConfigStateOperationDto"
+            },
+            "type": "array"
+          },
+          "workspaceGeneration": {
+            "$ref": "#/components/schemas/WorkspaceGeneration"
+          }
+        },
+        "required": [
+          "workspaceGeneration",
+          "operations"
+        ],
         "type": "object"
       },
       "PatchSettingsRequest": {
@@ -1604,11 +1914,28 @@
         ],
         "type": "string"
       },
+      "RecentMarkdownFileDto": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "$ref": "#/components/schemas/WorkspaceRelativePath"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "type": "object"
+      },
       "ReloadScope": {
         "enum": [
           "workspace",
           "documents",
           "settings",
+          "app-config",
           "sync-config",
           "sync-status"
         ],
@@ -1736,6 +2063,28 @@
               }
             },
             "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "app-config"
+                ],
+                "type": "string"
+              },
+              "workspaceGeneration": {
+                "$ref": "#/components/schemas/WorkspaceGeneration"
+              },
+              "workspaceId": {
+                "$ref": "#/components/schemas/WorkspaceId"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "workspaceGeneration",
               "kind"
             ],
             "type": "object"
@@ -2436,6 +2785,150 @@
         ],
         "type": "string"
       },
+      "StoredFileTreeSortDto": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/FileTreeSortDirection"
+          },
+          "key": {
+            "$ref": "#/components/schemas/FileTreeSortKey"
+          }
+        },
+        "required": [
+          "key",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "StoredWorkspaceDraftDto": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/DocumentContents"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "$ref": "#/components/schemas/Nullable_WorkspaceRelativePath"
+          }
+        },
+        "required": [
+          "content",
+          "id",
+          "name",
+          "path"
+        ],
+        "type": "object"
+      },
+      "StoredWorkspaceLayoutDto": {
+        "additionalProperties": false,
+        "properties": {
+          "openWindows": {
+            "items": {
+              "$ref": "#/components/schemas/StoredWorkspaceWindowDto"
+            },
+            "type": "array"
+          },
+          "schemaVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "windowStates": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StoredWorkspaceWindowStateDto"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "windowStates",
+          "openWindows"
+        ],
+        "type": "object"
+      },
+      "StoredWorkspaceWindowDto": {
+        "additionalProperties": false,
+        "properties": {
+          "filePath": {
+            "$ref": "#/components/schemas/Nullable_WorkspaceRelativePath"
+          },
+          "label": {
+            "$ref": "#/components/schemas/WindowLabel"
+          },
+          "openFilePaths": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRelativePath"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "filePath",
+          "label",
+          "openFilePaths"
+        ],
+        "type": "object"
+      },
+      "StoredWorkspaceWindowStateDto": {
+        "additionalProperties": false,
+        "properties": {
+          "activeDraftId": {
+            "$ref": "#/components/schemas/Nullable_String"
+          },
+          "draftTabs": {
+            "items": {
+              "$ref": "#/components/schemas/StoredWorkspaceDraftDto"
+            },
+            "type": "array"
+          },
+          "filePath": {
+            "$ref": "#/components/schemas/Nullable_WorkspaceRelativePath"
+          },
+          "fileTreeAssetsVisible": {
+            "type": "boolean"
+          },
+          "fileTreeOpen": {
+            "type": "boolean"
+          },
+          "folderName": {
+            "$ref": "#/components/schemas/Nullable_String"
+          },
+          "folderPath": {
+            "$ref": "#/components/schemas/Nullable_WorkspaceRelativePath"
+          },
+          "openFilePaths": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRelativePath"
+            },
+            "type": "array"
+          },
+          "sideBySideGroup": {
+            "$ref": "#/components/schemas/Nullable_StoredWorkspaceSplitGroupDto"
+          }
+        },
+        "required": [
+          "activeDraftId",
+          "draftTabs",
+          "fileTreeAssetsVisible",
+          "filePath",
+          "fileTreeOpen",
+          "folderName",
+          "folderPath",
+          "openFilePaths",
+          "sideBySideGroup"
+        ],
+        "type": "object"
+      },
       "SyncCompletionState": {
         "enum": [
           "idle",
@@ -2997,6 +3490,9 @@
         ],
         "type": "object"
       },
+      "WindowLabel": {
+        "type": "string"
+      },
       "WorkspaceChangedEvent": {
         "properties": {
           "type": {
@@ -3112,6 +3608,51 @@
         ],
         "type": "object"
       },
+      "WorkspaceLayoutPatchDto": {
+        "additionalProperties": false,
+        "properties": {
+          "activeDraftId": {
+            "$ref": "#/components/schemas/Nullable_String"
+          },
+          "draftTabs": {
+            "items": {
+              "$ref": "#/components/schemas/StoredWorkspaceDraftDto"
+            },
+            "type": "array"
+          },
+          "filePath": {
+            "$ref": "#/components/schemas/Nullable_WorkspaceRelativePath"
+          },
+          "fileTreeAssetsVisible": {
+            "type": "boolean"
+          },
+          "fileTreeOpen": {
+            "type": "boolean"
+          },
+          "folderName": {
+            "$ref": "#/components/schemas/Nullable_String"
+          },
+          "folderPath": {
+            "$ref": "#/components/schemas/Nullable_WorkspaceRelativePath"
+          },
+          "openFilePaths": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRelativePath"
+            },
+            "type": "array"
+          },
+          "openWindows": {
+            "items": {
+              "$ref": "#/components/schemas/StoredWorkspaceWindowDto"
+            },
+            "type": "array"
+          },
+          "sideBySideGroup": {
+            "$ref": "#/components/schemas/Nullable_StoredWorkspaceSplitGroupDto"
+          }
+        },
+        "type": "object"
+      },
       "WorkspaceReadiness": {
         "enum": [
           "ready",
@@ -3168,6 +3709,485 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/app-config": {
+      "get": {
+        "operationId": "getAppConfig",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppConfigSnapshotDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "app_config_unavailable",
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
+          }
+        ]
+      }
+    },
+    "/api/v1/app-config/state": {
+      "patch": {
+        "operationId": "patchAppConfigState",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchAppConfigStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppConfigSnapshotDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "csrf_rejected",
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "workspace_generation_stale"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "resource_too_large"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_app_config_state"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "app_config_unavailable",
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
+          }
+        ],
+        "x-body-limit-bytes": 67108864
+      }
+    },
     "/api/v1/auth/initialize": {
       "post": {
         "operationId": "initializeServerOwner",

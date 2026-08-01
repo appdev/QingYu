@@ -11,7 +11,7 @@ export const KERNEL_API_ERROR_MESSAGES: Record<KernelApiErrorCode, string> = {
   kernel_not_ready: "The Kernel is not ready.", workspace_unavailable: "The workspace is unavailable.", workspace_locked: "The workspace is locked.",
   document_not_found: "The document was not found.", resource_not_found: "The resource was not found.", document_already_exists: "The document already exists.", document_too_large: "The document exceeds the supported size.", resource_too_large: "The resource exceeds the supported size.",
   document_invalid_encoding: "The document encoding is invalid.", revision_conflict: "The document changed since it was loaded.", settings_revision_conflict: "The settings changed since they were loaded.",
-  sync_config_revision_conflict: "The sync configuration changed since it was loaded.", invalid_settings_field: "A settings field is invalid.", settings_unavailable: "Settings are unavailable.",
+  workspace_generation_stale: "The workspace generation is stale.", sync_config_revision_conflict: "The sync configuration changed since it was loaded.", invalid_settings_field: "A settings field is invalid.", invalid_app_config_state: "The app configuration state is invalid.", settings_unavailable: "Settings are unavailable.", app_config_unavailable: "App configuration is unavailable.",
   sync_config_absent: "Sync is not configured.", sync_config_invalid: "The sync configuration is invalid.", sync_not_ready: "Sync is not ready.",
   sync_run_unavailable: "A sync run cannot be started now.", internal_error: "An unexpected error occurred.",
 };

@@ -140,7 +140,7 @@ describe("Kernel events", () => {
     expect(onEvent).toHaveBeenCalledWith(eventFrame(CONNECTION_1, 1, "revision-1"));
     expect(onSnapshotRequired).toHaveBeenCalledWith({
       reason: "sequence-gap",
-      reloadScopes: ["workspace", "documents", "settings", "sync-config", "sync-status"],
+      reloadScopes: ["workspace", "documents", "settings", "app-config", "sync-config", "sync-status"],
     });
     expect(onStateChange).toHaveBeenLastCalledWith("stale");
     expect(socket.closed).toEqual([{ code: 4009, reason: "snapshot reload required" }]);
@@ -179,7 +179,7 @@ describe("Kernel events", () => {
     mismatch.sockets[0]!.message(eventFrame(CONNECTION_2, 1, "revision-1"));
     expect(snapshot).toHaveBeenCalledWith({
       reason: "connection-mismatch",
-      reloadScopes: ["workspace", "documents", "settings", "sync-config", "sync-status"],
+      reloadScopes: ["workspace", "documents", "settings", "app-config", "sync-config", "sync-status"],
     });
   });
 
@@ -218,7 +218,7 @@ describe("Kernel events", () => {
     second.message(readyFrame(CONNECTION_2, INSTANCE_1));
     expect(snapshots).toHaveBeenLastCalledWith({
       reason: "reconnect",
-      reloadScopes: ["workspace", "documents", "settings", "sync-config", "sync-status"],
+      reloadScopes: ["workspace", "documents", "settings", "app-config", "sync-config", "sync-status"],
     });
     expect(harness.getCredential).toHaveBeenCalledTimes(2);
 
@@ -277,6 +277,58 @@ describe("Kernel events", () => {
     expect(onError.mock.calls[0]?.[0]).toMatchObject({
       kind: "invalid-websocket-frame",
     });
+  });
+
+  it("accepts exact redacted AppConfig events and rejects relationship or field drift", () => {
+    const valid = {
+      type: "event",
+      protocolVersion: 1,
+      connectionId: CONNECTION_1,
+      sequence: 1,
+      resource: {
+        kind: "app-config",
+        workspaceId: WORKSPACE_1,
+        workspaceGeneration: "generation-1",
+      },
+      revision: "app-config-1",
+      event: {
+        type: "app-config-state-changed",
+        workspaceId: WORKSPACE_1,
+        workspaceGeneration: "generation-1",
+        revision: "app-config-1",
+      },
+    };
+    const harness = new EventsHarness();
+    const onEvent = vi.fn();
+    harness.client.connect({ onEvent });
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.message(readyFrame(CONNECTION_1, INSTANCE_1));
+    socket.message(valid);
+    expect(onEvent).toHaveBeenCalledWith(valid);
+
+    for (const invalid of [
+      { ...valid, revision: "different-revision" },
+      {
+        ...valid,
+        resource: { ...valid.resource, workspaceGeneration: "other-generation" },
+      },
+      {
+        ...valid,
+        event: { ...valid.event, filePath: "secret.md" },
+      },
+    ]) {
+      const invalidHarness = new EventsHarness();
+      const onError = vi.fn();
+      invalidHarness.client.connect({ onError });
+      const invalidSocket = invalidHarness.sockets[0]!;
+      invalidSocket.open();
+      invalidSocket.message(readyFrame(CONNECTION_1, INSTANCE_1));
+      invalidSocket.message(invalid);
+      expect(onError.mock.calls[0]?.[0]).toMatchObject({
+        kind: "invalid-websocket-frame",
+      });
+    }
   });
 
   it("rejects impossible calendar timestamps in WebSocket document events", () => {

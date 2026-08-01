@@ -223,6 +223,7 @@ async fn broadcast_lag_emits_one_buffer_overflow_gap_then_closes_4009() {
                     ReloadScope::Workspace,
                     ReloadScope::Documents,
                     ReloadScope::Settings,
+                    ReloadScope::AppConfig,
                     ReloadScope::SyncConfig,
                     ReloadScope::SyncStatus,
                 ]

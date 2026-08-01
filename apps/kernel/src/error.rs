@@ -17,10 +17,12 @@ pub const fn http_status_for_error_code(code: ErrorCode) -> u16 {
         | ErrorCode::AlreadyInitialized
         | ErrorCode::RevisionConflict
         | ErrorCode::SettingsRevisionConflict
+        | ErrorCode::WorkspaceGenerationStale
         | ErrorCode::SyncConfigRevisionConflict => 409,
         ErrorCode::DocumentTooLarge | ErrorCode::ResourceTooLarge => 413,
         ErrorCode::DocumentInvalidEncoding
         | ErrorCode::InvalidSettingsField
+        | ErrorCode::InvalidAppConfigState
         | ErrorCode::SyncConfigInvalid => 422,
         ErrorCode::WorkspaceLocked => 423,
         ErrorCode::AuthenticationRateLimited => 429,
@@ -28,6 +30,7 @@ pub const fn http_status_for_error_code(code: ErrorCode) -> u16 {
         | ErrorCode::AuthenticationUnavailable
         | ErrorCode::WorkspaceUnavailable
         | ErrorCode::SettingsUnavailable
+        | ErrorCode::AppConfigUnavailable
         | ErrorCode::SyncNotReady
         | ErrorCode::SyncRunUnavailable => 503,
         ErrorCode::InternalError => 500,
@@ -84,11 +87,14 @@ pub const fn safe_message_for_error_code(code: ErrorCode) -> &'static str {
         ErrorCode::DocumentInvalidEncoding => "The document encoding is invalid.",
         ErrorCode::RevisionConflict => "The document changed since it was loaded.",
         ErrorCode::SettingsRevisionConflict => "The settings changed since they were loaded.",
+        ErrorCode::WorkspaceGenerationStale => "The workspace generation is stale.",
         ErrorCode::SyncConfigRevisionConflict => {
             "The sync configuration changed since it was loaded."
         }
         ErrorCode::InvalidSettingsField => "A settings field is invalid.",
+        ErrorCode::InvalidAppConfigState => "The app configuration state is invalid.",
         ErrorCode::SettingsUnavailable => "Settings are unavailable.",
+        ErrorCode::AppConfigUnavailable => "App configuration is unavailable.",
         ErrorCode::SyncConfigAbsent => "Sync is not configured.",
         ErrorCode::SyncConfigInvalid => "The sync configuration is invalid.",
         ErrorCode::SyncNotReady => "Sync is not ready.",
@@ -114,6 +120,7 @@ const fn error_details_are_allowed(code: ErrorCode, details: &ErrorDetails) -> b
                 | ErrorCode::ResourceTooLarge
                 | ErrorCode::DocumentInvalidEncoding
                 | ErrorCode::InvalidSettingsField
+                | ErrorCode::InvalidAppConfigState
                 | ErrorCode::SyncConfigInvalid
         ),
         ErrorDetails::Startup { .. } => matches!(
@@ -122,6 +129,7 @@ const fn error_details_are_allowed(code: ErrorCode, details: &ErrorDetails) -> b
                 | ErrorCode::WorkspaceUnavailable
                 | ErrorCode::WorkspaceLocked
                 | ErrorCode::SettingsUnavailable
+                | ErrorCode::AppConfigUnavailable
                 | ErrorCode::SyncNotReady
                 | ErrorCode::SyncRunUnavailable
         ),

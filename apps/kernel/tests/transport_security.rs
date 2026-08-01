@@ -12,22 +12,23 @@ use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
     contract::{
-        ApiErrorEnvelope, ApiVersion, CreateDocumentRequest, CreatedDocumentDto,
-        DeleteDocumentRequest, DocumentContentDto, DocumentEntryDto, DocumentHistoryPageDto,
-        DocumentHistorySnapshotDto, DocumentId, DocumentKind, DocumentPageDto, ErrorCode,
-        ErrorDetails, ListDocumentsQuery, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
-        ReadyHealthResponse, ReadyStatus, RestoreDocumentHistoryRequest, Revision, RunId,
-        RuntimeCapabilitiesDto, RuntimeStateDto, SearchPageDto, SearchWorkspaceQuery,
-        SettingsSnapshotDto, SnapshotId, StartupState, SyncConfigViewDto, SyncConnectionTestDto,
-        SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto, SystemVersionResponse,
-        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
-        WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
+        ApiErrorEnvelope, ApiVersion, AppConfigSnapshotDto, CreateDocumentRequest,
+        CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto, DocumentEntryDto,
+        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentKind,
+        DocumentPageDto, ErrorCode, ErrorDetails, ListDocumentsQuery, MoveDocumentRequest,
+        PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest, ReadyHealthResponse,
+        ReadyStatus, RestoreDocumentHistoryRequest, Revision, RunId, RuntimeCapabilitiesDto,
+        RuntimeStateDto, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
+        StartupState, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
+        SyncRunStatusDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
+        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceGeneration,
+        WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
     },
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{
-        DocumentsApiService, KernelRuntime, ServiceFailure, SettingsApiService, SyncApiService,
-        SystemApiService, WorkspaceApiService,
+        AppConfigApiService, DocumentsApiService, KernelRuntime, ServiceFailure,
+        SettingsApiService, SyncApiService, SystemApiService, WorkspaceApiService,
     },
 };
 use serde_json::{json, Value};
@@ -44,6 +45,8 @@ struct TestApi {
     runtime_calls: Arc<AtomicUsize>,
     document_create_calls: Arc<AtomicUsize>,
     settings_patch_calls: Arc<AtomicUsize>,
+    app_config_calls: Arc<AtomicUsize>,
+    app_config_failure: Arc<AtomicUsize>,
     sync_connection_test_calls: Arc<AtomicUsize>,
     sync_run_calls: Arc<AtomicUsize>,
     _root: tempfile::TempDir,
@@ -62,6 +65,11 @@ struct TestDocumentsService {
 
 struct TestSettingsService {
     patch_calls: Arc<AtomicUsize>,
+}
+
+struct TestAppConfigService {
+    calls: Arc<AtomicUsize>,
+    failure: Arc<AtomicUsize>,
 }
 
 struct TestSyncService {
@@ -182,6 +190,65 @@ impl SettingsApiService for TestSettingsService {
             values: vec![],
         })
     }
+}
+
+#[async_trait::async_trait]
+impl AppConfigApiService for TestAppConfigService {
+    async fn get_app_config(&self) -> Result<AppConfigSnapshotDto, ServiceFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.failure.load(Ordering::SeqCst) != 0 {
+            return Err(ServiceFailure::new(ErrorCode::AppConfigUnavailable, None).unwrap());
+        }
+        Ok(app_config_snapshot())
+    }
+
+    async fn patch_app_config_state(
+        &self,
+        request: PatchAppConfigStateRequest,
+    ) -> Result<AppConfigSnapshotDto, ServiceFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.failure.load(Ordering::SeqCst) != 0 {
+            return Err(ServiceFailure::new(ErrorCode::AppConfigUnavailable, None).unwrap());
+        }
+        match request.workspace_generation.as_str() {
+            "retired-generation" => {
+                Err(ServiceFailure::new(ErrorCode::WorkspaceGenerationStale, None).unwrap())
+            }
+            "invalid-state" => {
+                Err(ServiceFailure::new(ErrorCode::InvalidAppConfigState, None).unwrap())
+            }
+            _ => Ok(app_config_snapshot()),
+        }
+    }
+}
+
+fn app_config_snapshot() -> AppConfigSnapshotDto {
+    serde_json::from_value(json!({
+        "appConfigVersion": 1,
+        "settings": {
+            "revision": "settings-1",
+            "values": []
+        },
+        "workspace": {
+            "id": uuid::Uuid::from_u128(1),
+            "generation": "generation-1"
+        },
+        "localState": {
+            "revision": "app-config-1",
+            "uiLayout": {
+                "schemaVersion": 1,
+                "windowStates": {},
+                "openWindows": []
+            },
+            "recentMarkdownFiles": [],
+            "fileTreeSort": {
+                "key": "name",
+                "direction": "ascending"
+            },
+            "pandocPath": null
+        }
+    }))
+    .unwrap()
 }
 
 #[async_trait::async_trait]
@@ -316,6 +383,8 @@ impl TestApi {
         let policy = TransportPolicy::loopback(HOST, ORIGIN).unwrap();
         let document_create_calls = Arc::new(AtomicUsize::new(0));
         let settings_patch_calls = Arc::new(AtomicUsize::new(0));
+        let app_config_calls = Arc::new(AtomicUsize::new(0));
+        let app_config_failure = Arc::new(AtomicUsize::new(0));
         let sync_connection_test_calls = Arc::new(AtomicUsize::new(0));
         let sync_run_calls = Arc::new(AtomicUsize::new(0));
         runtime
@@ -328,6 +397,12 @@ impl TestApi {
                 patch_calls: settings_patch_calls.clone(),
             }))
             .expect("install settings API service once");
+        runtime
+            .install_app_config_api_service(Arc::new(TestAppConfigService {
+                calls: app_config_calls.clone(),
+                failure: app_config_failure.clone(),
+            }))
+            .expect("install app config API service once");
         if install_sync_service {
             runtime
                 .install_sync_api_service(Arc::new(TestSyncService {
@@ -344,6 +419,8 @@ impl TestApi {
             runtime_calls,
             document_create_calls,
             settings_patch_calls,
+            app_config_calls,
+            app_config_failure,
             sync_connection_test_calls,
             sync_run_calls,
             _root: root,
@@ -367,6 +444,15 @@ impl TestApi {
         );
         request
     }
+
+    fn authorized_json_request(&self, method: &str, path: &str, value: Value) -> Request<Body> {
+        let mut request = self.authorized_request(method, path);
+        request
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        *request.body_mut() = Body::from(serde_json::to_vec(&value).unwrap());
+        request
+    }
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -374,6 +460,215 @@ async fn body_json(response: axum::response::Response) -> Value {
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn app_config_get_returns_one_aggregate_snapshot() {
+    let api = TestApi::new();
+    let response = api
+        .router
+        .clone()
+        .oneshot(api.authorized_request("GET", "/api/v1/app-config"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["workspace"]["generation"], "generation-1");
+    assert!(body["settings"].is_object());
+    assert!(body["localState"]["uiLayout"]["windowStates"].is_object());
+    assert_eq!(api.app_config_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn stale_app_config_patch_maps_to_conflict() {
+    let api = TestApi::new();
+    let request = api.authorized_json_request(
+        "PATCH",
+        "/api/v1/app-config/state",
+        json!({
+            "workspaceGeneration": "retired-generation",
+            "operations": [{ "type": "clear-recent-files" }]
+        }),
+    );
+    let response = api.router.clone().oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(response).await["code"],
+        "workspace_generation_stale"
+    );
+}
+
+#[tokio::test]
+async fn app_config_routes_require_authentication() {
+    let api = TestApi::new();
+    let get = api
+        .router
+        .clone()
+        .oneshot(api.request("GET", "/api/v1/app-config"))
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::UNAUTHORIZED);
+
+    let mut patch = api.request("PATCH", "/api/v1/app-config/state");
+    patch
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    *patch.body_mut() = Body::from(
+        serde_json::to_vec(&json!({
+            "workspaceGeneration": "generation-1",
+            "operations": [{ "type": "clear-recent-files" }]
+        }))
+        .unwrap(),
+    );
+    let patch = api.router.clone().oneshot(patch).await.unwrap();
+    assert_eq!(patch.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(api.app_config_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn invalid_app_config_state_maps_to_unprocessable_entity_before_service_invocation() {
+    let api = TestApi::new();
+    for body in [
+        json!({
+            "workspaceGeneration": "generation-1",
+            "operations": [{ "type": "remove-recent-file", "path": "../secret.md" }]
+        }),
+        json!({
+            "workspaceGeneration": "generation-1",
+            "operations": [{ "type": "clear-recent-files", "extra": true }]
+        }),
+    ] {
+        let response = api
+            .router
+            .clone()
+            .oneshot(api.authorized_json_request("PATCH", "/api/v1/app-config/state", body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body_json(response).await["code"],
+            "invalid_app_config_state"
+        );
+    }
+    assert_eq!(api.app_config_calls.load(Ordering::SeqCst), 0);
+
+    let response = api
+        .router
+        .clone()
+        .oneshot(api.authorized_json_request(
+            "PATCH",
+            "/api/v1/app-config/state",
+            json!({
+                "workspaceGeneration": "invalid-state",
+                "operations": [{ "type": "clear-recent-files" }]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["code"],
+        "invalid_app_config_state"
+    );
+}
+
+#[tokio::test]
+async fn app_config_body_limit_accepts_maximum_draft_content_envelope_and_rejects_over_limit() {
+    let api = TestApi::new();
+    let draft_content = "x".repeat(16 * 1024 * 1024);
+    let operations = (0..3)
+        .map(|index| {
+            json!({
+                "type": "patch-ui-layout",
+                "windowLabel": format!("window-{index}"),
+                "patch": {
+                    "draftTabs": [{
+                        "id": format!("draft-{index}"),
+                        "name": format!("Draft {index}"),
+                        "path": null,
+                        "content": draft_content
+                    }]
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let accepted = api
+        .router
+        .clone()
+        .oneshot(api.authorized_json_request(
+            "PATCH",
+            "/api/v1/app-config/state",
+            json!({
+                "workspaceGeneration": "generation-1",
+                "operations": operations
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(api.app_config_calls.load(Ordering::SeqCst), 1);
+
+    let mut request = api.authorized_request("PATCH", "/api/v1/app-config/state");
+    request
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    *request.body_mut() = Body::from(vec![b' '; 64 * 1024 * 1024 + 1]);
+    let rejected = api.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(api.app_config_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unavailable_app_config_maps_to_service_unavailable() {
+    let api = TestApi::new();
+    api.app_config_failure.store(1, Ordering::SeqCst);
+    let response = api
+        .router
+        .clone()
+        .oneshot(api.authorized_request("GET", "/api/v1/app-config"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(response).await["code"], "app_config_unavailable");
+}
+
+#[tokio::test]
+async fn app_config_route_methods_and_preflight_are_exact() {
+    let api = TestApi::new();
+    for (path, accepted, rejected) in [
+        ("/api/v1/app-config", "GET", "PATCH"),
+        ("/api/v1/app-config/state", "PATCH", "GET"),
+    ] {
+        let accepted = Request::builder()
+            .method("OPTIONS")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, accepted)
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization, content-type, x-csrf-token",
+            )
+            .body(Body::empty())
+            .unwrap();
+        let accepted = api.router.clone().oneshot(accepted).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT, "{path}");
+
+        let rejected = Request::builder()
+            .method("OPTIONS")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, rejected)
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap();
+        let rejected = api.router.clone().oneshot(rejected).await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
 }
 
 #[tokio::test]

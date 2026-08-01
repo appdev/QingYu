@@ -441,9 +441,12 @@ const API_ERROR_CODES: ReadonlySet<KernelApiErrorCode> = new Set([
   "document_invalid_encoding",
   "revision_conflict",
   "settings_revision_conflict",
+  "workspace_generation_stale",
   "sync_config_revision_conflict",
   "invalid_settings_field",
+  "invalid_app_config_state",
   "settings_unavailable",
+  "app_config_unavailable",
   "sync_config_absent",
   "sync_config_invalid",
   "sync_not_ready",
@@ -457,12 +460,12 @@ const ERROR_STATUS: Record<KernelApiErrorCode, number> = {
   host_not_allowed: 403, origin_not_allowed: 403, csrf_rejected: 403,
   document_not_found: 404, resource_not_found: 404, sync_config_absent: 404,
   document_already_exists: 409, initialization_required: 409, already_initialized: 409,
-  revision_conflict: 409, settings_revision_conflict: 409,
+  revision_conflict: 409, settings_revision_conflict: 409, workspace_generation_stale: 409,
   sync_config_revision_conflict: 409, document_too_large: 413, resource_too_large: 413,
-  document_invalid_encoding: 422, invalid_settings_field: 422, sync_config_invalid: 422,
+  document_invalid_encoding: 422, invalid_settings_field: 422, invalid_app_config_state: 422, sync_config_invalid: 422,
   workspace_locked: 423, authentication_rate_limited: 429,
   kernel_not_ready: 503, authentication_unavailable: 503, workspace_unavailable: 503,
-  settings_unavailable: 503, sync_not_ready: 503, sync_run_unavailable: 503,
+  settings_unavailable: 503, app_config_unavailable: 503, sync_not_ready: 503, sync_run_unavailable: 503,
   internal_error: 500,
 };
 
@@ -518,7 +521,7 @@ function isErrorDetails(value: unknown, code: KernelApiErrorCode) {
       );
     case "startup":
       return (
-        ["kernel_not_ready", "workspace_unavailable", "workspace_locked", "settings_unavailable", "sync_not_ready", "sync_run_unavailable"].includes(code) &&
+        ["kernel_not_ready", "workspace_unavailable", "workspace_locked", "settings_unavailable", "app_config_unavailable", "sync_not_ready", "sync_run_unavailable"].includes(code) &&
         typeof details.state === "string" &&
         STARTUP_STATES.has(details.state) &&
         hasOnlyKeys(details, ["type", "state"])

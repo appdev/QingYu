@@ -107,6 +107,7 @@ const ALL_RELOAD_SCOPES: KernelReloadScope[] = [
   "workspace",
   "documents",
   "settings",
+  "app-config",
   "sync-config",
   "sync-status",
 ];
@@ -482,6 +483,13 @@ function isEventRelationship(
       return resource.kind === "document" && resource.id === event.documentId && revision === event.revision;
     case "settings-changed":
       return resource.kind === "settings" && revision === event.settings.revision;
+    case "app-config-state-changed":
+      return (
+        resource.kind === "app-config" &&
+        resource.workspaceId === event.workspaceId &&
+        resource.workspaceGeneration === event.workspaceGeneration &&
+        revision === event.revision
+      );
     case "sync-config-changed":
       return resource.kind === "sync-config" && revision === event.config.revision;
     case "sync-status-changed": {
@@ -566,6 +574,12 @@ function isResourceRef(value: unknown): value is Schemas["ResourceRefDto"] {
     case "settings":
     case "sync-config":
       return hasExactKeys(value, ["kind"]);
+    case "app-config":
+      return (
+        isUuid(value.workspaceId) &&
+        isWorkspaceGeneration(value.workspaceGeneration) &&
+        hasExactKeys(value, ["kind", "workspaceGeneration", "workspaceId"])
+      );
     case "sync-status":
       return (
         (value.runId === null || isUuid(value.runId)) &&
@@ -606,6 +620,18 @@ function isDomainEvent(value: unknown): value is Schemas["DomainEvent"] {
       );
     case "settings-changed":
       return isSettingsSnapshot(value.settings) && hasExactKeys(value, ["type", "settings"]);
+    case "app-config-state-changed":
+      return (
+        isUuid(value.workspaceId) &&
+        isWorkspaceGeneration(value.workspaceGeneration) &&
+        isRevision(value.revision) &&
+        hasExactKeys(value, [
+          "type",
+          "revision",
+          "workspaceGeneration",
+          "workspaceId",
+        ])
+      );
     case "sync-config-changed":
       return isSyncConfig(value.config) && hasExactKeys(value, ["type", "config"]);
     case "sync-status-changed":
