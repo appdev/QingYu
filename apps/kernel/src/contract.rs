@@ -772,7 +772,7 @@ pub struct ServerSessionDto {
 pub struct InitializeServerOwnerRequest {
     #[schema(write_only)]
     initialization_token: String,
-    #[schema(write_only)]
+    #[schema(write_only, min_length = 1, max_length = 1024, pattern = r"^[!-~]+$")]
     password: String,
 }
 
@@ -805,7 +805,7 @@ impl Drop for InitializeServerOwnerRequest {
 #[derive(Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CreateServerSessionRequest {
-    #[schema(write_only)]
+    #[schema(write_only, min_length = 1, max_length = 1024, pattern = r"^[!-~]+$")]
     password: String,
 }
 
@@ -833,9 +833,9 @@ impl Drop for CreateServerSessionRequest {
 #[derive(Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ChangeServerOwnerPasswordRequest {
-    #[schema(write_only)]
+    #[schema(write_only, min_length = 1, max_length = 1024, pattern = r"^[!-~]+$")]
     current_password: String,
-    #[schema(write_only)]
+    #[schema(write_only, min_length = 1, max_length = 1024, pattern = r"^[!-~]+$")]
     new_password: String,
 }
 

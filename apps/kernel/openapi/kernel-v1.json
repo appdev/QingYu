@@ -282,10 +282,16 @@
         "additionalProperties": false,
         "properties": {
           "currentPassword": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
             "type": "string",
             "writeOnly": true
           },
           "newPassword": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
             "type": "string",
             "writeOnly": true
           }
@@ -364,6 +370,9 @@
         "additionalProperties": false,
         "properties": {
           "password": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
             "type": "string",
             "writeOnly": true
           }
@@ -1474,6 +1483,9 @@
             "writeOnly": true
           },
           "password": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[!-~]+$",
             "type": "string",
             "writeOnly": true
           }
