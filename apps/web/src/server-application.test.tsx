@@ -247,6 +247,125 @@ describe("server Web application gate", () => {
     expect(input.value).toBe("");
   });
 
+  it("uses the shared printable ASCII constraints for server password inputs", () => {
+    const { rerender } = render(
+      <ServerStartupShell
+        owner={inertOwner()}
+        snapshot={{ phase: "login", error: null }}
+      />,
+    );
+    const login = screen.getByLabelText("Server password") as HTMLInputElement;
+
+    expect(login.pattern).toBe("[!-~]+");
+    expect(login.maxLength).toBe(1024);
+
+    rerender(
+      <ServerStartupShell
+        owner={inertOwner()}
+        snapshot={{ phase: "initialize", error: null }}
+      />,
+    );
+    const password = screen.getByLabelText("Owner password") as HTMLInputElement;
+    const confirmation = screen.getByLabelText("Confirm password") as HTMLInputElement;
+
+    expect(password.pattern).toBe("[!-~]+");
+    expect(password.maxLength).toBe(1024);
+    expect(confirmation.pattern).toBe("[!-~]+");
+    expect(confirmation.maxLength).toBe(1024);
+  });
+
+  it("keeps an invalid login password available and does not submit it", () => {
+    const owner = inertOwner();
+    owner.login = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        owner={owner}
+        snapshot={{ phase: "login", error: null }}
+      />,
+    );
+    const input = screen.getByLabelText("Server password") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "中文" } });
+    fireEvent.submit(input.form!);
+
+    expect(owner.login).not.toHaveBeenCalled();
+    expect(input.value).toBe("中文");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByText(
+      "Enter 1–1024 characters using only English letters, numbers, and special symbols, without spaces.",
+    )).not.toBeNull();
+  });
+
+  it.each(["Owner Secret", "😀", "", "x".repeat(1025)])(
+    "blocks invalid initialization password %j before calling the owner",
+    (passwordValue) => {
+      const owner = inertOwner();
+      owner.initialize = vi.fn(async () => undefined);
+      render(
+        <ServerStartupShell
+          owner={owner}
+          snapshot={{ phase: "initialize", error: null }}
+        />,
+      );
+      const token = screen.getByLabelText("One-time initialization token") as HTMLInputElement;
+      const password = screen.getByLabelText("Owner password") as HTMLInputElement;
+      const confirmation = screen.getByLabelText("Confirm password") as HTMLInputElement;
+      fireEvent.change(token, { target: { value: "one-time-token" } });
+      fireEvent.change(password, { target: { value: passwordValue } });
+      fireEvent.change(confirmation, { target: { value: passwordValue } });
+      fireEvent.submit(token.form!);
+
+      expect(owner.initialize).not.toHaveBeenCalled();
+      expect(password.getAttribute("aria-invalid")).toBe("true");
+    },
+  );
+
+  it("accepts a one-character ASCII password after exactly matching confirmation", () => {
+    const owner = inertOwner();
+    owner.initialize = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        owner={owner}
+        snapshot={{ phase: "initialize", error: null }}
+      />,
+    );
+    const token = screen.getByLabelText("One-time initialization token") as HTMLInputElement;
+    const password = screen.getByLabelText("Owner password") as HTMLInputElement;
+    const confirmation = screen.getByLabelText("Confirm password") as HTMLInputElement;
+    fireEvent.change(token, { target: { value: "one-time-token" } });
+    fireEvent.change(password, { target: { value: "!" } });
+    fireEvent.change(confirmation, { target: { value: "!" } });
+    fireEvent.submit(token.form!);
+
+    expect(owner.initialize).toHaveBeenCalledWith({
+      initializationToken: "one-time-token",
+      password: "!",
+    });
+    expect(password.value).toBe("");
+    expect(confirmation.value).toBe("");
+  });
+
+  it("treats case-only differences in confirmation as a mismatch", () => {
+    const owner = inertOwner();
+    owner.initialize = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        owner={owner}
+        snapshot={{ phase: "initialize", error: null }}
+      />,
+    );
+    const token = screen.getByLabelText("One-time initialization token") as HTMLInputElement;
+    const password = screen.getByLabelText("Owner password") as HTMLInputElement;
+    const confirmation = screen.getByLabelText("Confirm password") as HTMLInputElement;
+    fireEvent.change(token, { target: { value: "one-time-token" } });
+    fireEvent.change(password, { target: { value: "A" } });
+    fireEvent.change(confirmation, { target: { value: "a" } });
+    fireEvent.submit(token.form!);
+
+    expect(owner.initialize).not.toHaveBeenCalled();
+    expect(screen.getByText("The passwords do not match. Enter the same password again.")).not.toBeNull();
+    expect(confirmation.getAttribute("aria-invalid")).toBe("true");
+  });
+
   it("blocks mismatched initialization passwords and submits only matching secrets", () => {
     const owner = inertOwner();
     owner.initialize = vi.fn(async () => undefined);
