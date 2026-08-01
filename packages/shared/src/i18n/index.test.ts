@@ -152,6 +152,53 @@ describe("i18n", () => {
     ]);
   });
 
+  it("ships localized workspace home copy in every supported locale", () => {
+    const keys = [
+      "workspaceHome.title",
+      "workspaceHome.description",
+      "workspaceHome.createDocument",
+      "workspaceHome.openDocument",
+      "workspaceHome.quickOpen",
+      "workspaceHome.showFiles",
+      "workspaceHome.openSettings",
+      "workspaceHome.configureSync",
+      "workspaceHome.switchWorkspace",
+      "workspaceHome.staleRecordsPruned"
+    ] as I18nKey[];
+
+    expect(keys.map((key) => t("en", key))).toEqual([
+      "Welcome to QingYu",
+      "Create a document or choose another way to continue in this workspace.",
+      "New Document",
+      "Open Document",
+      "Quick Open",
+      "Show Files",
+      "Open Settings",
+      "Configure Sync",
+      "Switch Workspace",
+      "Unavailable recent items were removed."
+    ]);
+    expect(keys.map((key) => t("zh-CN", key))).toEqual([
+      "欢迎使用轻语",
+      "新建文档，或选择其他方式继续使用当前工作区。",
+      "新建文档",
+      "打开文档",
+      "快速打开",
+      "显示文件",
+      "打开设置",
+      "配置同步",
+      "切换工作区",
+      "已移除不可用的最近项目。"
+    ]);
+
+    for (const [language, messages] of Object.entries(localeMessages)) {
+      for (const key of keys) {
+        expect(messages[key], `${language}:${key}`).toBeTypeOf("string");
+        expect(messages[key]?.trim(), `${language}:${key}`).not.toBe("");
+      }
+    }
+  });
+
   it("describes standalone onboarding and named current-notebook synchronization", () => {
     expect(enMessages).not.toHaveProperty("onboarding.action.openFolder");
     expect(zhCnMessages).not.toHaveProperty("onboarding.action.openFolder");
