@@ -1071,6 +1071,7 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "clear_mcp_audit_entries",
             "commit_theme_activation",
             "delete_theme",
+            "export_markdown_file",
             "import_theme_file",
             "install_shell_command",
             "mcp::initialize",

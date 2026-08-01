@@ -123,6 +123,70 @@ function listLineAttributes(source: string) {
   };
 }
 
+function rangeSelectionIncludesPosition(
+  view: EditorView,
+  position: number,
+) {
+  return view.state.selection.ranges.some(
+    (selection) =>
+      !selection.empty && selection.from <= position && selection.to > position,
+  );
+}
+
+function buildListMarkerSelectionDecorations(view: EditorView) {
+  const ranges: Range<Decoration>[] = [];
+  const decoratedLines = new Set<number>();
+
+  for (const visibleRange of view.visibleRanges) {
+    const firstLine = view.state.doc.lineAt(visibleRange.from).number;
+    const lastLine = view.state.doc.lineAt(visibleRange.to).number;
+
+    for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber += 1) {
+      const line = view.state.doc.line(lineNumber);
+      if (
+        decoratedLines.has(line.from) ||
+        !listLineAttributes(line.text) ||
+        !rangeSelectionIncludesPosition(view, line.from)
+      ) {
+        continue;
+      }
+
+      decoratedLines.add(line.from);
+      ranges.push(
+        Decoration.line({
+          attributes: { "data-markra-list-marker-selected": "true" },
+        }).range(line.from),
+      );
+    }
+  }
+
+  return Decoration.set(ranges, true);
+}
+
+const listMarkerSelectionPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = buildListMarkerSelectionDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (
+        update.docChanged ||
+        update.selectionSet ||
+        update.viewportChanged
+      ) {
+        // Visual list markers are pseudo-elements, so CodeMirror's selection
+        // layer cannot paint them. Mirror selection only when source includes
+        // the marker, without revealing Markdown or changing line geometry.
+        this.decorations = buildListMarkerSelectionDecorations(update.view);
+      }
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
+
 function emptyTaskMarkerRange(source: string) {
   const match = EMPTY_TASK_ITEM_PATTERN.exec(source);
   if (!match) return null;
@@ -346,12 +410,30 @@ function buildDecorations(
       if (blockClass) {
         const firstLine = state.doc.lineAt(visibleNodeFrom).number;
         const lastLine = state.doc.lineAt(visibleNodeTo - 1).number;
+        let paragraphEndLine: number | null = null;
+        if (
+          node.name === "Paragraph" &&
+          listDepth(node.node as MarkraSyntaxNode) === 0
+        ) {
+          const endLine = state.doc.lineAt(node.to - 1).number;
+          // An authored blank line already provides full-height block rhythm.
+          // Extra spacing is only needed when another block starts directly.
+          if (
+            endLine < state.doc.lines &&
+            state.doc.line(endLine + 1).text.trim().length > 0
+          ) {
+            paragraphEndLine = endLine;
+          }
+        }
         for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber += 1) {
           const line = state.doc.line(lineNumber);
           const key = `${blockClass}:${line.from}`;
           if (!decoratedBlockLines.has(key)) {
             decoratedBlockLines.add(key);
-            ranges.push(Decoration.line({ class: blockClass }).range(line.from));
+            const className = lineNumber === paragraphEndLine
+              ? `${blockClass} cm-markra-paragraph-end`
+              : blockClass;
+            ranges.push(Decoration.line({ class: className }).range(line.from));
           }
         }
       }
@@ -703,18 +785,6 @@ function buildDecorations(
         decoratedEmptyLines.add(line.from);
         ranges.push(
           Decoration.line({
-            attributes: {
-              "data-markra-empty-source": isRevealed({
-                view,
-                state,
-                from: line.from,
-                to: line.to,
-                nodeName: "EmptyLine",
-                scope: "line",
-              })
-                ? "visible"
-                : "hidden",
-            },
             class: "cm-markra-empty-line",
           }).range(line.from),
         );
@@ -845,5 +915,9 @@ function previewPlugin(config: LivePreviewConfig): Extension {
 }
 
 export function livePreview(config: LivePreviewConfig = {}): Extension {
-  return [sourceDragSelectionExtension, previewPlugin(config)];
+  return [
+    sourceDragSelectionExtension,
+    previewPlugin(config),
+    listMarkerSelectionPlugin,
+  ];
 }

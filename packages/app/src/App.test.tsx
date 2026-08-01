@@ -75,6 +75,7 @@ import {
   mockedSaveNativeClipboardImage,
   mockedSaveNativeClipboardAttachment,
   mockedSaveNativeHtmlFile,
+  mockedSaveNativeMarkdownBundleFile,
   mockedSaveNativeMarkdownFile,
   mockedSaveNativePandocFile,
   mockedSaveNativePdfFile,
@@ -4283,6 +4284,7 @@ describe("QingYu workspace", () => {
 
     expect(menuHandlers.exportHtml).toEqual(expect.any(Function));
     expect(menuHandlers.exportPdf).toEqual(expect.any(Function));
+    expect(menuHandlers.exportMarkdown).toBeUndefined();
     expect(menuHandlers.exportDocx).toBeUndefined();
     expect(menuHandlers.exportEpub).toBeUndefined();
     expect(menuHandlers.exportLatex).toBeUndefined();
@@ -11900,6 +11902,67 @@ describe("QingYu workspace", () => {
     expect(exportedHtml).not.toContain("/api/v1/resources/editor-only-image");
     expect(exportedHtml).toContain("<title>exportable.md</title>");
     expect(exportedHtml).toContain('font-family: "Example Serif", ui-serif');
+  });
+
+  it("exports the current saved markdown document with its local resources from the native menu", async () => {
+    const runtime = createDefaultAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: {
+        ...runtime.features,
+        applicationMenu: true,
+        export: true,
+        markdownBundle: true
+      }
+    });
+    const markdown = [
+      "# Portable Markdown",
+      "",
+      "![Chart](assets/chart.png)",
+      "[Escaped](files/reference\\(final\\).pdf)",
+      "[Reference](files/reference.pdf)",
+      "[Remote](https://example.test/reference.pdf)"
+    ].join("\n");
+    mockOpenMarkdownFile({
+      content: markdown,
+      name: "portable.md",
+      path: mockNativePath
+    });
+    mockedSaveNativeMarkdownBundleFile.mockResolvedValue({
+      name: "portable.md",
+      path: "/mock-exports/portable.md"
+    });
+
+    renderApp();
+
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
+
+    await act(async () => {
+      await menuHandlers.openDocument?.();
+    });
+    await act(async () => {
+      await menuHandlers.exportMarkdown?.();
+    });
+
+    await waitFor(() =>
+      expect(mockedSaveNativeMarkdownBundleFile).toHaveBeenCalledWith({
+        documentPath: mockNativePath,
+        folder: "assets",
+        markdown,
+        references: expect.arrayContaining([
+          expect.objectContaining({ href: "assets/chart.png" }),
+          expect.objectContaining({
+            href: "files/reference(final).pdf",
+            rawHref: "files/reference\\(final\\).pdf"
+          }),
+          expect.objectContaining({ href: "files/reference.pdf" })
+        ]),
+        rootPath: mockNativePath,
+        suggestedName: "portable.md"
+      })
+    );
+    expect(mockedSaveNativeMarkdownBundleFile.mock.calls[0]?.[0].references).toHaveLength(3);
   });
 
   it("exports the current markdown document as PDF from the native menu", async () => {

@@ -35,6 +35,7 @@ import type {
   SaveNativeClipboardAttachmentInput,
   SaveNativeClipboardImageInput,
   SaveNativeHtmlFileInput,
+  SaveNativeMarkdownBundleFileInput,
   SaveNativeMarkdownFileInput,
   SaveNativePandocFileInput,
   SaveNativePdfFileInput,
@@ -311,6 +312,9 @@ export type AppFileRuntime = {
   ) => Promise<SavedNativeClipboardImage[]>;
   saveClipboardAttachment: (input: SaveNativeClipboardAttachmentInput) => Promise<SavedNativeClipboardAttachment>;
   saveHtmlFile: (input: SaveNativeHtmlFileInput) => Promise<SavedNativeHtmlFile | null>;
+  saveMarkdownBundleFile?: (
+    input: SaveNativeMarkdownBundleFileInput
+  ) => Promise<SavedNativeMarkdownFile | null>;
   saveMarkdownFile: (input: SaveNativeMarkdownFileInput) => Promise<SavedNativeMarkdownFile | null>;
   savePandocFile: (input: SaveNativePandocFileInput) => Promise<SavedNativePandocFile | null>;
   savePdfFile: (input: SaveNativePdfFileInput) => Promise<SavedNativePdfFile | null>;
@@ -403,6 +407,7 @@ export type AppFeatureRuntime = {
   export: boolean;
   fileDrop: boolean;
   imageImport: boolean;
+  markdownBundle?: boolean;
   nativeWindowChrome: boolean;
   openLocalAttachments: boolean;
   pandoc: boolean;
@@ -1017,6 +1022,7 @@ export type {
   SaveNativeClipboardAttachmentInput,
   SaveNativeClipboardImageInput,
   SaveNativeHtmlFileInput,
+  SaveNativeMarkdownBundleFileInput,
   SaveNativeMarkdownFileInput,
   SaveNativePandocFileInput,
   SaveNativePdfFileInput,

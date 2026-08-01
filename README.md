@@ -43,7 +43,13 @@ macOS 用户可以通过 Homebrew 安装：
 brew install --cask markrahq/tap/markra
 ```
 
-也可以从 [GitHub Releases](https://github.com/appdev/QingYu/releases/latest) 下载 macOS、Windows 和 Linux 桌面版。
+也可以从 [GitHub Releases](https://github.com/appdev/QingYu/releases/latest) 下载 macOS、Windows 和 Linux 桌面版；Linux 还提供 AppImage、DEB、RPM 和 Arch Linux x64 安装包。
+
+在 Arch Linux 上，下载发布页中的 x64 安装包后运行：
+
+```sh
+sudo pacman -U ./QingYu_<version>_linux_x64.pkg.tar.zst
+```
 
 ## 文档
 
@@ -64,7 +70,7 @@ brew install --cask markrahq/tap/markra
 | 自动保存和状态恢复 | 已有文件、标签页、草稿和工作区窗口 | 支持浏览器文件句柄和 IndexedDB 状态时可用 |
 | 资源处理 | 当前笔记目录根部的 `assets/`、文档旁的 `assets/`，以及已有本地引用 | 在权限允许时使用浏览器句柄和本地引用 |
 | 笔记同步 | 当前笔记目录可选的 WebDAV、S3 兼容双向同步 | Web 运行时不可用 |
-| 导出 | HTML、PDF，以及配置 Pandoc 后的更多格式 | HTML 下载和浏览器打印/PDF |
+| 导出 | HTML、PDF、带附件的可移植 Markdown，以及配置 Pandoc 后的更多格式 | HTML 下载和浏览器打印/PDF |
 
 ## 核心特性
 
@@ -87,7 +93,7 @@ brew install --cask markrahq/tap/markra
 
 - 可以启用一份应用级 WebDAV 或 S3 兼容同步配置。它只同步当前笔记目录到 `notes/<目录名>/`；切换笔记目录时保留同一份配置，只改变云端目录名。
 - 打开独立 Markdown 文件不会改变当前笔记目录或同步目标。新设备从云端恢复时只列出目录名，并且只下载用户选择的一个笔记目录。
-- 导出为独立 HTML 或 PDF；配置 Pandoc 后还可使用更多格式。
+- 导出为独立 HTML、PDF 或带附件的可移植 Markdown；配置 Pandoc 后还可使用更多格式。
 
 同步设置和凭据保存在应用数据目录，不会写进笔记目录。凭据会在本机以明文保存，但不会参与轻语同步；主题、布局等可迁移偏好可以独立随笔记同步，设备路径、同步状态和 MCP 运行数据始终留在本机。
 

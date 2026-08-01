@@ -170,6 +170,7 @@ describe("desktop runtime retained capabilities", () => {
       export: true,
       fileDrop: true,
       imageImport: true,
+      markdownBundle: true,
       nativeWindowChrome: true,
       openLocalAttachments: true,
       pandoc: true,

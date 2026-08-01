@@ -415,6 +415,45 @@ describe("native menu", () => {
     expect(execCommand).toHaveBeenNthCalledWith(1, "insertText", false, "native clipboard text");
   });
 
+  it("pastes into the editor that opened the native context menu", async () => {
+    const target = document.createElement("main");
+    const mainPaper = document.createElement("article");
+    const sidePaper = document.createElement("article");
+    const mainContent = document.createElement("div");
+    const sideContent = document.createElement("div");
+    const mainPaste = vi.fn();
+    const sidePaste = vi.fn((event: Event) => event.preventDefault());
+    const execCommand = vi.fn().mockReturnValue(false);
+    mainPaper.className = "markdown-paper";
+    sidePaper.className = "markdown-paper";
+    mainContent.className = "cm-content";
+    sideContent.className = "cm-content";
+    mainPaper.append(mainContent);
+    sidePaper.append(sideContent);
+    target.append(mainPaper, sidePaper);
+    document.body.append(target);
+    mainContent.addEventListener("paste", mainPaste);
+    sideContent.addEventListener("paste", sidePaste);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand
+    });
+    mockedInvoke.mockImplementation(async (command) => {
+      if (command === "read_clipboard_text") return "side clipboard text";
+
+      return undefined;
+    });
+
+    await installNativeEditorContextMenu(target, {}, "en");
+
+    sideContent.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    domMenuItemById("markra:context:paste").click();
+    await vi.waitFor(() => expect(sidePaste).toHaveBeenCalledTimes(1));
+
+    expect(mainPaste).not.toHaveBeenCalled();
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
   it("passes customized app shortcuts to the native application menu", async () => {
     await installNativeApplicationMenu({}, "en", {
       openQuickOpen: "Mod+Alt+Q",
@@ -445,6 +484,7 @@ describe("native menu", () => {
       exportEpub: vi.fn(),
       exportHtml: vi.fn(),
       exportLatex: vi.fn(),
+      exportMarkdown: vi.fn(),
       exportPdf: vi.fn(),
       formatBold: vi.fn(),
       formatCodeBlock: vi.fn(),
@@ -479,6 +519,7 @@ describe("native menu", () => {
     expect(domMenuItemById("markra:context:export").textContent).toContain("Export");
     expect(domSubmenuById("markra:context:export").textContent).toContain("Export PDF");
     expect(domSubmenuById("markra:context:export").textContent).toContain("Export HTML");
+    expect(domSubmenuById("markra:context:export").textContent).toContain("Export Markdown with attachments");
     expect(domSubmenuById("markra:context:export").textContent).toContain("Export DOCX");
     expect(domSubmenuById("markra:context:export").textContent).toContain("Export EPUB");
     expect(domSubmenuById("markra:context:export").textContent).toContain("Export LaTeX");
@@ -493,6 +534,8 @@ describe("native menu", () => {
     openMenu();
     domMenuItemById("markra:context:export-html").click();
     openMenu();
+    domMenuItemById("markra:context:export-markdown").click();
+    openMenu();
     domMenuItemById("markra:context:export-docx").click();
     openMenu();
     domMenuItemById("markra:context:export-epub").click();
@@ -504,6 +547,7 @@ describe("native menu", () => {
     expect(handlers.insertImage).toHaveBeenCalledTimes(1);
     expect(handlers.exportPdf).toHaveBeenCalledTimes(1);
     expect(handlers.exportHtml).toHaveBeenCalledTimes(1);
+    expect(handlers.exportMarkdown).toHaveBeenCalledTimes(1);
     expect(handlers.exportDocx).toHaveBeenCalledTimes(1);
     expect(handlers.exportEpub).toHaveBeenCalledTimes(1);
     expect(handlers.exportLatex).toHaveBeenCalledTimes(1);

@@ -62,16 +62,18 @@ describe("codeBlockPreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(codeDocument);
   });
 
-  it("keeps the visual code block chrome while editing its content", () => {
+  it("keeps the visual code block chrome while editing its content", async () => {
     const view = createView();
 
     view.dispatch({
       selection: { anchor: codeDocument.indexOf("answer =") + 2 },
     });
 
-    expect(view.dom.querySelector(".cm-markra-code-header")?.textContent).toBe(
-      "ts",
-    );
+    await vi.waitFor(() => {
+      expect(view.dom.querySelector(".cm-markra-code-header")?.textContent).toBe(
+        "ts",
+      );
+    });
     expect(renderedLines(view)).not.toContain("```ts");
     expect(renderedLines(view)).not.toContain("```");
     expect(renderedLines(view)).toContain("const answer = 42;");
