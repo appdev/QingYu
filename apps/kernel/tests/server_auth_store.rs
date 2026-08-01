@@ -13,7 +13,7 @@ use qingyu_kernel::{
 };
 use tempfile::tempdir;
 
-const OWNER_PASSWORD: &str = "correct horse battery staple";
+const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
 fn fixture_paths(root: &Path) -> KernelPaths {
     let workspace = root.join("workspace");
@@ -47,7 +47,7 @@ fn owner_password_initialization_is_durable_one_time_and_argon2id_hashed() {
     );
     assert_eq!(
         store
-            .verify_owner_password("incorrect owner password")
+            .verify_owner_password("Incorrect-Owner-Password!9")
             .unwrap(),
         OwnerPasswordVerification::Rejected
     );
@@ -64,7 +64,7 @@ fn owner_password_initialization_is_durable_one_time_and_argon2id_hashed() {
     );
     assert_eq!(
         reopened
-            .initialize_owner_password("another sufficiently long password".to_owned())
+            .initialize_owner_password("Another-Sufficiently-Long-Password!2".to_owned())
             .unwrap_err(),
         OwnerPasswordInitializationError::AlreadyInitialized
     );
@@ -136,7 +136,7 @@ fn legacy_password_hash_is_replaced_with_the_current_policy_using_the_verified_p
     let store = ServerAuthenticationStore::open(paths.config_root()).unwrap();
     assert_eq!(
         store
-            .rehash_owner_password("incorrect owner password material".to_owned())
+            .rehash_owner_password("Incorrect-Owner-Password-Material!9".to_owned())
             .unwrap_err(),
         OwnerPasswordUpdateError::InvalidCurrentPassword
     );
@@ -172,8 +172,8 @@ fn owner_password_change_is_atomic_and_requires_the_current_password_and_a_valid
     assert_eq!(
         store
             .change_owner_password(
-                "incorrect owner password material".to_owned(),
-                "short".to_owned(),
+                "Incorrect-Owner-Password-Material!9".to_owned(),
+                "has space".to_owned(),
             )
             .unwrap_err(),
         OwnerPasswordUpdateError::InvalidCurrentPassword
@@ -181,17 +181,24 @@ fn owner_password_change_is_atomic_and_requires_the_current_password_and_a_valid
     assert_eq!(fs::read(&authentication_file).unwrap(), original);
     assert_eq!(
         store
-            .change_owner_password(OWNER_PASSWORD.to_owned(), "short".to_owned())
+            .change_owner_password(OWNER_PASSWORD.to_owned(), "has space".to_owned())
             .unwrap_err(),
         OwnerPasswordUpdateError::InvalidNewPassword
     );
     assert_eq!(fs::read(&authentication_file).unwrap(), original);
 
     store
-        .change_owner_password(
-            OWNER_PASSWORD.to_owned(),
-            "new owner password material".to_owned(),
-        )
+        .change_owner_password(OWNER_PASSWORD.to_owned(), "!".to_owned())
+        .unwrap();
+    assert_eq!(
+        store.verify_owner_password("!").unwrap(),
+        OwnerPasswordVerification::Authorized {
+            needs_rehash: false
+        }
+    );
+
+    store
+        .change_owner_password("!".to_owned(), "New-Owner-Password-Material!8".to_owned())
         .unwrap();
     assert_eq!(
         store.verify_owner_password(OWNER_PASSWORD).unwrap(),
@@ -199,7 +206,7 @@ fn owner_password_change_is_atomic_and_requires_the_current_password_and_a_valid
     );
     assert_eq!(
         store
-            .verify_owner_password("new owner password material")
+            .verify_owner_password("New-Owner-Password-Material!8")
             .unwrap(),
         OwnerPasswordVerification::Authorized {
             needs_rehash: false
@@ -208,28 +215,59 @@ fn owner_password_change_is_atomic_and_requires_the_current_password_and_a_valid
 }
 
 #[test]
-fn invalid_password_material_never_creates_owner_state() {
-    let temporary = tempdir().unwrap();
-    let paths = fixture_paths(temporary.path());
-    let store = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+fn owner_passwords_accept_only_printable_non_space_ascii() {
+    for candidate in [
+        "",
+        " ",
+        " leading",
+        "trailing ",
+        "middle space",
+        "\t",
+        "\n",
+        "\0",
+        "\u{7f}",
+        "\u{a0}",
+        "中文",
+        "Ａ",
+        "😀",
+    ] {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let store = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+        assert_eq!(
+            store
+                .initialize_owner_password(candidate.to_owned())
+                .unwrap_err(),
+            OwnerPasswordInitializationError::InvalidPassword,
+            "candidate {candidate:?} must be rejected",
+        );
+    }
 
+    for candidate in ["!", "A", "0", "~", "Owner-Secret!1"] {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        ServerAuthenticationStore::open(paths.config_root())
+            .unwrap()
+            .initialize_owner_password(candidate.to_owned())
+            .unwrap();
+    }
+
+    let accepted = tempdir().unwrap();
+    let accepted_paths = fixture_paths(accepted.path());
+    ServerAuthenticationStore::open(accepted_paths.config_root())
+        .unwrap()
+        .initialize_owner_password("x".repeat(1024))
+        .unwrap();
+
+    let rejected = tempdir().unwrap();
+    let rejected_paths = fixture_paths(rejected.path());
     assert_eq!(
-        store
-            .initialize_owner_password("short".to_owned())
-            .unwrap_err(),
-        OwnerPasswordInitializationError::InvalidPassword
-    );
-    assert_eq!(
-        store
+        ServerAuthenticationStore::open(rejected_paths.config_root())
+            .unwrap()
             .initialize_owner_password("x".repeat(1025))
             .unwrap_err(),
-        OwnerPasswordInitializationError::InvalidPassword
+        OwnerPasswordInitializationError::InvalidPassword,
     );
-    assert_eq!(
-        store.status().unwrap(),
-        ServerAuthenticationStatus::NeedsInitialization
-    );
-    assert!(!temporary.path().join("config/owner-auth-v1.json").exists());
 }
 
 #[test]
@@ -318,12 +356,12 @@ fn authentication_store_debug_and_errors_never_expose_passwords_or_paths() {
         .unwrap();
 
     let rejected = store
-        .verify_owner_password("rejected owner password material")
+        .verify_owner_password("Rejected-Owner-Password-Material!0")
         .unwrap();
     assert_eq!(rejected, OwnerPasswordVerification::Rejected);
     let rendered = format!("{store:?} {rejected:?}");
     assert!(!rendered.contains(OWNER_PASSWORD));
-    assert!(!rendered.contains("rejected owner password material"));
+    assert!(!rendered.contains("Rejected-Owner-Password-Material!0"));
     assert!(!rendered.contains(temporary.path().to_string_lossy().as_ref()));
 
     let update_error = store
