@@ -560,7 +560,7 @@ mod tests {
                     7,
                     Duration::from_secs(0),
                     INITIALIZATION_TOKEN,
-                    "short".to_owned(),
+                    "contains space".to_owned(),
                 )
                 .unwrap_err(),
             ServerOwnerInitializationError::StateUnavailable

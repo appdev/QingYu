@@ -166,6 +166,8 @@ apps/web/src/server-application.test.tsx
 apps/web/src/server-application.tsx
 apps/web/src/server-bootstrap.test.ts
 apps/web/src/server-bootstrap.ts
+apps/web/src/server-password.test.ts
+apps/web/src/server-password.ts
 apps/web/src/server-startup-appearance.test.ts
 apps/web/src/server-startup-appearance.ts
 apps/web/src/server-startup-language.ts
@@ -497,6 +499,8 @@ packages/app/src/lib/settings/settings-events.test.ts
 packages/app/src/lib/settings/settings-events.ts
 packages/app/src/lib/settings/workspace-state.test.ts
 packages/app/src/lib/settings/workspace-state.ts
+packages/app/src/lib/shortcut-display.test.ts
+packages/app/src/lib/shortcut-display.ts
 packages/app/src/lib/sync-config-events.test.ts
 packages/app/src/lib/sync-config-events.ts
 packages/app/src/lib/sync-config.test.ts
@@ -524,6 +528,8 @@ packages/app/src/lib/view-mode.ts
 packages/app/src/lib/vim-labels.ts
 packages/app/src/lib/workspace-assets.test.ts
 packages/app/src/lib/workspace-assets.ts
+packages/app/src/lib/workspace-home-contrast.test.ts
+packages/app/src/lib/workspace-home-contrast.ts
 packages/app/src/lib/workspace-links.test.ts
 packages/app/src/lib/workspace-links.ts
 packages/app/src/lib/workspace-resource-snapshots.test.ts
