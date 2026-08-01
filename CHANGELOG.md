@@ -1,3 +1,16 @@
+## [2.5.0](https://github.com/markrahq/markra/compare/v2.4.0...v2.5.0) (2026-08-01)
+
+### Features
+
+* **export:** add portable Markdown bundles ([#626](https://github.com/markrahq/markra/issues/626)) ([f2c3b90](https://github.com/markrahq/markra/commit/f2c3b90c874530c9a82357b11ca4fda303054aed)), closes [#619](https://github.com/markrahq/markra/issues/619)
+* **release:** add Arch Linux package ([#621](https://github.com/markrahq/markra/issues/621)) ([9e70bba](https://github.com/markrahq/markra/commit/9e70bba57100a9089c10928763d3c913365e41fc))
+
+### Bug Fixes
+
+* **editor:** align block controls and list interactions ([#627](https://github.com/markrahq/markra/issues/627)) ([2556ac7](https://github.com/markrahq/markra/commit/2556ac76dd875103e2c219b5ffa5cb1a296ac753)), closes [#624](https://github.com/markrahq/markra/issues/624)
+* **editor:** preserve list formatting on context paste ([#622](https://github.com/markrahq/markra/issues/622)) ([ca099d3](https://github.com/markrahq/markra/commit/ca099d38644925ae27fcb432b7955b35cf0b4ca7)), closes [#620](https://github.com/markrahq/markra/issues/620)
+* **editor:** stabilize blank-line editing ([#625](https://github.com/markrahq/markra/issues/625)) ([62ace2d](https://github.com/markrahq/markra/commit/62ace2d4487d4ff7e865aae56709c9e2ba3d2657)), closes [#623](https://github.com/markrahq/markra/issues/623) [#623](https://github.com/markrahq/markra/issues/623)
+
 ## [2.4.0](https://github.com/markrahq/markra/compare/v2.3.3...v2.4.0) (2026-07-31)
 
 ### Features
