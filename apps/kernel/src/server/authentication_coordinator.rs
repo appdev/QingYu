@@ -750,7 +750,7 @@ mod tests {
                 .login(
                     7,
                     Duration::ZERO,
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::RateLimited {
@@ -806,7 +806,7 @@ mod tests {
                     login.session().credential(),
                     Some(login.session().csrf_token()),
                     Duration::ZERO,
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                     "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
@@ -858,7 +858,7 @@ mod tests {
                 .login(
                     7,
                     Duration::ZERO,
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUnavailable
@@ -1398,7 +1398,7 @@ mod tests {
                     login.session().credential(),
                     Some(login.session().csrf_token()),
                     Duration::from_secs(1),
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                     "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
@@ -1471,7 +1471,7 @@ mod tests {
                     login.session().credential(),
                     Some(login.session().csrf_token()),
                     Duration::from_secs(1),
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                     "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
@@ -1573,7 +1573,7 @@ mod tests {
                 .login(
                     7,
                     Duration::from_secs(0),
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -1599,7 +1599,7 @@ mod tests {
                 .login(
                     7,
                     Duration::from_secs(2),
-                    "incorrect owner password material".to_owned(),
+                    "Incorrect-Owner-Password-Material!9".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUnavailable
