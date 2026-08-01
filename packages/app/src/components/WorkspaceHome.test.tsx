@@ -123,6 +123,23 @@ describe("WorkspaceHome", () => {
     });
   });
 
+  it("keeps short desktop surfaces scrollable from the top while centering available space", () => {
+    const { container } = render(
+      <WorkspaceHome
+        actions={actions()}
+        language="en"
+        presentation="desktop"
+      />
+    );
+
+    const home = container.querySelector<HTMLElement>('[data-workspace-surface="home"]');
+    const composition = home?.firstElementChild;
+
+    expect(home).toHaveClass("items-start");
+    expect(home).not.toHaveClass("items-center");
+    expect(composition).toHaveClass("my-auto");
+  });
+
   it("does not render shortcut hints in compact presentation", () => {
     const { container } = render(
       <WorkspaceHome

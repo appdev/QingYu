@@ -243,7 +243,7 @@ export function WorkspaceHome({
       className={`flex h-full min-h-0 w-full overflow-y-auto bg-(--bg-primary) text-(--workspace-home-text) ${
         compact
           ? "items-start px-7 pt-8 pb-12"
-          : "items-center px-8 py-10 sm:px-12"
+          : "items-start px-8 py-10 sm:px-12"
       }`}
       data-presentation={presentation}
       data-workspace-surface="home"
@@ -255,7 +255,7 @@ export function WorkspaceHome({
         className={`mx-auto grid min-w-0 w-full ${
           compact
             ? "max-w-sm gap-7"
-            : "max-w-[32.5rem] -translate-x-6 gap-8"
+            : "my-auto max-w-[32.5rem] -translate-x-6 gap-8"
         }`}
       >
         <h1 className="sr-only" id={titleId}>{t(language, "workspaceHome.title")}</h1>
