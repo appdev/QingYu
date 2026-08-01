@@ -9133,9 +9133,13 @@ describe("QingYu workspace", () => {
 
     const homeHeading = await screen.findByRole("heading", { name: "Welcome to QingYu" });
     expect(homeHeading.closest(".editor-content-slot")).toBeInTheDocument();
-    expect(screen.getByText("⌘+N")).toBeInTheDocument();
-    expect(screen.getByText("⌘+O")).toBeInTheDocument();
-    expect(screen.getByText("⌘+,")).toBeInTheDocument();
+    const home = screen.getByRole("region", { name: "Welcome to QingYu" });
+    expect([...within(home).getByRole("button", { name: "New Document" }).querySelectorAll("kbd")]
+      .map((keycap) => keycap.textContent)).toEqual(["⌘", "N"]);
+    expect([...within(home).getByRole("button", { name: "Open Document" }).querySelectorAll("kbd")]
+      .map((keycap) => keycap.textContent)).toEqual(["⌘", "O"]);
+    expect([...within(home).getByRole("button", { name: "Open Settings" }).querySelectorAll("kbd")]
+      .map((keycap) => keycap.textContent)).toEqual(["⌘", ","]);
     expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Unsaved changes")).not.toBeInTheDocument();

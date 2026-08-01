@@ -1,4 +1,25 @@
-import { formatShortcutForPlatform } from "./shortcut-display";
+import {
+  formatShortcutForPlatform,
+  shortcutTokensForPlatform
+} from "./shortcut-display";
+
+describe("shortcutTokensForPlatform", () => {
+  it("returns one conventional macOS symbol or key per keycap", () => {
+    expect(shortcutTokensForPlatform("Mod+N", "macos")).toEqual(["⌘", "N"]);
+    expect(shortcutTokensForPlatform("Mod+Shift+M", "macos")).toEqual(["⌘", "⇧", "M"]);
+    expect(shortcutTokensForPlatform("Mod+Alt+F", "macos")).toEqual(["⌘", "⌥", "F"]);
+  });
+
+  it.each(["windows", "linux"] as const)("returns one conventional %s label per keycap", (platform) => {
+    expect(shortcutTokensForPlatform("Mod+N", platform)).toEqual(["Ctrl", "N"]);
+    expect(shortcutTokensForPlatform("Mod+Shift+M", platform)).toEqual(["Ctrl", "Shift", "M"]);
+    expect(shortcutTokensForPlatform("Mod+Alt+F", platform)).toEqual(["Ctrl", "Alt", "F"]);
+  });
+
+  it("omits an unrecognized shortcut instead of presenting it as a keycap", () => {
+    expect(shortcutTokensForPlatform("launch-writing-mode", "macos")).toBeNull();
+  });
+});
 
 describe("formatShortcutForPlatform", () => {
   it("uses conventional macOS symbols", () => {

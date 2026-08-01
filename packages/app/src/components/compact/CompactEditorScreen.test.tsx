@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 import type { CompactNavigation, CompactPage } from "../../hooks/useCompactNavigation";
 import { CompactEditorScreen } from "./CompactEditorScreen";
@@ -49,6 +49,7 @@ function controller(overrides: {
     saveDocument: vi.fn()
   };
   const createBlankDocument = vi.fn().mockResolvedValue(true);
+  const openNotebookManager = vi.fn();
   const open = overrides.open ?? true;
 
   return {
@@ -88,6 +89,7 @@ function controller(overrides: {
       files: {},
       preferences: {},
       workspace: {
+        openNotebookManager,
         primaryRoot: "/notes",
         syncConfigDocument: overrides.syncConfigured ? {
           config: {
@@ -121,7 +123,8 @@ function controller(overrides: {
       },
       saveState: overrides.saveState ?? saveState("saved")
     } as unknown as CompactAppController,
-    createBlankDocument
+    createBlankDocument,
+    openNotebookManager
   };
 }
 
@@ -268,6 +271,15 @@ describe("CompactEditorScreen", () => {
     render(<CompactEditorScreen controller={setup.controller} navigation={compactNavigation} />);
 
     expect(screen.getByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    const home = screen.getByRole("region", { name: "Welcome to QingYu" });
+    expect(within(home).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "New Document",
+      "Show Files",
+      "Open Settings",
+      "Configure Sync",
+      "Switch Workspace"
+    ]);
+    expect(home.querySelector("kbd")).not.toBeInTheDocument();
     expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Visual Milkdown editor")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "New Document" }));
@@ -281,7 +293,21 @@ describe("CompactEditorScreen", () => {
     await waitFor(() => expect(compactNavigation.push).toHaveBeenCalledWith({ kind: "sync-status" }));
     expect(screen.queryByRole("button", { name: "Open Document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Quick Open" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Switch Workspace" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Switch Workspace" }));
+    expect(setup.openNotebookManager).toHaveBeenCalledOnce();
+  });
+
+  it("omits Compact sync configuration when the capability is unavailable", () => {
+    const setup = controller({ applicationSync: false, open: false, workspaceSurface: "home" });
+    render(<CompactEditorScreen controller={setup.controller} navigation={navigation()} />);
+
+    const home = screen.getByRole("region", { name: "Welcome to QingYu" });
+    expect(within(home).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "New Document",
+      "Show Files",
+      "Open Settings",
+      "Switch Workspace"
+    ]);
   });
 
   it("keeps Workspace Home creation failures readable and retryable in the dialog", async () => {

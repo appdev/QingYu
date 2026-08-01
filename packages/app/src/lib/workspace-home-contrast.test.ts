@@ -24,13 +24,13 @@ describe("workspace home contrast", () => {
     { background: [35, 40, 45] as RgbColor, preferred: [231, 233, 234] as RgbColor },
     { background: [255, 255, 255] as RgbColor, preferred: [38, 38, 38] as RgbColor }
   ])("fits restrained brand colors to the requested thresholds", ({ background, preferred }) => {
-    const base = fitContrast(background, preferred, 1.55);
-    const slice = fitContrast(background, preferred, 2.05);
+    const base = fitContrast(background, preferred, 1.35);
+    const slice = fitContrast(background, preferred, 1.6);
 
-    expect(contrastRatio(background, base)).toBeGreaterThanOrEqual(1.55);
-    expect(contrastRatio(background, base)).toBeLessThan(1.67);
-    expect(contrastRatio(background, slice)).toBeGreaterThanOrEqual(2.05);
-    expect(contrastRatio(background, slice)).toBeLessThan(2.17);
+    expect(contrastRatio(background, base)).toBeGreaterThanOrEqual(1.35);
+    expect(contrastRatio(background, base)).toBeLessThan(1.47);
+    expect(contrastRatio(background, slice)).toBeGreaterThanOrEqual(1.6);
+    expect(contrastRatio(background, slice)).toBeLessThan(1.72);
   });
 
   it("preserves compliant functional colors and repairs only failing ones", () => {

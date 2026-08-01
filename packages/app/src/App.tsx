@@ -100,7 +100,7 @@ import {
 } from "@markra/shared";
 import { showAppToast } from "./lib/app-toast";
 import { appVersion } from "./lib/app-version";
-import { formatShortcutForPlatform } from "./lib/shortcut-display";
+import { shortcutTokensForPlatform } from "./lib/shortcut-display";
 import {
   createMarkdownImageSrcResolver,
   getWordCount,
@@ -5192,17 +5192,17 @@ function WorkspaceApp() {
                   language={appLanguage.language}
                   presentation="desktop"
                   shortcuts={{
-                    createDocument: formatShortcutForPlatform("Mod+N", desktopPlatform),
-                    openDocument: formatShortcutForPlatform("Mod+O", desktopPlatform),
-                    openSettings: formatShortcutForPlatform("Mod+,", desktopPlatform),
-                    quickOpen: formatShortcutForPlatform(
+                    createDocument: shortcutTokensForPlatform("Mod+N", desktopPlatform) ?? undefined,
+                    openDocument: shortcutTokensForPlatform("Mod+O", desktopPlatform) ?? undefined,
+                    openSettings: shortcutTokensForPlatform("Mod+,", desktopPlatform) ?? undefined,
+                    quickOpen: shortcutTokensForPlatform(
                       editorPreferences.preferences.markdownShortcuts.openQuickOpen,
                       desktopPlatform
-                    ),
-                    showFiles: formatShortcutForPlatform(
+                    ) ?? undefined,
+                    showFiles: shortcutTokensForPlatform(
                       editorPreferences.preferences.markdownShortcuts.toggleMarkdownFiles,
                       desktopPlatform
-                    )
+                    ) ?? undefined
                   }}
                 />
               ) : hasOpenDocument ? (
