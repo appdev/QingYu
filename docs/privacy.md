@@ -6,9 +6,9 @@ This document explains what stays local and what can leave the device when optio
 
 ## By Default
 
-- Markdown files are ordinary files on disk or browser-selected file handles.
-- Desktop settings are stored locally by the Tauri app.
-- Web settings are stored in the browser through IndexedDB.
+- Markdown files are ordinary files in the current desktop workspace, the Docker `/data/workspace` volume, or the mobile application-managed workspace.
+- Desktop, Server Web/Docker, Android, and iOS read and write application settings and durable UI state through the same Kernel AppConfig service.
+- The official Docker/Web client does not use browser storage or process memory as the authoritative source for settings, open documents, recent files, drafts, or layout.
 - Current-notebook sync runs only when the application-level configuration is enabled and a permitted trigger runs.
 - QingYu does not provide an account system or hosted document storage.
 
@@ -16,16 +16,16 @@ This document explains what stays local and what can leave the device when optio
 
 QingYu may store these items locally:
 
-- editor preferences, theme choices, keyboard shortcuts, and export settings
-- recent standalone files and notebook directories
-- workspace state, open tabs, draft state, file history, and file tree sort settings
-- the device-local current-notebook path or managed notebook name in `local-state.json`
+- editor preferences, theme choices, keyboard shortcuts, export settings, recent files, workspace layout, open tabs, draft state, file-tree sort settings, and the local Pandoc path in Kernel AppConfig `settings.json`
+- the selected desktop workspace authorization and path in `primary-workspace.json`; this is desktop-only bootstrap metadata and contains no UI layout, recent files, drafts, or normal settings
 - WebDAV or S3-compatible synchronization settings and credentials in `sync-config.json`
 - synchronization manifests, status, staging, and quarantined conflicts below `sync-state/`
-- device-local MCP policy stored in `local-state.json`
+- the desktop-only device MCP policy in `mcp.json`
 - desktop MCP IPC, audit, and other runtime-only state stored below the app-data `mcp-runtime/` directory
 
-These files live in QingYu's application-data directory, not in the notes workspace. WebDAV and S3-compatible credentials are intentionally stored as plaintext in `sync-config.json`, together with the endpoint, account, remote path, storage choice, and trigger policy. Anyone or any tool that can read the application's private data may read those credentials. `local-state.json`, `sync-config.json`, `sync-state/`, and `mcp-runtime/` are never included in QingYu synchronization.
+Durable configuration files are grouped under one platform ConfigRoot: the QingYu application-data directory on desktop, `/data/config` in Docker, and the application sandbox configuration directory on mobile. They remain separate typed documents because AppConfig, synchronization secrets, MCP policy, and desktop pre-Kernel workspace selection have different validation and security rules. Operational manifests, journals, checkpoints, locks, and recovery metadata remain under the platform state root; Docker uses `/data/state` and never stores a second `settings.json` or `sync-config.json` there.
+
+WebDAV and S3-compatible credentials are intentionally stored as plaintext in `sync-config.json`, together with the endpoint, account, remote path, storage choice, and trigger policy. Anyone or any tool that can read the application's private data may read those credentials. Local AppConfig state, `sync-config.json`, `mcp.json`, `primary-workspace.json`, sync operational state, and `mcp-runtime/` are never included in QingYu synchronization. The application is unreleased, so development-era `local-state.json`, browser settings, Plugin Store data, and old settings locations are not imported, migrated, or used as fallbacks.
 
 ## Current-Notebook And Standalone Resources
 
@@ -45,7 +45,7 @@ Choosing another directory switches the current notebook while keeping the same 
 
 QingYu excludes `.qingyu/` and the legacy `.markra-sync/` directory from its own synchronization, file tree, workspace search, and watcher so stale configuration or secrets cannot be uploaded. Neither directory is read, migrated, rewritten, or deleted. These exclusions do not control Git, cloud-drive clients, backup tools, or other third-party software.
 
-Portable settings can include the selected theme, custom theme CSS, layout, keyboard shortcuts, and export preferences. They are validated before application and can synchronize independently from note content. The MCP policy, device-specific paths, recent/local window state, credentials, manifests, runtime endpoints, audit data, installed theme packages, and extension directories remain local in this version.
+Portable settings can include allowlisted appearance, theme, language, editor, file-ignore, keyboard-shortcut, and export preferences. They are validated before application and can synchronize independently from note content. UI layout, open tabs, drafts, recent files, file-tree sort, Pandoc path, MCP policy, device-specific paths, credentials, manifests, runtime endpoints, audit data, installed theme packages, and extension directories remain local. Replacing portable settings preserves these local AppConfig fields.
 
 ## Desktop MCP
 
@@ -53,11 +53,13 @@ Desktop MCP is optional and disabled by default. One device-local policy control
 
 MCP clients connect to the bundled stdio bridge, which forwards requests over private local IPC to the QingYu desktop host. QingYu does not open an MCP HTTP/TCP listener for external clients and does not use the operating-system credential store for that transport. The desktop host keeps policy, confirmation, and audit enforcement, then calls its child Kernel over authenticated loopback HTTP with a short-lived Bearer credential. MCP clients receive opaque, process-scoped identifiers instead of that credential, direct filesystem access, or absolute paths.
 
-The MCP policy, local IPC endpoints, audit entries, process keys, and workspace handles remain device-local and are not included in application-settings export or synchronization. Legacy MCP values in `settings.json` are migrated to `local-state.json` on first load.
+The MCP policy, local IPC endpoints, audit entries, process keys, and workspace handles remain device-local and are not included in application-settings export or synchronization. The canonical desktop policy lives only in `mcp.json`; QingYu does not import it from `local-state.json` or `settings.json`.
 
-## Desktop And Web Differences
+## Desktop, Server Web, And Mobile Differences
 
-The desktop app can access native file paths, switch the current notebook directory, open standalone Markdown files, run the local MCP service, and synchronize the current notebook through WebDAV or S3-compatible storage. Mobile can keep multiple named managed notebooks below `workspaces/` while selecting only one current notebook for editing and synchronization. It can edit its device-local MCP policy but does not include the local MCP server, IPC transport, tool registry, audit log, or MCP notebook filesystem authority. The web editor runs inside browser permission and CORS limits, so it uses browser file handles, downloads, print-to-PDF, and IndexedDB settings; it does not run current-notebook synchronization or the local MCP service.
+The desktop app can access native file paths, switch the current notebook directory, open standalone Markdown files, run the local MCP service, and synchronize the current notebook through WebDAV or S3-compatible storage. Its native host keeps only `primary-workspace.json` as pre-Kernel workspace-selection metadata; after Kernel startup it uses the same AppConfig behavior as every other client.
+
+Mobile uses one fixed application-managed workspace and the embedded Kernel. It has no desktop directory picker, Plugin Store state authority, local MCP service, MCP policy file, IPC transport, tool registry, or MCP filesystem authority. Server Web/Docker uses the fixed `/data/workspace` root and authenticated Kernel HTTP/WebSocket contract. A browser is a client of that Docker instance: refreshing it or opening another browser reads the same committed `/data/config/settings.json`; browser IndexedDB is not an authoritative official-runtime store.
 
 ## Other Network Access
 

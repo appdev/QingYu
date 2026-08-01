@@ -42,12 +42,22 @@ If a usable Docker daemon is present, `verify-contract.sh` additionally builds t
 ## Fixed runtime contract
 
 - `/data` is the only persistent mount. The Kernel owns `/data/workspace`, `/data/config`, `/data/state`, and `/data/logs`; no command or environment variable can relocate them.
+- `/data/config/settings.json` is the Kernel AppConfig document. It contains normal application settings plus the committed workspace-partitioned UI layout, recent Markdown files, file-tree sort, drafts, and local Pandoc path. `/data/config/sync-config.json` remains a separate typed configuration document because it has different secret and recovery rules.
+- `/data/state` contains operational manifests, checkpoints, journals, locks, and recovery metadata. It must not contain another `settings.json` or `sync-config.json`.
 - `/tmp/qingyu` is the only disposable cache path. Compose supplies it as a UID/GID `10001:10001` tmpfs.
 - The final image and Compose service run as numeric UID/GID `10001:10001`, drop all capabilities, enable `no-new-privileges`, and use a read-only root filesystem. Compose allows 35 seconds before forced termination so the Kernel's 30-second drain deadline can finish and report its outcome.
 - Only container port 3210 is exposed. Compose binds it to `127.0.0.1:3210` by default for a same-host TLS reverse proxy. Set `QINGYU_PUBLISHED_ADDRESS` explicitly when direct HTTP must listen on another host interface; this value controls Compose port publishing and is not passed into the container.
 - `QINGYU_PUBLIC_ORIGIN` is required at process launch. It is not secret, but it must be the exact canonical browser-visible HTTP or HTTPS origin accepted by the Kernel, for example `http://192.168.0.172:3210`, `https://notes.example.com`, or `https://notes.example.com:8443`. Do not include a trailing slash, path, query, user information, or an explicit default `:80`/`:443` port.
 - `QINGYU_SERVER_INITIALIZATION_TOKEN` is optional after initialization and is passed only through the container environment. It never enters a build argument, image environment value, Compose literal, or Compose default.
 - Both container runtime inputs use Compose's value-free environment pass-through. The entrypoint fails closed if `QINGYU_PUBLIC_ORIGIN` is absent or empty; the Kernel validates its canonical HTTP/HTTPS form and exact authority.
+
+## Durable AppConfig and cold start
+
+The official Docker/Web client does not use browser storage, IndexedDB, or process memory as the authoritative source for settings or workspace restoration. After authentication it reads one AppConfig snapshot from the Kernel and sends semantic state mutations back to the Kernel. Consequently, page refresh, another authenticated browser, and a replacement container attached to the same `qingyu-data` volume all observe the latest successfully committed instance state.
+
+Persisted document references are workspace-relative rather than `/data/workspace` absolute paths. On cold start, valid remembered files and dirty drafts restore in the editor. Missing files are pruned from the committed layout; if no valid file or recoverable draft remains, the ready workspace shows Workspace Home. A dirty draft whose source disappeared still restores in the editor. A missing or unusable `/data` mount is a startup error, not Workspace Home.
+
+Reading defaults from a new volume does not create `/data/config/settings.json`. The file is published only after the first accepted settings or AppConfig-state mutation. This is a clean-cut format: development-era browser/local-state files and old copies below `/data/state` are not imported, migrated, or used as fallbacks.
 
 The source-build image can be built independently for local/CI verification when Docker is available:
 
@@ -128,3 +138,19 @@ Never place the token in the Dockerfile, image labels, Compose YAML, shell histo
 | TLS ingress | Not included | Reverse-proxy tests prove HTTPS origin, headers, cookies, CSRF, WSS upgrades, and isolation from HTTP cookies. |
 
 The runtime packaging gate is ready. Final live Linux acceptance is still pending until the prebuilt-image/container matrix proves fixed `/data`, initialization, restart persistence, direct HTTP/WS, HTTPS/WSS proxying, HTTP/HTTPS cookie isolation, SIGTERM with a 30-second drain budget, and Linux runtime behavior. Docker being unavailable is an environmental limitation, not passing evidence.
+
+### AppConfig persistent-volume matrix
+
+Automated tests can prove service, storage-root, adapter, and restoration behavior, but they do not prove a real container/browser lifecycle. Record both evidence channels against the same frozen release SHA.
+
+| Scenario | Expected result | Automated status/evidence | Real-environment status |
+| --- | --- | --- | --- |
+| Existing volume, Browser A refresh | Open two Markdown files, select the second, change one layout field, then refresh; the selected file and committed layout restore. | Coverage exists in Kernel AppConfig service/API and server-runtime restoration tests; final Task 9 rerun pending. | Pending final-SHA Docker/browser run. |
+| Same instance, Browser B | Browser B reads A's committed state; different semantic fields changed by A and B both survive the final aggregate. | Coverage exists in semantic-operation merge and committed-snapshot adapter tests; final Task 9 rerun pending. | Pending final-SHA two-browser run. |
+| Restart and container replacement | Restart, then replace the container while retaining `qingyu-data`; the last successful commit restores identically. | Coverage exists in ConfigRoot composition and durable publication tests; final Task 9 rerun pending. | Pending final-SHA container run. |
+| Missing remembered files, no draft | Refresh shows Workspace Home and stale paths are pruned from committed AppConfig. | Coverage exists in shared restoration/Home behavior tests; final Task 9 rerun pending. | Pending final-SHA browser run. |
+| Missing remembered file, dirty draft | The recoverable draft editor wins over Workspace Home across refresh/restart. | Coverage exists in shared dirty-draft restoration tests; final Task 9 rerun pending. | Pending final-SHA browser run. |
+| New named volume | Workspace Home appears before any mutation; `settings.json` is absent until the first accepted mutation. | Coverage exists in absent-document/default-without-write service tests; final Task 9 rerun pending. | Pending final-SHA volume inspection. |
+| Filesystem separation | `settings.json` and `sync-config.json` exist only below `/data/config`; operational files remain below `/data/state`. | Coverage exists in Kernel root-placement and Docker contract checks; final Task 9 rerun pending. | Pending final-SHA volume inspection. |
+
+On the 2026-08-01 documentation run, the local host reported `docker: command not found`. Therefore every real-environment row above remains pending; no Docker refresh, browser-switch, restart, or volume-inspection result is claimed by this update.

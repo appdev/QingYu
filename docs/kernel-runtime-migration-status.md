@@ -2,7 +2,7 @@
 
 > Status snapshot: 2026-08-01 (Asia/Shanghai)
 >
-> Implementation snapshot commit: `5c3af461b1298882bc0d2a44a347acaf4a4e52c2`
+> Implementation snapshot commit: `2f465b29320945e6172a7238267083b2e647b0bc`
 >
 > This is the progress source of truth for the active Desktop, Server Web/Docker,
 > and Mobile Kernel migration. Historical test reports remain evidence for their
@@ -23,6 +23,19 @@
 - Mobile embeds an in-process Kernel and presents the shared application through
   its native WebView. Platform adapters own only operating-system integration and
   lifecycle differences.
+- Desktop, Server Web/Docker, Android, and iOS use one Kernel AppConfig service
+  for normal settings and durable cold-start UI state. No official Kernel-backed
+  client uses browser storage, Tauri Plugin Store, or process memory as its
+  authoritative layout store.
+- Durable configuration is grouped under each platform's ConfigRoot:
+  `settings.json` contains AppConfig, `sync-config.json` retains its typed secret
+  boundary, desktop MCP uses `mcp.json`, and desktop alone keeps
+  `primary-workspace.json` as pre-Kernel workspace-selection metadata.
+  Operational manifests, journals, checkpoints, locks, and recovery state remain
+  under InstanceDataRoot.
+- A ready workspace with no valid remembered file or recoverable draft renders
+  the shared Workspace Home. Missing remembered paths are pruned; a dirty draft
+  whose source disappeared restores in the editor instead of Home.
 - CLI remains a Kernel process and automation entrypoint; it does not own a
   second implementation of product business logic.
 - S3/WebDAV synchronization remains Kernel-owned. Sync baselines are isolated by
@@ -38,19 +51,26 @@
 | P1 — Kernel foundation and service boundaries | Complete | Kernel HTTP/WS contract, document/settings/resource/history/sync services, runtime ownership, and generated contract checks are in `main`. | Revalidated as part of the final combined suite. |
 | P2 — Desktop production Kernel cutover | Code complete | `db20eb2a` completed the production cutover; later commits added atomic workspace switching, startup readiness, child supervision, MCP-to-Kernel routing, writer fencing, and recovery handling. | Repeat the real macOS GUI/Desktop regression on the final combined SHA. |
 | P3 — Server Web and runtime-only Docker | Code complete; final-candidate acceptance pending | Fixed `/data`, one-user initialization, browser KernelClient, HTTP/HTTPS cookie profiles, WS/WSS, runtime-only packaging, restart persistence, and Linux container security were implemented. Earlier Linux candidates passed the core runtime/browser matrix. | Rebuild and repeat macOS/Linux runtime acceptance on the final combined SHA. Two live S3 endpoints run only when credentials can be injected without disclosure. |
-| P4 — Mobile in-process Kernel | Implementation substantially complete | In-process mobile Kernel ownership, shared runtime composition, lifecycle settlement, portable settings, and mobile image-import integration are in `main`. | Finish the current durable resource-batch gate, then run final iOS/Android builds and the available native acceptance matrix. |
-| Resource batch durability | In progress; release blocker | Batch API, bounded HTTP body, authentication/CSRF/Origin checks, seven-format validation, SVG hardening, publication fencing baseline, and OpenAPI/client integration are in `main`. An isolated worktree is adding durable journal/receipt replay and crash recovery. | Review and commit the durable transaction; prove restart recovery, idempotency, sync admission, capacity bounds, and fail-closed behavior before integration. |
-| Final combined verification | Pending | Earlier combined candidates passed Kernel/Desktop Rust and workspace pnpm gates, but those results predate the durable transaction. | After serial integration, run one complete Kernel/Desktop Rust, pnpm test/typecheck/build, OpenAPI/generated-contract, iOS, and Android gate on one frozen SHA. |
+| P4 — Mobile in-process Kernel | Code complete; final native acceptance pending | In-process mobile Kernel ownership, shared runtime composition, lifecycle settlement, portable settings, mobile image-import integration, fixed managed workspace, and Kernel AppConfig ownership are present on the current feature snapshot. | Run fresh Android/iOS builds and the applicable native AppConfig/Home acceptance matrix on the final frozen SHA. |
+| Resource batch durability | Complete | `e1b409da` added durable journal/receipt replay and crash recovery; `a7d3a7bc` integrated the rollout, with later image/import fixes through downstream baseline `31ee52ce`. | Revalidate as part of the final combined suite; do not reuse the earlier candidate as evidence for later AppConfig changes. |
+| Kernel AppConfig and Workspace Home | Code complete; final verification and live acceptance pending | Commits `289e02ec` through `2f465b29` moved configuration to ConfigRoot, added the aggregate AppConfig service/API/client, unified official client bootstrap and writes, added deterministic restoration/Home, and removed obsolete native/local writers. | Complete Task 9 automated gates, then run final-SHA desktop, Docker, Android, and iOS acceptance where tooling exists. |
+| Final combined verification | Pending for the current feature snapshot | Earlier candidates passed Kernel/Desktop Rust and workspace pnpm gates, but those results predate the AppConfig and Workspace Home cutover. | Run one complete Kernel/Desktop Rust, pnpm test/typecheck/build, OpenAPI/generated-contract, and applicable native build gate on one frozen SHA. |
 | Final live acceptance | Pending | Earlier macOS/Linux and HTTP/HTTPS/WSS evidence is baseline-only. | Use new worktrees and artifacts built from the frozen final SHA. Do not reuse an older candidate as release evidence. |
 
 ## Current Release Blockers
 
-1. Complete and independently review the durable resource-batch transaction.
-2. Serially integrate it onto the latest `main` without losing intervening user
-   changes or retained stashes.
-3. Run the one final combined automated regression on the resulting frozen SHA.
-4. Repeat macOS real-GUI and Linux runtime-only Docker HTTP/HTTPS/WS/WSS
-   acceptance using artifacts from that exact SHA.
+1. Complete the independent review and final combined automated regression for
+   the AppConfig/Workspace Home feature snapshot.
+2. Repeat macOS real-GUI acceptance, including workspace-partitioned restoration,
+   missing-file Home, dirty-draft recovery, and the absence of local-state or
+   Plugin Store writes, using an artifact from that exact SHA.
+3. Run Linux runtime-only Docker HTTP/HTTPS/WS/WSS and persistent-volume
+   acceptance on that exact SHA. The current documentation host has no Docker
+   command, so refresh, second-browser, restart/replace, and volume inspection
+   remain unclaimed.
+4. Run Android and iOS native AppConfig/Home lifecycle acceptance where the
+   required emulator, Simulator, or devices are available; record unavailable
+   tooling explicitly and leave those surfaces pending.
 5. Run the two-endpoint live S3 matrix only when credentials are available through
    non-echoing process input; never record them in repository files or evidence.
 6. Resolve the mobile compatibility decision if hard seven-format parity remains

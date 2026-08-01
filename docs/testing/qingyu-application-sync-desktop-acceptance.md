@@ -2,13 +2,16 @@
 
 Use this checklist to verify the application-level WebDAV and S3-compatible synchronization model in the desktop app. Never put a real endpoint, account, token, access key, or secret in this document, screenshots, issue text, or committed test fixtures.
 
+Automated Rust and TypeScript suites are prerequisite evidence, not desktop-GUI evidence. Mark a manual row complete only when it is exercised on the stated desktop build and frozen commit; record unavailable tooling or environment as pending rather than inferring a pass from tests.
+
 ## Contract Under Test
 
 - One device has exactly one current notebook directory after onboarding and one application sync configuration.
 - Synchronization is disabled by default and cannot run without a valid current notebook and complete active-provider settings.
 - Choosing another directory switches the current notebook; temporary external-folder editing is not supported. Opening or focusing a standalone file never retargets synchronization.
 - The current notebook synchronizes ordinary files below remote `notes/<directory-name>/`; portable `settings.json` synchronizes separately below remote `app/`.
-- `local-state.json`, `sync-config.json`, `sync-state/`, `mcp-runtime/`, themes, extensions, credentials, and device paths never synchronize.
+- Local AppConfig fields in `settings.json`, `sync-config.json`, `primary-workspace.json`, `mcp.json`, sync operational state, `mcp-runtime/`, themes, extensions, credentials, and device paths never synchronize.
+- The child Kernel is the only normal `settings.json` writer. UI layout, open tabs, drafts, recent files, file-tree sort, and Pandoc path use Kernel AppConfig; the native host stores only canonical desktop bootstrap metadata in `primary-workspace.json`.
 - Current-notebook resources use the root lowercase `assets/` directory. Standalone saved documents use adjacent `assets/` only for clipboard bytes; existing local resources remain filesystem references.
 - `.qingyu/` and `.markra-sync/` stay excluded in both directions and are not read, migrated, rewritten, or deleted.
 
@@ -26,11 +29,20 @@ Use a unique remote path or prefix for this run and snapshot it while empty.
 
 ## Onboarding And Current Notebook
 
-- [ ] Start with fresh application data. Confirm the welcome screen has no fake step counter and prominently presents “明窗净几，字字轻语。”.
-- [ ] Choose `[NOTEBOOK_A]`. Confirm it becomes the current notebook and synchronization remains off.
-- [ ] Restart QingYu. Confirm `[NOTEBOOK_A]` opens automatically without another welcome prompt.
-- [ ] Open Settings from a notebook document, a standalone document, and an empty editor window. Confirm every window shows the same current notebook and synchronization configuration.
+- [ ] Start with fresh application data. Complete the existing desktop workspace-selection surface and choose `[NOTEBOOK_A]`; this pre-Kernel surface is distinct from Workspace Home.
+- [ ] Confirm `[NOTEBOOK_A]` becomes the current notebook, synchronization remains off, and a ready workspace with no document shows Workspace Home without creating `Untitled.md` or an editable welcome document.
+- [ ] Create and select a Markdown document, then restart QingYu. Confirm `[NOTEBOOK_A]`, the selected document, and its committed layout restore without another workspace prompt.
+- [ ] Open Settings from a notebook document, a standalone document, and Workspace Home. Confirm every window shows the same current notebook and synchronization configuration.
 - [ ] Switch to `[NOTEBOOK_B]` through File or Settings. Confirm the old notebook run is safely stopped before B is persisted and new runs use B's immutable root.
+
+## AppConfig Cold Start And Workspace Home
+
+- [ ] In workspace A, open two Markdown files, select the second, change the file-tree visibility or another layout field, quit, and relaunch. Confirm the selected file and committed layout restore from Kernel AppConfig.
+- [ ] Switch to workspace B, create a different layout, then switch back to A. Confirm each stable workspace identity restores only its own tabs, active file, drafts, recent files, and sort state.
+- [ ] Delete all remembered source files with no dirty draft, then relaunch. Confirm Workspace Home appears and the stale paths are pruned from committed AppConfig.
+- [ ] Repeat after retaining a dirty draft for a deleted source. Confirm the recoverable draft editor appears instead of Workspace Home.
+- [ ] Close the final tab. Confirm Workspace Home appears without creating a document, draft, history entry, or persisted Home flag.
+- [ ] Snapshot the application configuration directory before and after the run. Confirm normal UI state changes only the Kernel-owned `settings.json`; there is no `local-state.json`, `desktop-ui-state.json`, or Tauri Plugin Store write. `primary-workspace.json` may change only when desktop workspace selection changes.
 
 ## Notebook Switching And Standalone Isolation
 
@@ -46,7 +58,7 @@ Use a unique remote path or prefix for this run and snapshot it while empty.
 ## Settings Save And Apply Boundaries
 
 - [ ] Open Sync settings and change one field at a time: enabled state, provider, remote path, save trigger, interval, endpoint, account, and credential.
-- [ ] After every field change, inspect application-data `sync-config.json`. Confirm the field persists immediately and atomically with a new revision.
+- [ ] After every field change, inspect ConfigRoot `sync-config.json`. Confirm the field persists immediately and atomically with a new revision beside, but independently from, Kernel AppConfig `settings.json`.
 - [ ] Confirm no synchronization configuration or credential file is created anywhere below either notebook or the standalone directory.
 - [ ] While the Sync page remains open, confirm automatic save and interval triggers are suspended and no final settings synchronization starts.
 - [ ] Leave Sync for another settings category. Expect one final `settings-exit` apply after pending writes finish; automatic work may then resume.
@@ -56,9 +68,9 @@ Use a unique remote path or prefix for this run and snapshot it while empty.
 
 ## Notes And Portable Settings Scopes
 
-- [ ] Change theme or layout and synchronize. Confirm a validated `settings.json` appears below remote `app/`, while notes remain below their named `notes/<directory-name>/` directories.
-- [ ] Confirm remote `app/` contains no `local-state.json`, `sync-config.json`, credentials, manifests, MCP runtime files, themes, extensions, or mobile workspace files.
-- [ ] With a second disposable application-data fixture pointed at the same remote target, synchronize and confirm portable settings apply without replacing that device's current-notebook path or local runtime state.
+- [ ] Change an allowlisted theme preference and also change UI layout, then synchronize. Confirm a validated portable `settings.json` appears below remote `app/`, while notes remain below their named `notes/<directory-name>/` directories.
+- [ ] Inspect remote `app/settings.json`. Confirm it contains no UI layout, open tabs, drafts, recent files, file-tree sort, Pandoc path, `sync-config.json`, credentials, manifests, MCP policy/runtime files, themes packages, extensions, or workspace metadata.
+- [ ] With a second disposable application-data fixture pointed at the same remote target, synchronize and confirm portable settings apply without replacing that device's current-notebook path or any local AppConfig field.
 - [ ] Create an invalid remote settings payload. Confirm local settings remain unchanged, the payload is quarantined below local `sync-state/conflicts/`, and the run visibly fails without exposing its contents as credentials.
 
 ## Resource Matrix
@@ -93,4 +105,4 @@ pnpm build
 git diff --check
 ```
 
-The default suite uses local mocks. Real MinIO coverage is environment-gated; run `pnpm test:s3-sync:live` only when all documented `MARKRA_TEST_S3_*` variables point to a disposable isolated target. Run `pnpm tauri dev` for the actual desktop checks above. Desktop packaging can use `pnpm tauri build --debug` when the platform dependencies are installed.
+The default suite uses local mocks. Real MinIO coverage is environment-gated; run `pnpm test:s3-sync:live` only when all documented `MARKRA_TEST_S3_*` variables point to a disposable isolated target. Run `pnpm tauri dev` for the actual desktop checks above. Desktop packaging can use `pnpm tauri build --debug` when the platform dependencies are installed. Record automated, desktop-GUI, and live-provider evidence separately; an unavailable GUI or live provider remains pending.

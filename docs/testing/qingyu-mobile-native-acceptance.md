@@ -1,6 +1,6 @@
 # QingYu Mobile Native Acceptance
 
-This checklist is the executable release gate for the Compact Android and iOS applications. A successful frontend build or an artifact that merely exists is not native acceptance. Run every applicable row in the installed application and record the outcome in `docs/testing/qingyu-mobile-native-results.md`.
+This checklist is the executable release gate for the Compact Android and iOS applications. A successful frontend build or an artifact that merely exists is not native acceptance. Run every applicable row in the installed application and record the outcome for the exact frozen commit. Existing entries in `docs/testing/qingyu-mobile-native-results.md` remain historical evidence for their recorded candidate and do not prove newly changed AppConfig behavior.
 
 Never record a credential, secret, authorization header, signed URL, private endpoint, private bucket, signing identity, or developer-team identifier. Evidence paths in the results document must be repository-relative or use a neutral placeholder such as `[LOCAL_EVIDENCE]/android/W01.png`.
 
@@ -16,14 +16,14 @@ Never record a credential, secret, authorization header, signed URL, private end
 
 | Surface | Prerequisite | Launch/install command or action |
 | --- | --- | --- |
-| Android emulator | API level and emulator image recorded; clean install plus upgrade install available | Build with the command below, install the APK with the Android tooling, then launch QingYu |
-| iOS Simulator | Simulator model and iOS version recorded; clean install plus upgrade install available | Build with the command below, boot a Simulator, install the `.app`, then launch QingYu |
+| Android emulator | API level and emulator image recorded; clean candidate install available | Build with the command below, install the APK with the Android tooling, then launch QingYu |
+| iOS Simulator | Simulator model and iOS version recorded; clean candidate install available | Build with the command below, boot a Simulator, install the `.app`, then launch QingYu |
 | Android device | One physical device with gesture and hardware/system Back available | Install a device-target build without recording signing material |
 | iOS device | One physical device with gallery and LAN permissions available | Install a device-target build without recording signing material |
 | Desktop native | Supported desktop host with Pandoc available for the export row | `pnpm tauri dev` |
 | Narrow browser | Phone-sized viewport; this is Web UI evidence only | `pnpm dev`, then use a phone-sized viewport |
 
-Before each clean-launch run, clear only the test installation's local data. Do not add a QingYu reset command and do not delete any remote data outside the test's isolated prefix. For upgrade persistence, install the earlier test build, create content, and install the candidate build over it without clearing app data.
+Before each clean-launch run, clear only the test installation's local data. Do not add a QingYu reset command and do not delete any remote data outside the test's isolated prefix. QingYu is unreleased, so this gate does not test importing or migrating development-era `local-state.json`, Tauri Plugin Store data, or legacy `settings.json` shapes.
 
 ## Commands
 
@@ -53,14 +53,21 @@ For every failed row, record the case ID, surface, date/time, commit, device/OS,
 
 A screenshot, log, diagnostic, or video containing a credential, authorization header, signed query, credential-bearing URL, or private endpoint is invalid evidence and must be deleted rather than redacted in-place. A failed required row blocks release until a focused regression test and rerun pass.
 
+## Kernel AppConfig Contract
+
+- Android and iOS use the embedded Kernel's AppConfig service and fixed application-managed workspace. They do not create or consult desktop `primary-workspace.json`, renderer `local-state.json`, Tauri Plugin Store state, browser storage, or process memory for authoritative restoration.
+- The application configuration directory groups Kernel AppConfig `settings.json` and typed `sync-config.json`; operational manifests, journals, checkpoints, and locks stay under the state root.
+- Compact Workspace Home is the ready-workspace surface when no valid remembered file or recoverable draft remains. It is not a document or draft and is not persisted as a flag.
+- Automated adapter and shared-UI tests remain separate from emulator, Simulator, and physical-device evidence. If a surface or command is unavailable, record the exact state and leave its result unclaimed.
+
 ## A. Workspace, Documents, and File Operations
 
 | ID | Applies to | Procedure and expected UI/behavior | Failure evidence if unmet |
 | --- | --- | --- | --- |
-| W01 | Android/iOS native | Clear app data and launch. Create notebook A from the welcome surface, then create/switch to B and back to A. Each is exactly one validated child below app-data `workspaces/`; no filesystem folder picker or path field appears. | Sanitized launch log and `workspaces/` tree |
+| W01 | Android/iOS native | Clear app data and launch. The embedded Kernel activates the fixed application-managed workspace and Compact Workspace Home appears without creating a document. No filesystem folder picker, notebook switcher, path field, or desktop bootstrap store appears. | Sanitized launch log, Home screenshot, and app-data tree |
 | W02 | Android/iOS native | Decline/skip sync setup. Create, edit, save, close, and reopen a note. Local-only editing works and no remote request or sync configuration is required. | Screen recording plus sanitized network/log excerpt |
-| W03 | Android/iOS native | Open document A, fully close and relaunch. Document A restores in the editor with the saved content. | Before/after screenshots and content hash |
-| W04 | Android/iOS native | Make the stored last-document path unavailable, then relaunch. The editor shows the welcome empty state and remains usable; it does not crash or show a stale document. | Sanitized state/log and welcome screenshot |
+| W03 | Android/iOS native | Open document A, change one supported layout field, wait for a successful Kernel AppConfig commit, fully close, and relaunch. Document A and the committed state restore in the editor with the saved content. | Before/after screenshots, content hash, and sanitized commit/lifecycle trace |
+| W04 | Android/iOS native | Make every remembered document unavailable with no dirty draft, then relaunch. Compact Workspace Home appears, stale references are pruned from committed AppConfig, and the app remains usable. | Sanitized state/log and Home screenshot |
 | W05 | Android/iOS native, desktop | Create a named file through the in-app name dialog. The file opens in the editor and current naming semantics are preserved. | Dialog/action video and file tree |
 | W06 | Android/iOS native, desktop | Create a folder and create a file inside it. Both appear once in the correct tree location. | Tree before/after |
 | W07 | Android/iOS native, desktop | Rename a file and a folder. Open paths and visible tree update without losing the active document. | Tree and active editor path |
@@ -71,6 +78,7 @@ A screenshot, log, diagnostic, or video containing a credential, authorization h
 | W12 | Android/iOS native, desktop | Submit empty, whitespace-only, reserved/invalid, traversal-like, and otherwise rejected names. The dialog remains open with a localized safe validation message and performs no mutation. | Dialog screenshot and unchanged tree |
 | W13 | Android/iOS native, desktop | Create or rename to an existing name. The dialog remains open, shows the localized duplicate-name reason, and preserves both existing entries. | Dialog and unchanged tree |
 | W14 | Android/iOS native, desktop | Force a write/create/rename/move failure. Show a safe operation failure, keep recoverable UI state, and do not leave a partial file or close the name dialog as success. | Sanitized failure, staging/final tree |
+| W15 | Android/iOS native | Retain a dirty draft, make its source document unavailable, then background/terminate and relaunch. The recoverable draft editor wins over Workspace Home. | Before/after draft screenshot and sanitized AppConfig/lifecycle trace |
 
 ## B. Editor, Input, Autosave, and Compact Navigation
 
@@ -116,10 +124,10 @@ Use fresh uniquely named fixtures. After each successful import, record the resu
 | B03 | Android emulator/device | Press Back with a name dialog/overlay open. The overlay closes or its guard consumes Back according to current behavior; no mutation or app exit occurs. | Video and unchanged tree |
 | B04 | Android emulator/device | Press Back at the editor root with no overlay. The request is acknowledged unconsumed and the app exits once; relaunch restores saved state. | Lifecycle log and relaunch screenshot |
 | B05 | iOS Simulator/device, narrow browser | Exercise every Compact page using visible navigation and system edge/navigation behavior available on the surface. Each action pops one level; editor root remains stable. | Video covering every page |
-| P01 | Android/iOS native | Move foreground to background and return from editor, Files, Settings, and an open picker/dialog. Saved editor state survives; foreground refresh preserves the active document and triggers only existing allowed sync behavior. | Lifecycle log and page screenshots |
-| P02 | Android/iOS native | Force close after a completed autosave, then relaunch. The selected notebook, last document, and saved content persist. | Timestamps and reopened bytes |
-| P03 | Android/iOS device | Trigger low-memory process recreation while content is saved. Relaunch/restore does not duplicate a managed notebook, lose saved content, or select a stale notebook/path. | OS lifecycle evidence and workspace tree |
-| P04 | Android/iOS native | Install the candidate build over an earlier build containing local notes and sync configuration. Workspace, documents, last-open state, and configuration persist without migration prompts. | Version/build IDs and before/after hashes |
+| P01 | Android/iOS native | Move foreground to background and return from editor, Files, Settings, and an open picker/dialog. The lifecycle flush commits pending AppConfig operations when execution time is available; foreground refresh preserves the active document and triggers only existing allowed sync behavior. | Lifecycle log and page screenshots |
+| P02 | Android/iOS native | Force close after a completed document autosave and AppConfig commit, then relaunch. The fixed workspace, last committed document/layout, and saved content persist. | Timestamps, reopened bytes, and sanitized AppConfig trace |
+| P03 | Android/iOS device | Trigger low-memory process recreation while content is saved. Relaunch/restore does not duplicate the fixed managed workspace, lose saved content, or select a stale document path. | OS lifecycle evidence and workspace tree |
+| P04 | Android/iOS native | Place development-era `local-state.json`, Plugin Store data, or a non-canonical legacy settings fixture in an isolated test profile, then launch the candidate. Confirm none is imported, translated, or used as a fallback; canonical configuration remains authoritative or startup fails closed for a malformed canonical document. | Sanitized pre/post app-data tree and startup result |
 
 ## E. Sync Parity and Error Handling
 
