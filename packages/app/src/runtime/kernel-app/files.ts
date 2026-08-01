@@ -84,6 +84,15 @@ const previewableImageMediaTypes = new Set([
   "image/webp",
 ]);
 
+const maximumNewMarkdownDocumentCreateAttempts = 10_000;
+
+function isDocumentAlreadyExistsError(error: unknown) {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "document_already_exists";
+}
+
 function createBatchId() {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -717,14 +726,30 @@ export function createKernelFileRuntimeOwner(
         const parent = input.defaultDirectory === null || input.defaultDirectory === undefined
           ? ""
           : relativePathFromServerPath(input.defaultDirectory);
-        const document = cacheEntry(await kernel.documents.create({
-          contents: input.contents,
-          kind: "file",
-          name: input.suggestedName,
-          parent: parent as KernelWorkspaceRelativePath,
-          workspaceGeneration: identity.generation,
-        }));
-        return { name: document.name, path: serverPathFromRelative(document.relativePath) };
+        const extension = input.suggestedName.match(/\.(?:markdown|md)$/i)?.[0] ?? ".md";
+        const stem = input.suggestedName.endsWith(extension)
+          ? input.suggestedName.slice(0, -extension.length)
+          : input.suggestedName;
+        for (let attempt = 0; attempt < maximumNewMarkdownDocumentCreateAttempts; attempt += 1) {
+          let created: KernelDocumentEntrySnapshot;
+          try {
+            created = await kernel.documents.create({
+              contents: input.contents,
+              kind: "file",
+              name: attempt === 0 ? input.suggestedName : `${stem} ${attempt}${extension}`,
+              parent: parent as KernelWorkspaceRelativePath,
+              workspaceGeneration: identity.generation,
+            });
+          } catch (error: unknown) {
+            if (!isDocumentAlreadyExistsError(error)) throw error;
+            continue;
+          }
+          const document = cacheEntry(created);
+          return { name: document.name, path: serverPathFromRelative(document.relativePath) };
+        }
+        throw new Error(
+          `Unable to allocate a unique Markdown filename after ${maximumNewMarkdownDocumentCreateAttempts.toLocaleString("en-US")} attempts.`,
+        );
       }
       const entry = await resolveEntry(input.path);
       if (entry.kind !== "file") throw new Error("The Kernel path is not a document.");

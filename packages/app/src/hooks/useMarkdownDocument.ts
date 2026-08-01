@@ -66,7 +66,7 @@ import { createEditorSyncState, type EditorSyncState } from "./markdown-document
 import {
   managedDocumentRelativePath
 } from "../lib/settings/workspace-state";
-import { kernelWorkspaceRelativePathFromPath } from "../runtime/kernel-app/app-config";
+import { kernelWorkspaceDocumentRelativePathFromPath } from "../runtime/kernel-app/app-config";
 import { kernelWorkspaceRoot } from "../runtime/kernel-app/files";
 import {
   parseEditorWindowContext,
@@ -240,8 +240,8 @@ function documentPathIsWithinWorkspaceRoot(rootPath: string, filePath: string) {
   }
 
   try {
-    const relativePath = kernelWorkspaceRelativePathFromPath(filePath);
-    return relativePath.length > 0 && isMarkdownPath(relativePath);
+    kernelWorkspaceDocumentRelativePathFromPath(filePath);
+    return true;
   } catch {
     return false;
   }
