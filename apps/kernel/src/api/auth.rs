@@ -1,7 +1,6 @@
 use std::{
     fmt,
     net::SocketAddr,
-    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -27,7 +26,7 @@ use crate::{
         MissingDirectPeer, ServerBlockingError, ServerHostEpochSlot, ServerHostLease,
         ServerHostProcessResources, ServerHostProcessResourcesError,
     },
-    paths::ConfigRootIdentity,
+    paths::ConfigRoot,
     runtime::KernelRuntime,
     server::{
         InitializationStatus, IssuedSession, RequestIntent, ServerAuthenticationCoordinator,
@@ -52,8 +51,7 @@ struct ServerApiAuthenticationState {
     authentication: ServerAuthenticationCoordinator,
 }
 
-static CLAIMED_SERVER_API_ROOTS: OnceLock<Mutex<Vec<(ConfigRootIdentity, PathBuf)>>> =
-    OnceLock::new();
+static CLAIMED_SERVER_API_ROOTS: OnceLock<Mutex<Vec<ConfigRoot>>> = OnceLock::new();
 
 /// Owns the one process-wide Server API activation attempt for one config root.
 ///
@@ -82,6 +80,10 @@ impl ServerApiProcess {
             .config_root()
             .verify_held_directory()
             .map_err(|_unavailable| ServerApiProcessError::RuntimeUnavailable)?;
+        let claimed_root = runtime
+            .config_root()
+            .try_clone_root()
+            .map_err(|_unavailable| ServerApiProcessError::RuntimeUnavailable)?;
         let root_identity = runtime.config_root().identity();
         let root_path = runtime.config_root().canonical_path();
         let mut claimed_roots = CLAIMED_SERVER_API_ROOTS
@@ -90,11 +92,11 @@ impl ServerApiProcess {
             .map_err(|_poisoned| ServerApiProcessError::RuntimeUnavailable)?;
         if claimed_roots
             .iter()
-            .any(|(identity, path)| *identity == root_identity || path == root_path)
+            .any(|root| root.identity() == root_identity || root.canonical_path() == root_path)
         {
             return Err(ServerApiProcessError::AlreadyClaimed);
         }
-        claimed_roots.push((root_identity, root_path.to_path_buf()));
+        claimed_roots.push(claimed_root);
         let slot = resources.epoch_slot();
         Ok(Self {
             runtime,

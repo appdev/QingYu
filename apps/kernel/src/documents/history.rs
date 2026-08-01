@@ -13,6 +13,8 @@ use base64::engine::general_purpose::STANDARD_NO_PAD;
 #[cfg(any(unix, windows))]
 use cap_fs_ext::OpenOptionsExt;
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+#[cfg(windows)]
+use cap_primitives::fs::_WindowsByHandle as _;
 use cap_std::fs::{Dir, OpenOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -619,8 +621,7 @@ fn history_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(windows)]
 fn history_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
-    metadata.number_of_links().unwrap_or(0)
+    metadata.number_of_links().map_or(0, u64::from)
 }
 
 #[cfg(not(any(unix, windows)))]

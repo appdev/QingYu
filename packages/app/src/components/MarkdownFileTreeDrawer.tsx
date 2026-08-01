@@ -2,9 +2,11 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
   type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -14,6 +16,7 @@ import {
   type SetStateAction,
   type UIEvent as ReactUIEvent
 } from "react";
+import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
@@ -65,6 +68,7 @@ import type { NativeMarkdownFolderFile } from "../lib/tauri";
 import { normalizeMovedPath, sameNativePath } from "../lib/path-move";
 import { readNativeClipboardText, showNativeMarkdownFileTreeContextMenu } from "../lib/tauri";
 import { resolveDesktopPlatform, type DesktopPlatform } from "../lib/platform";
+import { anchoredPopoverStyle } from "../lib/anchored-popover";
 import type { SidebarLayoutMode } from "../lib/settings/app-settings";
 import {
   workspaceBacklinksForPath,
@@ -475,6 +479,7 @@ export function MarkdownFileTreeDrawer({
   const fileTreeScrollNodeRef = useRef<HTMLDivElement | null>(null);
   const fileTreeSortMenuRef = useRef<HTMLDivElement | null>(null);
   const createMenuRef = useRef<HTMLDivElement | null>(null);
+  const createMenuSurfaceRef = useRef<HTMLDivElement | null>(null);
   const outlineLevelMenuRef = useRef<HTMLDivElement | null>(null);
   const imageAssetDragImageRef = useRef<HTMLDivElement | null>(null);
   const imageAssetDragTrackerRef = useRef<ImageAssetDragTracker | null>(null);
@@ -506,6 +511,7 @@ export function MarkdownFileTreeDrawer({
   const [outlineLevelMenuOpen, setOutlineLevelMenuOpen] = useState(false);
   const [outlineLevelFilter, setOutlineLevelFilter] = useState<OutlineLevelFilter>("all");
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [createMenuStyle, setCreateMenuStyle] = useState<CSSProperties | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameFileName, setRenameFileName] = useState("");
   const renamingPathRef = useRef<string | null>(null);
@@ -688,6 +694,22 @@ export function MarkdownFileTreeDrawer({
   const fileCreationAvailable = Boolean(onCreateFile);
   const folderCreationAvailable = folderOpen && Boolean(onCreateFolder);
   const folderActionsAvailable = fileCreationAvailable || folderCreationAvailable;
+  const positionCreateMenu = useCallback((anchor: Element) => {
+    const createActionCount = Number(fileCreationAvailable) + Number(folderCreationAvailable);
+    const templateSectionHeight = fileCreationAvailable ? 28 + availableMarkdownTemplates.length * 28 : 0;
+
+    setCreateMenuStyle(
+      anchoredPopoverStyle(anchor, createMenuSurfaceRef.current, {
+        align: "end",
+        fallbackSize: {
+          height: 8 + createActionCount * 28 + templateSectionHeight,
+          width: 176
+        },
+        gap: 4,
+        placement: "bottom"
+      })
+    );
+  }, [availableMarkdownTemplates.length, fileCreationAvailable, folderCreationAvailable]);
   const backgroundContextMenuAvailable = folderActionsAvailable || Boolean(onOpenContainingFolder && rootPath);
   const folderExpansionAvailable = folderPaths.length > 0;
   const assetVisibilityToggleAvailable = deferredFiles.some((file) => file.kind === "asset");
@@ -922,6 +944,7 @@ export function MarkdownFileTreeDrawer({
       const openMenuRoots = [
         fileTreeSortMenuOpen ? fileTreeSortMenuRef.current : null,
         createMenuOpen ? createMenuRef.current : null,
+        createMenuOpen ? createMenuSurfaceRef.current : null,
         outlineLevelMenuOpen ? outlineLevelMenuRef.current : null
       ];
 
@@ -938,6 +961,34 @@ export function MarkdownFileTreeDrawer({
       window.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [createMenuOpen, fileTreeSortMenuOpen, outlineLevelMenuOpen]);
+
+  useEffect(() => {
+    if (!open) setCreateMenuOpen(false);
+  }, [open]);
+
+  useEffect(() => {
+    if (!createMenuOpen) return;
+
+    const handleLayoutChange = () => {
+      const trigger = createMenuRef.current?.querySelector("button");
+      if (trigger) positionCreateMenu(trigger);
+    };
+
+    window.addEventListener("resize", handleLayoutChange);
+    window.addEventListener("scroll", handleLayoutChange, true);
+
+    return () => {
+      window.removeEventListener("resize", handleLayoutChange);
+      window.removeEventListener("scroll", handleLayoutChange, true);
+    };
+  }, [createMenuOpen, positionCreateMenu]);
+
+  useLayoutEffect(() => {
+    if (!createMenuOpen) return;
+
+    const trigger = createMenuRef.current?.querySelector("button");
+    if (trigger) positionCreateMenu(trigger);
+  }, [createMenuOpen, positionCreateMenu]);
 
   useEffect(() => {
     const validKeys = new Set(collapsibleOutlineKeys);
@@ -2532,12 +2583,15 @@ export function MarkdownFileTreeDrawer({
               className={actionButtonClassName}
               label={label("app.newMarkdownItem")}
               pressed={createMenuOpen}
-              onClick={() => {
-                setCreateMenuOpen((open) => {
-                  const nextOpen = !open;
-                  if (nextOpen) setFileTreeSortMenuOpen(false);
-                  return nextOpen;
-                });
+              onClick={(event) => {
+                if (createMenuOpen) {
+                  setCreateMenuOpen(false);
+                  return;
+                }
+
+                setFileTreeSortMenuOpen(false);
+                positionCreateMenu(event.currentTarget);
+                setCreateMenuOpen(true);
               }}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
@@ -2548,9 +2602,11 @@ export function MarkdownFileTreeDrawer({
             >
               <Plus aria-hidden="true" size={14} />
             </IconButton>
-            {createMenuOpen ? (
+            {open && createMenuOpen && createMenuStyle && typeof document !== "undefined" ? createPortal(
               <div
-                className="absolute top-8 right-0 z-40 min-w-44 rounded-md border border-(--border-default) bg-(--bg-primary) py-1 shadow-[0_12px_30px_color-mix(in_srgb,var(--text-heading)_14%,transparent)]"
+                ref={createMenuSurfaceRef}
+                className="fixed z-40 w-44 max-w-[calc(100vw-1rem)] overflow-x-hidden rounded-md border border-(--border-default) bg-(--bg-primary) py-1 shadow-[0_12px_30px_color-mix(in_srgb,var(--text-heading)_14%,transparent)]"
+                style={createMenuStyle}
                 role="menu"
                 aria-label={label("app.newMarkdownItem")}
               >
@@ -2581,12 +2637,13 @@ export function MarkdownFileTreeDrawer({
                         <span className="flex w-3.5 justify-center" aria-hidden="true">
                           <LayoutTemplate size={13} />
                         </span>
-                        <span>{template.name}</span>
+                        <span className="truncate">{template.name}</span>
                       </button>
                     ))}
                   </>
                 ) : null}
-              </div>
+              </div>,
+              document.body
             ) : null}
           </div>
         ) : null}

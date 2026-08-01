@@ -86,6 +86,8 @@ export function prepareMcpSidecar({
     paths.source,
     paths.destination,
     targetTriple,
+    process.platform,
+    { allowCargoHardLinkSource: true },
   );
   return { ...paths, ...validation };
 }

@@ -81,13 +81,13 @@ pub fn notebook_name_available_on_current_platform(name: &str) -> bool {
                 .is_some_and(|suffix| {
                     suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9')
                 });
-        return name.encode_utf16().count() <= 255
+        name.encode_utf16().count() <= 255
             && !name.chars().any(|character| {
                 character.is_control()
                     || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*')
             })
             && !name.ends_with(['.', ' '])
-            && !reserved;
+            && !reserved
     }
 
     #[cfg(not(windows))]

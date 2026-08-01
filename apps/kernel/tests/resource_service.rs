@@ -2189,7 +2189,7 @@ async fn resource_batch_restart_rolls_forward_from_each_rename_boundary() {
         let snapshot = workspace.get_workspace().await.unwrap();
         let error = service
             .create_resource_batch(
-                ResourceBatchId::new(Uuid::from_u128(0xfeed_100 + fail_at as u128)),
+                ResourceBatchId::new(Uuid::from_u128(0x0fee_d100 + fail_at as u128)),
                 &first_document_id(&service),
                 snapshot.generation,
                 WorkspaceRelativePath::parse("assets").unwrap(),

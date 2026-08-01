@@ -82,14 +82,19 @@ test("release publication waits for every platform and uploads deterministic not
   assert.match(job, /node scripts\/release\/generate-release-notes\.mjs/);
   assert.match(job, /RELEASE_TARGET: \$\{\{ github\.sha \}\}/);
   assert.match(job, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
-  assert.match(job, /GITHUB_MODELS_MODEL: openai\/gpt-4\.1/);
   assert.match(job, /RELEASE_FACTS_PATH: release-facts\.json/);
   assert.match(job, /SIGNED_RELEASE: \$\{\{ needs\.validate_release\.outputs\.signed_release \}\}/);
   assert.match(job, /name: Upload generated release notes/);
+  assert.match(job, /name: Publish release draft/);
+  assert.match(job, /node scripts\/release\/publish-release-draft\.mjs/);
+  assert.match(job, /ALLOWED_STALE_DRAFT_ID: \$\{\{ inputs\.replace_stale_draft_id \}\}/);
   assert.match(job, /pattern: \$\{\{ env\.APP_SLUG \}\}-\*-bundles/);
-  assert.match(job, /target_commitish: \$\{\{ github\.sha \}\}/);
-  assert.match(job, /^          draft: true$/m);
+  assert.match(job, /RELEASE_FILES_PATH: release-files\.txt/);
+  assert.doesNotMatch(job, /softprops\/action-gh-release/u);
   assert.doesNotMatch(job, /pnpm dlx changelogen@latest/);
+  assert.doesNotMatch(job, /GITHUB_MODELS/u);
+  assert.doesNotMatch(job, /REQUIRE_GITHUB_MODELS/u);
+  assert.doesNotMatch(job, /models: read/);
 });
 
 test("desktop artifact collection excludes package internals", () => {

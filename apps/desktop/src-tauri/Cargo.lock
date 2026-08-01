@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "qingyu"
-version = "2.2.0"
+version = "2.4.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -3545,6 +3545,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "cap-fs-ext",
+ "cap-primitives",
  "cap-std",
  "fs2",
  "futures-util",

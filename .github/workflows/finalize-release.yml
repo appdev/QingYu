@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: finalize-release-${{ inputs.tag }}
+  group: release-mutation-${{ github.repository }}
   cancel-in-progress: false
 
 env:

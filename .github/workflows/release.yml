@@ -2,12 +2,17 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      replace_stale_draft_id:
+        description: Exact stale draft release ID allowed to be replaced
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-mutation-${{ github.repository }}
   cancel-in-progress: false
 
 env:
@@ -728,10 +733,9 @@ jobs:
     name: Create GitHub Draft Release
     needs: [validate_release, build, build_android, build_ios]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
-      models: read
     env:
       RELEASE_TAG: ${{ needs.validate_release.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.validate_release.outputs.release_version }}
@@ -750,7 +754,6 @@ jobs:
 
       - name: Generate release notes
         env:
-          GITHUB_MODELS_MODEL: openai/gpt-4.1
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_FACTS_PATH: release-facts.json
@@ -832,15 +835,15 @@ jobs:
             echo '__FILES__'
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ env.APP_PRODUCT_NAME }} ${{ env.RELEASE_TAG }}
-          body_path: release-notes.md
-          draft: true
-          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
-          overwrite_files: true
-          fail_on_unmatched_files: true
-          files: ${{ steps.release_files.outputs.paths }}
+      - name: Publish release draft
+        env:
+          ALLOWED_STALE_DRAFT_ID: ${{ inputs.replace_stale_draft_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_FILES_PATH: release-files.txt
+          RELEASE_NAME: ${{ env.APP_PRODUCT_NAME }} ${{ env.RELEASE_TAG }}
+          RELEASE_NOTES_PATH: release-notes.md
+          RELEASE_PRERELEASE: ${{ contains(env.RELEASE_TAG, '-') }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RELEASE_TARGET: ${{ github.sha }}
+        run: node scripts/release/publish-release-draft.mjs

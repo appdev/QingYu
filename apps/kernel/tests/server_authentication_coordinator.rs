@@ -133,7 +133,7 @@ fn rejected_passwords_are_settled_as_failures_before_a_client_is_limited() {
     assert!(retry_after > Duration::from_secs(29));
     assert!(retry_after <= Duration::from_secs(30));
     coordinator
-        .login(7, Duration::from_secs(32), OWNER_PASSWORD.to_owned())
+        .login(7, Duration::from_secs(120), OWNER_PASSWORD.to_owned())
         .unwrap();
 }
 

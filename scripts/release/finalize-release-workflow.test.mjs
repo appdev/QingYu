@@ -12,6 +12,7 @@ test("Finalize Release validates an existing draft before publishing without reb
   const workflow = fs.readFileSync(workflowPath, "utf8");
 
   assert.match(workflow, /^name: Finalize Release$/m);
+  assert.match(workflow, /group: release-mutation-\$\{\{ github\.repository \}\}/);
   assert.match(workflow, /^on:\n  workflow_dispatch:\n    inputs:\n      tag:/m);
   assert.doesNotMatch(workflow, /^  (?:push|pull_request|schedule):/m);
   assert.match(workflow, /node scripts\/release\/validate-release-draft\.mjs/);

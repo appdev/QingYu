@@ -6,7 +6,9 @@ use std::{
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use cap_fs_ext::{DirExt as _, MetadataExt as _};
+use cap_fs_ext::DirExt as _;
+#[cfg(not(windows))]
+use cap_fs_ext::MetadataExt as _;
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

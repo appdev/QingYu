@@ -2,18 +2,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const FIELD_SEPARATOR = "\u001f";
 const RECORD_SEPARATOR = "\u001e";
 const MAINTENANCE_TYPES = new Set(["build", "chore", "ci", "docs", "style", "test"]);
-const DEFAULT_MODEL = "openai/gpt-4.1";
 const MAX_MODEL_INPUT_CHARS = 48_000;
 const MAX_MODEL_BODY_CHARS = 1_000;
 const MAX_MODEL_PATHS = 20;
-const MODEL_SYSTEM_PROMPT = `你是 QingYu 桌面笔记应用的发布说明编辑。根据提供的确定性提交事实，以简体中文总结用户可感知的变化。
-只陈述输入事实支持的内容；不要发明版本、平台、签名、安全、迁移或链接信息。把相关提交合并成主题，不要输出逐提交清单。
-除非输入事实原文包含相同词语或直接对应的英文事实（signing、updater、security、vulnerability、migrate、migration），否则 summary、标题、正文和提醒中禁止出现“Windows”“macOS”“Linux”“Android”“iOS”“签名”“自动更新”“安全”“漏洞”“迁移”或“CVE”；例如不要把 harden 自行解释为“安全”。
-只返回 JSON：summary 为简短总述；sections 为 2 到 5 个主题，每项包含 title 和 items；每个 item 包含 text 与支持它的 commitShas；notice 仅在事实明确支持升级或兼容提醒时使用，否则为 null；otherChanges 为较小的用户可见变化。`;
 
 function requireEnv(env, name) {
   const value = env[name]?.trim();
@@ -178,6 +174,133 @@ export function buildReleaseFacts({
   };
 }
 
+function requireFactString(value, field, { allowNull = false, allowEmpty = false } = {}) {
+  if (allowNull && value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || (!allowEmpty && !value)) {
+    throw new Error(`Release facts field ${field} must be ${allowEmpty ? "a string" : "a non-empty string"}.`);
+  }
+  if (value !== normalizeText(value)) {
+    throw new Error(`Release facts field ${field} must already be normalized.`);
+  }
+  return value;
+}
+
+export function validateReleaseFacts(
+  value,
+  {
+    repository: expectedRepository,
+    currentTag: expectedCurrentTag,
+    previousTag: expectedPreviousTag,
+    releaseTarget: expectedTarget,
+    signedRelease: expectedSignedRelease,
+  },
+) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Release facts must be a JSON object.");
+  }
+  if (value.schemaVersion !== 1) {
+    throw new Error("Release facts schemaVersion must be 1.");
+  }
+
+  const repository = requireFactString(value.repository, "repository");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository) || repository !== expectedRepository) {
+    throw new Error(`Release facts repository must equal ${expectedRepository}.`);
+  }
+  const currentTag = requireFactString(value.currentTag, "currentTag");
+  if (currentTag !== expectedCurrentTag) {
+    throw new Error(`Release facts currentTag must equal ${expectedCurrentTag}.`);
+  }
+  const previousTag = requireFactString(value.previousTag, "previousTag", { allowNull: true });
+  if (previousTag !== expectedPreviousTag) {
+    throw new Error(`Release facts previousTag must equal ${expectedPreviousTag ?? "null"}.`);
+  }
+  const releaseTarget = requireFactString(value.releaseTarget, "releaseTarget");
+  if (!/^[0-9a-f]{40}$/u.test(releaseTarget) || releaseTarget !== expectedTarget) {
+    throw new Error(`Release facts releaseTarget must equal ${expectedTarget} as a full commit SHA.`);
+  }
+  if (typeof value.signedRelease !== "boolean") {
+    throw new Error("Release facts signedRelease must be a boolean.");
+  }
+  if (value.signedRelease !== expectedSignedRelease) {
+    throw new Error(`Release facts signedRelease must equal ${expectedSignedRelease}.`);
+  }
+
+  const expectedCompareUrl = buildCompareUrl(repository, previousTag, currentTag);
+  if (value.compareUrl !== expectedCompareUrl) {
+    throw new Error(`Release facts compareUrl must equal ${expectedCompareUrl}.`);
+  }
+  if (!Array.isArray(value.commits)) {
+    throw new Error("Release facts commits must be an array.");
+  }
+
+  const fullShas = new Set();
+  const shortShas = new Set();
+  const allReferences = new Set();
+  for (const [index, commit] of value.commits.entries()) {
+    const field = `commits[${index}]`;
+    if (!commit || typeof commit !== "object" || Array.isArray(commit)) {
+      throw new Error(`Release facts field ${field} must be an object.`);
+    }
+    const sha = requireFactString(commit.sha, `${field}.sha`);
+    const shortSha = requireFactString(commit.shortSha, `${field}.shortSha`);
+    if (!/^[0-9a-f]{40}$/u.test(sha)) {
+      throw new Error(`Release facts commit SHA ${sha} must contain 40 lowercase hexadecimal characters.`);
+    }
+    if (!/^[0-9a-f]{7,40}$/u.test(shortSha) || !sha.startsWith(shortSha)) {
+      throw new Error(`Release facts short SHA ${shortSha} must be a lowercase prefix of ${sha}.`);
+    }
+    if (fullShas.has(sha)) {
+      throw new Error(`Release facts commit SHA ${sha} must be unique.`);
+    }
+    if (shortShas.has(shortSha)) {
+      throw new Error(`Release facts short SHA ${shortSha} must be unique.`);
+    }
+    if (allReferences.has(sha) || allReferences.has(shortSha)) {
+      throw new Error(`Release facts SHA reference ${shortSha} must be unique.`);
+    }
+    fullShas.add(sha);
+    shortShas.add(shortSha);
+    allReferences.add(sha);
+    allReferences.add(shortSha);
+
+    if (commit.type !== null) {
+      requireFactString(commit.type, `${field}.type`);
+    }
+    if (commit.scope !== null) {
+      requireFactString(commit.scope, `${field}.scope`);
+    }
+    if (typeof commit.breaking !== "boolean") {
+      throw new Error(`Release facts field ${field}.breaking must be a boolean.`);
+    }
+    requireFactString(commit.subject, `${field}.subject`);
+    requireFactString(commit.description, `${field}.description`);
+    requireFactString(commit.body, `${field}.body`, { allowEmpty: true });
+    requireFactString(commit.author, `${field}.author`);
+    if (!Array.isArray(commit.changedPaths)) {
+      throw new Error(`Release facts field ${field}.changedPaths must be an array.`);
+    }
+    for (const [pathIndex, changedPath] of commit.changedPaths.entries()) {
+      requireFactString(changedPath, `${field}.changedPaths[${pathIndex}]`);
+    }
+    for (const numericField of ["insertions", "deletions"]) {
+      if (!Number.isInteger(commit[numericField]) || commit[numericField] < 0) {
+        throw new Error(`Release facts field ${field}.${numericField} must be a non-negative integer.`);
+      }
+    }
+  }
+
+  for (const shortSha of shortShas) {
+    const matchingFullShas = [...fullShas].filter((sha) => sha.startsWith(shortSha));
+    if (matchingFullShas.length !== 1) {
+      throw new Error(`Release facts short SHA ${shortSha} must be an unambiguous commit prefix.`);
+    }
+  }
+
+  return value;
+}
+
 function truncateText(value, maximumLength) {
   const normalized = normalizeText(value);
   if (normalized.length <= maximumLength) {
@@ -262,7 +385,13 @@ function assertClaimsSupported(text, facts, field) {
     ["cve", ["cve"]],
   ];
 
-  if (/https?:\/\//u.test(normalized)) {
+  if (
+    /!?\[[^\]\n]*\]\s*\([^\n)]*\)/u.test(normalized) ||
+    /[A-Za-z][A-Za-z0-9+.-]*:/u.test(normalized) ||
+    /\/\/[A-Za-z0-9]/u.test(normalized) ||
+    /\bwww\.[A-Za-z0-9]/iu.test(normalized) ||
+    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu.test(normalized)
+  ) {
     throw new Error(`Model field ${field} contains an unsupported claim (URL).`);
   }
 
@@ -284,9 +413,6 @@ function validateModelItem(value, facts, field, knownShas) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`Model field ${field} must be an object.`);
   }
-  const text = requireModelText(value.text, `${field}.text`, { maximumLength: 500 });
-  assertClaimsSupported(text, facts, `${field}.text`);
-
   if (!Array.isArray(value.commitShas) || value.commitShas.length === 0) {
     throw new Error(`Model field ${field}.commitShas must contain at least one commit SHA.`);
   }
@@ -299,6 +425,16 @@ function validateModelItem(value, facts, field, knownShas) {
     }
     return normalized;
   });
+
+  const referencedShas = new Set(commitShas);
+  const referencedFacts = {
+    ...facts,
+    commits: facts.commits.filter(
+      (commit) => referencedShas.has(commit.sha) || referencedShas.has(commit.shortSha),
+    ),
+  };
+  const text = requireModelText(value.text, `${field}.text`, { maximumLength: 500 });
+  assertClaimsSupported(text, referencedFacts, `${field}.text`);
 
   return { text, commitShas: [...new Set(commitShas)] };
 }
@@ -454,45 +590,6 @@ export function renderModelReleaseNotes(summary, facts) {
   return `${lines.join("\n").trim()}\n`;
 }
 
-export async function generateReleaseNotes({
-  facts,
-  model = DEFAULT_MODEL,
-  modelClient,
-  warn = (message) => console.warn(message),
-}) {
-  if (!modelClient) {
-    return { notes: renderDeterministicReleaseNotes(facts), usedModel: false };
-  }
-
-  try {
-    const userPrompt = JSON.stringify(buildModelInput(facts));
-    const modelValue = await modelClient({
-      model,
-      systemPrompt: MODEL_SYSTEM_PROMPT,
-      userPrompt,
-    });
-    let summary;
-    try {
-      summary = validateModelSummary(modelValue, facts);
-    } catch (validationError) {
-      const reason = normalizeText(
-        validationError instanceof Error ? validationError.message : String(validationError),
-      ).slice(0, 500);
-      const repairedValue = await modelClient({
-        model,
-        systemPrompt: `${MODEL_SYSTEM_PROMPT}\n上一次输出未通过事实校验：${reason}。请重新生成完整 JSON，删除不受事实支持的表述，并继续严格遵守所有禁用词和 SHA 约束。`,
-        userPrompt,
-      });
-      summary = validateModelSummary(repairedValue, facts);
-    }
-    return { notes: renderModelReleaseNotes(summary, facts), usedModel: true };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    warn(`::warning::GitHub Models failed (${reason}); using deterministic release notes.`);
-    return { notes: renderDeterministicReleaseNotes(facts), usedModel: false };
-  }
-}
-
 export function renderReleaseNotes({
   repository = "appdev/QingYu",
   currentTag,
@@ -560,60 +657,77 @@ function gitTagIsAncestor(tag, target) {
   return result.status === 0;
 }
 
-function collectCommits(range) {
-  const rawLog = runGit([
+function assignStableShortShas(commits) {
+  return commits.map((commit) => {
+    let length = Math.min(8, commit.sha.length);
+    while (
+      length < commit.sha.length &&
+      commits.some(
+        (candidate) => candidate.sha !== commit.sha && candidate.sha.startsWith(commit.sha.slice(0, length)),
+      )
+    ) {
+      length += 1;
+    }
+    return { ...commit, shortSha: commit.sha.slice(0, length) };
+  });
+}
+
+function collectCommits(range, runGitImpl = runGit) {
+  const rawLog = runGitImpl([
     "log",
     "--no-merges",
     "--reverse",
-    `--format=%H%x1f%h%x1f%s%x1f%b%x1f%an%x1e`,
+    `--format=%H%x1f%H%x1f%s%x1f%b%x1f%an%x1e`,
     range,
   ]);
 
-  return parseGitLog(rawLog).map((commit) => ({
+  return assignStableShortShas(parseGitLog(rawLog)).map((commit) => ({
     ...commit,
-    ...parseNumStat(runGit(["diff-tree", "--no-commit-id", "--numstat", "-r", "--root", commit.sha])),
+    ...parseNumStat(
+      runGitImpl([
+        "-c",
+        "core.quotePath=false",
+        "diff-tree",
+        "--no-commit-id",
+        "--numstat",
+        "-r",
+        "--root",
+        commit.sha,
+      ]),
+    ),
   }));
 }
 
-function createGitHubModelsClient({ token, fetchImpl = fetch, timeoutMs = 30_000 }) {
-  return async ({ model, systemPrompt, userPrompt }) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new Error("GitHub Models request timed out.")), timeoutMs);
+export function validateReleaseFactsProvenance(facts, { runGitImpl = runGit } = {}) {
+  const resolvedTarget = runGitImpl([
+    "rev-parse",
+    "--verify",
+    `${facts.releaseTarget}^{commit}`,
+  ]).trim();
+  if (resolvedTarget !== facts.releaseTarget) {
+    throw new Error(`Release facts target ${facts.releaseTarget} does not resolve to that commit.`);
+  }
 
-    try {
-      const response = await fetchImpl("https://models.github.ai/inference/chat/completions", {
-        method: "POST",
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-        }),
-        signal: controller.signal,
-      });
+  if (facts.previousTag) {
+    runGitImpl(["rev-parse", "--verify", `${facts.previousTag}^{commit}`]);
+    runGitImpl(["merge-base", "--is-ancestor", `${facts.previousTag}^{commit}`, facts.releaseTarget]);
+  }
 
-      if (!response.ok) {
-        throw new Error(`GitHub Models returned ${response.status} ${response.statusText}.`);
-      }
-      const payload = await response.json();
-      const content = payload?.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) {
-        throw new Error("GitHub Models returned an empty response.");
-      }
-      return JSON.parse(content);
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
+  const range = facts.previousTag
+    ? `${facts.previousTag}^{commit}..${facts.releaseTarget}^{commit}`
+    : `${facts.releaseTarget}^{commit}`;
+  const expectedFacts = buildReleaseFacts({
+    repository: facts.repository,
+    currentTag: facts.currentTag,
+    previousTag: facts.previousTag,
+    releaseTarget: facts.releaseTarget,
+    signedRelease: facts.signedRelease,
+    commits: collectCommits(range, runGitImpl),
+  });
+  if (!isDeepStrictEqual(facts, expectedFacts)) {
+    throw new Error("Release facts do not match the local Git range.");
+  }
+  return facts;
 }
 
 async function main(env = process.env) {
@@ -646,12 +760,7 @@ async function main(env = process.env) {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.mkdirSync(path.dirname(factsPath), { recursive: true });
   fs.writeFileSync(factsPath, `${JSON.stringify(facts, null, 2)}\n`, "utf8");
-  const generated = await generateReleaseNotes({
-    facts,
-    model: env.GITHUB_MODELS_MODEL?.trim() || DEFAULT_MODEL,
-    modelClient: createGitHubModelsClient({ token }),
-  });
-  fs.writeFileSync(outputPath, generated.notes, "utf8");
+  fs.writeFileSync(outputPath, renderDeterministicReleaseNotes(facts), "utf8");
 }
 
 const isCli = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;

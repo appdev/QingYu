@@ -17,6 +17,8 @@ use std::{
 };
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(windows)]
+use cap_primitives::fs::_WindowsByHandle as _;
 use cap_std::fs::{Dir, File, Metadata, OpenOptions};
 use serde::{Serialize, Serializer};
 
@@ -202,7 +204,6 @@ fn link_count(metadata: &Metadata) -> u64 {
 
 #[cfg(windows)]
 fn link_count(metadata: &Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
     metadata.number_of_links().map_or(0, u64::from)
 }
 
@@ -224,8 +225,6 @@ fn require_same_file(left: &Metadata, right: &Metadata) -> io::Result<()> {
 
 #[cfg(windows)]
 fn require_same_file(left: &Metadata, right: &Metadata) -> io::Result<()> {
-    use cap_std::fs::MetadataExt as _;
-
     let identities = (
         left.volume_serial_number(),
         left.file_index(),
@@ -649,18 +648,24 @@ fn next_tick<Value>(state: &mut ContentRevisionCacheState<Value>) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, num::NonZeroUsize, thread, time::Duration};
+    #[cfg(unix)]
+    use std::{fs, time::Duration};
+    use std::{num::NonZeroUsize, thread};
 
+    #[cfg(unix)]
     use cap_std::{ambient_authority, fs::Dir};
+    #[cfg(unix)]
     use tempfile::tempdir;
 
     use crate::contract::WorkspaceRelativePath;
 
+    #[cfg(unix)]
+    use super::RetainedInventoryFile;
     use super::{
         ContentDigest, ContentRevisionCache, ContentRevisionCacheKey, FileVersionStamp,
         InventoryCandidateSnapshot, InventoryCandidateType, InventoryModifiedTime,
         InventorySnapshotBudget, InventorySnapshotBudgetError, InventorySnapshotLimits,
-        RetainedInventoryFile, StrongFileVersionStamp,
+        StrongFileVersionStamp,
     };
 
     #[cfg(unix)]
