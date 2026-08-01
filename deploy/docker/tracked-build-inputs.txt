@@ -37,6 +37,9 @@ apps/kernel/src/api/server_auth_tests.rs
 apps/kernel/src/api/web.rs
 apps/kernel/src/api/web_tests.rs
 apps/kernel/src/api/ws.rs
+apps/kernel/src/app_config/mod.rs
+apps/kernel/src/app_config/model.rs
+apps/kernel/src/app_config/service.rs
 apps/kernel/src/bin/qingyu-kernel.rs
 apps/kernel/src/composition.rs
 apps/kernel/src/config.rs
@@ -81,6 +84,7 @@ apps/kernel/src/server/runtime_composition.rs
 apps/kernel/src/server/secret.rs
 apps/kernel/src/server/security.rs
 apps/kernel/src/server/session.rs
+apps/kernel/src/services/app_config.rs
 apps/kernel/src/services/documents.rs
 apps/kernel/src/services/mod.rs
 apps/kernel/src/services/settings.rs
@@ -252,6 +256,8 @@ packages/app/src/components/WindowsNativeTitleBar.test.tsx
 packages/app/src/components/WindowsNativeTitleBar.tsx
 packages/app/src/components/WindowsWindowControls.test.tsx
 packages/app/src/components/WindowsWindowControls.tsx
+packages/app/src/components/WorkspaceHome.test.tsx
+packages/app/src/components/WorkspaceHome.tsx
 packages/app/src/components/WorkspaceLayout.tsx
 packages/app/src/components/compact/CompactAcceptance.test.tsx
 packages/app/src/components/compact/CompactAppShell.test.tsx
@@ -275,7 +281,6 @@ packages/app/src/components/compact/CompactSyncFormScreen.test.tsx
 packages/app/src/components/compact/CompactSyncFormScreen.tsx
 packages/app/src/components/compact/CompactSyncStatusScreen.test.tsx
 packages/app/src/components/compact/CompactSyncStatusScreen.tsx
-packages/app/src/components/compact/CompactWelcomeState.tsx
 packages/app/src/components/compact/types.ts
 packages/app/src/components/file-tree/FileTreeDnd.tsx
 packages/app/src/components/file-tree/file-tree-model.test.ts
@@ -327,12 +332,13 @@ packages/app/src/components/settings/resources/ResourceResultsList.tsx
 packages/app/src/components/settings/translate.ts
 packages/app/src/components/sync/SyncConflictHistoryDialog.test.tsx
 packages/app/src/components/sync/SyncConflictHistoryDialog.tsx
-packages/app/src/constants/initial-markdown.ts
 packages/app/src/hooks/compact-navigation-history.test.ts
 packages/app/src/hooks/compact-navigation-history.ts
 packages/app/src/hooks/markdown-document/document-model.ts
 packages/app/src/hooks/markdown-document/editor-sync.test.ts
 packages/app/src/hooks/markdown-document/editor-sync.ts
+packages/app/src/hooks/markdown-document/restore-outcome.test.ts
+packages/app/src/hooks/markdown-document/restore-outcome.ts
 packages/app/src/hooks/useAppLanguage.ts
 packages/app/src/hooks/useAppSyncCoordinator.test.tsx
 packages/app/src/hooks/useAppSyncCoordinator.ts
@@ -470,6 +476,8 @@ packages/app/src/lib/runtime-log.ts
 packages/app/src/lib/selection-anchor.test.ts
 packages/app/src/lib/selection-anchor.ts
 packages/app/src/lib/selection-formatting.ts
+packages/app/src/lib/settings/app-config-state.test.ts
+packages/app/src/lib/settings/app-config-state.ts
 packages/app/src/lib/settings/app-settings.test.ts
 packages/app/src/lib/settings/app-settings.ts
 packages/app/src/lib/settings/editor-preferences.test.ts
@@ -477,12 +485,12 @@ packages/app/src/lib/settings/export-settings.test.ts
 packages/app/src/lib/settings/export-settings.ts
 packages/app/src/lib/settings/file-ignore-settings.test.ts
 packages/app/src/lib/settings/file-ignore-settings.ts
-packages/app/src/lib/settings/local-state.test.ts
-packages/app/src/lib/settings/local-state.ts
 packages/app/src/lib/settings/portable-settings-parity.test.ts
 packages/app/src/lib/settings/portable-settings.golden.json
 packages/app/src/lib/settings/primary-workspace-events.test.ts
 packages/app/src/lib/settings/primary-workspace-events.ts
+packages/app/src/lib/settings/primary-workspace-state.test.ts
+packages/app/src/lib/settings/primary-workspace-state.ts
 packages/app/src/lib/settings/recent-markdown.test.ts
 packages/app/src/lib/settings/recent-markdown.ts
 packages/app/src/lib/settings/settings-events.test.ts
@@ -530,9 +538,12 @@ packages/app/src/runtime/context-menu-items.test.ts
 packages/app/src/runtime/context-menu-items.ts
 packages/app/src/runtime/index.test.ts
 packages/app/src/runtime/index.ts
+packages/app/src/runtime/kernel-app/app-config.test.ts
+packages/app/src/runtime/kernel-app/app-config.ts
 packages/app/src/runtime/kernel-app/files.ts
 packages/app/src/runtime/kernel-app/index.ts
 packages/app/src/runtime/kernel-app/kernel-app.test.ts
+packages/app/src/runtime/kernel-app/settings.test.ts
 packages/app/src/runtime/kernel-app/settings.ts
 packages/app/src/runtime/kernel-app/sync-config.test.ts
 packages/app/src/runtime/kernel-app/sync-config.ts

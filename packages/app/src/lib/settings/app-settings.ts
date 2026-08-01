@@ -53,10 +53,6 @@ export {
   saveStoredRecentMarkdownFile,
   saveStoredWorkspaceState
 } from "./app-config-state";
-export {
-  consumeWelcomeDocumentState,
-  resetWelcomeDocumentState
-} from "./local-state";
 export type { PrimaryWorkspaceState } from "./primary-workspace-state";
 export {
   defaultFileIgnoreSettings,

@@ -4,6 +4,25 @@ import { defaultEditorPreferences } from "../../lib/settings/app-settings";
 import { GeneralSettings } from "./GeneralSettings";
 
 describe("GeneralSettings", () => {
+  it("keeps startup restoration without a welcome reset row or status", () => {
+    render(
+      <GeneralSettings
+        appVersion="0.0.7"
+        language="en"
+        preferences={defaultEditorPreferences}
+        translate={translate}
+        onCheckForUpdates={vi.fn()}
+        onSelectLanguage={vi.fn()}
+        onUpdatePreferences={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("switch", { name: "Restore last workspace" })).toBeInTheDocument();
+    expect(screen.queryByText("Welcome document")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show welcome next launch" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Welcome document will show next launch.")).not.toBeInTheDocument();
+  });
+
   it("applies global file ignore rules from general settings", () => {
     const onApplyFileIgnoreSettings = vi.fn();
 
@@ -14,10 +33,8 @@ describe("GeneralSettings", () => {
         language="en"
         preferences={defaultEditorPreferences}
         translate={translate}
-        welcomeReset={false}
         onApplyFileIgnoreSettings={onApplyFileIgnoreSettings}
         onCheckForUpdates={vi.fn()}
-        onResetWelcomeDocument={vi.fn()}
         onSelectLanguage={vi.fn()}
         onUpdatePreferences={vi.fn()}
       />
@@ -38,9 +55,7 @@ describe("GeneralSettings", () => {
       language: "en" as const,
       preferences: defaultEditorPreferences,
       translate,
-      welcomeReset: false,
       onCheckForUpdates: vi.fn(),
-      onResetWelcomeDocument: vi.fn(),
       onSelectLanguage: vi.fn(),
       onUpdatePreferences: vi.fn()
     };
@@ -60,9 +75,7 @@ describe("GeneralSettings", () => {
         language="en"
         preferences={defaultEditorPreferences}
         translate={translate}
-        welcomeReset={false}
         onCheckForUpdates={vi.fn()}
-        onResetWelcomeDocument={vi.fn()}
         onSelectLanguage={vi.fn()}
         onUpdatePreferences={onUpdatePreferences}
       />
@@ -89,9 +102,7 @@ describe("GeneralSettings", () => {
         language="en"
         preferences={defaultEditorPreferences}
         translate={translate}
-        welcomeReset={false}
         onCheckForUpdates={vi.fn()}
-        onResetWelcomeDocument={vi.fn()}
         onSelectLanguage={vi.fn()}
         onUpdatePreferences={onUpdatePreferences}
       />
@@ -128,9 +139,7 @@ describe("GeneralSettings", () => {
           openDroppedFilesInTabs: false
         }}
         translate={translate}
-        welcomeReset={false}
         onCheckForUpdates={vi.fn()}
-        onResetWelcomeDocument={vi.fn()}
         onSelectLanguage={vi.fn()}
         onUpdatePreferences={onUpdatePreferences}
       />
@@ -157,9 +166,7 @@ describe("GeneralSettings", () => {
         language="en"
         preferences={defaultEditorPreferences}
         translate={translate}
-        welcomeReset={false}
         onCheckForUpdates={vi.fn()}
-        onResetWelcomeDocument={vi.fn()}
         onSelectLanguage={vi.fn()}
         onUpdatePreferences={vi.fn()}
       />
@@ -178,9 +185,7 @@ describe("GeneralSettings", () => {
       language: "en" as const,
       preferences: defaultEditorPreferences,
       translate,
-      welcomeReset: false,
       onCheckForUpdates: vi.fn(),
-      onResetWelcomeDocument: vi.fn(),
       onSelectLanguage: vi.fn(),
       onUpdatePreferences: vi.fn(),
       onInstallShellCommand,
@@ -253,11 +258,9 @@ describe("GeneralSettings", () => {
       language: "en" as const,
       preferences: defaultEditorPreferences,
       translate,
-      welcomeReset: false,
       onCheckForUpdates: vi.fn(),
       onExportSettings,
       onImportSettings,
-      onResetWelcomeDocument: vi.fn(),
       onSelectLanguage: vi.fn(),
       onUpdatePreferences: vi.fn()
     };
@@ -283,9 +286,7 @@ describe("GeneralSettings", () => {
         language="en"
         preferences={defaultEditorPreferences}
         translate={translate}
-        welcomeReset={false}
         onCheckForUpdates={vi.fn()}
-        onResetWelcomeDocument={vi.fn()}
         onSelectLanguage={vi.fn()}
         onUpdatePreferences={vi.fn()}
       />

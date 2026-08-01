@@ -2,9 +2,10 @@ import { AlertCircle, Check, Circle, Files, LoaderCircle, MoreHorizontal } from 
 import { useState } from "react";
 import { t } from "@markra/shared";
 import type { CompactNavigation, CompactOverlayPage } from "../../hooks/useCompactNavigation";
+import { WorkspaceHome } from "../WorkspaceHome";
 import { CompactEditorToolbar } from "./CompactEditorToolbar";
 import { CompactEditorMoreMenu } from "./CompactEditorMoreMenu";
-import { CompactWelcomeState } from "./CompactWelcomeState";
+import { CompactNameDialog, compactNameOperationErrorMessage } from "./CompactNameDialog";
 import type { CompactAppController, CompactSaveState } from "./types";
 
 type CompactEditorScreenProps = {
@@ -41,8 +42,11 @@ function saveStateContent(language: CompactAppController["language"], saveState:
 
 export function CompactEditorScreen({ controller, navigation }: CompactEditorScreenProps) {
   const [moreOpen, setMoreOpen] = useState(false);
+  const [nameDialogOpen, setNameDialogOpen] = useState(false);
   const language = controller.language ?? "en";
-  const documentAvailable = controller.document.document.open;
+  const editorVisible = controller.document.workspaceSurface === "editor"
+    && controller.document.document.open;
+  const homeVisible = controller.document.workspaceSurface === "home";
   const syncConfigured = controller.workspace.syncConfigDocument?.readiness === "ready"
     && controller.workspace.syncConfigDocument.config.enabled;
   const saveContent = saveStateContent(language, controller.saveState);
@@ -70,10 +74,12 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
           <Files aria-hidden="true" size={20} />
         </button>
         <div className="min-w-0 px-2 text-center">
-          <h1 className="m-0 truncate text-sm font-semibold text-(--text-heading)">
-            {controller.document.document.name}
-          </h1>
-          {documentAvailable ? (
+          {editorVisible ? (
+            <h1 className="m-0 truncate text-sm font-semibold text-(--text-heading)">
+              {controller.document.document.name}
+            </h1>
+          ) : null}
+          {editorVisible ? (
             <p
               aria-live="polite"
               className={`m-0 flex min-w-0 items-center justify-center gap-1 truncate text-[11px] ${
@@ -98,7 +104,7 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
         </button>
         {moreOpen ? (
           <CompactEditorMoreMenu
-            documentAvailable={documentAvailable}
+            documentAvailable={editorVisible}
             language={language}
             applicationSyncAvailable={controller.capabilities.applicationSync}
             syncConfigured={syncConfigured}
@@ -112,7 +118,7 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
           />
         ) : null}
       </header>
-      {documentAvailable && controller.saveState.status === "error" ? (
+      {editorVisible && controller.saveState.status === "error" ? (
         <div
           className="relative z-10 flex shrink-0 items-center gap-2 border-b border-(--status-error) bg-(--bg-secondary) px-3 py-1 text-sm text-(--status-error)"
           role="alert"
@@ -130,22 +136,46 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {documentAvailable ? controller.editor.host : (
-          <CompactWelcomeState
+        {editorVisible ? controller.editor.host : homeVisible ? (
+          <WorkspaceHome
+            actions={{
+              createDocument: () => setNameDialogOpen(true),
+              showFiles: openFiles,
+              openSettings,
+              configureSync: controller.capabilities.applicationSync ? openSyncStatus : undefined,
+              switchWorkspace: controller.workspace.openNotebookManager
+            }}
             language={language}
-            applicationSyncAvailable={controller.capabilities.applicationSync}
-            onConfigureSync={openSyncStatus}
-            onNewDocument={controller.document.createBlankDocument}
+            presentation="compact"
           />
-        )}
+        ) : null}
       </div>
-      {documentAvailable && navigation.page.kind === "editor" ? (
+      {editorVisible && navigation.page.kind === "editor" ? (
         <CompactEditorToolbar
           disabled={controller.editor.readOnly}
           editor={controller.editor}
           imageImport={controller.capabilities.imageImport}
           language={language}
           trueMobile={controller.capabilities.trueMobile}
+        />
+      ) : null}
+      {nameDialogOpen ? (
+        <CompactNameDialog
+          cancelLabel={t(language, "compact.files.cancel")}
+          errorMessage={(operationError) => compactNameOperationErrorMessage(operationError, {
+            duplicate: t(language, "compact.files.nameExists"),
+            fallback: t(language, "compact.files.operationFailed"),
+            invalid: t(language, "compact.files.nameInvalid")
+          })}
+          initialValue=""
+          submitLabel={t(language, "compact.files.create")}
+          title={t(language, "compact.files.newFileName")}
+          onCancel={() => setNameDialogOpen(false)}
+          onSubmit={async (fileName) => {
+            const created = await controller.document.createBlankDocument(fileName);
+            if (!created) throw new Error("Document creation failed");
+            setNameDialogOpen(false);
+          }}
         />
       ) : null}
     </section>

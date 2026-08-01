@@ -17,7 +17,6 @@ import {
   getStoredCustomThemeCss,
   getStoredWorkspaceState,
   appThemeOptions,
-  consumeWelcomeDocumentState,
   editorThemeOptions,
   getStoredLanguage,
   getStoredEditorPreferences,
@@ -29,7 +28,6 @@ import {
   lightEditorThemeOptions,
   importStoredAppSettings,
   isThemeId,
-  resetWelcomeDocumentState,
   normalizeEditorPreferences,
   resolveAppAppearanceTheme,
   resolveAppThemePreferencesAppearance,
@@ -73,28 +71,6 @@ describe("app settings", () => {
       );
       expect(defaultCustomThemeCss).toContain(`--editor-h${level}-line-height:`);
     }
-  });
-
-  it("consumes and persists the first welcome document state in the Tauri app data store", async () => {
-    mockedLoadStore.mockResolvedValueOnce(store as never);
-    store.get.mockResolvedValue(undefined);
-
-    await expect(consumeWelcomeDocumentState()).resolves.toBe(true);
-
-    expect(mockedLoadStore).toHaveBeenCalledWith("local-state.json", { autoSave: false, defaults: {} });
-    expect(store.get).toHaveBeenCalledWith("welcomeDocumentSeen");
-    expect(store.set).toHaveBeenCalledWith("welcomeDocumentSeen", true);
-    expect(store.save).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not rewrite settings after the welcome document was already seen", async () => {
-    mockedLoadStore.mockResolvedValueOnce(store as never);
-    store.get.mockResolvedValue(true);
-
-    await expect(consumeWelcomeDocumentState()).resolves.toBe(false);
-
-    expect(store.set).not.toHaveBeenCalled();
-    expect(store.save).not.toHaveBeenCalled();
   });
 
   it("loads a persisted global theme from settings", async () => {
@@ -386,14 +362,6 @@ describe("app settings", () => {
     expect(defaultEditorPreferences.vimModeEnabled).toBe(false);
     expect(normalizeEditorPreferences({ vimModeEnabled: true }).vimModeEnabled).toBe(true);
     expect(normalizeEditorPreferences({ vimModeEnabled: "yes" }).vimModeEnabled).toBe(false);
-  });
-
-  it("resets the welcome document state for the next launch", async () => {
-    mockedLoadStore.mockResolvedValueOnce(store as never);
-    await resetWelcomeDocumentState();
-
-    expect(store.delete).toHaveBeenCalledWith("welcomeDocumentSeen");
-    expect(store.save).toHaveBeenCalledTimes(1);
   });
 
   it("loads workspace state only from AppConfig", async () => {

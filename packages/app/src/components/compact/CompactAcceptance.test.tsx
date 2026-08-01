@@ -42,7 +42,7 @@ describe("Compact acceptance", () => {
     resetAppRuntimeForTests();
   });
 
-  it("starts an empty true-mobile workspace in the welcome state", async () => {
+  it("starts an empty true-mobile workspace on Workspace Home", async () => {
     configureTrueMobileRuntime();
     mockedGetStoredWorkspaceState.mockResolvedValue({
       filePath: null,
@@ -55,7 +55,7 @@ describe("Compact acceptance", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Start writing" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
     expect(mockedListNativeMarkdownFilesForPath).toHaveBeenCalledWith(
       managedRoot,
       { managedAttachmentFolder: "assets" }

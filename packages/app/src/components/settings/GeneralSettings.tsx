@@ -1,4 +1,4 @@
-import { Download, Languages, RefreshCw, RotateCcw, Terminal, Trash2, Upload, Wrench } from "lucide-react";
+import { Download, Languages, RefreshCw, Terminal, Trash2, Upload, Wrench } from "lucide-react";
 import { supportedLanguages, type AppLanguage } from "@markra/shared";
 import {
   defaultFileIgnoreSettings,
@@ -138,7 +138,6 @@ export function GeneralSettings({
   onImportSettings,
   onInstallShellCommand,
   onRefreshShellCommand,
-  onResetWelcomeDocument,
   onSelectLanguage,
   onUninstallShellCommand,
   onUpdatePreferences,
@@ -147,8 +146,7 @@ export function GeneralSettings({
   shellCommandRunning = false,
   shellCommandStatus,
   translate,
-  updatesEnabled = true,
-  welcomeReset
+  updatesEnabled = true
 }: {
   appVersion: string;
   availableUpdateVersion?: string | null;
@@ -160,7 +158,6 @@ export function GeneralSettings({
   onImportSettings?: () => unknown;
   onInstallShellCommand?: () => unknown;
   onRefreshShellCommand?: () => unknown;
-  onResetWelcomeDocument: () => unknown;
   onSelectLanguage: (language: AppLanguage) => unknown;
   onUninstallShellCommand?: () => unknown;
   onUpdatePreferences: (preferences: EditorPreferences) => unknown;
@@ -170,7 +167,6 @@ export function GeneralSettings({
   shellCommandStatus?: NativeShellCommandStatus | null;
   translate: SettingsTranslate;
   updatesEnabled?: boolean;
-  welcomeReset: boolean;
 }) {
   const shellCommandEnabled = Boolean(onInstallShellCommand && onRefreshShellCommand && onUninstallShellCommand);
   const availableUpdateMessage = availableUpdateVersion
@@ -210,23 +206,7 @@ export function GeneralSettings({
             />
           }
         />
-        <SettingsRow
-          title={translate("settings.welcome.title")}
-          description={translate("settings.welcome.description")}
-          action={
-            <SettingsButton label={translate("settings.welcome.buttonLabel")} onClick={onResetWelcomeDocument}>
-              <RotateCcw aria-hidden="true" size={13} />
-              {translate("settings.welcome.button")}
-            </SettingsButton>
-          }
-        />
       </SettingsSection>
-
-      {welcomeReset ? (
-        <p className="-mt-6 mb-8 text-[12px] leading-5 text-(--accent)" role="status">
-          {translate("settings.welcome.status")}
-        </p>
-      ) : null}
 
       <SettingsSection label={translate("settings.sections.fileOpening")}>
         <SettingsRow

@@ -66,7 +66,6 @@ import {
   mockedReadNativeLocalImageFile,
   mockedReadNativeMarkdownFile,
   mockedReadNativeMarkdownFileHistory,
-  mockedResetWelcomeDocumentState,
   mockedRenameNativeMarkdownTreeFile,
   mockedResolveDesktopOsVersion,
   mockedResolveDesktopPlatform,
@@ -2308,7 +2307,7 @@ describe("QingYu workspace", () => {
 
     expect(await screen.findByRole("tab", { name: /Untitled\.md/ })).toBeInTheDocument();
     expect(screen.getByLabelText("Window drag region")).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Editor fixture" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Markdown or Folder" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save Markdown" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeInTheDocument();
@@ -2350,9 +2349,9 @@ describe("QingYu workspace", () => {
 
     expect(await screen.findByTestId("compact-app-shell")).toBeInTheDocument();
     if (formFactor === "mobile") {
-      expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
     } else {
-      expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+      expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     }
     expect(container.querySelector(".native-title")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Toggle file list" })).not.toBeInTheDocument();
@@ -3158,7 +3157,7 @@ describe("QingYu workspace", () => {
       renderApp();
 
       expect(await screen.findByTestId("compact-app-shell")).toBeInTheDocument();
-      expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+      expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "More" }));
       expect(screen.queryByRole("menuitem", { name: "Configure Sync" })).not.toBeInTheDocument();
       expect(screen.queryByRole("menuitem", { name: "Sync now" })).not.toBeInTheDocument();
@@ -3391,7 +3390,7 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Editor fixture" })).toBeInTheDocument();
     expect(container.querySelector(".native-title-slot")).toBeInTheDocument();
     expect(screen.queryByTestId("compact-app-shell")).not.toBeInTheDocument();
 
@@ -3589,7 +3588,7 @@ describe("QingYu workspace", () => {
   it("does not open local import pickers while source mode is active", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await selectEditorViewMode("Source code");
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
@@ -3955,7 +3954,7 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers & {
       importLocalFiles?: () => unknown | Promise<unknown>;
@@ -3998,7 +3997,7 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
     await act(async () => {
@@ -4098,31 +4097,31 @@ describe("QingYu workspace", () => {
   it("replaces the document word count with the selected word count in the quiet status line", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
 
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
     const view = getMarkdownSourceView(sourceEditor);
-    const start = view.state.doc.toString().indexOf("Welcome");
+    const start = view.state.doc.toString().indexOf("Editor fixture");
 
     act(() => {
       view.dispatch({
         selection: {
           anchor: start,
-          head: start + "Welcome to QingYu".length
+          head: start + "Editor fixture".length
         }
       });
     });
 
-    await waitFor(() => expect(container.querySelector(".quiet-status")).toHaveTextContent("3 words"));
+    await waitFor(() => expect(container.querySelector(".quiet-status")).toHaveTextContent("2 words"));
     expect(container.querySelector(".quiet-status")).not.toHaveTextContent("75 words");
   });
 
   it("keeps the active writing surface clear of the quiet status line", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await waitFor(() => {
       expect(container.querySelector(".markdown-paper")?.getAttribute("style")).toContain("padding-bottom: 56px");
     });
@@ -4215,7 +4214,7 @@ describe("QingYu workspace", () => {
 
     const { unmount } = renderApp();
 
-    await screen.findByText("Welcome to QingYu");
+    await screen.findByText("Editor fixture");
 
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
@@ -4270,7 +4269,7 @@ describe("QingYu workspace", () => {
 
     const { unmount } = renderApp();
 
-    await screen.findByText("Welcome to QingYu");
+    await screen.findByText("Editor fixture");
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
 
@@ -4487,7 +4486,7 @@ describe("QingYu workspace", () => {
     }));
     renderApp();
 
-    await screen.findByText("Welcome to QingYu");
+    await screen.findByText("Editor fixture");
 
     const viewModeButton = screen.getByRole("button", { name: "View mode: Daily" });
     mockTitlebarActionRects(["viewMode", "sourceMode", "save", "theme"]);
@@ -4619,7 +4618,7 @@ describe("QingYu workspace", () => {
   it("opens modal settings, blocks the workspace, and restores focus after closing", async () => {
     const { container } = renderApp();
 
-    await screen.findByText("Welcome to QingYu");
+    await screen.findByText("Editor fixture");
 
     const launcher = screen.getByRole("button", { name: "Settings" });
     launcher.focus();
@@ -5040,7 +5039,7 @@ describe("QingYu workspace", () => {
 
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "View mode: Custom" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Editor view mode: Preview" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save Markdown" })).not.toBeInTheDocument();
@@ -5461,7 +5460,7 @@ describe("QingYu workspace", () => {
     expect(document.querySelector("[data-settings-modal-background]"))
       .toHaveAttribute("data-settings-workspace-source-path", "/mock-files/deleted-notes");
     expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
-    expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
+    expect(screen.queryByText("Editor fixture")).not.toBeInTheDocument();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
   });
@@ -5764,7 +5763,7 @@ describe("QingYu workspace", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Editor fixture" })).toBeInTheDocument();
     await waitFor(() => expect(mockedShowNativeWindow).toHaveBeenCalledTimes(1));
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 750));
@@ -6252,20 +6251,6 @@ describe("QingYu workspace", () => {
     expect(issueUrl.searchParams.get("body")).toContain("- Error message: Mock runtime error preview");
   });
 
-  it("resets the welcome document from settings", async () => {
-    window.history.pushState({}, "", "/?settings=1");
-
-    const { container } = renderApp();
-
-    await waitFor(() => expect(container.querySelector(".settings-sidebar nav button")).toHaveAttribute("aria-current", "page"));
-    expect(container.querySelector('[role="group"]')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Show welcome next launch" }));
-
-    await waitFor(() => expect(mockedResetWelcomeDocumentState).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("status")).toBeInTheDocument();
-  });
-
   it("checks for updates from the settings window", async () => {
     window.history.pushState({}, "", "/?settings=1");
     let resolveUpdateCheck: (value: null) => void = () => {};
@@ -6482,7 +6467,7 @@ describe("QingYu workspace", () => {
   it("resizes the editor writing column and persists the custom width", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     expect(screen.getByLabelText("Markdown editor")).toHaveStyle({
       maxWidth: "860px"
     });
@@ -6531,7 +6516,7 @@ describe("QingYu workspace", () => {
     try {
       renderApp();
 
-      expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+      expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
       expect(screen.getByLabelText("Markdown editor")).toHaveStyle({
         maxWidth: "860px"
       });
@@ -6551,7 +6536,7 @@ describe("QingYu workspace", () => {
     try {
       renderApp();
 
-      expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+      expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
       expect(screen.getByLabelText("Markdown editor")).toHaveStyle({
         maxWidth: "860px"
       });
@@ -6567,7 +6552,7 @@ describe("QingYu workspace", () => {
     try {
       renderApp();
 
-      expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+      expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
       const resizeHandle = await screen.findByRole("separator", { name: "Resize editor width" });
 
       fireEvent.pointerDown(resizeHandle, { clientX: 860, pointerId: 1 });
@@ -7328,6 +7313,7 @@ describe("QingYu workspace", () => {
     try {
       renderApp();
 
+      expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
       fireEvent.keyDown(window, { key: "o", metaKey: true });
       expect(await screen.findByRole("complementary", { name: "Markdown file tree" })).toBeInTheDocument();
 
@@ -9033,10 +9019,86 @@ describe("QingYu workspace", () => {
 
     await waitFor(() => expect(mockedGetStoredWorkspaceState).toHaveBeenCalledTimes(1));
 
+    const homeHeading = await screen.findByRole("heading", { name: "Welcome to QingYu" });
+    expect(homeHeading.closest(".editor-content-slot")).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Unsaved changes")).not.toBeInTheDocument();
     expect(mockedSaveStoredWorkspaceState).not.toHaveBeenCalled();
+  });
+
+  it("opens a document from Workspace Home and transitions to the editor", async () => {
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedOpenNativeMarkdownFile.mockResolvedValue({
+      content: "# Opened from Home",
+      name: "home-open.md",
+      path: `${mockFolderPath}/home-open.md`
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+
+    const { container } = renderFreshApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Open Document" }));
+
+    await expectVisibleCodeMirrorText(container, "Opened from Home");
+    expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument();
+  });
+
+  it("returns to Workspace Home after the final document closes", async () => {
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+
+    renderFreshApp();
+    fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument());
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
+
+    await act(async () => {
+      await menuHandlers.closeDocument?.();
+    });
+
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+  });
+
+  it("omits local folder and workspace switching actions for a fixed-root Home", async () => {
+    const runtime = createDefaultAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => mockFolderPath
+        }
+      }
+    });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockDesktopPrimaryWorkspace({ canChooseDesktopRoot: false, root: mockFolderPath, status: "ready" });
+
+    renderFreshApp();
+
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Switch Workspace" })).not.toBeInTheDocument();
   });
 
   it("does not render an editor or Workspace Home action while restoration is pending", async () => {
@@ -9091,7 +9153,7 @@ describe("QingYu workspace", () => {
 
     expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
     expect(await screen.findByLabelText("Markdown editor")).toHaveTextContent(/^$/);
-    expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
+    expect(screen.queryByText("Editor fixture")).not.toBeInTheDocument();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
   });
@@ -9368,7 +9430,7 @@ describe("QingYu workspace", () => {
       mockFolderPath,
       defaultFileTreeListOptions
     ));
-    expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
+    expect(screen.queryByText("Editor fixture")).not.toBeInTheDocument();
     expect(mockedListNativeMarkdownFilesForPath).not.toHaveBeenCalledWith(
       "/Primary",
       expect.anything()
@@ -9400,7 +9462,7 @@ describe("QingYu workspace", () => {
 
   it("opens a dropped markdown file in a new window when the current editor has content", async () => {
     renderApp();
-    await screen.findByRole("heading", { name: "Welcome to QingYu" });
+    await screen.findByRole("heading", { name: "Editor fixture" });
     await waitFor(() => expect(mockedInstallNativeMarkdownFileDrop).toHaveBeenCalled());
     const handleDrop = mockedInstallNativeMarkdownFileDrop.mock.calls.at(-1)?.[0];
 
@@ -9410,7 +9472,7 @@ describe("QingYu workspace", () => {
 
     expect(mockedOpenNativeMarkdownFileInNewWindow).toHaveBeenCalledWith(mockDroppedPath);
     expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalledWith(mockDroppedPath);
-    expect(screen.getByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Editor fixture" })).toBeInTheDocument();
   });
 
   it("routes a dropped folder from an external editor through the durable primary-window request", async () => {
@@ -9480,7 +9542,7 @@ describe("QingYu workspace", () => {
     });
 
     renderApp();
-    await screen.findByText("Welcome to QingYu");
+    await screen.findByText("Editor fixture");
 
     fireEvent.keyDown(window, { key: "s", metaKey: true });
 
@@ -9636,13 +9698,13 @@ describe("QingYu workspace", () => {
   it("switches between the visual editor and markdown source mode", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
 
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
-    expect(readMarkdownSource(sourceEditor)).toContain("# Welcome to QingYu");
-    expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument();
+    expect(readMarkdownSource(sourceEditor)).toContain("# Editor fixture");
+    expect(screen.queryByRole("heading", { name: "Editor fixture" })).not.toBeInTheDocument();
 
     replaceMarkdownSource(sourceEditor, "# Source edit\n\nUpdated from source mode.");
 
@@ -9658,7 +9720,7 @@ describe("QingYu workspace", () => {
   it("commits pending visual IME content before source mode mounts", async () => {
     renderApp();
 
-    await expectVisibleMarkdownText("Welcome to QingYu");
+    await expectVisibleMarkdownText("Editor fixture");
     const visualEditor = screen.getByRole("textbox", { name: "Markdown document" });
     const visualView = getMarkdownSourceView(visualEditor);
     const pendingCompositionTasks: VoidFunction[] = [];
@@ -9815,7 +9877,7 @@ describe("QingYu workspace", () => {
     }));
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     expect(container.querySelector(".cm-lineNumbers")).not.toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
@@ -9823,7 +9885,7 @@ describe("QingYu workspace", () => {
 
     await selectEditorViewMode("Preview + Source");
     expect(container.querySelectorAll(".cm-lineNumbers")).toHaveLength(1);
-    expect(screen.getByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Editor fixture" })).toBeInTheDocument();
   });
 
   it("enables typewriter mode in visual and source editors", async () => {
@@ -9832,7 +9894,7 @@ describe("QingYu workspace", () => {
     }));
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     expect(getVisibleCodeMirrorView(container).dom).toHaveAttribute(
       "data-typewriter-mode",
       "true"
@@ -9850,7 +9912,7 @@ describe("QingYu workspace", () => {
   it("toggles and persists typewriter mode from the keyboard shortcut", async () => {
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     expect(getVisibleCodeMirrorView(container).dom).not.toHaveAttribute("data-typewriter-mode");
 
     fireEvent.keyDown(window, { key: "Y", metaKey: true, shiftKey: true });
@@ -9875,7 +9937,7 @@ describe("QingYu workspace", () => {
     );
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
 
     fireEvent.keyDown(window, { key: "Y", metaKey: true, shiftKey: true });
 
@@ -9896,7 +9958,7 @@ describe("QingYu workspace", () => {
   it("toggles and persists Vim mode from the keyboard shortcut", async () => {
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     expect(getVisibleCodeMirrorView(container).scrollDOM).not.toHaveClass("cm-vimMode");
 
     fireEvent.keyDown(window, { altKey: true, code: "KeyV", key: "v", metaKey: true });
@@ -9915,7 +9977,7 @@ describe("QingYu workspace", () => {
   it("keeps raw source punctuation unchanged while editing in source mode", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
@@ -9929,7 +9991,7 @@ describe("QingYu workspace", () => {
   it("keeps source mode typing undoable and redoable before switching back to visual mode", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
@@ -9952,7 +10014,7 @@ describe("QingYu workspace", () => {
   it("keeps visual undo history after switching to source mode and back", async () => {
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
 
@@ -9996,7 +10058,7 @@ describe("QingYu workspace", () => {
     mockedResolveDesktopPlatform.mockReturnValue("macos");
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     await settleEditorUpdates();
     const visualView = getVisibleCodeMirrorView(container);
 
@@ -10009,7 +10071,7 @@ describe("QingYu workspace", () => {
 
     await waitFor(() => {
       expect(container.querySelector(".cm-editor .markra-selection-hold")).toHaveTextContent(
-        "Welcome to QingYu"
+        "Editor fixture"
       );
     });
   });
@@ -10017,15 +10079,15 @@ describe("QingYu workspace", () => {
   it("applies inline formatting from the selection toolbar to the live CodeMirror selection", async () => {
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     await settleEditorUpdates();
     const visualView = getVisibleCodeMirrorView(container);
-    const from = findEditorTextPosition(visualView, "Welcome");
+    const from = findEditorTextPosition(visualView, "Editor");
 
     act(() => {
       visualView.focus();
       visualView.dispatch({
-        selection: EditorSelection.range(from, from + "Welcome".length)
+        selection: EditorSelection.range(from, from + "Editor".length)
       });
     });
 
@@ -10034,29 +10096,29 @@ describe("QingYu workspace", () => {
     fireEvent.click(bold);
 
     await waitFor(() => {
-      expect(visualView.state.doc.toString()).toContain("**Welcome** to QingYu");
+      expect(visualView.state.doc.toString()).toContain("**Editor** fixture");
     });
     expect(visualView.state.sliceDoc(
       visualView.state.selection.main.from,
       visualView.state.selection.main.to
-    )).toBe("Welcome");
+    )).toBe("Editor");
   });
 
   it.each([
-    { button: "Italic", formatted: "*Welcome* to QingYu" },
-    { button: "Strikethrough", formatted: "~~Welcome~~ to QingYu" }
+    { button: "Italic", formatted: "*Editor* fixture" },
+    { button: "Strikethrough", formatted: "~~Editor~~ fixture" }
   ])("applies $button from the selection toolbar", async ({ button, formatted }) => {
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     await settleEditorUpdates();
     const visualView = getVisibleCodeMirrorView(container);
-    const from = findEditorTextPosition(visualView, "Welcome");
+    const from = findEditorTextPosition(visualView, "Editor");
 
     act(() => {
       visualView.focus();
       visualView.dispatch({
-        selection: EditorSelection.range(from, from + "Welcome".length)
+        selection: EditorSelection.range(from, from + "Editor".length)
       });
     });
 
@@ -10083,16 +10145,16 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     try {
-      await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+      await expectVisibleCodeMirrorText(container, "Editor fixture");
       await settleEditorUpdates();
       expect(screen.queryByRole("toolbar", { name: "Format" })).not.toBeInTheDocument();
       const visualView = getVisibleCodeMirrorView(container);
-      const from = findEditorTextPosition(visualView, "Welcome");
+      const from = findEditorTextPosition(visualView, "Editor");
 
     act(() => {
       visualView.focus();
       visualView.dispatch({
-        selection: EditorSelection.range(from, from + "Welcome".length)
+        selection: EditorSelection.range(from, from + "Editor".length)
       });
     });
 
@@ -10119,14 +10181,14 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     try {
-      await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+      await expectVisibleCodeMirrorText(container, "Editor fixture");
       const visualView = getVisibleCodeMirrorView(container);
-      const from = findEditorTextPosition(visualView, "Welcome");
+      const from = findEditorTextPosition(visualView, "Editor");
 
       act(() => {
         visualView.focus();
         visualView.dispatch({
-          selection: EditorSelection.range(from, from + "Welcome".length)
+          selection: EditorSelection.range(from, from + "Editor".length)
         });
       });
       expect(await screen.findByRole("toolbar", { name: "Format" })).toBeInTheDocument();
@@ -10154,7 +10216,7 @@ describe("QingYu workspace", () => {
     mockedResolveDesktopPlatform.mockReturnValue("windows");
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     await settleEditorUpdates();
     const visualView = getVisibleCodeMirrorView(container);
 
@@ -10172,7 +10234,7 @@ describe("QingYu workspace", () => {
   it("inserts the default menu image and renders its preview after leaving the source", async () => {
     const { container } = renderApp();
 
-    await expectVisibleCodeMirrorText(container, "Welcome to QingYu");
+    await expectVisibleCodeMirrorText(container, "Editor fixture");
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
 
@@ -10208,7 +10270,7 @@ describe("QingYu workspace", () => {
   it("keeps source edits undoable after switching back to visual mode", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
 
@@ -10238,7 +10300,7 @@ describe("QingYu workspace", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Source history" })).not.toBeInTheDocument()
     );
-    expect(screen.getByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Editor fixture" })).toBeInTheDocument();
 
     act(() => {
       menuHandlers.editRedo?.();
@@ -10253,7 +10315,7 @@ describe("QingYu workspace", () => {
   it("keeps callout body line breaks when switching from source to visual mode", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
 
@@ -10276,7 +10338,7 @@ describe("QingYu workspace", () => {
   it("keeps explicit empty callout body lines when switching source and visual modes", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
 
@@ -10305,7 +10367,7 @@ describe("QingYu workspace", () => {
   it("keeps trailing empty callout body lines after content when switching source and visual modes", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Source code");
 
@@ -10447,7 +10509,7 @@ describe("QingYu workspace", () => {
   it("keeps source and visual editors synchronized in split mode", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await settleEditorUpdates();
 
     await selectEditorViewMode("Preview + Source");
@@ -10484,7 +10546,7 @@ describe("QingYu workspace", () => {
   it("keeps a visual update that arrives after source pane focus in split mode", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await settleEditorUpdates();
 
     await selectEditorViewMode("Preview + Source");
@@ -10515,7 +10577,7 @@ describe("QingYu workspace", () => {
   it("keeps a synced visual edit in source after focusing the source pane in split mode", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await settleEditorUpdates();
 
     await selectEditorViewMode("Preview + Source");
@@ -10552,7 +10614,7 @@ describe("QingYu workspace", () => {
   it("places the visual pane before the source pane in split mode", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Preview + Source");
 
@@ -10567,7 +10629,7 @@ describe("QingYu workspace", () => {
   it("resizes split panes from the center divider and persists the ratio", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Preview + Source");
 
@@ -10607,7 +10669,7 @@ describe("QingYu workspace", () => {
   it("links source and visual pane scrolling in split mode", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     await selectEditorViewMode("Preview + Source");
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
@@ -10639,7 +10701,7 @@ describe("QingYu workspace", () => {
   it("recalibrates split pane scrolling after target layout changes", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     await settleEditorUpdates();
 
     await selectEditorViewMode("Preview + Source");
@@ -10764,12 +10826,12 @@ describe("QingYu workspace", () => {
   it("switches source mode from the keyboard shortcut", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "s", altKey: true, metaKey: true });
 
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
-    expect(readMarkdownSource(sourceEditor)).toContain("# Welcome to QingYu");
+    expect(readMarkdownSource(sourceEditor)).toContain("# Editor fixture");
 
     fireEvent.keyDown(window, { key: "s", altKey: true, metaKey: true });
 
@@ -10779,7 +10841,7 @@ describe("QingYu workspace", () => {
   it("opens document search from the keyboard shortcut", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     expect(fireEvent.keyDown(window, { key: "f", metaKey: true })).toBe(false);
 
@@ -10800,7 +10862,7 @@ describe("QingYu workspace", () => {
 
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     expect(fireEvent.keyDown(window, { key: "h", ctrlKey: true })).toBe(false);
 
@@ -10812,7 +10874,7 @@ describe("QingYu workspace", () => {
   it("opens document replace from the native macOS Cmd+Option+F keyboard shortcut", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     expect(fireEvent.keyDown(window, { altKey: true, code: "KeyF", key: "ƒ", metaKey: true })).toBe(false);
 
@@ -11024,13 +11086,13 @@ describe("QingYu workspace", () => {
   it("does not scroll the visual editor while typing a document search query", async () => {
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     const view = getVisibleCodeMirrorView(container);
     const selectionBeforeSearch = view.state.selection.main.from;
 
     fireEvent.keyDown(window, { key: "f", metaKey: true });
     const searchbox = screen.getByRole("searchbox", { name: "Find in document" });
-    fireEvent.change(searchbox, { target: { value: "Welcome" } });
+    fireEvent.change(searchbox, { target: { value: "Editor" } });
 
     await waitFor(() => expect(container.querySelector(".cm-markra-search-match-current")).toBeInTheDocument());
     await settleEditorUpdates();
@@ -11215,14 +11277,14 @@ describe("QingYu workspace", () => {
   it("replaces the current source-mode document search match", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "s", altKey: true, metaKey: true });
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
 
     fireEvent.keyDown(window, { key: "f", altKey: true, metaKey: true });
     fireEvent.change(screen.getByRole("searchbox", { name: "Find in document" }), {
-      target: { value: "Welcome" }
+      target: { value: "Editor" }
     });
     const replaceInput = screen.getByRole("textbox", { name: "Replace" });
     expect(replaceInput).toHaveAttribute("autocomplete", "off");
@@ -11233,13 +11295,13 @@ describe("QingYu workspace", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
 
-    expect(readMarkdownSource(sourceEditor)).toContain("# Hello to QingYu");
+    expect(readMarkdownSource(sourceEditor)).toContain("# Hello fixture");
   });
 
   it("toggles read-only mode from the keyboard shortcut and marks the status area", async () => {
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "l", altKey: true, metaKey: true });
 
@@ -12205,7 +12267,7 @@ describe("QingYu workspace", () => {
   it("inserts a markdown table from the native editor menu handler", async () => {
     const { container } = renderApp();
 
-    await screen.findByText("Welcome to QingYu");
+    await screen.findByText("Editor fixture");
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as Record<string, () => unknown>;
 

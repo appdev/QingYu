@@ -125,9 +125,7 @@ describe("i18n", () => {
       "compact.save.saved",
       "compact.save.dirty",
       "compact.save.saving",
-      "compact.sync.configure",
-      "compact.welcome.title",
-      "compact.welcome.newDocument"
+      "compact.sync.configure"
     ] as I18nKey[];
 
     expect(keys.map((key) => t("en", key))).toEqual([
@@ -136,9 +134,7 @@ describe("i18n", () => {
       "Saved",
       "Unsaved",
       "Saving",
-      "Configure Sync",
-      "Start writing",
-      "New Document"
+      "Configure Sync"
     ]);
     expect(keys.map((key) => t("zh-CN", key))).toEqual([
       "文件",
@@ -146,9 +142,7 @@ describe("i18n", () => {
       "已保存",
       "未保存",
       "保存中",
-      "配置同步",
-      "开始写作",
-      "新建文档"
+      "配置同步"
     ]);
   });
 

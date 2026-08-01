@@ -23,7 +23,7 @@ type AppThemeController = ReturnType<typeof useAppTheme>;
 
 export type CompactDocumentController = Pick<
   MarkdownDocumentController,
-  "document" | "saveCurrentDocument"
+  "document" | "saveCurrentDocument" | "workspaceSurface"
 > & {
   createBlankDocument: (fileName: string) => Promise<boolean>;
 };

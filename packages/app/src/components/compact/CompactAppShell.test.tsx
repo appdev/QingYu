@@ -20,7 +20,8 @@ function controllerWithEditorHost() {
       document: {
         name: "Draft.md",
         open: true
-      }
+      },
+      workspaceSurface: "editor"
     },
     editor: {
       getSelectionFormattingState: vi.fn(() => ({ actions: [], headingLevel: null })),

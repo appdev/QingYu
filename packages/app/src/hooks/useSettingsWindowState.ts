@@ -7,7 +7,6 @@ import {
   defaultEditorPreferences,
   defaultExportSettings,
   defaultFileIgnoreSettings,
-  resetWelcomeDocumentState,
   exportStoredAppSettings,
   importStoredAppSettings,
   saveStoredEditorPreferences,
@@ -206,7 +205,6 @@ export function useSettingsWindowState({
   const [shellCommandStatus, setShellCommandStatus] = useState<NativeShellCommandStatus | null>(null);
   const [shellCommandRunning, setShellCommandRunning] = useState(false);
   const [systemFontFamilies, setSystemFontFamilies] = useState<AppSystemFontFamily[]>([]);
-  const [welcomeReset, setWelcomeReset] = useState(false);
   const syncSession = useCompactSyncSettings({
     available: true,
     observedLoadResult: null,
@@ -568,12 +566,6 @@ export function useSettingsWindowState({
     };
   }, []);
 
-  const handleResetWelcomeDocument = useCallback(() => {
-    resetWelcomeDocumentState().then(() => {
-      setWelcomeReset(true);
-    }).catch(() => {});
-  }, []);
-
   const handleUpdateEditorPreferences = useCallback((preferences: EditorPreferences) => {
     setEditorPreferences(preferences);
     saveStoredEditorPreferences(preferences)
@@ -824,7 +816,6 @@ export function useSettingsWindowState({
     handleExportSettings,
     handleApplyFileIgnoreSettings,
     handleImportSettings,
-    handleResetWelcomeDocument,
     handleCreateMarkdownTemplate: handleSaveMarkdownTemplate,
     handleDeleteMarkdownTemplate,
     handleUpdateMarkdownTemplate: handleSaveMarkdownTemplate,
@@ -851,7 +842,6 @@ export function useSettingsWindowState({
     syncSession,
     systemFontFamilies,
     clearSettingsFocusTarget,
-    translate,
-    welcomeReset
+    translate
   };
 }

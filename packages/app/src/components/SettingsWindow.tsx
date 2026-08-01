@@ -72,7 +72,6 @@ export function SettingsWindow({
     fileIgnoreSettings,
     handleCreateMarkdownTemplate,
     handleDeleteMarkdownTemplate,
-    handleResetWelcomeDocument,
     handleExportSettings,
     handleApplyFileIgnoreSettings,
     handleImportSettings,
@@ -99,8 +98,7 @@ export function SettingsWindow({
     syncSession,
     systemFontFamilies,
     clearSettingsFocusTarget,
-    translate,
-    welcomeReset
+    translate
   } = settingsState;
   const appRuntime = getAppRuntime();
   const appFeatures = appRuntime.features;
@@ -308,14 +306,12 @@ export function SettingsWindow({
               language={appLanguage.language}
               translate={translate}
               updatesEnabled={appFeatures.updater}
-              welcomeReset={welcomeReset}
               onCheckForUpdates={updater.checkForUpdates}
               onApplyFileIgnoreSettings={handleApplyFileIgnoreSettings}
               onExportSettings={handleExportSettings}
               onImportSettings={handleImportSettings}
               onInstallShellCommand={handleInstallShellCommand}
               onRefreshShellCommand={handleRefreshShellCommandStatus}
-              onResetWelcomeDocument={handleResetWelcomeDocument}
               onSelectLanguage={appLanguage.selectLanguage}
               onUninstallShellCommand={handleUninstallShellCommand}
               onUpdatePreferences={handleUpdateEditorPreferences}

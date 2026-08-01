@@ -40,6 +40,7 @@ function controller(overrides: {
   saveState?: CompactSaveState;
   syncConfigured?: boolean;
   readOnly?: boolean;
+  workspaceSurface?: "restoring" | "editor" | "home" | "recovery";
 } = {}) {
   const actions = {
     openDocumentHistory: vi.fn(),
@@ -69,7 +70,8 @@ function controller(overrides: {
           revision: 1,
           sizeBytes: null
         },
-        saveCurrentDocument: vi.fn()
+        saveCurrentDocument: vi.fn(),
+        workspaceSurface: overrides.workspaceSurface ?? (open ? "editor" : "home")
       },
       editor: {
         getSelectionFormattingState: vi.fn(() => ({ actions: [], headingLevel: null })),
@@ -260,12 +262,12 @@ describe("CompactEditorScreen", () => {
     expect(setup.actions.runApplicationSyncNow).not.toHaveBeenCalled();
   });
 
-  it("shows the welcome state and asks for the new document name in-app", async () => {
-    const setup = controller({ applicationSync: true, open: false });
+  it("shows Workspace Home and asks for the new document name in-app", async () => {
+    const setup = controller({ applicationSync: true, open: false, workspaceSurface: "home" });
     const compactNavigation = navigation();
     render(<CompactEditorScreen controller={setup.controller} navigation={compactNavigation} />);
 
-    expect(screen.getByRole("heading", { name: "Start writing" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
     expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Visual Milkdown editor")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "New Document" }));
@@ -277,11 +279,13 @@ describe("CompactEditorScreen", () => {
     await waitFor(() => expect(setup.createBlankDocument).toHaveBeenCalledWith("First note"));
     fireEvent.click(screen.getByRole("button", { name: "Configure Sync" }));
     await waitFor(() => expect(compactNavigation.push).toHaveBeenCalledWith({ kind: "sync-status" }));
-    expect(screen.queryByRole("button", { name: /open|choose|recent/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Quick Open" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Switch Workspace" })).not.toBeInTheDocument();
   });
 
-  it("keeps welcome-state creation failures readable and retryable in the dialog", async () => {
-    const setup = controller({ open: false });
+  it("keeps Workspace Home creation failures readable and retryable in the dialog", async () => {
+    const setup = controller({ open: false, workspaceSurface: "home" });
     setup.createBlankDocument.mockRejectedValueOnce(new Error(
       "token=super-secret failed at /Users/example/private-note.md"
     ));
@@ -298,6 +302,26 @@ describe("CompactEditorScreen", () => {
     expect(screen.getByRole("dialog", { name: "New file name" })).toBeInTheDocument();
   });
 
+  it("selects Workspace Home from workspaceSurface instead of document.open", () => {
+    const setup = controller({ open: true, workspaceSurface: "home" });
+
+    render(<CompactEditorScreen controller={setup.controller} navigation={navigation()} />);
+
+    expect(screen.getByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Draft.md" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Visual Milkdown editor")).not.toBeInTheDocument();
+  });
+
+  it("hides editor-specific title and content while the workspace is restoring", () => {
+    const setup = controller({ open: true, workspaceSurface: "restoring" });
+
+    render(<CompactEditorScreen controller={setup.controller} navigation={navigation()} />);
+
+    expect(screen.queryByRole("heading", { name: "Draft.md" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Visual Milkdown editor")).not.toBeInTheDocument();
+  });
+
   it("mounts the touch formatting toolbar only for an active document", () => {
     const active = controller({ open: true });
     const { rerender } = render(
@@ -306,8 +330,8 @@ describe("CompactEditorScreen", () => {
 
     expect(screen.getByRole("toolbar", { name: "Formatting" })).toBeInTheDocument();
 
-    const welcome = controller({ open: false });
-    rerender(<CompactEditorScreen controller={welcome.controller} navigation={navigation()} />);
+    const home = controller({ open: false, workspaceSurface: "home" });
+    rerender(<CompactEditorScreen controller={home.controller} navigation={navigation()} />);
 
     expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
   });
@@ -337,11 +361,11 @@ describe("CompactEditorScreen", () => {
   });
 
   it("does not expose remote configuration in web narrow mode", () => {
-    const setup = controller({ applicationSync: false, open: false });
+    const setup = controller({ applicationSync: false, open: false, workspaceSurface: "home" });
     render(<CompactEditorScreen controller={setup.controller} navigation={navigation()} />);
 
     expect(screen.queryByRole("button", { name: "Configure Sync" })).not.toBeInTheDocument();
-    expect(screen.getByText("Your notes stay on this device.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New Document" })).toBeInTheDocument();
   });
 
   it("does not mount desktop-only editor capabilities or bottom navigation", () => {

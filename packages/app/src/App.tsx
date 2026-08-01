@@ -38,6 +38,7 @@ import { QuickOpenPanel } from "./components/QuickOpenPanel";
 import { SettingsWindowLoadingShell } from "./components/SettingsWindowLoadingShell";
 import { SideDocumentPane } from "./components/SideDocumentPane";
 import type { SidebarSyncButtonState } from "./components/SidebarSyncButton";
+import { WorkspaceHome } from "./components/WorkspaceHome";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
 import { CompactAppShell } from "./components/compact/CompactAppShell";
 import { MobileNotebookDialog } from "./components/notebooks/MobileNotebookDialog";
@@ -3225,6 +3226,13 @@ function WorkspaceApp() {
     primaryWindowOwner,
     translate
   ]);
+  const handleOpenWorkspaceHomeDocument = useCallback(async () => {
+    captureActiveDocumentViewState();
+    setActiveImageFile(null);
+    await openMarkdownFile({
+      pickerTitle: translate("app.openMarkdownFile")
+    });
+  }, [captureActiveDocumentViewState, openMarkdownFile, translate]);
   const handleOpenRecentMarkdownFile = useCallback(async (file: RecentMarkdownFile) => {
     if (
       primaryWindowOwner &&
@@ -3413,6 +3421,13 @@ function WorkspaceApp() {
       fileTreeSourcePath ?? document.path ?? primaryRoot
     ).catch(() => {});
   }, [document.path, fileTreeSourcePath, openSettingsModal, primaryRoot]);
+  const handleConfigureSync = useCallback(() => {
+    openSettingsModal(
+      "sync",
+      primaryRoot,
+      fileTreeSourcePath ?? primaryRoot
+    ).catch(() => {});
+  }, [fileTreeSourcePath, openSettingsModal, primaryRoot]);
   const handleOpenBlankEditorWindow = useCallback(() => {
     openBlankEditorWindow().catch(() => {});
   }, []);
@@ -4743,7 +4758,8 @@ function WorkspaceApp() {
     document: {
       createBlankDocument: handleCreateCompactDocument,
       document,
-      saveCurrentDocument
+      saveCurrentDocument,
+      workspaceSurface
     },
     editor: {
       getSelectionFormattingState: editor.getSelectionFormattingState,
@@ -4845,7 +4861,8 @@ function WorkspaceApp() {
     syncConfig.appliedDocument,
     mainEditorReadOnly,
     runApplicationSyncNow,
-    saveCurrentDocument
+    saveCurrentDocument,
+    workspaceSurface
   ]);
   const documentSearchOverlay = documentSearchOpen && documentSearchAvailable ? (
     <DocumentSearchBar
@@ -5169,6 +5186,28 @@ function WorkspaceApp() {
                   alt={activeImageFile.name}
                   language={appLanguage.language}
                   src={imagePreviewSrc}
+                />
+              ) : workspaceSurface === "home" ? (
+                <WorkspaceHome
+                  actions={{
+                    createDocument: handleQuickCreateMarkdownTreeFile,
+                    openDocument: canChooseLocalWorkspace
+                      ? handleOpenWorkspaceHomeDocument
+                      : undefined,
+                    quickOpen: fileTreeFiles.length > 0 ? handleQuickOpenOpen : undefined,
+                    showFiles: handleFileTreeToggle,
+                    openSettings: handleOpenSettings,
+                    configureSync: appFeatures.projectSync ? handleConfigureSync : undefined,
+                    switchWorkspace: canChooseLocalWorkspace
+                      ? handleOpenMarkdownFolder
+                      : undefined
+                  }}
+                  language={appLanguage.language}
+                  presentation="desktop"
+                  shortcuts={{
+                    quickOpen: editorPreferences.preferences.markdownShortcuts.openQuickOpen,
+                    showFiles: editorPreferences.preferences.markdownShortcuts.toggleMarkdownFiles
+                  }}
                 />
               ) : hasOpenDocument ? (
                 <div

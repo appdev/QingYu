@@ -80,7 +80,6 @@ import {
   getStoredThemePreferences,
   getStoredWorkspaceState,
   removeStoredRecentMarkdownFile,
-  resetWelcomeDocumentState,
   saveStoredCustomThemeCss,
   saveStoredEditorPreferences,
   saveStoredExportSettings,
@@ -652,7 +651,6 @@ vi.mock("../lib/settings/app-settings", () => ({
     file,
     ...files.filter((item) => item.path !== file.path)
   ].slice(0, 10)),
-  resetWelcomeDocumentState: vi.fn(),
   removeStoredRecentMarkdownFile: vi.fn(),
   saveStoredCustomThemeCss: vi.fn(),
   saveStoredEditorPreferences: vi.fn(),
@@ -763,7 +761,6 @@ export const mockedGetStoredThemePreferences = vi.mocked(getStoredThemePreferenc
 export const mockedGetStoredWorkspaceState = vi.mocked(getStoredWorkspaceState);
 export const mockedClearStoredRecentMarkdownFiles = vi.mocked(clearStoredRecentMarkdownFiles);
 export const mockedRemoveStoredRecentMarkdownFile = vi.mocked(removeStoredRecentMarkdownFile);
-export const mockedResetWelcomeDocumentState = vi.mocked(resetWelcomeDocumentState);
 export const mockedSaveStoredCustomThemeCss = vi.mocked(saveStoredCustomThemeCss);
 export const mockedSaveStoredEditorPreferences = vi.mocked(saveStoredEditorPreferences);
 export const mockedSaveStoredExportSettings = vi.mocked(saveStoredExportSettings);
@@ -800,7 +797,7 @@ export const mockedNotifyAppThemeChanged = vi.mocked(notifyAppThemeChanged);
 export const mockNativePath = "/mock-files/native.md";
 export const mockDroppedPath = "/mock-files/dropped.md";
 export const mockFolderPath = "/mock-files/vault";
-const defaultEditorFixture = `# Welcome to QingYu
+const defaultEditorFixture = `# Editor fixture
 
 QingYu is a quiet, local-first Markdown editor for simple, practical note recording.
 
@@ -1163,7 +1160,6 @@ export function installAppTestHarness() {
     mockedGetStoredWorkspaceState.mockReset();
     mockedClearStoredRecentMarkdownFiles.mockReset();
     mockedRemoveStoredRecentMarkdownFile.mockReset();
-    mockedResetWelcomeDocumentState.mockReset();
     mockedSaveStoredCustomThemeCss.mockReset();
     mockedSaveStoredEditorPreferences.mockReset();
     mockedSaveStoredExportSettings.mockReset();
@@ -1432,7 +1428,6 @@ export function installAppTestHarness() {
       folderPath: null,
       openFilePaths: []
     });
-    mockedResetWelcomeDocumentState.mockResolvedValue(undefined);
     mockedClearStoredRecentMarkdownFiles.mockResolvedValue(undefined);
     mockedRemoveStoredRecentMarkdownFile.mockResolvedValue([]);
     mockedSaveStoredLanguage.mockResolvedValue(undefined);
