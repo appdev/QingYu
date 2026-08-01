@@ -2071,6 +2071,7 @@ fn install_operation_errors(document: &mut serde_json::Value) {
         "patch",
         TRANSPORT,
         &[
+            "invalid_request",
             "resource_too_large",
             "invalid_app_config_state",
             "workspace_generation_stale",
@@ -2297,6 +2298,33 @@ fn patch_literal_and_nullable_schemas(document: &mut serde_json::Value) {
     for schema in schemas.values_mut() {
         rename_schema_properties_to_camel_case(schema);
         strip_null_from_optional_properties(schema);
+    }
+    for (schema_name, property_name) in [
+        ("AppConfigSnapshotDto", "appConfigVersion"),
+        ("StoredWorkspaceLayoutDto", "schemaVersion"),
+    ] {
+        schemas
+            .get_mut(schema_name)
+            .and_then(|schema| schema.pointer_mut(&format!("/properties/{property_name}")))
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("AppConfig version property schema is an object")
+            .insert("const".to_owned(), serde_json::json!(1));
+    }
+    schemas
+        .get_mut("AppConfigStateChangedEvent")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("AppConfig event schema is an object")
+        .insert("additionalProperties".to_owned(), serde_json::json!(false));
+    let operation_variants = schemas
+        .get_mut("AppConfigStateOperationDto")
+        .and_then(|schema| schema.get_mut("oneOf"))
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("AppConfig operation schema variants are an array");
+    for variant in operation_variants {
+        variant
+            .as_object_mut()
+            .expect("AppConfig operation variant is an object")
+            .insert("additionalProperties".to_owned(), serde_json::json!(false));
     }
     let nullable_names = schemas
         .keys()

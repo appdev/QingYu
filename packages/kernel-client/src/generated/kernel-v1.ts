@@ -499,8 +499,11 @@ export interface components {
             uiLayout: components["schemas"]["StoredWorkspaceLayoutDto"];
         };
         AppConfigSnapshotDto: {
-            /** Format: int32 */
-            appConfigVersion: number;
+            /**
+             * Format: int32
+             * @constant
+             */
+            appConfigVersion: 1;
             localState: components["schemas"]["AppConfigLocalStateDto"];
             settings: components["schemas"]["SettingsSnapshotDto"];
             workspace: components["schemas"]["AppConfigWorkspaceDto"];
@@ -1159,8 +1162,11 @@ export interface components {
         };
         StoredWorkspaceLayoutDto: {
             openWindows: components["schemas"]["StoredWorkspaceWindowDto"][];
-            /** Format: int32 */
-            schemaVersion: number;
+            /**
+             * Format: int32
+             * @constant
+             */
+            schemaVersion: 1;
             windowStates: {
                 [key: string]: components["schemas"]["StoredWorkspaceWindowStateDto"];
             };
@@ -1475,6 +1481,20 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppConfigSnapshotDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
                 };
             };
             /** @description Error */

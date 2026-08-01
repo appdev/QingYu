@@ -65,6 +65,7 @@
         "additionalProperties": false,
         "properties": {
           "appConfigVersion": {
+            "const": 1,
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -88,6 +89,7 @@
         "type": "object"
       },
       "AppConfigStateChangedEvent": {
+        "additionalProperties": false,
         "properties": {
           "revision": {
             "$ref": "#/components/schemas/Revision"
@@ -119,6 +121,7 @@
       "AppConfigStateOperationDto": {
         "oneOf": [
           {
+            "additionalProperties": false,
             "properties": {
               "patch": {
                 "$ref": "#/components/schemas/WorkspaceLayoutPatchDto"
@@ -141,6 +144,7 @@
             "type": "object"
           },
           {
+            "additionalProperties": false,
             "properties": {
               "file": {
                 "$ref": "#/components/schemas/RecentMarkdownFileDto"
@@ -159,6 +163,7 @@
             "type": "object"
           },
           {
+            "additionalProperties": false,
             "properties": {
               "path": {
                 "$ref": "#/components/schemas/WorkspaceRelativePath"
@@ -177,6 +182,7 @@
             "type": "object"
           },
           {
+            "additionalProperties": false,
             "properties": {
               "type": {
                 "enum": [
@@ -191,6 +197,7 @@
             "type": "object"
           },
           {
+            "additionalProperties": false,
             "properties": {
               "sort": {
                 "$ref": "#/components/schemas/StoredFileTreeSortDto"
@@ -209,6 +216,7 @@
             "type": "object"
           },
           {
+            "additionalProperties": false,
             "properties": {
               "path": {
                 "$ref": "#/components/schemas/Nullable_String"
@@ -2835,6 +2843,7 @@
             "type": "array"
           },
           "schemaVersion": {
+            "const": 1,
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -3912,6 +3921,41 @@
               }
             },
             "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
             "headers": {
               "X-Request-Id": {
                 "description": "Correlation ID for this response.",

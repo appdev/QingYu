@@ -780,6 +780,7 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
             "csrf_rejected",
             "host_not_allowed",
             "internal_error",
+            "invalid_request",
             "invalid_app_config_state",
             "origin_not_allowed",
             "resource_too_large",
@@ -787,6 +788,30 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
             "workspace_generation_stale",
         ])
     );
+}
+
+#[test]
+fn app_config_schemas_freeze_strict_wire_constraints() {
+    let document = api_document();
+    assert_eq!(
+        component(&document, "AppConfigSnapshotDto")["properties"]["appConfigVersion"]["const"],
+        1
+    );
+    assert_eq!(
+        component(&document, "StoredWorkspaceLayoutDto")["properties"]["schemaVersion"]["const"],
+        1
+    );
+    assert_eq!(
+        component(&document, "AppConfigStateChangedEvent")["additionalProperties"],
+        false
+    );
+    let operation_variants = component(&document, "AppConfigStateOperationDto")["oneOf"]
+        .as_array()
+        .expect("AppConfigStateOperationDto variants");
+    assert_eq!(operation_variants.len(), 6);
+    for variant in operation_variants {
+        assert_eq!(variant["additionalProperties"], false);
+    }
 }
 
 fn operation_error_codes(responses: &Value) -> BTreeSet<&str> {
