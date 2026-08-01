@@ -67,6 +67,23 @@ trait PrimaryWorkspaceBackend: Sync {
             Err(_) => PrimaryWorkspacePersistence::NotPublished,
         }
     }
+    fn restore_transaction(
+        &self,
+        schema_version: Option<Value>,
+        primary_workspace: Option<Value>,
+    ) -> Result<(), String> {
+        if let Some(schema_version) = schema_version {
+            self.set(LOCAL_STATE_SCHEMA_VERSION_KEY, schema_version);
+        } else {
+            self.delete(LOCAL_STATE_SCHEMA_VERSION_KEY);
+        }
+        if let Some(primary_workspace) = primary_workspace {
+            self.set(PRIMARY_WORKSPACE_KEY, primary_workspace);
+        } else {
+            self.delete(PRIMARY_WORKSPACE_KEY);
+        }
+        self.save()
+    }
     fn set(&self, key: &str, value: Value);
 }
 
@@ -186,13 +203,20 @@ impl DesktopDiskPrimaryWorkspaceBackend {
     fn reload_from_disk(&self) -> Result<(), String> {
         let loaded =
             read_workspace_store_file(&self.app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)?;
-        let expected_target = loaded.as_ref().and_then(|state| {
-            read_workspace_store_file(&self.app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
-                .ok()
-                .flatten()
-                .filter(|published| published.identity == state.identity)
-                .map(|published| published.identity)
-        });
+        let expected_target = match loaded.as_ref() {
+            Some(state) => {
+                let published = read_workspace_store_file(
+                    &self.app_data_root,
+                    DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
+                )?
+                .ok_or_else(persistence_error)?;
+                if published.identity != state.identity {
+                    return Err(persistence_error());
+                }
+                Some(published.identity)
+            }
+            None => None,
+        };
         let values = loaded.map(|state| state.values).unwrap_or_default();
         *self
             .expected_target
@@ -213,25 +237,9 @@ impl DesktopDiskPrimaryWorkspaceBackend {
             Ok(values) => values.clone(),
             Err(_) => return PrimaryWorkspacePersistence::NotPublished,
         };
-        let document = values
-            .get(LOCAL_STATE_SCHEMA_VERSION_KEY)
-            .and_then(Value::as_u64)
-            .filter(|version| *version == LOCAL_STATE_SCHEMA_VERSION)
-            .and_then(|schema_version| {
-                values
-                    .get(PRIMARY_WORKSPACE_KEY)
-                    .cloned()
-                    .and_then(|primary_workspace| {
-                        deserialize_current_primary_workspace_state(primary_workspace).ok()
-                    })
-                    .map(|primary_workspace| CanonicalPrimaryWorkspaceDocument {
-                        schema_version,
-                        primary_workspace,
-                    })
-            });
-        let bytes = match document.and_then(|document| serde_json::to_vec(&document).ok()) {
-            Some(bytes) if bytes.len() <= MAX_PRIMARY_WORKSPACE_STORE_BYTES => bytes,
-            _ => return PrimaryWorkspacePersistence::NotPublished,
+        let bytes = match serialize_primary_workspace_document(&values) {
+            Ok(bytes) => bytes,
+            Err(_) => return PrimaryWorkspacePersistence::NotPublished,
         };
         let expected = match self.expected_target.lock() {
             Ok(expected) => *expected,
@@ -246,18 +254,55 @@ impl DesktopDiskPrimaryWorkspaceBackend {
             sync_after_rename,
         );
         if publication != PrimaryWorkspacePersistence::NotPublished {
-            let identity = read_workspace_store_file(
+            let identity = match read_workspace_store_file(
                 &self.app_data_root,
                 DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
-            )
-            .ok()
-            .flatten()
-            .map(|state| state.identity);
+            ) {
+                Ok(Some(state)) => Some(state.identity),
+                Ok(None) | Err(_) => {
+                    return PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability;
+                }
+            };
             if let Ok(mut expected_target) = self.expected_target.lock() {
                 *expected_target = identity;
+            } else {
+                return PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability;
             }
         }
         publication
+    }
+
+    fn restore_values(
+        &self,
+        schema_version: Option<Value>,
+        primary_workspace: Option<Value>,
+    ) -> Result<(), String> {
+        let mut values = self.values.lock().map_err(|_| persistence_error())?;
+        if let Some(schema_version) = schema_version {
+            values.insert(LOCAL_STATE_SCHEMA_VERSION_KEY.to_owned(), schema_version);
+        } else {
+            values.remove(LOCAL_STATE_SCHEMA_VERSION_KEY);
+        }
+        if let Some(primary_workspace) = primary_workspace {
+            values.insert(PRIMARY_WORKSPACE_KEY.to_owned(), primary_workspace);
+        } else {
+            values.remove(PRIMARY_WORKSPACE_KEY);
+        }
+        Ok(())
+    }
+
+    fn remove_published_authority(&self) -> Result<(), String> {
+        let published_identity = self
+            .expected_target
+            .lock()
+            .map_err(|_| persistence_error())?
+            .ok_or_else(persistence_error)?;
+        remove_primary_workspace_file_with_identity(&self.app_data_root, published_identity)?;
+        *self
+            .expected_target
+            .lock()
+            .map_err(|_| persistence_error())? = None;
+        Ok(())
     }
 }
 
@@ -287,6 +332,20 @@ impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
 
     fn save_publication(&self) -> PrimaryWorkspacePersistence {
         self.save_publication_with_sync(sync_directory)
+    }
+
+    fn restore_transaction(
+        &self,
+        schema_version: Option<Value>,
+        primary_workspace: Option<Value>,
+    ) -> Result<(), String> {
+        let original_was_absent = schema_version.is_none() && primary_workspace.is_none();
+        self.restore_values(schema_version, primary_workspace)?;
+        if original_was_absent {
+            self.remove_published_authority()
+        } else {
+            self.save()
+        }
     }
 
     fn set(&self, key: &str, value: Value) {
@@ -344,13 +403,7 @@ fn read_workspace_store_file(
     if rechecked != Some(identity) {
         return Err(persistence_error());
     }
-    let document = serde_json::from_slice::<CanonicalPrimaryWorkspaceDocument>(&bytes)
-        .map_err(|_| persistence_error())?;
-    if document.schema_version != LOCAL_STATE_SCHEMA_VERSION
-        || document.primary_workspace.version != LOCAL_STATE_SCHEMA_VERSION
-    {
-        return Err(persistence_error());
-    }
+    let document = deserialize_primary_workspace_document(&bytes)?;
     let primary_workspace = serialize_primary_workspace_state(&document.primary_workspace)?;
     let values = BTreeMap::from([
         (
@@ -360,6 +413,82 @@ fn read_workspace_store_file(
         (PRIMARY_WORKSPACE_KEY.to_owned(), primary_workspace),
     ]);
     Ok(Some(ExistingPrimaryWorkspaceFile { identity, values }))
+}
+
+#[cfg(not(mobile))]
+fn remove_primary_workspace_file_with_identity(
+    app_data_root: &Path,
+    expected_identity: UniqueRegularFileIdentity,
+) -> Result<(), String> {
+    static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+    let directory =
+        open_canonical_directory_nofollow(app_data_root).map_err(|_| persistence_error())?;
+    let retained = directory
+        .open_with(
+            DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
+            &nonfollowing_primary_workspace_removal_options(),
+        )
+        .map_err(|_| persistence_error())?;
+    let retained_identity = retained
+        .metadata()
+        .ok()
+        .and_then(|metadata| unique_regular_file_identity(&metadata))
+        .ok_or_else(persistence_error)?;
+    if retained_identity != expected_identity {
+        return Err(persistence_error());
+    }
+
+    let rollback_name = (0..1000).find_map(|_| {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = format!(
+            ".primary-workspace-rollback-{}-{sequence}.tmp",
+            std::process::id()
+        );
+        match rename_retained_file_in_directory(
+            &directory,
+            &retained,
+            DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
+            expected_identity,
+            &candidate,
+            false,
+        ) {
+            Ok(()) => Some(Ok(candidate)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+            Err(_) => Some(Err(())),
+        }
+    });
+    let Some(Ok(rollback_name)) = rollback_name else {
+        return Err(persistence_error());
+    };
+    let rollback_identity = directory
+        .symlink_metadata(&rollback_name)
+        .ok()
+        .and_then(|metadata| unique_regular_file_identity(&metadata));
+    if rollback_identity != Some(expected_identity) {
+        return Err(persistence_error());
+    }
+    drop(retained);
+    directory
+        .remove_file(&rollback_name)
+        .map_err(|_| persistence_error())?;
+    sync_directory(&directory).map_err(|_| persistence_error())
+}
+
+#[cfg(not(mobile))]
+fn nonfollowing_primary_workspace_removal_options() -> cap_std::fs::OpenOptions {
+    let mut options = nonfollowing_read_options();
+    #[cfg(windows)]
+    {
+        use cap_fs_ext::OpenOptionsExt;
+
+        options
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Storage::FileSystem::DELETE,
+            )
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+    }
+    options
 }
 
 #[cfg(not(mobile))]
@@ -711,9 +840,9 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
             }
         }
         if let Err(error) = validate() {
-            self.restore_value(PRIMARY_WORKSPACE_KEY, previous_primary_workspace);
-            self.restore_value(LOCAL_STATE_SCHEMA_VERSION_KEY, previous_schema_version);
-            self.backend.save().map_err(|_| persistence_error())?;
+            self.backend
+                .restore_transaction(previous_schema_version, previous_primary_workspace)
+                .map_err(|_| persistence_error())?;
             return Err(error);
         }
 
@@ -1112,6 +1241,35 @@ fn deserialize_primary_workspace_state(
 }
 
 #[cfg(not(mobile))]
+fn validate_primary_workspace_shape(state: &StoredPrimaryWorkspaceState) -> Result<(), String> {
+    if state
+        .desktop_workspace_root
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+        || state
+            .desktop_path
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(persistence_error());
+    }
+
+    match (
+        state.desktop_workspace_root.is_some(),
+        state.desktop_path.is_some(),
+        state.managed_name.as_deref(),
+    ) {
+        (false, false, None) | (true, true, None) => Ok(()),
+        (false, false, Some(managed_name)) => {
+            crate::notebook_scope::validate_notebook_name(managed_name)
+                .map(|_| ())
+                .map_err(|_| persistence_error())
+        }
+        _ => Err(persistence_error()),
+    }
+}
+
+#[cfg(not(mobile))]
 fn deserialize_current_primary_workspace_state(
     value: Value,
 ) -> Result<StoredPrimaryWorkspaceState, String> {
@@ -1119,12 +1277,60 @@ fn deserialize_current_primary_workspace_state(
     if state.version != LOCAL_STATE_SCHEMA_VERSION {
         return Err(persistence_error());
     }
+    validate_primary_workspace_shape(&state)?;
     Ok(state)
 }
 
 #[cfg(not(mobile))]
 fn serialize_primary_workspace_state(state: &StoredPrimaryWorkspaceState) -> Result<Value, String> {
     serde_json::to_value(state).map_err(|_| persistence_error())
+}
+
+#[cfg(not(mobile))]
+fn primary_workspace_document_from_values(
+    values: &BTreeMap<String, Value>,
+) -> Result<CanonicalPrimaryWorkspaceDocument, String> {
+    let schema_version = values
+        .get(LOCAL_STATE_SCHEMA_VERSION_KEY)
+        .and_then(Value::as_u64)
+        .filter(|version| *version == LOCAL_STATE_SCHEMA_VERSION)
+        .ok_or_else(persistence_error)?;
+    let primary_workspace = values
+        .get(PRIMARY_WORKSPACE_KEY)
+        .cloned()
+        .ok_or_else(persistence_error)
+        .and_then(deserialize_current_primary_workspace_state)?;
+    Ok(CanonicalPrimaryWorkspaceDocument {
+        schema_version,
+        primary_workspace,
+    })
+}
+
+#[cfg(not(mobile))]
+fn serialize_primary_workspace_document(
+    values: &BTreeMap<String, Value>,
+) -> Result<Vec<u8>, String> {
+    let document = primary_workspace_document_from_values(values)?;
+    let bytes = serde_json::to_vec(&document).map_err(|_| persistence_error())?;
+    if bytes.len() > MAX_PRIMARY_WORKSPACE_STORE_BYTES {
+        return Err(persistence_error());
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(mobile))]
+fn deserialize_primary_workspace_document(
+    bytes: &[u8],
+) -> Result<CanonicalPrimaryWorkspaceDocument, String> {
+    let document = serde_json::from_slice::<CanonicalPrimaryWorkspaceDocument>(bytes)
+        .map_err(|_| persistence_error())?;
+    if document.schema_version != LOCAL_STATE_SCHEMA_VERSION
+        || document.primary_workspace.version != LOCAL_STATE_SCHEMA_VERSION
+    {
+        return Err(persistence_error());
+    }
+    validate_primary_workspace_shape(&document.primary_workspace)?;
+    Ok(document)
 }
 
 /// Desktop host decision at process startup.
@@ -1564,21 +1770,12 @@ fn desktop_primary_workspace_initialization_error() -> String {
 fn completed_primary_workspace_state(
     value: Option<Value>,
 ) -> Result<StoredPrimaryWorkspaceState, String> {
-    let state = value
-        .and_then(|value| deserialize_current_primary_workspace_state(value).ok())
-        .filter(|state| {
-            let desktop_pair =
-                state.desktop_workspace_root.is_some() && state.desktop_path.is_some();
-            let no_desktop_identity =
-                state.desktop_workspace_root.is_none() && state.desktop_path.is_none();
-            let identity_is_valid = (desktop_pair && state.managed_name.is_none())
-                || (no_desktop_identity && state.managed_name.is_some())
-                || (no_desktop_identity && state.managed_name.is_none());
-            state.onboarding_completed
-                && !state.onboarding_requested_for_next_launch
-                && identity_is_valid
-        })
-        .ok_or_else(sync_primary_workspace_unavailable)?;
+    let value = value.ok_or_else(sync_primary_workspace_unavailable)?;
+    let state = deserialize_current_primary_workspace_state(value)
+        .map_err(|_| sync_primary_workspace_unavailable())?;
+    if !state.onboarding_completed || state.onboarding_requested_for_next_launch {
+        return Err(sync_primary_workspace_unavailable());
+    }
     Ok(state)
 }
 
@@ -1850,6 +2047,56 @@ mod tests {
 
     use super::*;
 
+    fn semantically_invalid_primary_workspace_states() -> [Value; 5] {
+        [
+            json!({
+                "desktopWorkspaceRoot": "/workspace",
+                "desktopPath": null,
+                "managedName": null,
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+            json!({
+                "desktopWorkspaceRoot": null,
+                "desktopPath": "/workspace/Notes",
+                "managedName": null,
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+            json!({
+                "desktopWorkspaceRoot": "/workspace",
+                "desktopPath": "/workspace/Notes",
+                "managedName": "personal",
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+            json!({
+                "desktopWorkspaceRoot": "   ",
+                "desktopPath": "/workspace/Notes",
+                "managedName": null,
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+            json!({
+                "desktopWorkspaceRoot": null,
+                "desktopPath": null,
+                "managedName": ".markra-sync",
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+        ]
+    }
+
+    fn assert_no_primary_workspace_temporary_files(root: &Path) {
+        assert!(std::fs::read_dir(root)
+            .expect("read app data")
+            .all(|entry| !entry
+                .expect("app data entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".primary-workspace-")));
+    }
+
     struct PublishedUnknownDiskBackend {
         inner: DesktopDiskPrimaryWorkspaceBackend,
     }
@@ -2054,6 +2301,88 @@ mod tests {
         .expect("seed authority with unknown inner field");
 
         assert!(DesktopDiskPrimaryWorkspaceBackend::open_at(root).is_err());
+    }
+
+    #[test]
+    fn desktop_primary_workspace_disk_reader_rejects_semantic_inner_shape_without_mutation() {
+        for state in semantically_invalid_primary_workspace_states() {
+            let app_data = tempfile::tempdir().expect("temporary app data");
+            let root = app_data.path().canonicalize().expect("canonical app data");
+            let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+            let bytes = serde_json::to_vec(&json!({
+                "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
+                "primaryWorkspace": state
+            }))
+            .expect("invalid semantic authority JSON");
+            std::fs::write(&target, &bytes).expect("seed invalid semantic authority");
+
+            assert!(DesktopDiskPrimaryWorkspaceBackend::open_at(root).is_err());
+            assert_eq!(
+                std::fs::read(target).expect("invalid authority remains unchanged"),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn post_validation_failure_restores_an_absent_disk_authority() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+        let backend = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("open absent authority");
+        let transaction = Mutex::new(());
+        let validations = AtomicUsize::new(0);
+
+        let error = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write_validated(write_input("/workspace/Notes"), || {
+                if validations.fetch_add(1, Ordering::Relaxed) == 0 {
+                    Ok(())
+                } else {
+                    Err("injected-post-validation-failure".to_owned())
+                }
+            })
+            .expect_err("post-validation failure must roll back publication");
+
+        assert_eq!(error, "injected-post-validation-failure");
+        assert!(!target.exists());
+        assert_eq!(backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY), None);
+        assert_eq!(backend.get(PRIMARY_WORKSPACE_KEY), None);
+        assert_no_primary_workspace_temporary_files(&root);
+    }
+
+    #[test]
+    fn post_validation_failure_restores_the_original_disk_authority() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+        let backend = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("open absent authority");
+        let transaction = Mutex::new(());
+        let original = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write(write_input("/workspace/A"))
+            .expect("publish original authority")
+            .state;
+        let original_bytes = std::fs::read(&target).expect("read original authority");
+        let validations = AtomicUsize::new(0);
+
+        let error = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write_validated(write_input("/workspace/B"), || {
+                if validations.fetch_add(1, Ordering::Relaxed) == 0 {
+                    Ok(())
+                } else {
+                    Err("injected-post-validation-failure".to_owned())
+                }
+            })
+            .expect_err("post-validation failure must restore original authority");
+
+        assert_eq!(error, "injected-post-validation-failure");
+        assert_eq!(backend.get(PRIMARY_WORKSPACE_KEY), Some(original));
+        assert_eq!(
+            std::fs::read(target).expect("read restored authority"),
+            original_bytes
+        );
+        assert_no_primary_workspace_temporary_files(&root);
     }
 
     #[test]
@@ -2714,6 +3043,41 @@ mod tests {
             .is_err());
         assert_eq!(backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY), None);
         assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), None);
+    }
+
+    #[test]
+    fn primary_workspace_writes_reject_semantic_inner_shape_without_persisting() {
+        let current = json!({
+            "desktopWorkspaceRoot": null,
+            "desktopPath": null,
+            "managedName": null,
+            "onboardingCompleted": false,
+            "version": 3
+        });
+
+        for state in semantically_invalid_primary_workspace_states() {
+            let backend = MemoryBackend::with([
+                (
+                    LOCAL_STATE_SCHEMA_VERSION_KEY,
+                    Value::from(LOCAL_STATE_SCHEMA_VERSION),
+                ),
+                (PRIMARY_WORKSPACE_KEY, current.clone()),
+            ]);
+            let lock = Mutex::new(());
+
+            assert!(PrimaryWorkspaceService::new(&backend, &lock)
+                .write(PrimaryWorkspaceWriteInput {
+                    expected_state: Some(current.clone()),
+                    state,
+                })
+                .is_err());
+            assert_eq!(
+                backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY),
+                Some(Value::from(LOCAL_STATE_SCHEMA_VERSION))
+            );
+            assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(current.clone()));
+            assert_eq!(backend.saves.load(Ordering::Relaxed), 0);
+        }
     }
 
     #[test]
