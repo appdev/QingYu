@@ -1873,6 +1873,13 @@ mod tests {
             kernel.runtime.host_profile(),
             crate::contract::HostProfile::Server
         );
+        let config_root = kernel.runtime.config_root().canonical_path();
+        let instance_data_root = kernel.runtime.instance_data_root().canonical_path();
+        assert!(config_root.join("settings.json").is_file());
+        assert!(config_root.join("sync-config.json").is_file());
+        assert!(!instance_data_root.join("settings.json").exists());
+        assert!(!instance_data_root.join("sync-config.json").exists());
+        assert!(instance_data_root.join("local-sync.json").is_file());
         let sync = SyncService::new(
             kernel.runtime.clone(),
             Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
@@ -2093,7 +2100,7 @@ mod tests {
         ) -> Self {
             let temporary = tempdir().expect("temporary Kernel roots");
             let cache = temporary.path().join("cache");
-            let (workspace, app_data, paths) = match local_binding {
+            let (workspace, app_data, config_root, paths) = match local_binding {
                 LocalBindingFixture::FreshServer => {
                     let data = temporary.path().join("data");
                     std::fs::create_dir(&data).expect("Server data");
@@ -2103,6 +2110,7 @@ mod tests {
                     (
                         paths.workspace_root().canonical_path().to_path_buf(),
                         paths.instance_data_root().canonical_path().to_path_buf(),
+                        paths.config_root().canonical_path().to_path_buf(),
                         paths,
                     )
                 }
@@ -2114,12 +2122,12 @@ mod tests {
                     std::fs::create_dir(&cache).expect("cache");
                     let paths =
                         KernelPaths::desktop(&workspace, &app_data, &cache).expect("Kernel paths");
-                    (workspace, app_data, paths)
+                    (workspace, app_data.clone(), app_data, paths)
                 }
             };
             if let Some(config) = ready_sync_config {
                 std::fs::write(
-                    app_data.join("sync-config.json"),
+                    config_root.join("sync-config.json"),
                     serde_json::to_vec_pretty(&config).expect("serialize sync config"),
                 )
                 .expect("write sync config");
@@ -2163,16 +2171,12 @@ mod tests {
                 )
                 .expect("fresh Server DejaVu binding");
             }
-            let settings_store = DurableFileStore::at_instance_data(
-                runtime.instance_data_root(),
-                runtime.launch_epoch(),
-            )
-            .expect("settings durable store");
-            let sync_store = DurableFileStore::at_instance_data(
-                runtime.instance_data_root(),
-                runtime.launch_epoch(),
-            )
-            .expect("sync durable store");
+            let settings_store =
+                DurableFileStore::at_config(runtime.config_root(), runtime.launch_epoch())
+                    .expect("settings durable store");
+            let sync_store =
+                DurableFileStore::at_config(runtime.config_root(), runtime.launch_epoch())
+                    .expect("sync durable store");
             let settings_store =
                 Arc::new(AtomicJsonSettingsStore::new(settings_store).expect("settings store"));
             settings_store

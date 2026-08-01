@@ -1298,11 +1298,8 @@ mod tests {
         .unwrap();
         let kernel_config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-        let durable = DurableFileStore::at_instance_data(
-            paths.instance_data_root(),
-            kernel_config.launch_epoch(),
-        )
-        .unwrap();
+        let durable =
+            DurableFileStore::at_config(paths.config_root(), kernel_config.launch_epoch()).unwrap();
 
         let store = SyncConfigStore::new(durable).unwrap();
 
@@ -1326,8 +1323,8 @@ mod tests {
         let kernel_config = KernelConfig::generate().unwrap();
         let launch_epoch = *kernel_config.launch_epoch();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-        let faulted = DurableFileStore::at_instance_data_with_test_fault(
-            paths.instance_data_root(),
+        let faulted = DurableFileStore::at_config_with_test_fault(
+            paths.config_root(),
             &launch_epoch,
             DurableFileTestFault::FinalizeFailure,
         )
@@ -1346,8 +1343,7 @@ mod tests {
             SyncConfigStoreErrorKind::RecoveryRequired
         );
         drop(store);
-        let recovering =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), &launch_epoch).unwrap();
+        let recovering = DurableFileStore::at_config(paths.config_root(), &launch_epoch).unwrap();
 
         let rebuilt = SyncConfigStore::new(recovering).unwrap();
 
@@ -1370,8 +1366,8 @@ mod tests {
         std::fs::write(app_data.join("sync-config.json"), &*original).unwrap();
         let kernel_config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-        let durable = DurableFileStore::at_instance_data_with_test_fault(
-            paths.instance_data_root(),
+        let durable = DurableFileStore::at_config_with_test_fault(
+            paths.config_root(),
             kernel_config.launch_epoch(),
             DurableFileTestFault::ParentSyncFailure,
         )
@@ -1426,8 +1422,8 @@ mod tests {
         std::fs::write(app_data.join("sync-config.json"), &*original).unwrap();
         let kernel_config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-        let durable = DurableFileStore::at_instance_data_with_test_fault(
-            paths.instance_data_root(),
+        let durable = DurableFileStore::at_config_with_test_fault(
+            paths.config_root(),
             kernel_config.launch_epoch(),
             fault,
         )

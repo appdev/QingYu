@@ -127,6 +127,26 @@ impl DurableFileStore {
         ))
     }
 
+    #[cfg(test)]
+    pub(crate) fn at_config_with_test_fault(
+        root: &ConfigRoot,
+        launch_epoch: &KernelLaunchEpoch,
+        fault: DurableFileTestFault,
+    ) -> Result<Self, DurableFileFailure> {
+        let directory = root
+            .try_clone_dir()
+            .map_err(|_| DurableFileFailure::unavailable())?;
+        Ok(Self::new(
+            directory,
+            root.canonical_path().to_path_buf(),
+            launch_epoch.value(),
+            Arc::new(DurableFileTestFaultInjector {
+                point: fault.point(),
+                fired: std::sync::atomic::AtomicBool::new(false),
+            }),
+        ))
+    }
+
     fn new(
         directory: Dir,
         canonical_root: PathBuf,

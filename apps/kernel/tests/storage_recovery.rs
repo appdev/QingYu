@@ -239,15 +239,13 @@ impl StorageFixture {
 
     fn store(&self) -> DurableFileStore {
         let paths = KernelPaths::desktop(&self.workspace, &self.app_data, &self.cache).unwrap();
-        DurableFileStore::at_instance_data(paths.instance_data_root(), self.config.launch_epoch())
-            .unwrap()
+        DurableFileStore::at_config(paths.config_root(), self.config.launch_epoch()).unwrap()
     }
 
     #[cfg(windows)]
     fn store_for_new_launch(&self) -> DurableFileStore {
         let paths = KernelPaths::desktop(&self.workspace, &self.app_data, &self.cache).unwrap();
         let config = KernelConfig::generate().unwrap();
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap()
+        DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap()
     }
 }
