@@ -15,8 +15,8 @@ use qingyu_kernel::{
 };
 use tempfile::tempdir;
 
-const OWNER_PASSWORD: &str = "correct horse battery staple";
-const INCORRECT_PASSWORD: &str = "incorrect owner password material";
+const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
+const INCORRECT_PASSWORD: &str = "Incorrect-Owner-Password-Material!9";
 
 fn fixture_paths(root: &Path) -> KernelPaths {
     let workspace = root.join("workspace");
@@ -325,7 +325,7 @@ fn password_change_requires_csrf_and_current_password_without_revoking_on_reject
                 None,
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::CsrfRejected
@@ -337,7 +337,7 @@ fn password_change_requires_csrf_and_current_password_without_revoking_on_reject
                 Some(login.session().csrf_token()),
                 Duration::from_secs(2),
                 INCORRECT_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -349,7 +349,7 @@ fn password_change_requires_csrf_and_current_password_without_revoking_on_reject
                 Some(login.session().csrf_token()),
                 Duration::from_secs(3),
                 OWNER_PASSWORD.to_owned(),
-                "short".to_owned(),
+                "contains space".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidPassword
@@ -361,7 +361,7 @@ fn password_change_requires_csrf_and_current_password_without_revoking_on_reject
                 Some(login.session().csrf_token()),
                 Duration::from_secs(3),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidSession
@@ -398,7 +398,7 @@ fn repeated_current_password_rejections_are_limited_without_spending_the_login_b
                 Some(login.session().csrf_token()),
                 Duration::from_secs(1),
                 INCORRECT_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -410,7 +410,7 @@ fn repeated_current_password_rejections_are_limited_without_spending_the_login_b
                 Some(login.session().csrf_token()),
                 Duration::from_secs(2),
                 INCORRECT_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::RateLimited {
@@ -427,7 +427,7 @@ fn repeated_current_password_rejections_are_limited_without_spending_the_login_b
                 Some(second_session.session().csrf_token()),
                 Duration::from_secs(4),
                 INCORRECT_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -450,7 +450,7 @@ fn an_authorized_current_password_resets_prior_password_change_failures() {
                 Some(login.session().csrf_token()),
                 Duration::from_secs(1),
                 INCORRECT_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -462,7 +462,7 @@ fn an_authorized_current_password_resets_prior_password_change_failures() {
                 Some(login.session().csrf_token()),
                 Duration::from_secs(2),
                 OWNER_PASSWORD.to_owned(),
-                "short".to_owned(),
+                "contains space".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidPassword
@@ -474,7 +474,7 @@ fn an_authorized_current_password_resets_prior_password_change_failures() {
                 Some(login.session().csrf_token()),
                 Duration::from_secs(3),
                 INCORRECT_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -500,7 +500,7 @@ fn successful_password_change_revokes_every_existing_session_and_only_new_passwo
                 Some(first.session().csrf_token()),
                 Duration::from_secs(2),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap(),
         2
@@ -528,7 +528,7 @@ fn successful_password_change_revokes_every_existing_session_and_only_new_passwo
         .login(
             7,
             Duration::from_secs(5),
-            "new owner password material".to_owned(),
+            "New-Owner-Password-Material!8".to_owned(),
         )
         .unwrap();
 }
@@ -555,7 +555,7 @@ fn unavailable_password_state_during_change_revokes_the_authorizing_session() {
                 Some(login.session().csrf_token()),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::StateUnavailable

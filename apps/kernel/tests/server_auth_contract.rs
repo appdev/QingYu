@@ -258,10 +258,18 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
         initialize["properties"]["initializationToken"]["writeOnly"],
         true
     );
-    assert_eq!(initialize["properties"]["password"]["writeOnly"], true);
-    let change = &document["components"]["schemas"]["ChangeServerOwnerPasswordRequest"];
-    assert_eq!(change["properties"]["currentPassword"]["writeOnly"], true);
-    assert_eq!(change["properties"]["newPassword"]["writeOnly"], true);
+    for (schema, property) in [
+        ("InitializeServerOwnerRequest", "password"),
+        ("CreateServerSessionRequest", "password"),
+        ("ChangeServerOwnerPasswordRequest", "currentPassword"),
+        ("ChangeServerOwnerPasswordRequest", "newPassword"),
+    ] {
+        let password = &document["components"]["schemas"][schema]["properties"][property];
+        assert_eq!(password["writeOnly"], true);
+        assert_eq!(password["minLength"], 1);
+        assert_eq!(password["maxLength"], 1024);
+        assert_eq!(password["pattern"], "^[!-~]+$");
+    }
 
     for (method, path) in [
         ("post", "/api/v1/auth/initialize"),

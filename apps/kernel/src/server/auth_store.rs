@@ -28,7 +28,7 @@ use super::secret::ServerAuthenticationSecret;
 const AUTHENTICATION_FILE: &str = "owner-auth-v1.json";
 const AUTHENTICATION_SCHEMA_VERSION: u32 = 1;
 const MAXIMUM_AUTHENTICATION_FILE_BYTES: u64 = 16 * 1024;
-const MINIMUM_OWNER_PASSWORD_BYTES: usize = 12;
+const MINIMUM_OWNER_PASSWORD_BYTES: usize = 1;
 const MAXIMUM_OWNER_PASSWORD_BYTES: usize = 1024;
 const ARGON2_MEMORY_KIB: u32 = 19_456;
 const ARGON2_ITERATIONS: u32 = 2;
@@ -631,7 +631,7 @@ struct PersistentAuthenticationSnapshot {
 
 fn valid_owner_password(password: &[u8]) -> bool {
     (MINIMUM_OWNER_PASSWORD_BYTES..=MAXIMUM_OWNER_PASSWORD_BYTES).contains(&password.len())
-        && password.iter().any(|byte| !byte.is_ascii_whitespace())
+        && password.iter().all(|byte| (b'!'..=b'~').contains(byte))
 }
 
 fn production_argon2() -> Argon2<'static> {
@@ -664,6 +664,9 @@ fn verify_password_against_state(
     candidate: &[u8],
     state: &PersistentAuthenticationState,
 ) -> Result<OwnerPasswordVerification, ServerAuthenticationError> {
+    if !valid_owner_password(candidate) {
+        return Ok(OwnerPasswordVerification::Rejected);
+    }
     let parsed = parse_password_hash(&state.password_hash)?;
     if production_argon2()
         .verify_password(candidate, &parsed)
@@ -695,8 +698,8 @@ mod tests {
     use super::*;
     use crate::{paths::KernelPaths, storage::DurableFileTestFault};
 
-    const OWNER_PASSWORD: &str = "correct horse battery staple";
-    const NEW_PASSWORD: &str = "new owner password material";
+    const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
+    const NEW_PASSWORD: &str = "New-Owner-Password-Material!8";
 
     assert_not_impl_any!(PreparedOwnerPasswordChange: Clone, Copy, fmt::Debug, Serialize);
 
@@ -725,7 +728,7 @@ mod tests {
 
         assert_eq!(
             store
-                .replace_password_hash(&stale.revision, b"third owner password material",)
+                .replace_password_hash(&stale.revision, b"Third-Owner-Password-Material!3",)
                 .unwrap_err(),
             OwnerPasswordUpdateError::StateUncertain
         );
@@ -742,7 +745,7 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .verify_owner_password("third owner password material")
+                .verify_owner_password("Third-Owner-Password-Material!3")
                 .unwrap(),
             OwnerPasswordVerification::Rejected
         );
@@ -776,7 +779,7 @@ mod tests {
             store
                 .change_owner_password(
                     NEW_PASSWORD.to_owned(),
-                    "third owner password material".to_owned(),
+                    "Third-Owner-Password-Material!3".to_owned(),
                 )
                 .unwrap_err(),
             OwnerPasswordUpdateError::StateUncertain

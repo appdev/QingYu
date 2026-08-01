@@ -121,6 +121,12 @@ The durable owner state in `/data/config` is authoritative, so an initialized vo
 
 Never place the token in the Dockerfile, image labels, Compose YAML, shell history, logs, or files under `/data`.
 
+### Owner password
+
+The browser sets the single owner's password during first initialization. It must contain 1–1024 characters, using only printable ASCII characters from `!` through `~`: English letters, numbers, and special symbols. Spaces, control characters, Chinese characters, full-width characters, emoji, and other non-ASCII characters are rejected. Character-category combinations are not required.
+
+The owner password is not a container environment input. The Kernel stores only its salted Argon2id hash below `/data/config`.
+
 ## Acceptance matrix
 
 | Boundary | Current status | Evidence required before browser release |

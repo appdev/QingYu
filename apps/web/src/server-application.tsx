@@ -22,6 +22,11 @@ import type {
   ServerWebBootstrapSnapshot,
   ServerWebPromptError,
 } from "./server-bootstrap";
+import {
+  SERVER_PASSWORD_MAX_LENGTH,
+  SERVER_PASSWORD_PATTERN,
+  isValidServerPassword,
+} from "./server-password";
 import type { ServerStartupLanguage } from "./server-startup-language";
 
 export interface ServerStartupShellProps {
@@ -134,6 +139,8 @@ function LoginForm({
     ? error.retryAfterSeconds
     : 0;
   const [retrySeconds, setRetrySeconds] = useState(initialRetrySeconds);
+  const [passwordInvalid, setPasswordInvalid] = useState(false);
+  const passwordInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setRetrySeconds(error?.kind === "rate-limited" ? error.retryAfterSeconds : 0);
@@ -154,8 +161,18 @@ function LoginForm({
     event.preventDefault();
     const form = event.currentTarget;
     const password = readSecret(new FormData(form), "password");
+    if (!isValidServerPassword(password)) {
+      setPasswordInvalid(true);
+      passwordInput.current?.focus({ preventScroll: true });
+      return;
+    }
+
+    setPasswordInvalid(false);
     form.reset();
     owner.login({ password }).catch(() => undefined);
+  };
+  const revalidatePassword = (event: FormEvent<HTMLInputElement>) => {
+    if (isValidServerPassword(event.currentTarget.value)) setPasswordInvalid(false);
   };
 
   return (
@@ -163,14 +180,19 @@ function LoginForm({
       <header className="server-startup__header server-startup__header--compact">
         <h1 id={titleId}>{copy.loginTitle}</h1>
       </header>
-      <form className="server-startup__form" onSubmit={submitLogin}>
+      <form className="server-startup__form" noValidate onSubmit={submitLogin}>
         <PromptError copy={copy} error={visibleError} retrySeconds={retrySeconds} />
         <SecretField
           autoComplete="current-password"
-          helper={copy.loginHelper}
-          invalid={visibleError?.kind === "invalid-credentials"}
+          helper={passwordInvalid ? copy.passwordInvalid : copy.passwordHelper}
+          helperTone={passwordInvalid ? "error" : undefined}
+          inputRef={passwordInput}
+          invalid={passwordInvalid || visibleError?.kind === "invalid-credentials"}
           label={copy.serverPassword}
+          maxLength={SERVER_PASSWORD_MAX_LENGTH}
           name="password"
+          onInput={revalidatePassword}
+          pattern={SERVER_PASSWORD_PATTERN}
           required
           revealLabel={copy.showPassword}
           concealLabel={copy.hidePassword}
@@ -198,7 +220,10 @@ function InitializeForm({
   readonly owner: ServerWebBootstrapOwner;
   readonly titleId: string;
 }) {
-  const [confirmationError, setConfirmationError] = useState(false);
+  const [passwordInvalid, setPasswordInvalid] = useState(false);
+  const [confirmationError, setConfirmationError] = useState<"invalid" | "mismatch" | null>(null);
+  const tokenInput = useRef<HTMLInputElement | null>(null);
+  const passwordInput = useRef<HTMLInputElement | null>(null);
   const confirmInput = useRef<HTMLInputElement | null>(null);
   const submitInitialization = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -207,23 +232,44 @@ function InitializeForm({
     const initializationToken = readSecret(fields, "initializationToken");
     const password = readSecret(fields, "password");
     const confirmation = readSecret(fields, "confirmPassword");
-    if (password !== confirmation) {
-      setConfirmationError(true);
+    if (initializationToken.length === 0) {
+      tokenInput.current?.focus({ preventScroll: true });
+      return;
+    }
+    const isPasswordValid = isValidServerPassword(password);
+    const isConfirmationValid = isValidServerPassword(confirmation);
+    const nextConfirmationError = !isConfirmationValid
+      ? "invalid"
+      : isPasswordValid && password !== confirmation ? "mismatch" : null;
+
+    setPasswordInvalid(!isPasswordValid);
+    setConfirmationError(nextConfirmationError);
+    if (!isPasswordValid) {
+      passwordInput.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (nextConfirmationError !== null) {
       confirmInput.current?.focus({ preventScroll: true });
       return;
     }
 
-    setConfirmationError(false);
     form.reset();
     owner.initialize({ initializationToken, password }).catch(() => undefined);
   };
+  const revalidatePassword = (event: FormEvent<HTMLInputElement>) => {
+    if (isValidServerPassword(event.currentTarget.value)) setPasswordInvalid(false);
+  };
   const revalidateConfirmation = (event: FormEvent<HTMLInputElement>) => {
-    if (!confirmationError) return;
+    if (confirmationError === null) return;
     const form = event.currentTarget.form;
     if (form === null) return;
     const fields = new FormData(form);
+    const password = readSecret(fields, "password");
+    const confirmation = readSecret(fields, "confirmPassword");
     setConfirmationError(
-      readSecret(fields, "password") !== readSecret(fields, "confirmPassword"),
+      !isValidServerPassword(confirmation)
+        ? "invalid"
+        : isValidServerPassword(password) && password !== confirmation ? "mismatch" : null,
     );
   };
 
@@ -233,12 +279,13 @@ function InitializeForm({
         <h1 id={titleId}>{copy.initializeTitle}</h1>
         <p>{copy.initializeIntroduction}</p>
       </header>
-      <form className="server-startup__form" onSubmit={submitInitialization}>
+      <form className="server-startup__form" noValidate onSubmit={submitInitialization}>
         <PromptError copy={copy} error={error} initializing />
         <SecretField
           autoComplete="off"
           helper={copy.tokenHelper}
           invalid={error?.kind === "invalid-credentials"}
+          inputRef={tokenInput}
           label={copy.initializationToken}
           name="initializationToken"
           required
@@ -247,24 +294,32 @@ function InitializeForm({
         />
         <SecretField
           autoComplete="new-password"
-          helper={copy.passwordHelper}
-          invalid={error?.kind === "invalid-credentials"}
+          helper={passwordInvalid ? copy.passwordInvalid : copy.passwordHelper}
+          helperTone={passwordInvalid ? "error" : undefined}
+          inputRef={passwordInput}
+          invalid={passwordInvalid || error?.kind === "invalid-credentials"}
           label={copy.ownerPassword}
-          minLength={12}
+          maxLength={SERVER_PASSWORD_MAX_LENGTH}
           name="password"
+          onInput={revalidatePassword}
+          pattern={SERVER_PASSWORD_PATTERN}
           required
           revealLabel={copy.showPassword}
           concealLabel={copy.hidePassword}
         />
         <SecretField
           autoComplete="new-password"
-          helper={confirmationError ? copy.passwordMismatch : copy.confirmationHelper}
-          helperTone={confirmationError ? "error" : undefined}
+          helper={confirmationError === "invalid"
+            ? copy.passwordInvalid
+            : confirmationError === "mismatch" ? copy.passwordMismatch : copy.confirmationHelper}
+          helperTone={confirmationError === null ? undefined : "error"}
           inputRef={confirmInput}
-          invalid={confirmationError}
+          invalid={confirmationError !== null}
           label={copy.confirmPassword}
+          maxLength={SERVER_PASSWORD_MAX_LENGTH}
           name="confirmPassword"
           onInput={revalidateConfirmation}
+          pattern={SERVER_PASSWORD_PATTERN}
           required
           revealLabel={copy.showConfirmation}
           concealLabel={copy.hideConfirmation}
@@ -533,10 +588,10 @@ type StartupCopy = {
   initializationToken: string;
   initializeIntroduction: string;
   initializeTitle: string;
-  loginHelper: string;
   loginTitle: string;
   ownerPassword: string;
   passwordHelper: string;
+  passwordInvalid: string;
   passwordMismatch: string;
   rateLimited: (seconds: number) => string;
   retry: string;
@@ -573,10 +628,10 @@ const startupCopy: Record<ServerStartupLanguage, StartupCopy> = {
     initializationToken: "One-time initialization token",
     initializeIntroduction: "Use the one-time token generated during deployment, then set the owner password.",
     initializeTitle: "Set up this server",
-    loginHelper: "This server has one owner account.",
     loginTitle: "Welcome back",
     ownerPassword: "Owner password",
-    passwordHelper: "Use at least 12 characters and a password unique to this server.",
+    passwordHelper: "Use 1–1024 characters: English letters, numbers, and special symbols only. Spaces are not allowed.",
+    passwordInvalid: "Enter 1–1024 characters using only English letters, numbers, and special symbols, without spaces.",
     passwordMismatch: "The passwords do not match. Enter the same password again.",
     rateLimited: (seconds) => `Too many attempts. Try again in ${seconds} seconds.`,
     retry: "Reconnect",
@@ -611,10 +666,10 @@ const startupCopy: Record<ServerStartupLanguage, StartupCopy> = {
     initializationToken: "一次性初始化令牌",
     initializeIntroduction: "使用部署时生成的一次性令牌，并为所有者设置密码。",
     initializeTitle: "设置这台服务器",
-    loginHelper: "此服务器只有一个所有者账户。",
     loginTitle: "欢迎回来",
     ownerPassword: "所有者密码",
-    passwordHelper: "至少 12 个字符。请使用独立密码。",
+    passwordHelper: "使用 1–1024 个字符，仅限英文字母、数字和特殊符号，不允许空格。",
+    passwordInvalid: "请输入 1–1024 个字符，只能使用英文字母、数字和特殊符号，且不能包含空格。",
     passwordMismatch: "两次密码不一致。请再次输入相同的密码。",
     rateLimited: (seconds) => `尝试次数过多。${seconds} 秒后可再次登录。`,
     retry: "重新连接",

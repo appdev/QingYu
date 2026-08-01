@@ -12,7 +12,7 @@ use qingyu_kernel::{
 use tempfile::tempdir;
 
 const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
-const OWNER_PASSWORD: &str = "correct horse battery staple";
+const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
 fn fixture_paths(root: &Path) -> KernelPaths {
     let workspace = root.join("workspace");
@@ -142,7 +142,7 @@ fn invalid_token_or_password_never_spends_the_token_or_creates_partial_state() {
                 7,
                 Duration::from_secs(1),
                 INITIALIZATION_TOKEN,
-                "short".to_owned(),
+                "contains space".to_owned(),
             )
             .unwrap_err(),
         ServerOwnerInitializationError::InvalidPassword
