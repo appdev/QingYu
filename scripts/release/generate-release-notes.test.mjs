@@ -6,8 +6,6 @@ const {
   buildCompareUrl,
   buildModelInput,
   buildReleaseFacts,
-  createGitHubModelsClient,
-  generateReleaseNotes,
   parseConventionalSubject,
   parseGitLog,
   parseNumStat,
@@ -25,11 +23,11 @@ test("release notes module exposes focused selection and rendering helpers", () 
   assert.equal(typeof releaseNotesModule.buildReleaseFacts, "function");
   assert.equal(typeof releaseNotesModule.buildCompareUrl, "function");
   assert.equal(typeof releaseNotesModule.buildModelInput, "function");
-  assert.equal(typeof releaseNotesModule.createGitHubModelsClient, "function");
   assert.equal(typeof releaseNotesModule.validateModelSummary, "function");
   assert.equal(typeof releaseNotesModule.renderModelReleaseNotes, "function");
-  assert.equal(typeof releaseNotesModule.generateReleaseNotes, "function");
   assert.equal(typeof releaseNotesModule.renderReleaseNotes, "function");
+  assert.equal(releaseNotesModule.createGitHubModelsClient, undefined);
+  assert.equal(releaseNotesModule.generateReleaseNotes, undefined);
 });
 
 test("selectPreviousRelease chooses the newest published ancestor", () => {
@@ -346,108 +344,47 @@ test("validateModelSummary accepts guarded Chinese terms backed by English sourc
   assert.doesNotThrow(() => validateModelSummary(translatedClaim, facts));
 });
 
-test("generateReleaseNotes uses a valid injected model result", async () => {
-  const calls = [];
-  const result = await generateReleaseNotes({
-    facts: modelFacts(),
-    model: "openai/gpt-4.1",
-    modelClient: async (request) => {
-      calls.push(request);
-      return validModelSummary();
-    },
+test("validateModelSummary requires each item claim to be supported by its referenced commits", () => {
+  const facts = modelFacts();
+  facts.commits.push({
+    sha: "1111111111111111111111111111111111111111",
+    shortSha: "1111111",
+    type: "fix",
+    scope: "security",
+    breaking: false,
+    subject: "fix(security): harden credential storage",
+    description: "harden credential storage",
+    body: "Improve security for stored credentials.",
+    author: "QingYu",
+    changedPaths: ["packages/app/src/security/credentials.ts"],
+    insertions: 5,
+    deletions: 2,
   });
+  const mismatchedClaim = validModelSummary();
+  mismatchedClaim.sections[0].items[0].text = "改进凭据存储的安全性。";
+  mismatchedClaim.sections[0].items[0].commitShas = ["0123456"];
 
-  assert.equal(result.usedModel, true);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, "openai/gpt-4.1");
-  assert.match(calls[0].systemPrompt, /简体中文/u);
-  assert.match(result.notes, /更可靠的同步/u);
+  assert.throws(() => validateModelSummary(mismatchedClaim, facts), /unsupported claim.*安全/u);
+
+  mismatchedClaim.sections[0].items[0].commitShas = ["1111111"];
+  assert.doesNotThrow(() => validateModelSummary(mismatchedClaim, facts));
 });
 
-test("GitHub Models client uses the current versioned inference endpoint", async () => {
-  const requests = [];
-  const modelClient = createGitHubModelsClient({
-    token: "test-token",
-    fetchImpl: async (url, options) => {
-      requests.push({ url, options });
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: JSON.stringify(validModelSummary()) } }],
-        }),
-      };
-    },
-  });
-
-  await modelClient({
-    model: "openai/gpt-4.1",
-    systemPrompt: "System prompt",
-    userPrompt: "User prompt",
-  });
-
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "https://models.github.ai/inference/chat/completions");
-  assert.equal(requests[0].options.headers["X-GitHub-Api-Version"], "2026-03-10");
-});
-
-test("generateReleaseNotes repairs one unsupported model summary before falling back", async () => {
-  const calls = [];
-  const unsupported = validModelSummary();
-  unsupported.sections[0].items[0].text = "自动完成安全迁移。";
-  const result = await generateReleaseNotes({
-    facts: modelFacts(),
-    modelClient: async (request) => {
-      calls.push(request);
-      return calls.length === 1 ? unsupported : validModelSummary();
-    },
-  });
-
-  assert.equal(result.usedModel, true);
-  assert.equal(calls.length, 2);
-  assert.match(calls[1].systemPrompt, /上一次输出未通过事实校验/u);
-  assert.match(calls[1].systemPrompt, /unsupported claim/u);
-  assert.match(result.notes, /更可靠的同步/u);
-});
-
-test("generateReleaseNotes warns and deterministically falls back for every model failure", async () => {
-  for (const failure of [
-    new Error("403 denied"),
-    new Error("request timed out"),
-    new SyntaxError("malformed JSON"),
+test("validateModelSummary rejects Markdown links and non-HTTP URI schemes", () => {
+  for (const externalReference of [
+    "查看[说明](//evil.example)。",
+    "通过[邮件](mailto:release@example.com)联系。",
+    "不要打开 javascript:alert(1)。",
+    "请拨打 tel:+123。",
+    "通过 sms:+123 联系。",
+    "打开 magnet:?xt=urn:test。",
+    "使用 vscode:extension/example。",
+    "访问 //evil.example。",
+    "访问 www.evil.example。",
+    "联系 release@example.com。",
   ]) {
-    const warnings = [];
-    const result = await generateReleaseNotes({
-      facts: modelFacts(),
-      modelClient: async () => {
-        throw failure;
-      },
-      warn: (message) => warnings.push(message),
-    });
-
-    assert.equal(result.usedModel, false);
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /deterministic release notes/u);
-    assert.equal(result.notes, renderReleaseNotes({ ...modelFacts(), commits: modelFacts().commits }));
+    const summary = validModelSummary();
+    summary.sections[0].items[0].text = externalReference;
+    assert.throws(() => validateModelSummary(summary, modelFacts()), /unsupported claim \(URL\)/u);
   }
-});
-
-test("generateReleaseNotes fails closed when a model result is required", async () => {
-  await assert.rejects(
-    generateReleaseNotes({
-      facts: modelFacts(),
-      requireModel: true,
-    }),
-    /GitHub Models failed.*client is required/u,
-  );
-
-  await assert.rejects(
-    generateReleaseNotes({
-      facts: modelFacts(),
-      modelClient: async () => {
-        throw new Error("410 Gone");
-      },
-      requireModel: true,
-    }),
-    /GitHub Models failed.*410 Gone/u,
-  );
 });

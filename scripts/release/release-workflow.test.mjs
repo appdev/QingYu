@@ -15,21 +15,27 @@ test("release workflow resolves a stable or preview updater endpoint before bund
   assert.match(workflow, /TAURI_UPDATER_ENDPOINT: \$\{\{ steps\.updater_endpoint\.outputs\.endpoint \}\}/);
 });
 
-test("release workflow always creates a draft with AI permission and inspectable note inputs", () => {
+test("release workflow creates a draft with deterministic inspectable note inputs", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
 
-  assert.match(workflow, /^  publish_release:[\s\S]*?permissions:\n      contents: write\n      models: read/m);
-  assert.match(workflow, /^          draft: true$/m);
-  assert.match(workflow, /GITHUB_MODELS_MODEL: openai\/gpt-4\.1/);
-  assert.match(workflow, /REQUIRE_GITHUB_MODELS: true/);
+  assert.match(workflow, /^  publish_release:[\s\S]*?permissions:\n      contents: write/m);
+  assert.match(workflow, /group: release-mutation-\$\{\{ github\.repository \}\}/);
   assert.match(workflow, /RELEASE_FACTS_PATH: release-facts\.json/);
   assert.match(workflow, /name: Upload generated release notes/);
-  assert.match(workflow, /uses: softprops\/action-gh-release@v3/);
+  assert.match(workflow, /name: Publish release draft/);
+  assert.match(workflow, /node scripts\/release\/publish-release-draft\.mjs/);
+  assert.match(workflow, /ALLOWED_STALE_DRAFT_ID: \$\{\{ inputs\.replace_stale_draft_id \}\}/);
+  assert.match(workflow, /RELEASE_FILES_PATH: release-files\.txt/);
   assert.match(workflow, /path: \|\n            release-notes\.md\n            release-facts\.json/);
+  assert.doesNotMatch(workflow, /models: read/);
+  assert.doesNotMatch(workflow, /GITHUB_MODELS/u);
+  assert.doesNotMatch(workflow, /REQUIRE_GITHUB_MODELS/u);
   assert.doesNotMatch(workflow, /inputs\.draft/);
   assert.doesNotMatch(workflow, /Publish preview updater manifest/);
   assert.doesNotMatch(workflow, /Prepare Homebrew tap checkout/);
   assert.doesNotMatch(workflow, /Publish Homebrew cask to tap/);
+  assert.doesNotMatch(workflow, /softprops\/action-gh-release/u);
+  assert.doesNotMatch(workflow, /\$\{\{ github\.ref \}\}/u);
 });
 
 test("release workflow excludes deb package internals from GitHub release assets", () => {
