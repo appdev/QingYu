@@ -4097,6 +4097,45 @@ describe("useMarkdownDocument", () => {
     });
   });
 
+  it("binds a new Kernel workspace document after its first save", async () => {
+    const documentPath = "kernel-workspace://primary/Untitled.md";
+    const editorMarkdown = "# First Kernel draft";
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Untitled.md",
+      path: documentPath
+    });
+    const { result } = renderHook(() => useMarkdownDocument({
+      getCurrentMarkdown: () => editorMarkdown,
+      onTreeRootFromFilePath: vi.fn(),
+      onTreeRootFromFolderPath: vi.fn(),
+      preferencesReady: false,
+      restoreWorkspaceOnStartup: false,
+      saveAsWorkspacePolicy: { kind: "primary", root: "kernel-workspace://primary" }
+    }));
+    act(() => result.current.handleMarkdownChange(editorMarkdown));
+
+    await act(async () => {
+      await result.current.saveCurrentDocument();
+    });
+
+    expect(mockedOpenNativeMarkdownFileInNewWindow).not.toHaveBeenCalled();
+    expect(result.current.document).toMatchObject({
+      dirty: false,
+      name: "Untitled.md",
+      path: documentPath
+    });
+
+    await act(async () => {
+      await result.current.saveCurrentDocument();
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(expect.objectContaining({
+      path: documentPath,
+      suggestedName: "Untitled.md"
+    }));
+  });
+
   it("retains standalone Save As behavior for an external owner", async () => {
     const originalPath = "/external/original.md";
     const copyPath = "/elsewhere/copy.md";

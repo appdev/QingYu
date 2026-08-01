@@ -10,6 +10,7 @@ import {
 } from "../index";
 import {
   createKernelAppConfigRuntime,
+  kernelWorkspaceDocumentRelativePathFromPath,
   kernelWorkspacePathFromRelativePath,
   kernelWorkspaceRelativePathFromPath,
 } from "./app-config";
@@ -77,6 +78,23 @@ describe("Kernel AppConfig runtime", () => {
       .toThrow("invalid");
     expect(() => kernelWorkspaceRelativePathFromPath(`${kernelWorkspaceRoot}/notes%2Fa.md`))
       .toThrow("invalid");
+  });
+
+  it.each([
+    [`${kernelWorkspaceRoot}/notes/Guide.md`, "notes/Guide.md"],
+    [`${kernelWorkspaceRoot}/notes/Long%20Guide.markdown`, "notes/Long Guide.markdown"],
+  ])("accepts Kernel document URI %s", (path, expected) => {
+    expect(kernelWorkspaceDocumentRelativePathFromPath(path)).toBe(expected);
+  });
+
+  it.each([
+    `${kernelWorkspaceRoot}/notes/Guide.txt`,
+    "kernel-workspace://secondary/notes/Guide.md",
+    `${kernelWorkspaceRoot}/notes/../Guide.md`,
+    `${kernelWorkspaceRoot}/notes%2FGuide.md`,
+    `${kernelWorkspaceRoot}/notes/%E0%A4%A.md`,
+  ])("rejects invalid Kernel document URI %s", (path) => {
+    expect(() => kernelWorkspaceDocumentRelativePathFromPath(path)).toThrow();
   });
 
   it.each([

@@ -153,6 +153,193 @@ describe("Kernel AppRuntime adapter", () => {
     expect(legacySave).not.toHaveBeenCalled();
   });
 
+  it("allocates a numbered name when a new Markdown document already exists", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    const collision = Object.assign(new Error("document already exists"), {
+      code: "document_already_exists",
+    });
+    const create: KernelDomainPort["documents"]["create"] = vi.fn(async (input) => {
+      if (input.name !== "Untitled 2.md") throw collision;
+      return {
+        contents: input.kind === "file" ? input.contents : "",
+        kind: "file" as const,
+        locator: "document-3" as never,
+        modifiedAt: "2026-07-31T00:00:00Z",
+        name: "Untitled 2.md",
+        parent: "notes" as never,
+        relativePath: "notes/Untitled 2.md" as never,
+        revision,
+        sizeBytes: 7,
+        workspaceGeneration: generation,
+      };
+    });
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: { ...unavailable.documents, create },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const files = createKernelFileRuntime(kernel);
+
+    await expect(files.saveMarkdownFile({
+      contents: "# Draft",
+      defaultDirectory: `${kernelWorkspaceRoot}/notes`,
+      path: null,
+      suggestedName: "Untitled.md",
+    })).resolves.toEqual({
+      name: "Untitled 2.md",
+      path: `${kernelWorkspaceRoot}/notes/Untitled%202.md`,
+    });
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create).toHaveBeenNthCalledWith(1, {
+      contents: "# Draft",
+      kind: "file",
+      name: "Untitled.md",
+      parent: "notes",
+      workspaceGeneration: generation,
+    });
+    expect(create).toHaveBeenNthCalledWith(2, {
+      contents: "# Draft",
+      kind: "file",
+      name: "Untitled 1.md",
+      parent: "notes",
+      workspaceGeneration: generation,
+    });
+    expect(create).toHaveBeenNthCalledWith(3, {
+      contents: "# Draft",
+      kind: "file",
+      name: "Untitled 2.md",
+      parent: "notes",
+      workspaceGeneration: generation,
+    });
+  });
+
+  it.each([
+    ["Draft.Md", "Draft 1.Md", `${kernelWorkspaceRoot}/Draft%201.Md`],
+    ["Draft.MaRkDoWn", "Draft 1.MaRkDoWn", `${kernelWorkspaceRoot}/Draft%201.MaRkDoWn`],
+  ])(
+    "preserves the supported Markdown extension when allocating from %s",
+    async (suggestedName, numberedName, expectedPath) => {
+      const unavailable = createUnavailableKernelDomainPort();
+      const collision = Object.assign(new Error("document already exists"), {
+        code: "document_already_exists",
+      });
+      let attempt = 0;
+      const create: KernelDomainPort["documents"]["create"] = vi.fn(async (input) => {
+        attempt += 1;
+        if (attempt === 1) throw collision;
+        return {
+          contents: input.kind === "file" ? input.contents : "",
+          kind: "file" as const,
+          locator: "document-2" as never,
+          modifiedAt: "2026-07-31T00:00:00Z",
+          name: input.name,
+          parent: "" as never,
+          relativePath: input.name as never,
+          revision,
+          sizeBytes: 7,
+          workspaceGeneration: generation,
+        };
+      });
+      const kernel: KernelDomainPort = {
+        ...unavailable,
+        availability: "available",
+        documents: { ...unavailable.documents, create },
+        workspace: {
+          read: vi.fn(async () => ({
+            displayName: "Notes",
+            generation,
+            id: "workspace-1",
+            readiness: "ready" as const,
+            revision,
+          })),
+        },
+      };
+      const files = createKernelFileRuntime(kernel);
+
+      await expect(files.saveMarkdownFile({
+        contents: "# Draft",
+        path: null,
+        suggestedName,
+      })).resolves.toEqual({ name: numberedName, path: expectedPath });
+      expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({ name: suggestedName }));
+      expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({ name: numberedName }));
+    },
+  );
+
+  it("does not retry a new Markdown document after a non-collision error", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    const failure = Object.assign(new Error("workspace locked"), {
+      code: "workspace_locked",
+    });
+    const create: KernelDomainPort["documents"]["create"] = vi.fn(async () => {
+      throw failure;
+    });
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: { ...unavailable.documents, create },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const files = createKernelFileRuntime(kernel);
+
+    await expect(files.saveMarkdownFile({
+      contents: "# Draft",
+      path: null,
+      suggestedName: "Untitled.md",
+    })).rejects.toBe(failure);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("stops allocating a new Markdown document after 10,000 collisions", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    const collision = Object.assign(new Error("document already exists"), {
+      code: "document_already_exists",
+    });
+    const create: KernelDomainPort["documents"]["create"] = vi.fn(async () => {
+      throw collision;
+    });
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: { ...unavailable.documents, create },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const files = createKernelFileRuntime(kernel);
+
+    await expect(files.saveMarkdownFile({
+      contents: "# Draft",
+      path: null,
+      suggestedName: "Untitled.md",
+    })).rejects.toThrow("Unable to allocate a unique Markdown filename after 10,000 attempts.");
+    expect(create).toHaveBeenCalledTimes(10_000);
+  });
+
   it("saves pasted images through the Kernel resource writer without a legacy fallback", async () => {
     const unavailable = createUnavailableKernelDomainPort();
     const create = vi.fn(async () => ({

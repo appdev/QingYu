@@ -141,6 +141,14 @@ export function kernelWorkspaceRelativePathFromPath(
   return decoded as KernelWorkspaceRelativePath;
 }
 
+export function kernelWorkspaceDocumentRelativePathFromPath(
+  path: string,
+): KernelWorkspaceRelativePath {
+  const relativePath = kernelWorkspaceRelativePathFromPath(path);
+  requireWorkspaceRelativePath(relativePath, { allowEmpty: false, markdown: true });
+  return relativePath;
+}
+
 async function resolveWindowLabel(
   requested: string | null | undefined,
   getWindowLabel: () => Promise<string | null>,
