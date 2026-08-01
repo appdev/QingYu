@@ -117,6 +117,23 @@ fn standalone_process_installs_durable_settings_and_sync_services_with_exact_cap
     assert!(settings.starts_with("HTTP/1.1 200 OK\r\n"), "{settings}");
     let settings_body: Value = serde_json::from_str(response_body(&settings)).unwrap();
     assert!(settings_body["revision"].as_str().is_some());
+    let patched_settings = authorized_request(
+        port,
+        VALID_CREDENTIAL,
+        "PATCH",
+        "/api/v1/settings",
+        Some(&json!({
+            "expectedRevision": settings_body["revision"],
+            "values": [{
+                "key": "language",
+                "value": { "type": "string", "value": "fr" }
+            }]
+        })),
+    );
+    assert!(
+        patched_settings.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{patched_settings}"
+    );
     assert!(app_data.join("settings.json").is_file());
 
     let sync_config = authorized_get(port, "/api/v1/sync/config");

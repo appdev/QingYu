@@ -12,12 +12,10 @@ use crate::{
     },
 };
 
-/// Host-owned settings persistence.
+/// Kernel settings persistence boundary.
 ///
-/// Desktop implements this trait with the one `tauri-plugin-store` instance
-/// that owns `settings.json`. Kernel-owned file storage is a separate adapter
-/// used by tests and future non-Tauri hosts; the service never opens a host
-/// settings path itself.
+/// Production desktop, server, and mobile hosts provide this through the
+/// Kernel durable-file adapter rooted at their configuration capability.
 pub trait SettingsStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsStoreError>;
     fn set(&self, key: &str, value: Value) -> Result<(), SettingsStoreError>;
@@ -29,11 +27,7 @@ pub trait SettingsStore: Send + Sync {
     ) -> Result<(), SettingsStoreError>;
 }
 
-/// Standalone Kernel settings storage for hosts that do not provide their own
-/// settings database.
-///
-/// Desktop keeps using its single `tauri-plugin-store` owner. Server/mobile
-/// hosts can construct this adapter over the Kernel durable-file boundary.
+/// Kernel settings storage over the durable configuration-file boundary.
 pub struct AtomicJsonSettingsStore {
     durable: DurableFileStore,
     target: StorageFileName,
@@ -278,8 +272,7 @@ mod tests {
         let config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let store = AtomicJsonSettingsStore::new(durable).unwrap();
         let mut state = store.state.lock().unwrap();
         state

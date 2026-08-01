@@ -279,15 +279,10 @@ pub enum SettingsGroup {
     ExportSettings,
 }
 
-pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
-const SETTINGS_SCHEMA_VERSION_KEY: &str = "settingsSchemaVersion";
-const LEGACY_MCP_CONFIG_KEY: &str = "mcp";
 const THEME_CATALOG_SETTINGS_KEYS: &[&str] = &[
     "themeCatalogVersion",
     "theme",
     "appearanceMode",
-    "lightTheme",
-    "darkTheme",
     "lightCustomThemeCss",
     "customThemeCss",
     "darkCustomThemeCss",
@@ -317,64 +312,6 @@ impl SettingsService {
             .map_err(|_| SettingsServiceError::unavailable())?;
         self.coordinator.ensure_available()?;
         self.read_exposed_unlocked()
-    }
-
-    pub fn migrate_schema(&self) -> Result<(), SettingsServiceError> {
-        let _transaction = self
-            .coordinator
-            .transaction_gate
-            .lock()
-            .map_err(|_| SettingsServiceError::unavailable())?;
-        self.coordinator.ensure_available()?;
-        let stored_version = self
-            .store
-            .get(SETTINGS_SCHEMA_VERSION_KEY)?
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        if stored_version >= SETTINGS_SCHEMA_VERSION {
-            return Ok(());
-        }
-
-        let mut changes = BTreeMap::from([(
-            SETTINGS_SCHEMA_VERSION_KEY.to_string(),
-            Value::from(SETTINGS_SCHEMA_VERSION),
-        )]);
-        for (current, legacy) in [("lightThemeId", "lightTheme"), ("darkThemeId", "darkTheme")] {
-            if self.store.get(current)?.is_none() {
-                if let Some(value) = self
-                    .store
-                    .get(legacy)?
-                    .filter(|value| valid_migrated_theme_id(current, value))
-                {
-                    changes.insert(current.to_string(), value);
-                }
-            }
-        }
-        let mut previous = BTreeMap::new();
-        for key in changes.keys() {
-            previous.insert(key.clone(), self.store.get(key)?);
-        }
-        for (key, value) in &changes {
-            if let Err(error) = self.store.set(key, value.clone()) {
-                if self.restore(&previous).is_err() {
-                    self.coordinator.require_recovery();
-                    return Err(SettingsServiceError::recovery_required());
-                }
-                return Err(error.into());
-            }
-        }
-        if let Err(error) = self.store.save() {
-            if error.kind() == SettingsStoreErrorKind::PublishUncertain {
-                self.coordinator.require_recovery();
-                return Err(SettingsServiceError::recovery_required());
-            }
-            if self.restore(&previous).is_err() {
-                self.coordinator.require_recovery();
-                return Err(SettingsServiceError::recovery_required());
-            }
-            return Err(error.into());
-        }
-        Ok(())
     }
 
     pub fn initialize_language_if_invalid(
@@ -519,48 +456,6 @@ impl SettingsService {
         Ok(true)
     }
 
-    pub fn read_legacy_mcp_config(&self) -> Result<Option<Value>, SettingsServiceError> {
-        let _transaction = self
-            .coordinator
-            .transaction_gate
-            .lock()
-            .map_err(|_| SettingsServiceError::unavailable())?;
-        self.coordinator.ensure_available()?;
-        self.store.get(LEGACY_MCP_CONFIG_KEY).map_err(Into::into)
-    }
-
-    pub fn remove_legacy_mcp_config_if_matches(
-        &self,
-        expected: &Value,
-    ) -> Result<bool, SettingsServiceError> {
-        let _transaction = self
-            .coordinator
-            .transaction_gate
-            .lock()
-            .map_err(|_| SettingsServiceError::unavailable())?;
-        self.coordinator.ensure_available()?;
-        if self.store.get(LEGACY_MCP_CONFIG_KEY)?.as_ref() != Some(expected) {
-            return Ok(false);
-        }
-        self.store.delete(LEGACY_MCP_CONFIG_KEY)?;
-        if let Err(error) = self.store.save() {
-            if error.kind() == SettingsStoreErrorKind::PublishUncertain {
-                self.coordinator.require_recovery();
-                return Err(SettingsServiceError::recovery_required());
-            }
-            if self
-                .store
-                .set(LEGACY_MCP_CONFIG_KEY, expected.clone())
-                .is_err()
-            {
-                self.coordinator.require_recovery();
-                return Err(SettingsServiceError::recovery_required());
-            }
-            return Err(error.into());
-        }
-        Ok(true)
-    }
-
     fn read_exposed_unlocked(&self) -> Result<SettingsSnapshotDto, SettingsServiceError> {
         let mut values = BTreeMap::new();
         values.insert(
@@ -573,14 +468,12 @@ impl SettingsService {
             "appearance.lightTheme".to_string(),
             self.store
                 .get("lightThemeId")?
-                .or(self.store.get("lightTheme")?)
                 .unwrap_or_else(|| json!(super::model::DEFAULT_LIGHT_THEME_ID)),
         );
         values.insert(
             "appearance.darkTheme".to_string(),
             self.store
                 .get("darkThemeId")?
-                .or(self.store.get("darkTheme")?)
                 .unwrap_or_else(|| json!(super::model::DEFAULT_DARK_THEME_ID)),
         );
         values.insert(
@@ -689,14 +582,8 @@ impl SettingsService {
         match group {
             SettingsGroup::Appearance => {
                 let mode = self.store.get("appearanceMode")?;
-                let light = self
-                    .store
-                    .get("lightThemeId")?
-                    .or(self.store.get("lightTheme")?);
-                let dark = self
-                    .store
-                    .get("darkThemeId")?
-                    .or(self.store.get("darkTheme")?);
+                let light = self.store.get("lightThemeId")?;
+                let dark = self.store.get("darkThemeId")?;
                 if mode.is_none() && light.is_none() && dark.is_none() {
                     return Ok(None);
                 }
@@ -1284,10 +1171,6 @@ fn exact_group_object<'a>(
     (actual == expected)
         .then_some(object)
         .ok_or_else(SettingsServiceError::invalid)
-}
-
-fn valid_migrated_theme_id(key: &str, value: &Value) -> bool {
-    valid_single_portable_value(key, value)
 }
 
 fn valid_single_portable_value(key: &str, value: &Value) -> bool {

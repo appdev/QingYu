@@ -27,7 +27,7 @@ use qingyu_kernel::{
         service::{
             SettingsGroup, SettingsPublicationBatch, SettingsPublicationBatchSink,
             SettingsPublicationEvent, SettingsRuntimeCoordinator, SettingsService,
-            SettingsServiceErrorKind, SETTINGS_SCHEMA_VERSION,
+            SettingsServiceErrorKind,
         },
         storage::{AtomicJsonSettingsStore, SettingsStore, SettingsStoreError},
     },
@@ -320,7 +320,6 @@ impl EventSink for RecordingEvents {
 fn default_read_is_complete_ordered_and_safe() {
     let store = Arc::new(MemorySettingsStore::with([
         ("workspace", serde_json::json!({ "path": "/private/notes" })),
-        ("mcp", serde_json::json!({ "enabled": true })),
         (
             "exportSettings",
             serde_json::json!({ "pandocPath": "/private/bin/pandoc" }),
@@ -338,7 +337,6 @@ fn default_read_is_complete_ordered_and_safe() {
     assert!(!serialized.contains("/private"));
     assert!(!serialized.contains("workspace"));
     assert!(!serialized.contains("pandocPath"));
-    assert!(!serialized.contains("mcp"));
 }
 
 #[test]
@@ -463,9 +461,7 @@ fn atomic_json_store_survives_reopen_and_preserves_non_portable_values() {
     std::fs::create_dir(&cache).unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let config = KernelConfig::generate().unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let store = AtomicJsonSettingsStore::new(durable).unwrap();
     store.set("language", serde_json::json!("en")).unwrap();
     store
@@ -474,9 +470,7 @@ fn atomic_json_store_survives_reopen_and_preserves_non_portable_values() {
     store.save().unwrap();
     drop(store);
 
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let reopened = AtomicJsonSettingsStore::new(durable).unwrap();
     assert_eq!(
         reopened.get("language").unwrap(),
@@ -491,9 +485,7 @@ fn atomic_json_store_survives_reopen_and_preserves_non_portable_values() {
         .unwrap();
     drop(reopened);
 
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let final_store = AtomicJsonSettingsStore::new(durable).unwrap();
     assert_eq!(
         final_store.get("language").unwrap(),
@@ -1219,55 +1211,6 @@ fn compatibility_groups_round_trip_through_the_kernel_owner() {
 }
 
 #[test]
-fn schema_migration_persists_marker_and_values_in_one_save() {
-    let store = Arc::new(MemorySettingsStore::with([
-        ("lightTheme", serde_json::json!("newsprint")),
-        ("darkTheme", serde_json::json!("night")),
-    ]));
-    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
-
-    service.migrate_schema().unwrap();
-
-    let values = store.values.lock().unwrap();
-    assert_eq!(
-        values["settingsSchemaVersion"],
-        serde_json::json!(SETTINGS_SCHEMA_VERSION)
-    );
-    assert_eq!(values["lightThemeId"], serde_json::json!("newsprint"));
-    assert_eq!(values["darkThemeId"], serde_json::json!("night"));
-    assert_eq!(values["lightTheme"], serde_json::json!("newsprint"));
-    assert_eq!(values["darkTheme"], serde_json::json!("night"));
-    drop(values);
-    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
-
-    service.migrate_schema().unwrap();
-    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
-    let portable = service.portable_snapshot().unwrap();
-    assert!(!String::from_utf8(portable.bytes().unwrap().to_vec())
-        .unwrap()
-        .contains("settingsSchemaVersion"));
-}
-
-#[test]
-fn schema_migration_does_not_copy_invalid_legacy_theme_ids() {
-    let store = Arc::new(MemorySettingsStore::with([
-        ("lightTheme", serde_json::json!("qingyu-reserved")),
-        ("darkTheme", serde_json::json!(7)),
-    ]));
-    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
-
-    service.migrate_schema().unwrap();
-
-    let values = store.values.lock().unwrap();
-    assert!(!values.contains_key("lightThemeId"));
-    assert!(!values.contains_key("darkThemeId"));
-    assert_eq!(
-        values["settingsSchemaVersion"],
-        serde_json::json!(SETTINGS_SCHEMA_VERSION)
-    );
-}
-
-#[test]
 fn startup_language_initialization_uses_the_owner_transaction_and_preserves_valid_values() {
     let store = Arc::new(MemorySettingsStore::with([(
         "language",
@@ -1345,47 +1288,6 @@ fn theme_catalog_migration_save_failure_restores_every_changed_field() {
     assert_eq!(*store.values.lock().unwrap(), before);
     store.fail_save.store(false, Ordering::Relaxed);
     assert!(service.read_exposed().is_ok());
-}
-
-#[test]
-fn ordinary_schema_migration_save_failure_restores_the_prior_cache() {
-    let store = Arc::new(MemorySettingsStore::with([(
-        "lightTheme",
-        serde_json::json!("newsprint"),
-    )]));
-    store.fail_save.store(true, Ordering::Relaxed);
-    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
-
-    let error = service.migrate_schema().unwrap_err();
-
-    assert_eq!(error.kind(), SettingsServiceErrorKind::Unavailable);
-    let values = store.values.lock().unwrap();
-    assert_eq!(values.len(), 1);
-    assert_eq!(values["lightTheme"], serde_json::json!("newsprint"));
-    drop(values);
-    store.fail_save.store(false, Ordering::Relaxed);
-    assert!(service.read_exposed().is_ok());
-}
-
-#[test]
-fn uncertain_schema_migration_save_requires_owner_recovery() {
-    let store = Arc::new(MemorySettingsStore::default());
-    store
-        .publish_uncertain_on_save
-        .store(true, Ordering::Relaxed);
-    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
-
-    let error = service.migrate_schema().unwrap_err();
-
-    assert_eq!(error.kind(), SettingsServiceErrorKind::RecoveryRequired);
-    assert_eq!(
-        store.values.lock().unwrap()["settingsSchemaVersion"],
-        serde_json::json!(SETTINGS_SCHEMA_VERSION)
-    );
-    assert_eq!(
-        service.read_exposed().unwrap_err().kind(),
-        SettingsServiceErrorKind::RecoveryRequired
-    );
 }
 
 #[test]
@@ -1641,13 +1543,11 @@ fn empty_duplicate_and_boundary_invalid_patches_never_write() {
 }
 
 fn portable_golden_store() -> Value {
-    let mut store = serde_json::from_str::<Value>(include_str!(
+    serde_json::from_str::<Value>(include_str!(
         "../../../packages/app/src/lib/settings/portable-settings.golden.json"
     ))
     .unwrap()["validStore"]
-        .clone();
-    store.as_object_mut().unwrap().remove("mcp");
-    store
+        .clone()
 }
 
 #[test]
@@ -1657,7 +1557,6 @@ fn portable_validation_accepts_the_cross_language_golden_and_rejects_local_field
 
     for invalid in [
         serde_json::json!({ "workspace": { "path": "/private/notes" } }),
-        serde_json::json!({ "mcp": { "enabled": true } }),
         serde_json::json!({ "exportSettings": { "pandocPath": "/private/bin/pandoc" } }),
     ] {
         assert!(validate_portable_settings_bytes(&serde_json::to_vec(&invalid).unwrap()).is_err());
@@ -1819,26 +1718,6 @@ fn portable_replace_preserves_valid_local_only_nested_settings() {
 }
 
 #[test]
-fn legacy_mcp_cleanup_is_conditional_and_uses_the_settings_transaction() {
-    let legacy = serde_json::json!({ "version": 1, "enabled": true });
-    let store = Arc::new(MemorySettingsStore::with([("mcp", legacy.clone())]));
-    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
-
-    assert_eq!(
-        service.read_legacy_mcp_config().unwrap(),
-        Some(legacy.clone())
-    );
-    assert!(!service
-        .remove_legacy_mcp_config_if_matches(&serde_json::json!({ "enabled": false }))
-        .unwrap());
-    assert!(service
-        .remove_legacy_mcp_config_if_matches(&legacy)
-        .unwrap());
-    assert_eq!(service.read_legacy_mcp_config().unwrap(), None);
-    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
-}
-
-#[test]
 fn portable_snapshot_rejects_an_invalid_local_portable_group() {
     let store = Arc::new(MemorySettingsStore::with([(
         "editorPreferences",
@@ -1852,20 +1731,18 @@ fn portable_snapshot_rejects_an_invalid_local_portable_group() {
 }
 
 #[test]
-fn legacy_remote_cleanup_removes_mcp_and_adds_null_export_font_family() {
-    let mut legacy = portable_golden_store();
-    legacy["mcp"] = serde_json::json!({ "enabled": true });
-    legacy["exportSettings"]
+fn remote_portable_settings_without_font_family_are_sanitized() {
+    let mut remote = portable_golden_store();
+    remote["exportSettings"]
         .as_object_mut()
         .unwrap()
         .remove("fontFamily");
 
-    let sanitized = sanitize_legacy_remote_portable_settings(&serde_json::to_vec(&legacy).unwrap())
-        .expect("valid legacy payload")
-        .expect("legacy payload changed");
+    let sanitized = sanitize_legacy_remote_portable_settings(&serde_json::to_vec(&remote).unwrap())
+        .expect("valid remote payload")
+        .expect("remote payload changed");
     let upgraded: Value = serde_json::from_slice(&sanitized).unwrap();
 
-    assert!(upgraded.get("mcp").is_none());
     assert!(upgraded["exportSettings"]["fontFamily"].is_null());
     validate_portable_settings_bytes(&sanitized).unwrap();
 }

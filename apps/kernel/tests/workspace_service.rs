@@ -657,9 +657,7 @@ async fn active_running_sync_fixture(root: &std::path::Path) -> ActiveRunningSyn
     let paths = KernelPaths::desktop(&workspace_path, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
     let rebuild_managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, sync_test_ports()).unwrap();
     let store = Arc::new(MemoryPrimaryWorkspaceStore::default());
     let workspace = Arc::new(

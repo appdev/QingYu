@@ -14,7 +14,10 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::{config::KernelLaunchEpoch, paths::InstanceDataRoot};
+use crate::{
+    config::KernelLaunchEpoch,
+    paths::{ConfigRoot, InstanceDataRoot},
+};
 
 const MAX_INTERNAL_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_INTENT_BYTES: u64 = 64 * 1024;
@@ -44,6 +47,21 @@ impl DurableFileStore {
     /// finalize a prior launch's durability-uncertain publication.
     pub fn at_instance_data(
         root: &InstanceDataRoot,
+        launch_epoch: &KernelLaunchEpoch,
+    ) -> Result<Self, DurableFileFailure> {
+        let directory = root
+            .try_clone_dir()
+            .map_err(|_| DurableFileFailure::unavailable())?;
+        Ok(Self::new(
+            directory,
+            root.canonical_path().to_path_buf(),
+            launch_epoch.value(),
+            Arc::new(NoFaults),
+        ))
+    }
+
+    pub fn at_config(
+        root: &ConfigRoot,
         launch_epoch: &KernelLaunchEpoch,
     ) -> Result<Self, DurableFileFailure> {
         let directory = root

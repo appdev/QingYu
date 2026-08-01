@@ -336,11 +336,8 @@ pub(crate) async fn install_fixed_kernel_services(
 ) -> Result<InstalledFixedKernelServices, FixedKernelCompositionError> {
     let settings_store = Arc::new(
         AtomicJsonSettingsStore::new(
-            DurableFileStore::at_instance_data(
-                runtime.instance_data_root(),
-                runtime.launch_epoch(),
-            )
-            .map_err(|_| FixedKernelCompositionError::SettingsStore)?,
+            DurableFileStore::at_config(runtime.config_root(), runtime.launch_epoch())
+                .map_err(|_| FixedKernelCompositionError::SettingsStore)?,
         )
         .map_err(|_| FixedKernelCompositionError::SettingsStore)?,
     );
@@ -359,11 +356,8 @@ pub(crate) async fn install_fixed_kernel_services(
         settings_store,
         runtime.event_broker().clone(),
     ));
-    settings_service
-        .migrate_schema()
-        .map_err(|_| FixedKernelCompositionError::SettingsMigration)?;
     let sync_store = SyncConfigStore::new(
-        DurableFileStore::at_instance_data(runtime.instance_data_root(), runtime.launch_epoch())
+        DurableFileStore::at_config(runtime.config_root(), runtime.launch_epoch())
             .map_err(|_| FixedKernelCompositionError::SyncStore)?,
     )
     .map_err(|_| FixedKernelCompositionError::SyncStore)?;
@@ -460,7 +454,6 @@ pub(crate) enum FixedKernelCompositionError {
     SettingsStore,
     SyncStore,
     WorkspaceService,
-    SettingsMigration,
     WorkspaceInstall,
     WorkspaceSnapshot,
     DocumentStorage,
@@ -640,8 +633,7 @@ mod tests {
         write_automatic_config(&app_data);
         let config = KernelConfig::generate().unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let (runtime, _installed) =
             compose_fixed_native_kernel_services(config, paths, workspace_state)
                 .await

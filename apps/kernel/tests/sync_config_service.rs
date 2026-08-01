@@ -1218,9 +1218,7 @@ async fn active_sync_runtime(
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, ports).unwrap();
     let workspace = install_active_workspace(&runtime, managed).await;
     (runtime, workspace, durable)
@@ -1266,9 +1264,7 @@ async fn existing_v3_anonymous_webdav_config_remains_ready() {
     .unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
         runtime.clone(),
@@ -1317,9 +1313,7 @@ async fn disabled_v3_config_with_unrepresentable_bounds_is_rejected_without_rewr
     std::fs::write(app_data.join("sync-config.json"), &bytes).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
         runtime.clone(),
@@ -1364,9 +1358,7 @@ fn corrupt_config_recovery_preserves_exact_damaged_bytes_before_installing_v3() 
     let expected = Revision::parse(format!("{:x}", sha2::Sha256::digest(damaged))).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let store = SyncConfigStore::new(durable).unwrap();
 
     let installed = store
@@ -1427,9 +1419,7 @@ fn stale_recovery_does_not_replace_or_preserve_the_current_config() {
     let stale = Revision::parse("0".repeat(64)).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let store = SyncConfigStore::new(durable).unwrap();
 
     let error = store
@@ -1484,9 +1474,7 @@ async fn patch_applies_inline_credential_keep_replace_clear_without_secret_event
     .unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let mut events = runtime.event_broker().subscribe();
     let service = SyncService::new(
@@ -1553,9 +1541,7 @@ async fn unsafe_legacy_endpoint_is_fully_redacted_from_public_config() {
     .unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
         runtime.clone(),
@@ -1597,8 +1583,7 @@ async fn submitted_userinfo_query_and_fragment_endpoints_are_rejected_without_wr
         let config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let service = SyncService::new(
             runtime.clone(),
@@ -1643,9 +1628,7 @@ async fn stale_patch_returns_current_revision_without_writing() {
     let current_revision = format!("{:x}", sha2::Sha256::digest(&original));
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
         runtime.clone(),
@@ -1712,11 +1695,9 @@ async fn patching_one_kernel_instance_does_not_change_another_instance() {
     let first_config = KernelConfig::generate().unwrap();
     let first_paths =
         KernelPaths::desktop(&first_workspace, &first_app_data, &first_cache).unwrap();
-    let first_durable = DurableFileStore::at_instance_data(
-        first_paths.instance_data_root(),
-        first_config.launch_epoch(),
-    )
-    .unwrap();
+    let first_durable =
+        DurableFileStore::at_config(first_paths.config_root(), first_config.launch_epoch())
+            .unwrap();
     let first_runtime =
         KernelRuntime::activate(first_config, first_paths, KernelPorts::unavailable()).unwrap();
     let first_service = SyncService::new(
@@ -1727,11 +1708,9 @@ async fn patching_one_kernel_instance_does_not_change_another_instance() {
     let second_config = KernelConfig::generate().unwrap();
     let second_paths =
         KernelPaths::desktop(&second_workspace, &second_app_data, &second_cache).unwrap();
-    let second_durable = DurableFileStore::at_instance_data(
-        second_paths.instance_data_root(),
-        second_config.launch_epoch(),
-    )
-    .unwrap();
+    let second_durable =
+        DurableFileStore::at_config(second_paths.config_root(), second_config.launch_epoch())
+            .unwrap();
     let second_runtime =
         KernelRuntime::activate(second_config, second_paths, KernelPorts::unavailable()).unwrap();
     let second_service = SyncService::new(
@@ -1783,8 +1762,7 @@ async fn corrupt_and_unsupported_configs_return_the_same_safe_api_error() {
         let config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let service = SyncService::new(
             runtime.clone(),
@@ -1815,9 +1793,7 @@ async fn symlinked_sync_config_is_rejected_without_reading_its_target() {
     std::os::unix::fs::symlink(&outside, app_data.join("sync-config.json")).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
         runtime.clone(),
@@ -1851,9 +1827,7 @@ async fn connection_test_applies_ephemeral_changes_and_calls_executor_exactly_on
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let _workspace = install_active_workspace(&runtime, managed).await;
     let executor = Arc::new(CountingExecutor::default());
@@ -1934,9 +1908,7 @@ async fn initial_sync_status_is_revision_bound_and_contains_no_config_secrets() 
     std::fs::write(app_data.join("sync-config.json"), original).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
         runtime.clone(),
@@ -1988,9 +1960,7 @@ async fn manual_run_is_spawned_once_and_completes_with_safe_status_events() {
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
     let _workspace = install_active_workspace(&runtime, managed).await;
     let mut events = runtime.event_broker().subscribe();
@@ -2166,8 +2136,7 @@ async fn completed_status_resets_to_idle_when_config_revision_or_provider_change
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
         let _workspace = install_active_workspace(&runtime, managed).await;
         let executor = Arc::new(ManualExecutor::default());
@@ -2288,9 +2257,7 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
     let _workspace = install_active_workspace(&runtime, managed).await;
     let executor = Arc::new(BlockingExecutor::default());
@@ -2494,9 +2461,7 @@ async fn active_manual_run_rejects_config_patch_without_write_or_status_drift() 
         .to_string();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
     let _workspace = install_active_workspace(&runtime, managed).await;
     let mut events = runtime.event_broker().subscribe();
@@ -2609,9 +2574,7 @@ async fn completed_run_event_precedes_a_new_config_and_its_idle_status() {
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
     let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let publication_gate = Arc::new(CompletionPublicationGate::default());
     let runtime = KernelRuntime::activate(
         config,
@@ -3015,11 +2978,8 @@ async fn direct_and_http_get_patch_have_identical_sync_dtos_and_revisions() {
         .expose_secret()
         .to_string();
     let http_paths = KernelPaths::desktop(&http_workspace, &http_app_data, &http_cache).unwrap();
-    let http_durable = DurableFileStore::at_instance_data(
-        http_paths.instance_data_root(),
-        http_config.launch_epoch(),
-    )
-    .unwrap();
+    let http_durable =
+        DurableFileStore::at_config(http_paths.config_root(), http_config.launch_epoch()).unwrap();
     let http_runtime =
         KernelRuntime::activate(http_config, http_paths, KernelPorts::unavailable()).unwrap();
     let mut http_events = http_runtime.event_broker().subscribe();
@@ -3037,11 +2997,9 @@ async fn direct_and_http_get_patch_have_identical_sync_dtos_and_revisions() {
     let direct_config = KernelConfig::generate().unwrap();
     let direct_paths =
         KernelPaths::desktop(&direct_workspace, &direct_app_data, &direct_cache).unwrap();
-    let direct_durable = DurableFileStore::at_instance_data(
-        direct_paths.instance_data_root(),
-        direct_config.launch_epoch(),
-    )
-    .unwrap();
+    let direct_durable =
+        DurableFileStore::at_config(direct_paths.config_root(), direct_config.launch_epoch())
+            .unwrap();
     let direct_runtime =
         KernelRuntime::activate(direct_config, direct_paths, KernelPorts::unavailable()).unwrap();
     let mut direct_events = direct_runtime.event_broker().subscribe();
@@ -4269,8 +4227,7 @@ async fn disabled_legacy_invalid_remote_roots_fail_closed_without_debug_or_event
         let config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let mut events = runtime.event_broker().subscribe();
         let store = Arc::new(SyncConfigStore::new(durable).unwrap());
@@ -4346,8 +4303,7 @@ async fn submitted_absolute_or_noncanonical_remote_roots_are_rejected_without_no
         let config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         let durable =
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .unwrap();
+            DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let mut events = runtime.event_broker().subscribe();
         let service = SyncService::new(
@@ -4417,9 +4373,7 @@ fn sync_service_for_editing(root: std::path::PathBuf) -> SyncService {
     std::fs::create_dir(&cache).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     SyncService::new(
         runtime,
@@ -4439,9 +4393,7 @@ async fn absent_config_is_reported_without_creating_a_file() {
     std::fs::create_dir(&cache).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let store = Arc::new(SyncConfigStore::new(durable).unwrap());
     let service = SyncService::new(runtime.clone(), store, Arc::new(RecordingExecutor));
@@ -4489,9 +4441,7 @@ async fn existing_v3_config_is_exposed_without_inline_credentials() {
     std::fs::write(app_data.join("sync-config.json"), &bytes).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let store = Arc::new(SyncConfigStore::new(durable).unwrap());
     let service = SyncService::new(runtime.clone(), store, Arc::new(RecordingExecutor));

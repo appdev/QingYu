@@ -226,7 +226,6 @@ pub enum ServerRuntimeCompositionError {
     FixedSettingsStore,
     FixedSyncStore,
     FixedWorkspaceService,
-    FixedSettingsMigration,
     FixedWorkspaceInstall,
     FixedWorkspaceSnapshot,
     FixedDocumentStorage,
@@ -245,7 +244,6 @@ impl ServerRuntimeCompositionError {
             FixedKernelCompositionError::SettingsStore => Self::FixedSettingsStore,
             FixedKernelCompositionError::SyncStore => Self::FixedSyncStore,
             FixedKernelCompositionError::WorkspaceService => Self::FixedWorkspaceService,
-            FixedKernelCompositionError::SettingsMigration => Self::FixedSettingsMigration,
             FixedKernelCompositionError::WorkspaceInstall => Self::FixedWorkspaceInstall,
             FixedKernelCompositionError::WorkspaceSnapshot => Self::FixedWorkspaceSnapshot,
             FixedKernelCompositionError::DocumentStorage => Self::FixedDocumentStorage,
@@ -264,7 +262,6 @@ impl ServerRuntimeCompositionError {
             Self::FixedSettingsStore => "QK-SRV-COMPOSE-FIXED-SETTINGS-STORE",
             Self::FixedSyncStore => "QK-SRV-COMPOSE-FIXED-SYNC-STORE",
             Self::FixedWorkspaceService => "QK-SRV-COMPOSE-FIXED-WORKSPACE",
-            Self::FixedSettingsMigration => "QK-SRV-COMPOSE-FIXED-SETTINGS-MIGRATION",
             Self::FixedWorkspaceInstall => "QK-SRV-COMPOSE-FIXED-WORKSPACE-INSTALL",
             Self::FixedWorkspaceSnapshot => "QK-SRV-COMPOSE-FIXED-WORKSPACE-SNAPSHOT",
             Self::FixedDocumentStorage => "QK-SRV-COMPOSE-FIXED-DOCUMENT-STORAGE",
@@ -297,8 +294,8 @@ mod tests {
         api::{build_server_router, TransportPolicy},
         config::KernelConfig,
         contract::{
-            HostProfile, PatchSyncConfigRequest, ServerAuthenticationSecret, SyncConfigChangesDto,
-            SyncTrigger,
+            HostProfile, PatchSettingsRequest, PatchSyncConfigRequest, ServerAuthenticationSecret,
+            SettingEntryDto, SettingKey, SettingValueDto, SyncConfigChangesDto, SyncTrigger,
         },
         paths::KernelPaths,
         server::{
@@ -360,6 +357,55 @@ mod tests {
             composition.authentication_status().unwrap(),
             ServerAuthenticationStatus::NeedsInitialization
         );
+    }
+
+    #[tokio::test]
+    async fn fixed_server_composition_writes_configuration_only_to_config_root() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let legacy = temporary.path().join("data/state/settings.json");
+        fs::write(&legacy, br#"{"language":"ja"}"#).unwrap();
+
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+        let settings = composition.runtime().settings_api_service().unwrap();
+        let before = settings.get_settings().await.unwrap();
+        assert_eq!(
+            &before
+                .values
+                .iter()
+                .find(|entry| entry.key == SettingKey::Language)
+                .unwrap()
+                .value,
+            &SettingValueDto::String {
+                value: "en".to_owned(),
+            },
+        );
+
+        settings
+            .patch_settings(PatchSettingsRequest {
+                expected_revision: before.revision,
+                values: vec![SettingEntryDto {
+                    key: SettingKey::Language,
+                    value: SettingValueDto::String {
+                        value: "zh-CN".to_owned(),
+                    },
+                }],
+            })
+            .await
+            .unwrap();
+
+        assert!(temporary.path().join("data/config/settings.json").is_file());
+        assert!(temporary
+            .path()
+            .join("data/config/sync-config.json")
+            .is_file());
+        assert_eq!(fs::read(&legacy).unwrap(), br#"{"language":"ja"}"#);
+        assert!(!temporary
+            .path()
+            .join("data/state/sync-config.json")
+            .exists());
     }
 
     #[tokio::test]
@@ -586,7 +632,7 @@ mod tests {
         );
         assert!(temporary
             .path()
-            .join("data/state/sync-config.json")
+            .join("data/config/sync-config.json")
             .is_file());
 
         let patched = sync
@@ -627,7 +673,7 @@ mod tests {
   }
 }
 "#;
-        let target = temporary.path().join("data/state/sync-config.json");
+        let target = temporary.path().join("data/config/sync-config.json");
         fs::write(&target, existing).unwrap();
 
         let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
@@ -645,7 +691,7 @@ mod tests {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         fs::write(
-            temporary.path().join("data/state/sync-config.json"),
+            temporary.path().join("data/config/sync-config.json"),
             br#"{
   "version": 3,
   "enabled": true,
@@ -704,7 +750,7 @@ mod tests {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         let corrupt = b"private-corrupt-sync-config-marker";
-        let target = temporary.path().join("data/state/sync-config.json");
+        let target = temporary.path().join("data/config/sync-config.json");
         fs::write(&target, corrupt).unwrap();
 
         let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
@@ -727,7 +773,7 @@ mod tests {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         let unsupported = br#"{"version":4,"private":"unsupported-sync-marker"}"#;
-        let target = temporary.path().join("data/state/sync-config.json");
+        let target = temporary.path().join("data/config/sync-config.json");
         fs::write(&target, unsupported).unwrap();
 
         let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
@@ -924,7 +970,7 @@ mod tests {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         fs::write(
-            temporary.path().join("data/state/settings.json"),
+            temporary.path().join("data/config/settings.json"),
             b"private-invalid-fixed-services-marker",
         )
         .unwrap();
@@ -1006,10 +1052,6 @@ mod tests {
             (
                 ServerRuntimeCompositionError::FixedWorkspaceService,
                 "QK-SRV-COMPOSE-FIXED-WORKSPACE",
-            ),
-            (
-                ServerRuntimeCompositionError::FixedSettingsMigration,
-                "QK-SRV-COMPOSE-FIXED-SETTINGS-MIGRATION",
             ),
             (
                 ServerRuntimeCompositionError::FixedWorkspaceInstall,
