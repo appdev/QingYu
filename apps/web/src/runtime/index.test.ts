@@ -15,11 +15,13 @@ describe("web runtime", () => {
     const indexedDbOpen = vi.fn(() => {
       throw new Error("IndexedDB owner must be unreachable");
     });
+    const bootstrap = appConfigSnapshot();
+    const committed = appConfigSnapshot({ fileTreeOpen: true, revision: "local-2" });
     const kernel = {
       appConfig: {
-        bootstrap: appConfigSnapshot(),
-        patchState: vi.fn(async () => appConfigSnapshot()),
-        read: vi.fn(async () => appConfigSnapshot()),
+        bootstrap,
+        patchState: vi.fn(async () => committed),
+        read: vi.fn(async () => bootstrap),
       },
       documents: {
         list: vi.fn(async () => ({ items: [], nextCursor: null, workspaceGeneration: "generation-1" })),
@@ -57,11 +59,29 @@ describe("web runtime", () => {
       .resolves.toEqual([]);
     await expect(runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
       filePath: `${kernelWorkspaceRoot}/notes/main.md`,
+      fileTreeOpen: false,
     });
     await expect(runtime.settings.loadStore("local-state.json", {
       autoSave: false,
       defaults: {},
     })).rejects.toThrow("unavailable for a Kernel-backed runtime");
+    await runtime.appConfig.patchState([{
+      patch: { fileTreeOpen: true },
+      type: "patch-ui-layout",
+      windowLabel: "main",
+    }]);
+    await expect(runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
+      filePath: `${kernelWorkspaceRoot}/notes/main.md`,
+      fileTreeOpen: true,
+    });
+    expect(kernel.appConfig.patchState).toHaveBeenCalledWith({
+      operations: [{
+        patch: { fileTreeOpen: true },
+        type: "patch-ui-layout",
+        windowLabel: "main",
+      }],
+      workspaceGeneration: "generation-1",
+    });
     expect(showDirectoryPicker).not.toHaveBeenCalled();
     expect(indexedDbOpen).not.toHaveBeenCalled();
     owner.release();
@@ -151,14 +171,20 @@ describe("web runtime", () => {
   });
 });
 
-function appConfigSnapshot() {
+function appConfigSnapshot({
+  fileTreeOpen = false,
+  revision = "local-1",
+}: {
+  fileTreeOpen?: boolean;
+  revision?: string;
+} = {}) {
   return {
     appConfigVersion: 1 as const,
     localState: {
       fileTreeSort: { direction: "ascending" as const, key: "name" as const },
       pandocPath: null,
       recentMarkdownFiles: [],
-      revision: "local-1" as KernelRevision,
+      revision: revision as KernelRevision,
       uiLayout: {
         openWindows: [],
         schemaVersion: 1 as const,
@@ -168,7 +194,7 @@ function appConfigSnapshot() {
             draftTabs: [],
             filePath: "notes/main.md" as never,
             fileTreeAssetsVisible: true,
-            fileTreeOpen: false,
+            fileTreeOpen,
             folderName: "notes",
             folderPath: "notes" as never,
             openFilePaths: ["notes/main.md" as never],

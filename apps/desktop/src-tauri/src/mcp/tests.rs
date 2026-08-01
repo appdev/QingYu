@@ -330,7 +330,7 @@ fn config_manager_reloads_policy_after_the_local_store_changes() {
     let initial_generation = manager.generation();
     let mut enabled = McpConfig::default();
     enabled.enabled = true;
-    let stored = settings.load_migrated().expect("stored policy");
+    let stored = settings.load().expect("stored policy");
     settings
         .write(&stored.revision, enabled)
         .expect("simulate an out-of-band local policy update");
@@ -1126,7 +1126,6 @@ fn mcp_initialization_uses_the_managed_kernel_owner_without_a_legacy_data_plane(
     assert!(!initialize.contains("with_primary_workspace_transaction"));
     assert!(!initialize.contains("DocumentService::new"));
     assert!(!initialize.contains("SyncService::new"));
-    assert!(!initialize.contains("KernelSettingsOwner"));
     assert!(!initialize.contains("WebviewWindow"));
 }
 
@@ -3303,7 +3302,7 @@ async fn local_policy_reload_updates_manager_server_and_audit_policy() {
     let mut synchronized = current.config.clone();
     synchronized.request_limit_bytes = 1024;
     synchronized.audit.enabled = false;
-    let stored = fixture.mcp_settings.load_migrated().expect("stored policy");
+    let stored = fixture.mcp_settings.load().expect("stored policy");
     fixture
         .mcp_settings
         .write(&stored.revision, synchronized.clone())
@@ -4152,15 +4151,14 @@ async fn bridge_forwards_tools_calls_and_tool_list_notifications_over_stdio() {
 #[tokio::test]
 async fn bridge_launches_qingyu_once_then_uses_bounded_reconnect() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let local_state_path = directory.path().join("local-state.json");
-    std::fs::write(&local_state_path, br#"{"mcp":{"enabled":true}}"#)
-        .expect("write enabled local state");
+    let mcp_config_path = directory.path().join("mcp.json");
+    std::fs::write(&mcp_config_path, br#"{"enabled":true}"#).expect("write enabled MCP config");
     let launcher = CountingLauncher::default();
     let unavailable = directory.path().join("unavailable.sock");
     let error = test_connect_with_launch(
-        &BridgeConfig::for_test_with_settings(
+        &BridgeConfig::for_test_with_config(
             LocalIpcEndpoint::for_test(unavailable),
-            local_state_path,
+            mcp_config_path,
         ),
         &launcher,
     )
@@ -4175,76 +4173,49 @@ async fn bridge_launches_qingyu_once_then_uses_bounded_reconnect() {
 }
 
 #[tokio::test]
-async fn bridge_uses_legacy_settings_only_when_local_state_is_missing() {
-    let directory = tempfile::tempdir().expect("bridge temp directory");
-    let legacy_settings_path = directory.path().join("settings.json");
-    std::fs::write(&legacy_settings_path, br#"{"mcp":{"enabled":true}}"#)
-        .expect("write enabled legacy settings");
-    let launcher = CountingLauncher::default();
-    let unavailable = directory.path().join("unavailable.sock");
-    let error = test_connect_with_launch(
-        &BridgeConfig::for_test_with_settings(
-            LocalIpcEndpoint::for_test(unavailable),
-            directory.path().join("local-state.json"),
-        ),
-        &launcher,
-    )
-    .await
-    .expect_err("unavailable upstream must remain bounded");
-
-    assert_eq!(error, BridgeError::UpstreamUnavailable);
-    assert_eq!(
-        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-}
-
-#[tokio::test]
-async fn bridge_uses_legacy_settings_when_valid_local_state_has_no_mcp_value() {
+async fn bridge_ignores_obsolete_settings_and_local_state_files() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
     std::fs::write(
         directory.path().join("local-state.json"),
-        br#"{"schemaVersion":2,"primaryWorkspacePath":"/notes"}"#,
+        br#"{"mcp":{"enabled":true}}"#,
     )
-    .expect("write valid local state without MCP");
+    .expect("write obsolete local state");
     std::fs::write(
         directory.path().join("settings.json"),
         br#"{"mcp":{"enabled":true}}"#,
     )
-    .expect("write enabled legacy settings");
+    .expect("write obsolete settings");
     let launcher = CountingLauncher::default();
-    let error = test_connect_with_launch(
-        &BridgeConfig::for_test_with_settings(
-            LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-            directory.path().join("local-state.json"),
-        ),
-        &launcher,
-    )
-    .await
-    .expect_err("unavailable upstream must remain bounded");
-
-    assert_eq!(error, BridgeError::UpstreamUnavailable);
-    assert_eq!(
-        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
-        1
-    );
-}
-
-#[tokio::test]
-async fn bridge_reports_disabled_without_launch_when_settings_are_missing() {
-    let directory = tempfile::tempdir().expect("bridge temp directory");
-    let launcher = CountingLauncher::default();
-    let config = BridgeConfig::for_test_with_settings(
+    let config = BridgeConfig::for_test_with_config(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        directory.path().join("local-state.json"),
+        directory.path().join("mcp.json"),
     );
 
     let error = test_connect_with_launch(&config, &launcher)
         .await
-        .expect_err("missing MCP settings must disable startup");
+        .expect_err("obsolete files must not enable MCP startup");
 
-    assert!(error.to_string().contains("mcp_disabled"));
-    assert!(error.to_string().contains("Settings"));
+    assert_eq!(error, BridgeError::McpDisabled);
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[tokio::test]
+async fn bridge_reports_disabled_without_launch_when_config_is_missing() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    let launcher = CountingLauncher::default();
+    let config = BridgeConfig::for_test_with_config(
+        LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
+        directory.path().join("mcp.json"),
+    );
+
+    let error = test_connect_with_launch(&config, &launcher)
+        .await
+        .expect_err("missing MCP config must disable startup");
+
+    assert_eq!(error, BridgeError::McpDisabled);
     assert_eq!(
         launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
         0
@@ -4254,20 +4225,19 @@ async fn bridge_reports_disabled_without_launch_when_settings_are_missing() {
 #[tokio::test]
 async fn bridge_reports_disabled_without_launch_when_mcp_is_false() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let local_state_path = directory.path().join("local-state.json");
-    std::fs::write(&local_state_path, br#"{"mcp":{"enabled":false}}"#)
-        .expect("write disabled local state");
+    let mcp_config_path = directory.path().join("mcp.json");
+    std::fs::write(&mcp_config_path, br#"{"enabled":false}"#).expect("write disabled MCP config");
     let launcher = CountingLauncher::default();
-    let config = BridgeConfig::for_test_with_settings(
+    let config = BridgeConfig::for_test_with_config(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        local_state_path,
+        mcp_config_path,
     );
 
     let error = test_connect_with_launch(&config, &launcher)
         .await
-        .expect_err("disabled MCP settings must prevent startup");
+        .expect_err("disabled MCP config must prevent startup");
 
-    assert!(error.to_string().contains("mcp_disabled"));
+    assert_eq!(error, BridgeError::McpDisabled);
     assert_eq!(
         launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
         0
@@ -4275,26 +4245,26 @@ async fn bridge_reports_disabled_without_launch_when_mcp_is_false() {
 }
 
 #[tokio::test]
-async fn bridge_reports_config_unavailable_without_legacy_fallback_for_malformed_local_state() {
+async fn bridge_reports_config_unavailable_for_malformed_mcp_config() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let local_state_path = directory.path().join("local-state.json");
-    std::fs::write(&local_state_path, b"not-json").expect("write malformed local state");
+    let mcp_config_path = directory.path().join("mcp.json");
+    std::fs::write(&mcp_config_path, b"not-json").expect("write malformed MCP config");
     std::fs::write(
         directory.path().join("settings.json"),
         br#"{"mcp":{"enabled":true}}"#,
     )
-    .expect("write enabled legacy settings");
+    .expect("write obsolete enabled settings");
     let launcher = CountingLauncher::default();
-    let config = BridgeConfig::for_test_with_settings(
+    let config = BridgeConfig::for_test_with_config(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        local_state_path,
+        mcp_config_path,
     );
 
     let error = test_connect_with_launch(&config, &launcher)
         .await
-        .expect_err("malformed MCP local state must fail closed without legacy fallback");
+        .expect_err("malformed MCP config must fail closed");
 
-    assert!(error.to_string().contains("mcp_config_unavailable"));
+    assert_eq!(error, BridgeError::McpConfigUnavailable);
     assert_eq!(
         launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
         0
@@ -4302,28 +4272,19 @@ async fn bridge_reports_config_unavailable_without_legacy_fallback_for_malformed
 }
 
 #[tokio::test]
-async fn bridge_reports_config_unavailable_when_local_mcp_enabled_is_not_boolean() {
+async fn bridge_reports_config_unavailable_when_enabled_is_not_boolean() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let local_state_path = directory.path().join("local-state.json");
-    std::fs::write(
-        &local_state_path,
-        br#"{"schemaVersion":2,"mcp":{"enabled":"true"}}"#,
-    )
-    .expect("write invalid local MCP state");
-    std::fs::write(
-        directory.path().join("settings.json"),
-        br#"{"mcp":{"enabled":true}}"#,
-    )
-    .expect("write enabled legacy settings");
+    let mcp_config_path = directory.path().join("mcp.json");
+    std::fs::write(&mcp_config_path, br#"{"enabled":"true"}"#).expect("write invalid MCP config");
     let launcher = CountingLauncher::default();
-    let config = BridgeConfig::for_test_with_settings(
+    let config = BridgeConfig::for_test_with_config(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        local_state_path,
+        mcp_config_path,
     );
 
     let error = test_connect_with_launch(&config, &launcher)
         .await
-        .expect_err("invalid local MCP value must fail closed without legacy fallback");
+        .expect_err("invalid MCP config must fail closed");
 
     assert_eq!(error, BridgeError::McpConfigUnavailable);
     assert_eq!(

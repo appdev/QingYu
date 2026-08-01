@@ -36,10 +36,6 @@ vi.mock("@tauri-apps/plugin-os", () => ({
   version: vi.fn(() => "26.5.1")
 }));
 
-vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn()
-}));
-
 const mockedInvoke = vi.mocked(invoke);
 const mockedOpenUrl = vi.mocked(openUrl);
 

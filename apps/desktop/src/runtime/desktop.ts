@@ -46,7 +46,6 @@ import * as updater from "./tauri/updater";
 import * as webResource from "./tauri/web-resource";
 import * as windowRuntime from "./tauri/window";
 import { listenNativeEvent } from "./tauri/events";
-import { loadDesktopRuntimeStore } from "./tauri/runtime-store";
 
 type DesktopPlatform = "macos" | "windows" | "linux";
 
@@ -216,12 +215,11 @@ export function createDesktopRuntime({
     resolveFormFactor
   },
   settings: {
-    loadStore: loadDesktopRuntimeStore,
+    loadStore: () => Promise.reject(new Error(
+      "Renderer-local stores are unavailable for a Kernel-backed runtime."
+    )),
     readPrimaryWorkspaceState: settings.readNativePrimaryWorkspaceState,
-    readGroup: settings.readNativeAppSettingsGroup,
-    replacePortable: settings.replaceNativePortableAppSettings,
-    writePrimaryWorkspaceState: settings.writeNativePrimaryWorkspaceState,
-    writeGroup: settings.writeNativeAppSettingsGroup
+    writePrimaryWorkspaceState: settings.writeNativePrimaryWorkspaceState
   },
   syncConfig: {
     bindRepository: syncConfig.bindNativeDejavuRepository,

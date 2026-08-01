@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
@@ -40,8 +38,6 @@ vi.mock("@tauri-apps/plugin-log", () => ({
   info: vi.fn(),
   warn: vi.fn(),
 }));
-vi.mock("@tauri-apps/plugin-store", () => ({ load: vi.fn() }));
-
 const mockedConfirm = vi.mocked(confirm);
 const mockedInvoke = vi.mocked(invoke);
 
@@ -51,24 +47,34 @@ describe("mobile Kernel runtime boundary", () => {
     mockedInvoke.mockReset();
   });
 
-  it("keeps the pre-Kernel shell free of legacy document, settings, and sync adapters", () => {
-    const source = readFileSync(resolve(process.cwd(), "src/runtime/mobile.ts"), "utf8");
-
-    expect(source).toContain('from "./tauri/file/mobile"');
-    expect(source).toContain('from "./tauri/file/confirm"');
-    expect(source).not.toContain('from "./tauri/file/shared"');
-    expect(source).not.toContain('from "./tauri/settings"');
-    expect(source).not.toContain('from "./tauri/sync-config/shared"');
-    expect(source).not.toContain('from "./tauri/managed-workspace"');
-    expect(source).not.toContain('from "./tauri/web-resource"');
+  it("keeps the pre-Kernel shell unavailable and free of renderer-local state", async () => {
     expect(mobileRuntime.kernel.availability).toBe("unavailable");
-    expect(source).not.toContain('from "./tauri/mcp-policy"');
     expect(mobileRuntime.mcp.policyAvailable).toBe(false);
     expect(mobileRuntime.mcp.localServiceAvailable).toBe(false);
+    await expect(mobileRuntime.settings.loadStore()).rejects.toThrow(
+      "Renderer-local stores are unavailable",
+    );
   });
 
   it("composes document, settings, and sync over one ready Kernel port", async () => {
     const kernel = readyKernelPort();
+    const committed = {
+      ...kernel.appConfig.bootstrap,
+      localState: {
+        ...kernel.appConfig.bootstrap.localState,
+        revision: "local-2" as KernelRevision,
+        uiLayout: {
+          ...kernel.appConfig.bootstrap.localState.uiLayout,
+          windowStates: {
+            main: {
+              ...kernel.appConfig.bootstrap.localState.uiLayout.windowStates.main,
+              fileTreeOpen: true,
+            },
+          },
+        },
+      },
+    };
+    vi.mocked(kernel.appConfig.patchState).mockResolvedValueOnce(committed);
     const owner = createMobileKernelRuntimeOwner(kernel);
 
     expect(owner.runtime.kernel).toBe(kernel);
@@ -83,6 +89,28 @@ describe("mobile Kernel runtime boundary", () => {
     expect(owner.runtime.settings.writeGroup).toEqual(expect.any(Function));
     await expect(owner.runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
       filePath: `${kernelWorkspaceRoot}/notes/main.md`,
+      fileTreeOpen: false,
+    });
+    await expect(owner.runtime.settings.loadStore("local-state.json", {
+      autoSave: false,
+      defaults: {},
+    })).rejects.toThrow("Renderer-local stores are unavailable");
+    await owner.runtime.appConfig.patchState([{
+      patch: { fileTreeOpen: true },
+      type: "patch-ui-layout",
+      windowLabel: "main",
+    }]);
+    await expect(owner.runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
+      filePath: `${kernelWorkspaceRoot}/notes/main.md`,
+      fileTreeOpen: true,
+    });
+    expect(kernel.appConfig.patchState).toHaveBeenCalledWith({
+      operations: [{
+        patch: { fileTreeOpen: true },
+        type: "patch-ui-layout",
+        windowLabel: "main",
+      }],
+      workspaceGeneration: "generation-1",
     });
     expect(owner.runtime.syncConfig.load).not.toBe(mobileRuntime.syncConfig.load);
     expect(owner.runtime.syncConfig.patch).not.toBe(mobileRuntime.syncConfig.patch);

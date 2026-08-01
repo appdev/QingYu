@@ -14,16 +14,12 @@ use sha2::{Digest, Sha256};
 mod backend;
 pub(crate) mod catalog;
 mod diagnostics;
-mod engine;
 #[cfg(test)]
 mod live_tests;
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod mcp_service;
 mod s3_backend;
-mod scope;
-pub(crate) mod service;
-mod settings_scope;
 
 pub(crate) use backend::{sync_state_key, ValidRemoteRoot};
 #[cfg(test)]
@@ -32,8 +28,7 @@ pub(crate) use backend::{
     RemoteSyncFile as TestRemoteSyncFile,
 };
 use backend::{RemoteSyncBackend, RemoteSyncError, RemoteSyncFile as BackendRemoteSyncFile};
-use engine::validate_relative_path;
-pub(crate) use engine::RemoteSyncExecutionCoordinator;
+use qingyu_kernel::sync::execution::validate_relative_path;
 use s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions};
 
 const REMOTE_SYNC_TIMEOUT_SECS: u64 = 60;

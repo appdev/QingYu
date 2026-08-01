@@ -320,7 +320,7 @@ pub(crate) struct McpConfigManager {
 
 impl McpConfigManager {
     pub(crate) fn load(settings: McpLocalSettingsService) -> Result<Self, McpConfigError> {
-        let document = settings.load_migrated()?;
+        let document = settings.load()?;
         Ok(Self {
             settings,
             state: Mutex::new(McpConfigState { document }),
@@ -359,7 +359,7 @@ impl McpConfigManager {
     }
 
     pub(crate) fn reload(&self) -> Result<McpConfigDocument, McpConfigError> {
-        let document = self.settings.load_migrated()?;
+        let document = self.settings.load()?;
         let mut state = self.state.lock().map_err(|_| McpConfigError::read())?;
         if state.document.revision != document.revision {
             self.generation.fetch_add(1, Ordering::AcqRel);

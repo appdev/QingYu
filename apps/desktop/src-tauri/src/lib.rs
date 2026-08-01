@@ -2,7 +2,6 @@
 mod app_exit;
 #[cfg(desktop)]
 mod app_logs;
-mod app_settings;
 mod atomic_noreplace;
 #[cfg(desktop)]
 mod clipboard;
@@ -40,8 +39,6 @@ mod opened_files;
 mod primary_workspace;
 mod protected_paths;
 mod remote_sync;
-#[cfg(desktop)]
-mod runtime_store;
 mod s3_http;
 #[cfg(desktop)]
 mod shell_command;

@@ -1,18 +1,11 @@
 use std::path::PathBuf;
 
-use serde_json::Value;
 use tauri::{Manager, Runtime};
 
-#[cfg(not(mobile))]
-use crate::app_settings::KernelSettingsOwner;
-
 use super::{
-    archive::PreparedThemeImport, catalog::ThemeCatalog, parser::parse_theme_file,
-    InvalidThemeFile, ThemeAppearance, ThemeCatalogSnapshot, ThemeDescriptor, ThemeError,
-    ThemeErrorCode,
+    catalog::ThemeCatalog, InvalidThemeFile, ThemeCatalogSnapshot, ThemeError, ThemeErrorCode,
 };
 
-const CATALOG_VERSION_KEY: &str = "themeCatalogVersion";
 const CATALOG_VERSION: i64 = 2;
 
 pub(crate) fn initialize_catalog<R: Runtime>(
@@ -24,115 +17,7 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         .map_err(|error| ThemeError::new(ThemeErrorCode::Io, error.to_string()))?
         .join("themes");
     let catalog = ThemeCatalog::at(root);
-    #[cfg(mobile)]
-    {
-        return initialize_catalog_without_legacy_settings(&catalog);
-    }
-    #[cfg(not(mobile))]
-    {
-        #[cfg(desktop)]
-        if app
-            .try_state::<std::sync::Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
-            .is_some()
-        {
-            return initialize_catalog_without_legacy_settings(&catalog);
-        }
-        let settings_owner = app.state::<KernelSettingsOwner>();
-        let settings = settings_owner
-            .read_theme_catalog_settings()
-            .map_err(theme_settings_unavailable)?;
-        let stored_catalog_version = settings
-            .get(CATALOG_VERSION_KEY)
-            .and_then(|value| value.as_i64())
-            .unwrap_or(0)
-            .max(0);
-        if stored_catalog_version >= CATALOG_VERSION {
-            let snapshot = catalog.scan()?;
-            let seed_diagnostics = catalog.drake_seed_diagnostics()?;
-            return Ok(merge_diagnostics(snapshot, seed_diagnostics));
-        }
-        let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
-        if !should_migrate_legacy_preferences(stored_catalog_version) {
-            let committed = settings_owner
-                .commit_theme_catalog_settings(stored_catalog_version, CATALOG_VERSION, None)
-                .map_err(theme_settings_save_failed)?;
-            if !committed {
-                return initialize_catalog(app);
-            }
-            return scan_with_diagnostics(&catalog, seed_diagnostics);
-        }
-
-        let legacy_theme = settings.get("theme").cloned().and_then(json_string);
-        let mut appearance_mode = settings
-            .get("appearanceMode")
-            .cloned()
-            .and_then(json_string)
-            .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"))
-            .unwrap_or_else(|| appearance_from_legacy(legacy_theme.as_deref()).to_string());
-        let mut light_theme_id = settings
-            .get("lightTheme")
-            .cloned()
-            .and_then(json_string)
-            .unwrap_or_else(|| legacy_light_theme(legacy_theme.as_deref()));
-        let mut dark_theme_id = settings
-            .get("darkTheme")
-            .cloned()
-            .and_then(json_string)
-            .unwrap_or_else(|| legacy_dark_theme(legacy_theme.as_deref()));
-
-        if light_theme_id == "custom" {
-            let css = settings
-                .get("lightCustomThemeCss")
-                .or_else(|| settings.get("customThemeCss"))
-                .cloned()
-                .and_then(json_string)
-                .unwrap_or_default();
-            light_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Light, &css)?.id;
-        }
-        if dark_theme_id == "custom" {
-            let css = settings
-                .get("darkCustomThemeCss")
-                .or_else(|| settings.get("customThemeCss"))
-                .cloned()
-                .and_then(json_string)
-                .unwrap_or_default();
-            dark_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Dark, &css)?.id;
-        }
-
-        let snapshot = catalog.scan()?;
-        if !snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == light_theme_id)
-            && light_theme_id != "light"
-        {
-            light_theme_id = "light".to_string();
-        }
-        if !snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == dark_theme_id)
-            && dark_theme_id != "dark"
-        {
-            dark_theme_id = "dark".to_string();
-        }
-        if !matches!(appearance_mode.as_str(), "system" | "light" | "dark") {
-            appearance_mode = "system".to_string();
-        }
-
-        let committed = settings_owner
-            .commit_theme_catalog_settings(
-                stored_catalog_version,
-                CATALOG_VERSION,
-                Some((&appearance_mode, &light_theme_id, &dark_theme_id)),
-            )
-            .map_err(theme_settings_save_failed)?;
-        if !committed {
-            return initialize_catalog(app);
-        }
-
-        scan_with_diagnostics(&catalog, seed_diagnostics)
-    }
+    initialize_catalog_without_legacy_settings(&catalog)
 }
 
 fn initialize_catalog_without_legacy_settings(
@@ -151,20 +36,6 @@ fn initialize_catalog_without_legacy_settings(
         catalog.persist_owned_catalog_version(CATALOG_VERSION)?;
     }
     scan_with_diagnostics(&catalog, seed_diagnostics)
-}
-
-fn theme_settings_unavailable(_error: crate::app_settings::AppSettingsError) -> ThemeError {
-    ThemeError::new(
-        ThemeErrorCode::Io,
-        "The QingYu settings store is unavailable.",
-    )
-}
-
-fn theme_settings_save_failed(_error: crate::app_settings::AppSettingsError) -> ThemeError {
-    ThemeError::new(
-        ThemeErrorCode::Io,
-        "Theme catalog settings could not be saved.",
-    )
 }
 
 pub(crate) fn theme_directory<R: Runtime>(
@@ -188,10 +59,6 @@ fn initialize_catalog_files(
         1 => catalog.seed_missing_drake(),
         _ => catalog.drake_seed_diagnostics(),
     }
-}
-
-fn should_migrate_legacy_preferences(catalog_version: i64) -> bool {
-    catalog_version <= 0
 }
 
 fn scan_with_diagnostics(
@@ -219,110 +86,6 @@ fn merge_diagnostics(
     snapshot
 }
 
-fn migrate_custom_theme(
-    catalog: &ThemeCatalog,
-    appearance: ThemeAppearance,
-    css: &str,
-) -> Result<ThemeDescriptor, ThemeError> {
-    let base_id = match appearance {
-        ThemeAppearance::Light => "migrated-custom-light",
-        ThemeAppearance::Dark => "migrated-custom-dark",
-    };
-    let existing = catalog.scan()?;
-    if let Some(theme) = existing
-        .themes
-        .into_iter()
-        .find(|theme| theme.id == base_id)
-    {
-        return Ok(theme);
-    }
-    let (name, background, panel, text, accent) = match appearance {
-        ThemeAppearance::Light => (
-            "Migrated Custom Light",
-            "#ffffff",
-            "#f6f8fa",
-            "#1f2328",
-            "#0969da",
-        ),
-        ThemeAppearance::Dark => (
-            "Migrated Custom Dark",
-            "#1e1e1e",
-            "#252526",
-            "#e0e0e0",
-            "#f4f4f5",
-        ),
-    };
-    let appearance_value = match appearance {
-        ThemeAppearance::Light => "light",
-        ThemeAppearance::Dark => "dark",
-    };
-    let rewritten = rewrite_legacy_custom_selectors(css, base_id);
-    let body = if rewritten.trim().is_empty() {
-        format!(":root {{ --bg-primary: {background}; --bg-secondary: {panel}; --text-primary: {text}; --accent: {accent}; }}")
-    } else {
-        rewritten
-    };
-    let bytes = format!(
-        "/*\n@qingyu-theme\nid: {base_id}\nname: {name}\nappearance: {appearance_value}\npreview-background: {background}\npreview-panel: {panel}\npreview-text: {text}\npreview-accent: {accent}\n*/\n\n{body}\n"
-    )
-    .into_bytes();
-    let parsed = parse_theme_file(&bytes, "migrated.css")?;
-    catalog.import_prepared(PreparedThemeImport::LegacyCss(parsed))
-}
-
-fn rewrite_legacy_custom_selectors(css: &str, id: &str) -> String {
-    css.replace("data-theme=\"custom\"", &format!("data-theme=\"{id}\""))
-        .replace("data-theme='custom'", &format!("data-theme='{id}'"))
-        .replace(
-            "data-editor-theme=\"custom\"",
-            &format!("data-editor-theme=\"{id}\""),
-        )
-        .replace(
-            "data-editor-theme='custom'",
-            &format!("data-editor-theme='{id}'"),
-        )
-}
-
-fn json_string(value: Value) -> Option<String> {
-    value.as_str().map(str::to_string)
-}
-
-fn appearance_from_legacy(theme: Option<&str>) -> &'static str {
-    match theme {
-        Some("system") | None => "system",
-        Some(theme) if is_dark_seed(theme) => "dark",
-        Some(_) => "light",
-    }
-}
-
-fn legacy_light_theme(theme: Option<&str>) -> String {
-    match theme {
-        Some(theme) if !is_dark_seed(theme) && theme != "system" => theme.to_string(),
-        _ => "light".to_string(),
-    }
-}
-
-fn legacy_dark_theme(theme: Option<&str>) -> String {
-    match theme {
-        Some(theme) if is_dark_seed(theme) => theme.to_string(),
-        _ => "dark".to_string(),
-    }
-}
-
-fn is_dark_seed(id: &str) -> bool {
-    matches!(
-        id,
-        "dark"
-            | "github-dark"
-            | "one-dark"
-            | "one-dark-pro"
-            | "night"
-            | "solarized-dark"
-            | "nord"
-            | "catppuccin-mocha"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -330,8 +93,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        initialize_catalog_files, initialize_catalog_without_legacy_settings,
-        rewrite_legacy_custom_selectors, should_migrate_legacy_preferences, CATALOG_VERSION,
+        initialize_catalog_files, initialize_catalog_without_legacy_settings, CATALOG_VERSION,
     };
     use crate::themes::{
         catalog::{ThemeCatalog, CATALOG_VERSION_MARKER_NAME},
@@ -550,7 +312,6 @@ mod tests {
         assert!(initialize_catalog_files(&catalog, 1).unwrap().is_empty());
         let after_v1 = catalog.scan().unwrap();
 
-        assert!(!should_migrate_legacy_preferences(1));
         assert!(!after_v1.themes.iter().any(|theme| theme.id == "nord"));
         assert!(after_v1
             .themes
@@ -616,14 +377,5 @@ mod tests {
         let repeated_diagnostics = initialize_catalog_files(&catalog, 2).unwrap();
         assert_eq!(repeated_diagnostics.len(), 1);
         assert_eq!(repeated_diagnostics[0].file_name, "drake-light");
-    }
-
-    #[test]
-    fn migration_rewrites_only_legacy_theme_selector_values() {
-        let css = ":root[data-theme=\"custom\"] .markdown-paper[data-editor-theme='custom'] { --name: custom; }";
-        assert_eq!(
-            rewrite_legacy_custom_selectors(css, "migrated-custom-light"),
-            ":root[data-theme=\"migrated-custom-light\"] .markdown-paper[data-editor-theme='migrated-custom-light'] { --name: custom; }"
-        );
     }
 }

@@ -430,11 +430,9 @@ fn mobile_platform_config_has_no_reset_or_workspace_switch_command() {
 }
 
 #[test]
-fn mobile_platform_config_exposes_no_legacy_mcp_policy_writer() {
+fn mobile_platform_config_exposes_no_desktop_mcp_commands() {
     let native_runtime = source("src/mobile_runtime.rs");
     for forbidden in [
-        "crate::app_settings::get_mcp_policy",
-        "crate::app_settings::update_mcp_policy",
         "get_mcp_settings",
         "update_mcp_settings",
         "set_mcp_primary_workspace",

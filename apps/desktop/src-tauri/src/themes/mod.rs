@@ -14,6 +14,9 @@ use std::path::Path;
 pub(crate) use activation::{release_theme_activation_for_window, ThemeActivationState};
 use catalog::ThemeCatalog;
 
+pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "light";
+pub(crate) const DEFAULT_DARK_THEME_ID: &str = "dark";
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ThemeAppearance {

@@ -121,10 +121,50 @@ describe("desktop runtime composition", () => {
       value: {},
     });
     vi.mocked(getCurrentWindow).mockReturnValue({ label: "editor-7" } as never);
-    const owner = createDesktopKernelRuntimeOwner(readyKernelPort());
+    const kernel = readyKernelPort();
+    const committed = {
+      ...kernel.appConfig.bootstrap,
+      localState: {
+        ...kernel.appConfig.bootstrap.localState,
+        revision: "local-2" as KernelRevision,
+        uiLayout: {
+          ...kernel.appConfig.bootstrap.localState.uiLayout,
+          windowStates: {
+            "editor-7": {
+              ...kernel.appConfig.bootstrap.localState.uiLayout.windowStates["editor-7"],
+              fileTreeOpen: true,
+            },
+          },
+        },
+      },
+    };
+    vi.mocked(kernel.appConfig.patchState).mockResolvedValueOnce(committed);
+    const owner = createDesktopKernelRuntimeOwner(kernel);
 
     await expect(owner.runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
       filePath: `${kernelWorkspaceRoot}/notes/editor.md`,
+      fileTreeOpen: false,
+    });
+    await expect(owner.runtime.settings.loadStore("local-state.json", {
+      autoSave: false,
+      defaults: {},
+    })).rejects.toThrow("Renderer-local stores are unavailable");
+    await owner.runtime.appConfig.patchState([{
+      patch: { fileTreeOpen: true },
+      type: "patch-ui-layout",
+      windowLabel: "editor-7",
+    }]);
+    await expect(owner.runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
+      filePath: `${kernelWorkspaceRoot}/notes/editor.md`,
+      fileTreeOpen: true,
+    });
+    expect(kernel.appConfig.patchState).toHaveBeenCalledWith({
+      operations: [{
+        patch: { fileTreeOpen: true },
+        type: "patch-ui-layout",
+        windowLabel: "editor-7",
+      }],
+      workspaceGeneration: "generation-1",
     });
 
     owner.release();

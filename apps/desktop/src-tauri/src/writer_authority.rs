@@ -993,12 +993,9 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         integration: WriterSurfaceIntegration::Unwired,
         entry_points: &[
             "enable_sync_config",
-            "patch_exposed_app_settings",
             "patch_sync_config",
             "recover_sync_config",
-            "replace_portable_app_settings",
             "reset_sync_config",
-            "write_app_settings_group",
         ],
     },
     LegacyWriterSurface {
@@ -1013,7 +1010,6 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "purge_remote_repository",
             "rebuild_local_repository",
             "stop_repository_sync",
-            "sync_application",
         ],
     },
     LegacyWriterSurface {
@@ -1053,7 +1049,6 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         integration: WriterSurfaceIntegration::Independent,
         entry_points: &[
             "cancel_sync_config_apply",
-            "commit_desktop_runtime_store_changes",
             "initialize_desktop_kernel_workspace",
             "request_sync_config_apply",
             "retry_desktop_kernel_workspace",
@@ -1095,7 +1090,6 @@ const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
     "detect_pandoc_path",
     "destroy_current_editor_window",
     "download_web_image",
-    "get_desktop_runtime_store_value",
     "get_mcp_health",
     "get_mcp_settings",
     "get_shell_command_status",
@@ -1106,7 +1100,6 @@ const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
     "list_mcp_audit_entries",
     "list_system_font_families",
     "list_themes",
-    "load_desktop_runtime_store",
     "load_sync_config_editing",
     "mark_settings_window_ready",
     "minimize_current_window",

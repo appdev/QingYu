@@ -13,8 +13,6 @@ use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::Manager;
-#[cfg(mobile)]
-use tauri_plugin_store::StoreExt;
 
 #[cfg(not(mobile))]
 use crate::storage_capability::{
@@ -23,7 +21,6 @@ use crate::storage_capability::{
     unique_regular_file_identity, UniqueRegularFileIdentity,
 };
 
-const LOCAL_STATE_STORE_PATH: &str = "local-state.json";
 #[cfg(not(mobile))]
 const DESKTOP_PRIMARY_WORKSPACE_STORE_PATH: &str = "primary-workspace.json";
 const LOCAL_STATE_SCHEMA_VERSION_KEY: &str = "schemaVersion";
@@ -67,21 +64,6 @@ trait PrimaryWorkspaceBackend: Sync {
         }
     }
     fn set(&self, key: &str, value: Value);
-}
-
-#[cfg(mobile)]
-struct StorePrimaryWorkspaceBackend<R: tauri::Runtime> {
-    store: Arc<tauri_plugin_store::Store<R>>,
-}
-
-#[cfg(mobile)]
-fn primary_local_state_store<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<Arc<tauri_plugin_store::Store<R>>, String> {
-    app.store_builder(LOCAL_STATE_STORE_PATH)
-        .disable_auto_save()
-        .build()
-        .map_err(|_| persistence_error())
 }
 
 /// Host-private, path-free identities for child Kernel launches.
@@ -156,25 +138,6 @@ pub(crate) trait TrustedDesktopWorkspacePersistence: Send + Sync {
     >;
 }
 
-#[cfg(mobile)]
-impl<R: tauri::Runtime> PrimaryWorkspaceBackend for StorePrimaryWorkspaceBackend<R> {
-    fn delete(&self, key: &str) {
-        self.store.delete(key);
-    }
-
-    fn get(&self, key: &str) -> Option<Value> {
-        self.store.get(key)
-    }
-
-    fn save(&self) -> Result<(), String> {
-        self.store.save().map_err(|_| persistence_error())
-    }
-
-    fn set(&self, key: &str, value: Value) {
-        self.store.set(key, value);
-    }
-}
-
 #[cfg(not(mobile))]
 struct DesktopDiskPrimaryWorkspaceBackend {
     app_data_root: PathBuf,
@@ -206,47 +169,8 @@ impl DesktopDiskPrimaryWorkspaceBackend {
     }
 
     fn reload_from_disk(&self) -> Result<(), String> {
-        let existing =
+        let loaded =
             read_workspace_store_file(&self.app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)?;
-        let legacy = if existing.is_none() {
-            read_workspace_store_file(&self.app_data_root, LOCAL_STATE_STORE_PATH)?
-        } else {
-            None
-        };
-        let loaded = match (existing, legacy) {
-            (Some(existing), _) => Some(existing),
-            (None, Some(legacy)) => {
-                let values = primary_workspace_values(&legacy.values);
-                if legacy_primary_workspace_is_valid(&values) {
-                    let bytes = serde_json::to_vec(&values).map_err(|_| persistence_error())?;
-                    let publication = replace_primary_workspace_file_atomically_with_hooks(
-                        &self.app_data_root,
-                        &bytes,
-                        Some(None),
-                        || Ok(()),
-                        || Ok(()),
-                        sync_directory,
-                    );
-                    let published = read_workspace_store_file(
-                        &self.app_data_root,
-                        DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
-                    )?;
-                    match (publication, published) {
-                        (PrimaryWorkspacePersistence::NotPublished, None) => {
-                            return Err(persistence_error())
-                        }
-                        (_, Some(published)) => Some(published),
-                        (_, None) => return Err(persistence_error()),
-                    }
-                } else {
-                    Some(ExistingPrimaryWorkspaceFile {
-                        identity: legacy.identity,
-                        values,
-                    })
-                }
-            }
-            (None, None) => None,
-        };
         let expected_target = loaded.as_ref().and_then(|state| {
             read_workspace_store_file(&self.app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
                 .ok()
@@ -304,29 +228,6 @@ impl DesktopDiskPrimaryWorkspaceBackend {
         }
         publication
     }
-}
-
-#[cfg(not(mobile))]
-fn primary_workspace_values(values: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-    [LOCAL_STATE_SCHEMA_VERSION_KEY, PRIMARY_WORKSPACE_KEY]
-        .into_iter()
-        .filter_map(|key| {
-            values
-                .get(key)
-                .cloned()
-                .map(|value| (key.to_owned(), value))
-        })
-        .collect()
-}
-
-#[cfg(not(mobile))]
-fn legacy_primary_workspace_is_valid(values: &BTreeMap<String, Value>) -> bool {
-    values.contains_key(PRIMARY_WORKSPACE_KEY)
-        && resolve_desktop_primary_workspace_read(Ok((
-            values.get(LOCAL_STATE_SCHEMA_VERSION_KEY).cloned(),
-            values.get(PRIMARY_WORKSPACE_KEY).cloned(),
-        )))
-        .is_ok()
 }
 
 #[cfg(not(mobile))]
@@ -518,20 +419,13 @@ where
     }
 }
 
+#[cfg(not(mobile))]
 fn with_primary_workspace_backend<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     operation: impl FnOnce(&dyn PrimaryWorkspaceBackend) -> Result<T, String>,
 ) -> Result<T, String> {
-    #[cfg(not(mobile))]
-    {
-        let backend = DesktopDiskPrimaryWorkspaceBackend::open(app)?;
-        operation(&backend)
-    }
-    #[cfg(mobile)]
-    {
-        let store = primary_local_state_store(app)?;
-        operation(&StorePrimaryWorkspaceBackend { store })
-    }
+    let backend = DesktopDiskPrimaryWorkspaceBackend::open(app)?;
+    operation(&backend)
 }
 
 // Retained for host-transaction tests and non-renderer workspace operations;
@@ -1832,11 +1726,13 @@ fn proposed_primary_workspace_root<R: tauri::Runtime>(
     }
 }
 
+#[cfg(not(mobile))]
 #[tauri::command]
 pub(crate) fn read_primary_workspace_state(app: tauri::AppHandle) -> Result<Option<Value>, String> {
     read_primary_workspace_value(&app)
 }
 
+#[cfg(not(mobile))]
 #[tauri::command]
 pub(crate) fn write_primary_workspace_state(
     app: tauri::AppHandle,
@@ -1853,6 +1749,7 @@ pub(crate) fn write_primary_workspace_state(
     })
 }
 
+#[cfg(not(mobile))]
 #[tauri::command]
 pub(crate) fn prepare_desktop_notebook_target(
     app: tauri::AppHandle,
@@ -1867,6 +1764,7 @@ pub(crate) fn prepare_desktop_notebook_target(
     )
 }
 
+#[cfg(not(mobile))]
 #[tauri::command]
 pub(crate) fn discard_prepared_desktop_notebook_target(lease: String) -> Result<(), String> {
     discard_prepared_desktop_notebook_target_lease(&lease)
@@ -2072,110 +1970,21 @@ mod tests {
     }
 
     #[test]
-    fn desktop_primary_workspace_migrates_to_an_independent_authority_file() {
+    fn desktop_primary_workspace_ignores_local_state_without_a_canonical_authority_file() {
         let app_data = tempfile::tempdir().expect("temporary app data");
         let root = app_data.path().canonicalize().expect("canonical app data");
-        let workspace = root.join("workspaces");
-        let first = workspace.join("A");
-        let second = workspace.join("B");
-        std::fs::create_dir_all(&first).expect("workspace A");
-        std::fs::create_dir_all(&second).expect("workspace B");
-        let first = first.canonicalize().expect("canonical A");
-        let second = second.canonicalize().expect("canonical B");
-        let first_state =
-            completed_v3_desktop_state(first.parent().expect("workspace parent"), &first);
-        let second_state =
-            completed_v3_desktop_state(second.parent().expect("workspace parent"), &second);
-        let legacy_path = root.join(LOCAL_STATE_STORE_PATH);
-        let legacy = serde_json::json!({
-            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": first_state.clone(),
-            "mcp": { "enabled": true }
-        });
-        std::fs::write(
-            &legacy_path,
-            serde_json::to_vec(&legacy).expect("legacy JSON"),
-        )
-        .expect("seed legacy local state");
+        let legacy_path = root.join("local-state.json");
+        std::fs::write(&legacy_path, br#"{"primaryWorkspace":{"version":3}}"#)
+            .expect("seed forbidden local state");
 
-        let backend = DesktopDiskPrimaryWorkspaceBackend::empty_at(root.clone());
-        let transaction = Mutex::new(());
-        let migrated_value = PrimaryWorkspaceService::new(&backend, &transaction)
-            .read()
-            .expect("first gated legacy read");
-        assert_eq!(migrated_value, Some(first_state.clone()));
-        let migrated = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
-            .expect("read migrated Desktop authority")
-            .expect("legacy authority must be materialized during the first gated read");
-        assert_eq!(
-            migrated.values.get(PRIMARY_WORKSPACE_KEY),
-            Some(&first_state)
-        );
-        assert_eq!(migrated.values.get("mcp"), None);
+        let backend = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("open canonical authority");
 
-        let legacy_after_migration = serde_json::json!({
-            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": second_state.clone(),
-            "mcp": { "enabled": false }
-        });
-        std::fs::write(
-            &legacy_path,
-            serde_json::to_vec(&legacy_after_migration).expect("post-migration MCP JSON"),
-        )
-        .expect("simulate MCP save after migration");
-        let restarted = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
-            .expect("restart after one-time migration");
+        assert_eq!(backend.get(PRIMARY_WORKSPACE_KEY), None);
+        assert!(!root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH).exists());
         assert_eq!(
-            restarted.get(PRIMARY_WORKSPACE_KEY),
-            Some(first_state.clone()),
-            "local-state writes must not regain Desktop workspace authority after restart"
-        );
-
-        backend.set(PRIMARY_WORKSPACE_KEY, second_state.clone());
-        let concurrent_mcp_save = serde_json::json!({
-            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": first_state.clone(),
-            "mcp": { "enabled": false }
-        });
-        std::fs::write(
-            &legacy_path,
-            serde_json::to_vec(&concurrent_mcp_save).expect("concurrent MCP JSON"),
-        )
-        .expect("simulate MCP save before Desktop publication");
-        assert_eq!(
-            backend.save_publication(),
-            PrimaryWorkspacePersistence::Durable,
-        );
-
-        let stale_mcp_save = serde_json::json!({
-            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": first_state.clone(),
-            "mcp": { "enabled": true }
-        });
-        std::fs::write(
-            &legacy_path,
-            serde_json::to_vec(&stale_mcp_save).expect("stale MCP JSON"),
-        )
-        .expect("simulate cached MCP save");
-        let reopened = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
-            .expect("reopen Desktop authority");
-
-        assert_eq!(reopened.get(PRIMARY_WORKSPACE_KEY), Some(second_state));
-        assert_eq!(
-            read_workspace_store_file(&root, LOCAL_STATE_STORE_PATH)
-                .expect("read legacy local state")
-                .expect("legacy state")
-                .values
-                .get("mcp"),
-            Some(&json!({ "enabled": true })),
-        );
-        assert_eq!(
-            read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
-                .expect("read Desktop authority")
-                .expect("Desktop authority")
-                .values
-                .get("mcp"),
-            None,
+            std::fs::read(&legacy_path).expect("local state remains untouched"),
+            br#"{"primaryWorkspace":{"version":3}}"#,
         );
     }
 
@@ -2289,25 +2098,6 @@ mod tests {
             Some(&home),
         )
         .is_err());
-    }
-
-    #[test]
-    fn primary_workspace_store_creation_never_uses_default_auto_save() {
-        let source = include_str!("primary_workspace.rs");
-        let default_store = [".", "store(", "LOCAL_STATE_STORE_PATH"].concat();
-        let configured_store = [
-            ".store_builder(LOCAL_STATE_STORE_PATH)",
-            ".disable_auto_save()",
-            ".build()",
-        ]
-        .concat();
-        let compact_source = source
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-
-        assert!(!source.contains(&default_store));
-        assert_eq!(compact_source.matches(&configured_store).count(), 1);
     }
 
     fn prepared_target_count() -> usize {

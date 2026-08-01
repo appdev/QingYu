@@ -739,7 +739,6 @@ pub(crate) fn run() {
     );
 
     builder
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -756,16 +755,6 @@ pub(crate) fn run() {
         .setup(move |app| {
             let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
             app.manage(bootstrap.clone());
-            crate::runtime_store::install_desktop_runtime_store(&app.handle())
-                .map_err(std::io::Error::other)?;
-            let startup_language =
-                crate::language::resolve_startup_language(&app.config().identifier);
-            let settings_owner = crate::app_settings::KernelSettingsOwner::install(&app.handle())
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            settings_owner
-                .initialize_startup_language(startup_language.as_code())
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            app.manage(settings_owner);
             if let Err(error) = crate::themes::initialize_catalog_before_kernel(&app.handle()) {
                 eprintln!("QingYu theme catalog initialization failed: {error}");
             }
@@ -849,14 +838,6 @@ pub(crate) fn run() {
                 crate::mcp::get_mcp_health,
                 crate::mcp::list_mcp_audit_entries,
                 crate::mcp::clear_mcp_audit_entries,
-                crate::app_settings::read_app_settings_group,
-                crate::app_settings::write_app_settings_group,
-                crate::app_settings::replace_portable_app_settings,
-                crate::app_settings::read_exposed_app_settings,
-                crate::app_settings::patch_exposed_app_settings,
-                crate::runtime_store::load_desktop_runtime_store,
-                crate::runtime_store::get_desktop_runtime_store_value,
-                crate::runtime_store::commit_desktop_runtime_store_changes,
                 crate::primary_workspace::read_primary_workspace_state,
                 crate::primary_workspace::write_primary_workspace_state,
                 crate::primary_workspace::prepare_desktop_notebook_target,
@@ -1308,22 +1289,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_service_runtime_does_not_depend_on_renderer_ui_state() {
-        let source = include_str!("desktop_runtime.rs");
-        let setup_start = source
-            .find(".setup(move |app| {")
-            .expect("desktop setup hook should exist");
-        let settings = source[setup_start..]
-            .find("crate::app_settings::KernelSettingsOwner::install")
-            .map(|offset| setup_start + offset)
-            .expect("Kernel settings owner should delimit runtime-store setup");
-        let setup_prefix = &source[setup_start..settings];
-
-        assert!(!setup_prefix.contains("if launch_mode == DesktopLaunchMode::Normal"));
-        assert!(setup_prefix.contains("install_desktop_runtime_store"));
-    }
-
-    #[test]
     fn every_desktop_launch_installs_one_kernel_runtime_before_mcp() {
         let source = include_str!("desktop_runtime.rs");
         let setup_start = source
@@ -1678,27 +1643,6 @@ mod tests {
     }
 
     #[test]
-    fn desktop_registers_typed_app_settings_commands() {
-        let lib_source = include_str!("desktop_runtime.rs");
-        let handler_source = &lib_source[lib_source
-            .find("tauri::generate_handler![")
-            .expect("Tauri invoke handler should be registered")..];
-
-        for command in [
-            "read_app_settings_group",
-            "write_app_settings_group",
-            "replace_portable_app_settings",
-            "read_exposed_app_settings",
-            "patch_exposed_app_settings",
-        ] {
-            assert!(
-                handler_source.contains(&format!("{command},")),
-                "desktop invoke handler should register {command}"
-            );
-        }
-    }
-
-    #[test]
     fn desktop_registers_single_instance_plugin_before_other_plugins() {
         let manifest = include_str!("../Cargo.toml");
         assert!(
@@ -1710,12 +1654,12 @@ mod tests {
         let single_instance_index = lib_source
             .find("tauri_plugin_single_instance::init")
             .expect("Tauri builder should register the single instance plugin");
-        let store_plugin_index = lib_source
-            .find("tauri_plugin_store::Builder")
-            .expect("Tauri builder should register the store plugin");
+        let dialog_plugin_index = lib_source
+            .find("tauri_plugin_dialog::init")
+            .expect("Tauri builder should register the dialog plugin");
 
         assert!(
-            single_instance_index < store_plugin_index,
+            single_instance_index < dialog_plugin_index,
             "single instance plugin should be registered before other plugins"
         );
     }

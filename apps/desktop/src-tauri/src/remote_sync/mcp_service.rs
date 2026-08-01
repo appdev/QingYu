@@ -232,15 +232,12 @@ impl SyncRunner for NativeSyncRunner {
         notes_root: PathBuf,
         revision: String,
     ) -> Pin<Box<dyn Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>> {
-        let app = self.app.clone();
-        Box::pin(async move {
-            crate::sync_config::run_primary_application_sync(
-                app,
-                notes_root,
-                revision,
-                SyncTrigger::Manual,
+        let _ = (&self.app, notes_root, revision);
+        Box::pin(async {
+            Err(
+                "sync-kernel-required: MCP synchronization is owned by the Kernel adapter."
+                    .to_string(),
             )
-            .await
         })
     }
 }

@@ -23,10 +23,6 @@ vi.mock("@tauri-apps/plugin-os", () => ({
   version: vi.fn(() => "26.5.1")
 }));
 
-vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn()
-}));
-
 vi.mock("./tauri/logs", () => ({
   isNativeLoggingAvailable: vi.fn(() => true),
   openNativeLogFolder: vi.fn(),
@@ -224,31 +220,6 @@ describe("desktop runtime retained capabilities", () => {
       releaseActivation: themes.releaseNativeThemeActivation
     });
     expect(desktopRuntime.themes).not.toHaveProperty("readCss");
-  });
-
-  it("routes typed setting groups through native commands", async () => {
-    mockedInvoke.mockClear();
-    mockedInvoke
-      .mockResolvedValueOnce({ appearanceMode: "dark" })
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
-
-    await expect(desktopRuntime.settings.readGroup?.("appearance")).resolves.toEqual({ appearanceMode: "dark" });
-    await expect(
-      desktopRuntime.settings.writeGroup?.("appearance", { appearanceMode: "dark" })
-    ).resolves.toBeUndefined();
-    await expect(
-      desktopRuntime.settings.replacePortable?.({ language: "zh-CN" })
-    ).resolves.toBeUndefined();
-
-    expect(mockedInvoke).toHaveBeenNthCalledWith(1, "read_app_settings_group", { group: "appearance" });
-    expect(mockedInvoke).toHaveBeenNthCalledWith(2, "write_app_settings_group", {
-      group: "appearance",
-      value: { appearanceMode: "dark" }
-    });
-    expect(mockedInvoke).toHaveBeenNthCalledWith(3, "replace_portable_app_settings", {
-      settings: { language: "zh-CN" }
-    });
   });
 
   it("routes primary workspace persistence through the native application-wide boundary", async () => {

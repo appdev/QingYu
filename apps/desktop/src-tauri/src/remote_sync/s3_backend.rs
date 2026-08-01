@@ -16,13 +16,13 @@ use super::diagnostics::{
     create_sync_run_id, record_s3_request_retrying, record_s3_request_succeeded, s3_http_failure,
     s3_integrity_failure, s3_replan_required, s3_transport_failure, SyncDiagnosticContext,
 };
-use super::engine::validate_relative_path;
 use crate::protected_paths::is_protected_sync_relative_path;
 use crate::s3_http::{
     s3_bucket_url, s3_object_url, signed_s3_headers, S3Connection, S3Payload,
     S3_LOGICAL_EMPTY_HEADER, S3_LOGICAL_EMPTY_SENTINEL,
 };
 use crate::sync_config::model::{S3AddressingStyle, S3TlsVerification};
+use qingyu_kernel::sync::execution::validate_relative_path;
 
 const REMOTE_SYNC_TIMEOUT_SECS: u64 = 60;
 const S3_REQUEST_MAX_ATTEMPTS: u8 = 3;

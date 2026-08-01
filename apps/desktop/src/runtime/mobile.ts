@@ -1,5 +1,4 @@
 import { emit } from "@tauri-apps/api/event";
-import { load } from "@tauri-apps/plugin-store";
 import {
   createDefaultAppRuntime,
   createKernelAppConfigRuntime,
@@ -78,8 +77,9 @@ export const mobileRuntime = {
     resolveFormFactor: () => "mobile",
   },
   settings: {
-    ...defaultRuntime.settings,
-    loadStore: load,
+    loadStore: () => Promise.reject(new Error(
+      "Renderer-local stores are unavailable for a Kernel-backed runtime."
+    )),
   },
   themes: {
     ...defaultRuntime.themes,

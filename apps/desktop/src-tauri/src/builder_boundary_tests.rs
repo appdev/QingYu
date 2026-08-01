@@ -12,12 +12,6 @@ const MCP_COMMANDS: &[&str] = &[
     "clear_mcp_audit_entries",
 ];
 
-const TYPED_SETTINGS_COMMANDS: &[&str] = &[
-    "read_app_settings_group",
-    "write_app_settings_group",
-    "replace_portable_app_settings",
-];
-
 const MOBILE_COMMANDS: &[&str] = &[
     "read_mobile_kernel_bootstrap",
     "retry_mobile_kernel_runtime",
@@ -42,14 +36,6 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "get_mcp_health",
     "list_mcp_audit_entries",
     "clear_mcp_audit_entries",
-    "read_app_settings_group",
-    "write_app_settings_group",
-    "replace_portable_app_settings",
-    "read_exposed_app_settings",
-    "patch_exposed_app_settings",
-    "load_desktop_runtime_store",
-    "get_desktop_runtime_store_value",
-    "commit_desktop_runtime_store_changes",
     "read_primary_workspace_state",
     "write_primary_workspace_state",
     "prepare_desktop_notebook_target",
@@ -283,7 +269,7 @@ fn builder_boundary_desktop_preserves_the_complete_command_surface() {
         "desktop retained the obsolete cloud catalog window handoff"
     );
     assert_eq!(commands, expected, "desktop command registrations changed");
-    for command in MCP_COMMANDS.iter().chain(TYPED_SETTINGS_COMMANDS) {
+    for command in MCP_COMMANDS {
         assert!(commands.contains(*command), "desktop omitted {command}");
     }
 }
@@ -369,11 +355,8 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
     for legacy_writer in [
         "read_markdown_file",
         "write_markdown_file",
-        "read_app_settings_group",
-        "write_app_settings_group",
         "load_sync_config",
         "patch_sync_config",
-        "sync_application",
         "save_clipboard_image",
     ] {
         assert!(
@@ -520,18 +503,17 @@ fn builder_boundary_default_denies_native_commands_in_every_launch_mode() {
 }
 
 #[test]
-fn builder_boundary_theme_migration_writes_finish_before_kernel_publication() {
+fn builder_boundary_theme_catalog_initialization_finishes_before_kernel_publication() {
     let desktop = source("src/desktop_runtime.rs");
     let migration = source("src/themes/migration.rs");
     let migration_call = desktop
         .find("initialize_catalog_before_kernel")
-        .expect("desktop startup should finish legacy theme migration");
+        .expect("desktop startup should finish theme catalog initialization");
     let kernel_install = desktop
         .find("DesktopKernelRuntimeState::new")
         .expect("desktop startup should install the Kernel runtime");
 
     assert!(migration_call < kernel_install);
-    assert!(migration.contains("DesktopKernelRuntimeState"));
     assert!(migration.contains("initialize_catalog_files(&catalog, 0)"));
 }
 
@@ -662,7 +644,6 @@ fn builder_boundary_mobile_excludes_desktop_modules_state_plugins_and_initializa
     }
 
     for plugin in [
-        "tauri_plugin_store",
         "tauri_plugin_dialog",
         "tauri_plugin_fs",
         "tauri_plugin_log",
@@ -713,7 +694,6 @@ fn builder_boundary_mobile_kernel_is_in_process_memory_only_and_origin_bound() {
         "NativeHostStart",
         "KernelHostSupervisor",
         "NativeKernelProcessFactory",
-        "tauri_plugin_store",
         "credential=",
         "?credential",
     ] {
@@ -725,23 +705,8 @@ fn builder_boundary_mobile_kernel_is_in_process_memory_only_and_origin_bound() {
 }
 
 #[test]
-fn builder_boundary_mobile_theme_catalog_skips_the_legacy_settings_owner() {
-    let migration = source("src/themes/migration.rs");
-    let mobile = migration
-        .find("#[cfg(mobile)]")
-        .expect("mobile theme initialization must have an explicit branch");
-    let legacy = migration
-        .find("app.state::<KernelSettingsOwner>()")
-        .expect("desktop legacy theme migration should remain available");
-    assert!(mobile < legacy);
-    assert!(migration[mobile..legacy].contains("initialize_catalog_without_legacy_settings"));
-}
-
-#[test]
 fn builder_boundary_dispatcher_cfg_gates_desktop_only_modules() {
     let lib = source("src/lib.rs");
-    assert!(lib.contains("\nmod app_settings;"));
-    assert!(!lib.contains("#[cfg(any(desktop, feature = \"desktop-sidecar\"))]\nmod app_settings;"));
     assert!(lib.contains("\nmod mcp;"));
     assert!(!lib.contains("#[cfg(any(desktop, feature = \"desktop-sidecar\"))]\nmod mcp;"));
     let mcp = source("src/mcp/mod.rs");
@@ -1084,20 +1049,14 @@ fn builder_boundary_capabilities_are_platform_disjoint() {
         permission_identifiers(&desktop)
             .iter()
             .all(|permission| !permission.starts_with("store:")),
-        "desktop renderer must use fixed native runtime-store commands"
+        "desktop renderer must not have a renderer-local store capability"
     );
-    for permission in [
-        "store:allow-delete",
-        "store:allow-get",
-        "store:allow-load",
-        "store:allow-save",
-        "store:allow-set",
-    ] {
-        assert!(
-            permissions.contains(&permission),
-            "mobile must retain {permission}"
-        );
-    }
+    assert!(
+        permissions
+            .iter()
+            .all(|permission| !permission.starts_with("store:")),
+        "mobile renderer must not have a renderer-local store capability"
+    );
 
     for (name, capability) in [("desktop", &desktop), ("mobile", &mobile)] {
         let opener = capability
@@ -1160,35 +1119,6 @@ fn builder_boundary_desktop_allows_guarded_frontend_app_exit() {
             .any(|permission| *permission == "process:allow-exit"),
         "desktop capability must allow the guarded frontend exit flow"
     );
-}
-
-#[test]
-fn builder_boundary_registers_fixed_desktop_runtime_store_commands() {
-    let runtime = source("src/desktop_runtime.rs");
-    let install = runtime
-        .find("crate::runtime_store::install_desktop_runtime_store")
-        .expect("desktop setup should install fixed runtime stores");
-    let settings = runtime
-        .find("crate::app_settings::KernelSettingsOwner::install")
-        .expect("desktop setup should install Kernel settings");
-    let mcp = runtime
-        .find("mcp::initialize")
-        .expect("desktop setup should initialize MCP");
-    assert!(install < settings && install < mcp);
-    let handler_source = &runtime[runtime
-        .find("tauri::generate_handler![")
-        .expect("Tauri invoke handler should be registered")..];
-
-    for command in [
-        "load_desktop_runtime_store",
-        "get_desktop_runtime_store_value",
-        "commit_desktop_runtime_store_changes",
-    ] {
-        assert!(
-            handler_source.contains(&format!("crate::runtime_store::{command},")),
-            "desktop invoke handler should register {command}"
-        );
-    }
 }
 
 #[test]
@@ -1352,7 +1282,4 @@ fn builder_boundary_keeps_the_legacy_path_guard_graph_out_of_native_runtime_owne
             "mobile runtime retained legacy writer command {command}"
         );
     }
-
-    let sync_config = source("src/sync_config.rs");
-    assert!(sync_config.contains("pub(crate) async fn sync_application"));
 }
