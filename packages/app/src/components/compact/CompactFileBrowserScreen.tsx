@@ -29,7 +29,6 @@ const compactTargetClass = "min-h-11 min-w-11";
 const longPressDelayMs = 500;
 
 type CompactFileNameAction =
-  | { kind: "create-file"; parentPath: string | null }
   | { kind: "create-folder"; parentPath: string | null }
   | { file: NativeMarkdownFolderFile; kind: "rename" };
 
@@ -104,6 +103,14 @@ export function CompactFileBrowserScreen({
     setError(errorMessage(operationError, translate("compact.files.operationFailed")));
   };
 
+  const reportNameOperationError = (operationError: unknown) => {
+    setError(compactNameOperationErrorMessage(operationError, {
+      duplicate: translate("compact.files.nameExists"),
+      fallback: translate("compact.files.operationFailed"),
+      invalid: translate("compact.files.nameInvalid")
+    }));
+  };
+
   const attemptNavigationFlush = async () => {
     try {
       await controller.saveState.flush("navigation");
@@ -124,17 +131,6 @@ export function CompactFileBrowserScreen({
     if (!nameAction) return;
     setError(null);
 
-    if (nameAction.kind === "create-file") {
-      const file = await controller.files.createFile(name, nameAction.parentPath);
-      if (!file) throw new Error("File creation failed");
-
-      await attemptNavigationFlush();
-      await controller.files.openFile(file);
-      await navigation.popToEditor();
-      setNameAction(null);
-      return;
-    }
-
     if (nameAction.kind === "create-folder") {
       const folder = await controller.files.createFolder(name, nameAction.parentPath);
       if (!folder) throw new Error("Folder creation failed");
@@ -151,6 +147,17 @@ export function CompactFileBrowserScreen({
     await controller.files.renameFile(nameAction.file, name);
     setActionPath(null);
     setNameAction(null);
+  };
+
+  const createUntitledFile = async (parentPath: string | null) => {
+    setError(null);
+    const file = await controller.files.createFile("Untitled.md", parentPath);
+    if (!file) throw new Error("File creation failed");
+
+    await attemptNavigationFlush();
+    await controller.files.openFile(file);
+    await navigation.popToEditor();
+    setActionPath(null);
   };
 
   const deleteFile = async (file: NativeMarkdownFolderFile) => {
@@ -205,7 +212,7 @@ export function CompactFileBrowserScreen({
           aria-label={translate("compact.files.newFile")}
           className={`${compactTargetClass} inline-flex items-center justify-center rounded-lg`}
           type="button"
-          onClick={() => setNameAction({ kind: "create-file", parentPath: null })}
+          onClick={() => createUntitledFile(null).catch(reportNameOperationError)}
         >
           <FilePlus2 aria-hidden="true" size={20} />
         </button>
@@ -288,7 +295,7 @@ export function CompactFileBrowserScreen({
                       <button
                         className={`${compactTargetClass} rounded-lg px-3 text-left text-sm`}
                         type="button"
-                        onClick={() => setNameAction({ kind: "create-file", parentPath: file.path })}
+                        onClick={() => createUntitledFile(file.path).catch(reportNameOperationError)}
                       >
                         {translate("compact.files.newFileHere")}
                       </button>
@@ -350,9 +357,7 @@ export function CompactFileBrowserScreen({
             : translate("compact.files.create")}
           title={nameAction.kind === "create-folder"
             ? translate("compact.files.newFolderName")
-            : nameAction.kind === "rename"
-              ? `${translate("compact.files.rename")} ${nameAction.file.name}`
-              : translate("compact.files.newFileName")}
+            : `${translate("compact.files.rename")} ${nameAction.file.name}`}
           onCancel={() => setNameAction(null)}
           onSubmit={submitNameAction}
         />

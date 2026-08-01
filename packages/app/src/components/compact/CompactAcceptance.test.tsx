@@ -156,7 +156,7 @@ describe("Compact acceptance", () => {
     }));
   });
 
-  it("creates the first true-mobile document through the current name-first file flow", async () => {
+  it("creates the first true-mobile document immediately with an allocated untitled name", async () => {
     configureTrueMobileRuntime();
     mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
@@ -166,9 +166,9 @@ describe("Compact acceptance", () => {
       openFilePaths: []
     }));
     const createdFile = {
-      name: "Mobile draft.md",
-      path: `${managedRoot}/Mobile draft.md`,
-      relativePath: "Mobile draft.md"
+      name: "Untitled 2.md",
+      path: `${managedRoot}/Untitled 2.md`,
+      relativePath: "Untitled 2.md"
     };
     mockedListNativeMarkdownFilesForPath
       .mockResolvedValueOnce([])
@@ -184,17 +184,17 @@ describe("Compact acceptance", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "  Mobile draft  " }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
-    expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(managedRoot, "Mobile draft");
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      managedRoot,
+      "Untitled.md"
+    ));
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: createdFile.name })).toBeInTheDocument();
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  it("localizes the true-mobile name-first prompt", async () => {
+  it("uses the same untitled name when the true-mobile interface is localized", async () => {
     configureTrueMobileRuntime();
     mockedGetStoredLanguage.mockResolvedValue("zh-CN");
     mockedGetStoredWorkspaceState.mockImplementation(async () => ({
@@ -205,9 +205,9 @@ describe("Compact acceptance", () => {
       openFilePaths: []
     }));
     const createdFile = {
-      name: "移动笔记.md",
-      path: `${managedRoot}/移动笔记.md`,
-      relativePath: "移动笔记.md"
+      name: "Untitled 1.md",
+      path: `${managedRoot}/Untitled 1.md`,
+      relativePath: "Untitled 1.md"
     };
     mockedListNativeMarkdownFilesForPath
       .mockResolvedValueOnce([])
@@ -223,17 +223,17 @@ describe("Compact acceptance", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "新建文档" }));
-    expect(screen.getByRole("dialog", { name: "新文件名" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("textbox", { name: "新文件名" }), {
-      target: { value: "移动笔记" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "创建" }));
 
-    expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(managedRoot, "移动笔记");
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      managedRoot,
+      "Untitled.md"
+    ));
+    expect(screen.queryByRole("dialog", { name: "新文件名" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: createdFile.name })).toBeInTheDocument();
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  it("creates, opens, and moves a named file through full-screen Files pages before returning to the editor", async () => {
+  it("creates, opens, and moves an allocated untitled file through full-screen Files pages", async () => {
     configureTrueMobileRuntime();
     const currentFile = {
       name: "Current.md",
@@ -247,14 +247,14 @@ describe("Compact acceptance", () => {
       relativePath: "archive"
     };
     const createdFile = {
-      name: "Created note.md",
-      path: `${managedRoot}/Created note.md`,
-      relativePath: "Created note.md"
+      name: "Untitled 3.md",
+      path: `${managedRoot}/Untitled 3.md`,
+      relativePath: "Untitled 3.md"
     };
     const movedFile = {
       ...createdFile,
-      path: `${managedRoot}/archive/Created note.md`,
-      relativePath: "archive/Created note.md"
+      path: `${managedRoot}/archive/Untitled 3.md`,
+      relativePath: "archive/Untitled 3.md"
     };
     mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: currentFile.path,
@@ -283,15 +283,12 @@ describe("Compact acceptance", () => {
     expect(filesPage.parentElement).toHaveAttribute("data-compact-page", "files");
     expect(filesPage.parentElement).toHaveClass("absolute", "inset-0");
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "Created note" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
       managedRoot,
-      "Created note"
+      "Untitled.md"
     ));
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: createdFile.name })).toBeInTheDocument();
     await act(async () => {
       window.dispatchEvent(new PopStateEvent("popstate", { state: editorHistoryState }));

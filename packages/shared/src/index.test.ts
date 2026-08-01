@@ -7,6 +7,7 @@ import {
   isMarkdownPath,
   isRecord,
   normalizeNullableString,
+  numberedMarkdownDocumentName,
   normalizedExternalAutolinkUrl,
   parentPathFromPath,
   pathNameFromPath,
@@ -30,6 +31,13 @@ describe("utilities", () => {
 
   it("keeps non-empty strings unchanged", () => {
     expect(normalizeNullableString("/mock-files/vault")).toBe("/mock-files/vault");
+  });
+
+  it("continues an existing Markdown document number instead of nesting suffixes", () => {
+    expect(numberedMarkdownDocumentName("Untitled.md", 0)).toBe("Untitled.md");
+    expect(numberedMarkdownDocumentName("Untitled.md", 3)).toBe("Untitled 3.md");
+    expect(numberedMarkdownDocumentName("Untitled 1.md", 1)).toBe("Untitled 2.md");
+    expect(numberedMarkdownDocumentName("Draft 7.MaRkDoWn", 2)).toBe("Draft 9.MaRkDoWn");
   });
 
   it("recognizes non-null object records", () => {

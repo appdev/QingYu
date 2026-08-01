@@ -42,7 +42,14 @@ import {
 } from "../lib/performance-marks";
 import { normalizeComparablePath, replaceMovedPath, sameNativePath } from "../lib/path-move";
 import { setNativeWindowTitle } from "../lib/tauri";
-import { debug, isMarkdownPath, parentPathFromPath, pathNameFromPath, type DocumentState } from "@markra/shared";
+import {
+  debug,
+  isMarkdownPath,
+  numberedMarkdownDocumentName,
+  parentPathFromPath,
+  pathNameFromPath,
+  type DocumentState
+} from "@markra/shared";
 import {
   activeFilePathFromTabs,
   activeFilePathFromWindowRestore,
@@ -93,6 +100,22 @@ function isKernelWorkspaceDirectory(path: string | null | undefined) {
   } catch {
     return false;
   }
+}
+
+function availableBlankDocumentName(
+  suggestedName: string | undefined,
+  tabs: readonly MarkdownDocumentTab[]
+) {
+  const initialName = blankDocumentName(suggestedName);
+  const occupiedNames = new Set(tabs.map((tab) => tab.name));
+  if (!occupiedNames.has(initialName)) return initialName;
+
+  for (let attempt = 1; attempt < 10_000; attempt += 1) {
+    const candidate = numberedMarkdownDocumentName(initialName, attempt);
+    if (!occupiedNames.has(candidate)) return candidate;
+  }
+
+  throw new Error("Unable to allocate a unique Markdown draft name after 10,000 attempts.");
 }
 
 type CreateBlankDocumentOptions = {
@@ -869,9 +892,12 @@ export function useMarkdownDocument({
     savedFile: SavedNativeMarkdownFile | null = null
   ) => {
     const content = options.content ?? "";
+    const name = savedFile?.name || (documentTabsEnabled
+      ? availableBlankDocumentName(options.name, tabsRef.current)
+      : blankDocumentName(options.name));
     const nextDocument = {
       path: savedFile?.path ?? null,
-      name: savedFile?.name || blankDocumentName(options.name),
+      name,
       content,
       deleted: false,
       dirty: savedFile === null,
@@ -881,6 +907,24 @@ export function useMarkdownDocument({
 
     if (documentTabsEnabled) {
       syncActiveDocumentFromEditor();
+      const existingSavedTab = savedFile
+        ? tabsRef.current.find((tab) => tab.path && sameNativePath(tab.path, savedFile.path))
+        : undefined;
+      if (existingSavedTab && savedFile) {
+        const nextTabs = tabsRef.current.map((tab) => tab.id === existingSavedTab.id
+          ? { ...tab, deleted: false }
+          : tab);
+        setActiveTabState(nextTabs, existingSavedTab.id);
+        const nextOpenFilePaths = openFilePathsFromTabs(nextTabs);
+        registerWindowRestoreState(savedFile.path, nextOpenFilePaths);
+        persistWorkspaceState({
+          ...draftWorkspacePatchFromTabs(nextTabs, existingSavedTab.id),
+          filePath: savedFile.path,
+          openFilePaths: nextOpenFilePaths
+        });
+        rememberRecentMarkdownFile(savedFile);
+        return true;
+      }
       const tab = createDocumentTab(
         nextDocument,
         savedFile ? fileTabId(savedFile.path) : createUntitledTabId()
@@ -930,7 +974,12 @@ export function useMarkdownDocument({
         ...defaultSaveDirectoryInput(defaultSaveDirectory, null),
         contents: options.content ?? "",
         path: null,
-        suggestedName: blankDocumentName(options.name)
+        suggestedName: documentTabsEnabled
+          ? availableBlankDocumentName(
+            options.name,
+            tabsRef.current.filter((tab) => tab.path !== null)
+          )
+          : blankDocumentName(options.name)
       });
       if (!savedFile) return false;
 

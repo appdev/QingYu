@@ -136,34 +136,37 @@ describe("CompactFileBrowserScreen", () => {
     expect(screen.queryByRole("button", { name: "readme.md" })).not.toBeInTheDocument();
   });
 
-  it("asks for a file name in-app, cancels without mutation, then opens a created file", async () => {
+  it("creates an untitled file immediately and opens the allocated file", async () => {
     const prompt = vi.spyOn(window, "prompt").mockReturnValue(null);
-    const createdFile = { path: "/vault/new.md", name: "new.md", relativePath: "new.md" };
+    const createdFile = {
+      path: "/vault/Untitled 2.md",
+      name: "Untitled 2.md",
+      relativePath: "Untitled 2.md"
+    };
     const { createFile, navigation, openTreeMarkdownFile } = setup();
-
-    fireEvent.click(screen.getByRole("button", { name: "New file" }));
-    const firstDialog = screen.getByRole("dialog", { name: "New file name" });
-    expect(firstDialog).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(createFile).not.toHaveBeenCalled();
-    await waitFor(() => expect(
-      screen.queryByRole("dialog", { name: "New file name" })
-    ).not.toBeInTheDocument());
-
     createFile.mockResolvedValueOnce(createdFile);
-    fireEvent.click(screen.getByRole("button", { name: "New file" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "  new  " }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => expect(createFile).toHaveBeenCalledWith("new", null));
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    await waitFor(() => expect(createFile).toHaveBeenCalledWith("Untitled.md", null));
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(openTreeMarkdownFile).toHaveBeenCalledWith(createdFile);
     expect(navigation.popToEditor).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(
-      screen.queryByRole("dialog", { name: "New file name" })
-    ).not.toBeInTheDocument());
     expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it("shows a safe error when immediate file creation fails", async () => {
+    const { createFile, openTreeMarkdownFile } = setup();
+    createFile.mockRejectedValueOnce(new Error(
+      "token=super-secret failed at /Users/example/vault/Untitled.md"
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "New file" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The file operation failed.");
+    expect(screen.queryByText(/super-secret|Users|example|vault/u)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
+    expect(openTreeMarkdownFile).not.toHaveBeenCalled();
   });
 
   it("creates a named folder and stays in the browser", async () => {
@@ -178,8 +181,8 @@ describe("CompactFileBrowserScreen", () => {
     expect(navigation.popToEditor).not.toHaveBeenCalled();
   });
 
-  it("keeps duplicate and invalid-name backend failures visible in the dialog", async () => {
-    const { createFile, createFolder } = setup();
+  it("keeps duplicate folder failures visible in the name dialog", async () => {
+    const { createFolder } = setup();
 
     createFolder.mockRejectedValueOnce(new Error("Folder already exists at /Users/example/vault/notes"));
     fireEvent.click(screen.getByRole("button", { name: "New folder" }));
@@ -192,16 +195,6 @@ describe("CompactFileBrowserScreen", () => {
     );
     expect(screen.queryByText(/Users|example|vault/u)).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "New folder name" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-    createFile.mockRejectedValueOnce(new Error("File must use .md or .markdown"));
-    fireEvent.click(screen.getByRole("button", { name: "New file" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "notes.txt" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Enter a valid name.");
-    expect(screen.getByRole("dialog", { name: "New file name" })).toBeInTheDocument();
   });
 
   it("shows a generic safe error instead of credential-bearing backend details", async () => {
@@ -224,21 +217,18 @@ describe("CompactFileBrowserScreen", () => {
 
   it("preserves the selected parent when creating inside a folder", async () => {
     const createdFile = {
-      path: "/vault/docs/nested.md",
-      name: "nested.md",
-      relativePath: "docs/nested.md"
+      path: "/vault/docs/Untitled 1.md",
+      name: "Untitled 1.md",
+      relativePath: "docs/Untitled 1.md"
     };
     const { createFile } = setup();
     createFile.mockResolvedValueOnce(createdFile);
 
     fireEvent.click(screen.getByRole("button", { name: "More actions: docs" }));
     fireEvent.click(screen.getByRole("button", { name: "New file here" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "nested" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
-    await waitFor(() => expect(createFile).toHaveBeenCalledWith("nested", "/vault/docs"));
+    await waitFor(() => expect(createFile).toHaveBeenCalledWith("Untitled.md", "/vault/docs"));
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
   });
 
   it("uses the existing rename and delete business callbacks", async () => {
@@ -334,8 +324,13 @@ describe("CompactFileBrowserScreen", () => {
     });
   });
 
-  it("localizes the full file surface and name-first dialogs in Simplified Chinese", async () => {
-    const { createFolder } = setup(undefined, "zh-CN");
+  it("localizes the full file surface and manual folder/rename dialogs in Simplified Chinese", async () => {
+    const { createFile, createFolder } = setup(undefined, "zh-CN");
+    createFile.mockResolvedValueOnce({
+      path: "/vault/Untitled.md",
+      name: "Untitled.md",
+      relativePath: "Untitled.md"
+    });
 
     expect(screen.getByRole("region", { name: "文件" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "返回" })).toBeInTheDocument();
@@ -344,8 +339,8 @@ describe("CompactFileBrowserScreen", () => {
     expect(screen.getByRole("button", { name: "新建文件夹" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "新建文件" }));
-    expect(screen.getByRole("dialog", { name: "新文件名" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(createFile).toHaveBeenCalledWith("Untitled.md", null));
+    expect(screen.queryByRole("dialog", { name: "新文件名" })).not.toBeInTheDocument();
 
     createFolder.mockRejectedValueOnce("failed");
     fireEvent.click(screen.getByRole("button", { name: "新建文件夹" }));
