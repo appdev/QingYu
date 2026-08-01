@@ -3552,6 +3552,8 @@ export interface operations {
                     "X-Content-Type-Options": "nosniff";
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
+                    /** @description Revision of the exact resource bytes opened for this response. */
+                    "X-Resource-Revision": components["schemas"]["Revision"];
                     [name: string]: unknown;
                 };
                 content: {

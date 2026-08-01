@@ -565,6 +565,61 @@ async fn inventory_scan_gate_does_not_gate_open_resource() {
 }
 
 #[tokio::test]
+async fn resource_api_reads_are_serialized_with_workspace_mutations() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("visible.bin"), b"visible").unwrap();
+    let mutation = fixture.runtime.mutation_coordinator().lock().await;
+    let service = fixture.service.clone();
+    let inventory = tokio::spawn(async move {
+        ResourcesApiService::list_workspace_inventory(
+            &service,
+            ListWorkspaceInventoryQuery {
+                cursor: None,
+                limit: Some(PageLimit::new(10).unwrap()),
+                parent: WorkspaceRelativePath::default(),
+            },
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+    assert!(!inventory.is_finished());
+    drop(mutation);
+    let inventory = inventory.await.unwrap().unwrap();
+    let resource = inventory
+        .items
+        .into_iter()
+        .find_map(|entry| match entry {
+            qingyu_kernel::contract::WorkspaceInventoryEntryDto::Resource { resource } => {
+                Some(resource)
+            }
+            qingyu_kernel::contract::WorkspaceInventoryEntryDto::Document { .. } => None,
+        })
+        .unwrap();
+
+    let retained = ResourcesApiService::open_workspace_resource(
+        &fixture.service,
+        resource.id,
+        ResourceKind::Attachment,
+    )
+    .await
+    .unwrap();
+    let runtime = fixture.runtime.clone();
+    let mut waiting = tokio::spawn(async move {
+        let _mutation = runtime.mutation_coordinator().lock().await;
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+            .await
+            .is_err()
+    );
+    drop(retained);
+    tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .expect("mutation should resume after the retained resource is dropped")
+        .unwrap();
+}
+
+#[tokio::test]
 async fn inventory_pages_continue_unchanged_and_reject_a_changed_collection() {
     let fixture = Fixture::new().await;
     fs::write(fixture.root.join("first.bin"), b"first").unwrap();
@@ -800,6 +855,10 @@ async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
     assert_eq!(
         response.headers().get(header::CONTENT_LENGTH).unwrap(),
         bytes.len().to_string().as_str()
+    );
+    assert_eq!(
+        response.headers().get("x-resource-revision").unwrap(),
+        resource.revision.as_str()
     );
     assert_eq!(
         response.headers().get("x-content-type-options").unwrap(),

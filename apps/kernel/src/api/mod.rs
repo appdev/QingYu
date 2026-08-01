@@ -659,7 +659,9 @@ fn decorate_response(response: &mut Response, allowed_origin: Option<&HeaderValu
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
         headers.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            HeaderValue::from_static("Retry-After, X-Request-Id, X-Content-Type-Options"),
+            HeaderValue::from_static(
+                "Retry-After, X-Request-Id, X-Content-Type-Options, X-Resource-Revision",
+            ),
         );
         headers.insert(header::VARY, HeaderValue::from_static("Origin"));
     }
@@ -717,7 +719,7 @@ impl ApiDoc {
         install_security_scheme(&mut document);
         patch_literal_and_nullable_schemas(&mut document);
         document["x-cors-exposed-response-headers"] =
-            serde_json::json!(["Retry-After", "X-Request-Id"]);
+            serde_json::json!(["Retry-After", "X-Request-Id", "X-Resource-Revision"]);
         document
     }
 }
@@ -1379,6 +1381,12 @@ fn install_paths(document: &mut serde_json::Value) {
         "description": "Disables content sniffing for untrusted workspace resources.",
         "required": true,
         "schema": { "type": "string", "const": "nosniff" }
+    });
+    paths["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"]
+        ["X-Resource-Revision"] = serde_json::json!({
+        "description": "Revision of the exact resource bytes opened for this response.",
+        "required": true,
+        "schema": { "$ref": "#/components/schemas/Revision" }
     });
     operation_mut(document, "/api/v1/auth/session", "get")["security"] = browser_session_security();
     for (path, method) in [

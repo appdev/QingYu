@@ -40,6 +40,7 @@ import {
   saveNativeClipboardImage,
   saveNativeHtmlFile,
   saveNativeMarkdownBundleFile,
+  saveNativeMarkdownBundleSnapshotFile,
   saveNativePandocFile,
   saveNativePdfFile,
   renameNativeMarkdownTreeFile,
@@ -1073,6 +1074,56 @@ describe("native file access", () => {
 
     expect(mockedOpen).not.toHaveBeenCalled();
     expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it("writes a pre-frozen Kernel Markdown snapshot without host source paths", async () => {
+    const markdown = "![Chart](assets/chart.png)";
+    const href = "assets/chart.png";
+    const from = markdown.indexOf(href);
+    mockedOpen.mockResolvedValue("/mock-exports");
+    mockedInvoke.mockResolvedValue("/mock-exports/draft/draft.md");
+
+    await expect(saveNativeMarkdownBundleSnapshotFile({
+      folder: "assets",
+      markdown,
+      references: [{
+        from,
+        href,
+        rawHref: href,
+        resourcePath: "notes/assets/chart.png",
+        to: from + href.length,
+      }],
+      resources: [{
+        bodyBase64: "aW1hZ2U=",
+        name: "chart.png",
+        path: "notes/assets/chart.png",
+      }],
+      suggestedName: "draft.md",
+    })).resolves.toEqual({
+      name: "draft.md",
+      path: "/mock-exports/draft/draft.md",
+    });
+
+    expect(mockedInvoke).toHaveBeenCalledWith("export_markdown_file", {
+      documentPath: null,
+      folder: "assets",
+      markdown,
+      parentPath: "/mock-exports",
+      references: [{
+        from,
+        href,
+        rawHref: href,
+        resourcePath: "notes/assets/chart.png",
+        to: from + href.length,
+      }],
+      resources: [{
+        bodyBase64: "aW1hZ2U=",
+        name: "chart.png",
+        path: "notes/assets/chart.png",
+      }],
+      rootPath: null,
+      suggestedName: "draft.md",
+    });
   });
 
   it("does not create a markdown export folder when directory selection is canceled", async () => {

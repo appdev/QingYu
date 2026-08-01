@@ -856,7 +856,7 @@ function assertServerRoot(path: string) {
   }
 }
 
-function relativePathFromServerPath(path: string) {
+export function relativePathFromServerPath(path: string) {
   if (path === kernelWorkspaceRoot) return "";
   const prefix = `${kernelWorkspaceRoot}/`;
   if (!path.startsWith(prefix)) throw new Error("The path is outside the Kernel workspace.");
@@ -884,7 +884,7 @@ function serverPathFromRelative(relativePath: string) {
   return `${kernelWorkspaceRoot}/${encoded}`;
 }
 
-function resolveServerMarkdownImagePath(documentPath: string, source: string) {
+export function resolveServerMarkdownImagePath(documentPath: string, source: string) {
   let documentRelativePath: string;
   try {
     documentRelativePath = relativePathFromServerPath(documentPath);

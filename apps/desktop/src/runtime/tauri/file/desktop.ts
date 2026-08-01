@@ -142,7 +142,22 @@ export type NativeMarkdownExportReference = {
   from: number;
   href: string;
   rawHref: string;
+  resourcePath?: string;
   to: number;
+};
+
+export type NativeMarkdownExportSnapshotResource = {
+  bodyBase64: string;
+  name: string;
+  path: string;
+};
+
+export type SaveNativeMarkdownBundleSnapshotFileInput = {
+  folder: string;
+  markdown: string;
+  references: NativeMarkdownExportReference[];
+  resources: NativeMarkdownExportSnapshotResource[];
+  suggestedName: string;
 };
 
 export type SaveNativeMarkdownBundleFileInput = {
@@ -805,6 +820,39 @@ export async function saveNativeMarkdownBundleFile({
     parentPath: directoryPath,
     references,
     rootPath,
+    suggestedName
+  });
+
+  return {
+    path: targetPath,
+    name: fileNameFromPath(targetPath)
+  };
+}
+
+export async function saveNativeMarkdownBundleSnapshotFile({
+  folder,
+  markdown,
+  references,
+  resources,
+  suggestedName
+}: SaveNativeMarkdownBundleSnapshotFileInput): Promise<SavedNativeMarkdownFile | null> {
+  const directoryPath = await open({
+    directory: true,
+    fileAccessMode: "scoped",
+    multiple: false,
+    recursive: true
+  });
+
+  if (!directoryPath || Array.isArray(directoryPath)) return null;
+
+  const targetPath = await invokeNative<string>("export_markdown_file", {
+    documentPath: null,
+    folder,
+    markdown,
+    parentPath: directoryPath,
+    references,
+    resources,
+    rootPath: null,
     suggestedName
   });
 

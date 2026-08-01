@@ -8887,6 +8887,13 @@
                   "format": "uuid",
                   "type": "string"
                 }
+              },
+              "X-Resource-Revision": {
+                "description": "Revision of the exact resource bytes opened for this response.",
+                "required": true,
+                "schema": {
+                  "$ref": "#/components/schemas/Revision"
+                }
               }
             }
           },
@@ -12140,6 +12147,7 @@
   },
   "x-cors-exposed-response-headers": [
     "Retry-After",
-    "X-Request-Id"
+    "X-Request-Id",
+    "X-Resource-Revision"
   ]
 }

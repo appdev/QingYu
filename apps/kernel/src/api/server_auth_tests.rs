@@ -889,7 +889,7 @@ async fn rate_limit_header_matches_the_safe_body_and_forwarded_headers_are_ignor
     assert!(second.headers().get(header::SET_COOKIE).is_none());
     assert_eq!(
         second.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
-        "Retry-After, X-Request-Id, X-Content-Type-Options"
+        "Retry-After, X-Request-Id, X-Content-Type-Options, X-Resource-Revision"
     );
     let retry_after = second.headers()[header::RETRY_AFTER]
         .to_str()

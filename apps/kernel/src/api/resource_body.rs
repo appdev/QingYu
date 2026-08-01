@@ -10,6 +10,7 @@ use futures_util::stream;
 use crate::resources::RetainedResource;
 
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
+const RESOURCE_REVISION_HEADER: &str = "x-resource-revision";
 
 pub(crate) async fn response(mut resource: RetainedResource) -> Result<Response, ()> {
     let entry = resource.entry().clone();
@@ -55,6 +56,10 @@ pub(crate) async fn response(mut resource: RetainedResource) -> Result<Response,
     response.headers_mut().insert(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&size.to_string()).map_err(|_| ())?,
+    );
+    response.headers_mut().insert(
+        RESOURCE_REVISION_HEADER,
+        HeaderValue::from_str(entry.revision.as_str()).map_err(|_| ())?,
     );
     if entry.media_type == "image/svg+xml" {
         response.headers_mut().insert(

@@ -642,6 +642,7 @@ describe("desktop Kernel domain adapter", () => {
             "content-length": "11",
             "content-type": "image/png",
             "x-content-type-options": "nosniff",
+            "x-resource-revision": "revision-resource-1",
             "x-request-id": REQUEST_ID,
           },
         });
@@ -690,6 +691,7 @@ describe("desktop Kernel domain adapter", () => {
       workspaceGeneration,
     });
     expect(body.mediaType).toBe("image/png");
+    expect(body.revision).toBe("revision-resource-1");
     expect(await body.body.text()).toBe("image bytes");
     expect(requests).toEqual([
       {

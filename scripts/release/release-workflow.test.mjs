@@ -49,7 +49,8 @@ test("release workflow builds and publishes an Arch Linux package from the x64 d
   const workflow = fs.readFileSync(workflowPath, "utf8");
 
   assert.match(workflow, /name: Prepare Arch Linux package/);
-  assert.match(workflow, /prepare-arch-package\.mjs/);
+  assert.match(workflow, /run: node scripts\/release\/prepare-arch-package\.mjs/);
+  assert.doesNotMatch(workflow, /\.release-scripts\/scripts\/release\/prepare-arch-package\.mjs/);
   assert.match(workflow, /archlinux:base-devel/);
   assert.match(workflow, /makepkg --noconfirm --nodeps/);
   assert.match(workflow, /QingYu_\$\{version\}_linux_x64\.pkg\.tar\.zst/);

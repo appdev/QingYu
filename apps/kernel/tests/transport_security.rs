@@ -406,7 +406,7 @@ async fn cross_origin_http_responses_expose_required_contract_headers() {
     assert_eq!(success.status(), StatusCode::OK);
     assert_eq!(
         success.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
-        "Retry-After, X-Request-Id, X-Content-Type-Options"
+        "Retry-After, X-Request-Id, X-Content-Type-Options, X-Resource-Revision"
     );
     uuid::Uuid::parse_str(success.headers()["x-request-id"].to_str().unwrap())
         .expect("successful browser response request ID must be a UUID");
@@ -419,7 +419,7 @@ async fn cross_origin_http_responses_expose_required_contract_headers() {
     assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
         error.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
-        "Retry-After, X-Request-Id, X-Content-Type-Options"
+        "Retry-After, X-Request-Id, X-Content-Type-Options, X-Resource-Revision"
     );
     let request_id = error.headers()["x-request-id"].clone();
     let envelope: ApiErrorEnvelope = serde_json::from_value(body_json(error).await).unwrap();

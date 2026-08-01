@@ -713,24 +713,6 @@ fn save_clipboard_attachment_with_registry(
 }
 
 #[cfg(desktop)]
-pub(super) fn import_local_file_for_document(
-    app: &tauri::AppHandle,
-    document_path: &Path,
-    folder: &str,
-    source_path: &Path,
-) -> Result<ClipboardAttachmentFile, String> {
-    import_local_file_with_registry(
-        crate::dejavu_sync::path_guard::native_working_tree_registry(),
-        document_path.to_string_lossy().to_string(),
-        folder.to_string(),
-        source_path.to_string_lossy().to_string(),
-        None,
-        |root| allow_asset_directory(app, root),
-        |root| forbid_asset_directory(app, root),
-    )
-}
-
-#[cfg(desktop)]
 #[tauri::command]
 pub(crate) fn save_clipboard_attachment(
     app: tauri::AppHandle,

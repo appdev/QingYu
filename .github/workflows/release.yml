@@ -783,7 +783,7 @@ jobs:
           ARCH_PACKAGE_DIR: generated/arch
           RELEASE_ASSETS_ROOT: release-assets
           RELEASE_VERSION: ${{ env.RELEASE_TAG }}
-        run: node .release-scripts/scripts/release/prepare-arch-package.mjs
+        run: node scripts/release/prepare-arch-package.mjs
 
       - name: Build Arch Linux package
         shell: bash
