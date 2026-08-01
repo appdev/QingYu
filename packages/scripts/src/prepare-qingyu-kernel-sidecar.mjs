@@ -123,6 +123,8 @@ export function prepareKernelSidecar({
     paths.source,
     paths.destination,
     targetTriple,
+    process.platform,
+    { allowCargoHardLinkSource: true },
   );
   return { ...paths, ...validation };
 }
@@ -132,9 +134,12 @@ export function copyKernelSidecarAtomically(
   destination,
   targetTriple,
   hostPlatform = process.platform,
+  { allowCargoHardLinkSource = false } = {},
 ) {
   validatePreparedKernelSidecar(source, targetTriple, hostPlatform);
-  rejectHardLink(source, "Kernel sidecar source");
+  if (!allowCargoHardLinkSource) {
+    rejectHardLink(source, "Kernel sidecar source");
+  }
   rejectDestinationDirectorySymlink(destination);
   rejectDestinationLink(destination);
 

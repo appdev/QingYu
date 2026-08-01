@@ -1,4 +1,4 @@
-import { chmod, link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -117,6 +117,35 @@ describe("Kernel sidecar build contract", () => {
     expect(result).toMatchObject({ ...paths, target, byteLength: 120 });
     expect(await readFile(paths.destination)).toEqual(elfHeader(62));
   });
+
+  it.runIf(process.platform !== "win32")(
+    "publishes an independent copy from a Cargo-style hard-linked build output",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "qingyu-kernel-prepare-hardlink-"));
+      const target = "x86_64-unknown-linux-gnu";
+      const paths = kernelSidecarPaths(root, target);
+      const cargoArtifact = join(root, "cargo-artifact");
+      const contents = elfHeader(62);
+      await mkdir(join(root, "apps/kernel"), { recursive: true });
+      await mkdir(join(paths.source, ".."), { recursive: true });
+      await mkdir(join(root, "apps/desktop/src-tauri/binaries"), { recursive: true });
+      await writeFile(cargoArtifact, contents, { mode: 0o755 });
+      await link(cargoArtifact, paths.source);
+
+      prepareKernelSidecar({
+        environment: { MARKRA_DESKTOP_TARGET: target },
+        root,
+        run() {
+          return "";
+        },
+      });
+
+      expect(await readFile(paths.destination)).toEqual(contents);
+      expect((await lstat(paths.destination)).nlink).toBe(1);
+      await writeFile(cargoArtifact, elfHeader(62, { payload: false }));
+      expect(await readFile(paths.destination)).toEqual(contents);
+    },
+  );
 });
 
 describe("validatePreparedKernelSidecar", () => {
