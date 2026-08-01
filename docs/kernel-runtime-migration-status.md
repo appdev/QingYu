@@ -73,8 +73,9 @@
    command, so refresh, second-browser, restart/replace, and volume inspection
    remain unclaimed.
 3. Run the remaining Android and iOS native AppConfig/Home lifecycle acceptance.
-   The iOS 18.6 Simulator fresh-launch and terminate/relaunch Home rows passed;
-   Android installation is pending because no AVD or physical device is configured.
+   Earlier-candidate iOS 18.6 Simulator fresh-launch and terminate/relaunch Home
+   rows passed; final-SHA iOS lifecycle acceptance remains pending. Android
+   installation is pending because no AVD or physical device is configured.
    MCP is outside mobile scope and must not be added to this matrix.
 4. Run the two-endpoint live S3 matrix only when credentials are available through
    non-echoing process input; never record them in repository files or evidence.
