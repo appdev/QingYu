@@ -66,7 +66,10 @@ import { createEditorSyncState, type EditorSyncState } from "./markdown-document
 import {
   managedDocumentRelativePath
 } from "../lib/settings/workspace-state";
-import { kernelWorkspaceDocumentRelativePathFromPath } from "../runtime/kernel-app/app-config";
+import {
+  kernelWorkspaceDocumentRelativePathFromPath,
+  kernelWorkspaceRelativePathFromPath
+} from "../runtime/kernel-app/app-config";
 import { kernelWorkspaceRoot } from "../runtime/kernel-app/files";
 import {
   parseEditorWindowContext,
@@ -80,6 +83,18 @@ export type WorkspaceSurface = "restoring" | "editor" | "home" | "recovery";
 function isEmptyUntitledDocument(document: DocumentState) {
   return document.open && document.path === null && document.content.trim() === "";
 }
+
+function isKernelWorkspaceDirectory(path: string | null | undefined) {
+  if (!path) return false;
+
+  try {
+    kernelWorkspaceRelativePathFromPath(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type CreateBlankDocumentOptions = {
   content?: string;
   name?: string;
@@ -849,57 +864,93 @@ export function useMarkdownDocument({
     return true;
   }, [setActiveDocument]);
 
-  const resetToBlankDocument = useCallback((options: CreateBlankDocumentOptions = {}) => {
+  const resetToBlankDocument = useCallback((
+    options: CreateBlankDocumentOptions = {},
+    savedFile: SavedNativeMarkdownFile | null = null
+  ) => {
+    const content = options.content ?? "";
     const nextDocument = {
-      path: null,
-      name: blankDocumentName(options.name),
-      content: options.content ?? "",
+      path: savedFile?.path ?? null,
+      name: savedFile?.name || blankDocumentName(options.name),
+      content,
       deleted: false,
-      dirty: true,
+      dirty: savedFile === null,
       open: true,
       revision: documentRef.current.revision + 1
     };
 
     if (documentTabsEnabled) {
       syncActiveDocumentFromEditor();
-      const tab = createDocumentTab(nextDocument, createUntitledTabId());
+      const tab = createDocumentTab(
+        nextDocument,
+        savedFile ? fileTabId(savedFile.path) : createUntitledTabId()
+      );
       const nextTabs = [...tabsRef.current, tab];
       setActiveTabState(nextTabs, tab.id);
-      registerWindowRestoreState(activeFilePathFromTabs(nextTabs, tab.id), openFilePathsFromTabs(nextTabs));
+      const nextActiveFilePath = activeFilePathFromTabs(nextTabs, tab.id);
+      const nextOpenFilePaths = openFilePathsFromTabs(nextTabs);
+      if (savedFile) editorSyncState.rememberSavedVisualEditorStaleContent(tab.id, content);
+      registerWindowRestoreState(nextActiveFilePath, nextOpenFilePaths);
       persistWorkspaceState({
         ...draftWorkspacePatchFromTabs(nextTabs, tab.id),
-        filePath: null,
-        openFilePaths: openFilePathsFromTabs(nextTabs)
+        filePath: nextActiveFilePath,
+        openFilePaths: nextOpenFilePaths
       });
     } else {
       setActiveDocument(nextDocument);
-      registerWindowRestoreState(null, []);
+      const nextOpenFilePaths = savedFile ? [savedFile.path] : [];
+      registerWindowRestoreState(savedFile?.path ?? null, nextOpenFilePaths);
       const nextTabs = [createDocumentTab(nextDocument, activeTabIdRef.current ?? "untitled:0")];
       persistWorkspaceState({
         ...draftWorkspacePatchFromTabs(nextTabs, activeTabIdRef.current),
-        filePath: null,
-        openFilePaths: []
+        filePath: savedFile?.path ?? null,
+        openFilePaths: nextOpenFilePaths
       });
     }
+    if (savedFile) rememberRecentMarkdownFile(savedFile);
     return true;
-  }, [createUntitledTabId, documentTabsEnabled, registerWindowRestoreState, setActiveDocument, setActiveTabState, syncActiveDocumentFromEditor]);
+  }, [
+    createUntitledTabId,
+    documentTabsEnabled,
+    editorSyncState,
+    registerWindowRestoreState,
+    rememberRecentMarkdownFile,
+    setActiveDocument,
+    setActiveTabState,
+    syncActiveDocumentFromEditor
+  ]);
 
-  const createBlankDocument = useCallback((options: CreateBlankDocumentOptions = {}) => {
-    if (documentTabsEnabled) return Promise.resolve(resetToBlankDocument(options));
+  const createBlankDocument = useCallback(async (options: CreateBlankDocumentOptions = {}) => {
+    const create = async () => {
+      if (!isKernelWorkspaceDirectory(defaultSaveDirectory)) {
+        return resetToBlankDocument(options);
+      }
+
+      const savedFile = await saveNativeMarkdownFile({
+        ...defaultSaveDirectoryInput(defaultSaveDirectory, null),
+        contents: options.content ?? "",
+        path: null,
+        suggestedName: blankDocumentName(options.name)
+      });
+      if (!savedFile) return false;
+
+      return resetToBlankDocument(options, savedFile);
+    };
+
+    if (documentTabsEnabled) return create();
 
     const canDiscard = confirmCanDiscardCurrentDocument();
     if (typeof canDiscard === "boolean") {
-      if (!canDiscard) return Promise.resolve(false);
+      if (!canDiscard) return false;
 
-      return Promise.resolve(resetToBlankDocument(options));
+      return create();
     }
 
-    return canDiscard.then((confirmed) => {
-      if (!confirmed) return false;
+    const confirmed = await canDiscard;
+    if (!confirmed) return false;
 
-      return resetToBlankDocument(options);
-    });
-  }, [confirmCanDiscardCurrentDocument, documentTabsEnabled, resetToBlankDocument]);
+    return create();
+  }, [confirmCanDiscardCurrentDocument, defaultSaveDirectory, documentTabsEnabled, resetToBlankDocument]);
 
   const clearOpenDocument = useCallback((options: ClearOpenDocumentOptions = {}) => {
     const openBlank = options.openBlank === true;

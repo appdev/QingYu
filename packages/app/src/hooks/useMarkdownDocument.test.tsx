@@ -620,6 +620,90 @@ describe("useMarkdownDocument", () => {
     expect(result.current.document.name).toBe("second.md");
   });
 
+  it("preallocates and binds the unique Kernel filename when a blank tab is created", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const documentPath = `${workspaceRoot}/Untitled%203.md`;
+    let resolveAllocation!: (file: { name: string; path: string }) => undefined;
+    const allocation = new Promise<{ name: string; path: string }>((resolve) => {
+      resolveAllocation = (file) => {
+        resolve(file);
+        return undefined;
+      };
+    });
+    mockedSaveNativeMarkdownFile.mockReturnValue(allocation);
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    const initialTabCount = result.current.tabs.length;
+    let creation!: Promise<boolean>;
+
+    act(() => {
+      creation = result.current.createBlankDocument();
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
+      contents: "",
+      defaultDirectory: workspaceRoot,
+      path: null,
+      suggestedName: "Untitled.md"
+    });
+    expect(result.current.tabs).toHaveLength(initialTabCount);
+
+    await act(async () => {
+      resolveAllocation({ name: "Untitled 3.md", path: documentPath });
+      expect(await creation).toBe(true);
+    });
+
+    expect(result.current.document).toMatchObject({
+      content: "",
+      dirty: false,
+      name: "Untitled 3.md",
+      path: documentPath
+    });
+    expect(result.current.tabs.at(-1)).toMatchObject({
+      dirty: false,
+      name: "Untitled 3.md",
+      path: documentPath
+    });
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenLastCalledWith(expect.objectContaining({
+      filePath: documentPath,
+      openFilePaths: [documentPath]
+    }));
+  });
+
+  it("keeps native blank tabs in memory instead of opening a Save dialog on creation", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: "/mock-files/vault",
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument()).toBe(true);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+    expect(result.current.document).toMatchObject({
+      dirty: true,
+      name: "Untitled.md",
+      path: null
+    });
+  });
+
   it("does not ask to discard a clean file after an editor-only trailing newline normalization", async () => {
     const confirmDiscardUnsavedChanges = vi.fn(() => true);
     mockedOpenNativeMarkdownFile
