@@ -234,7 +234,7 @@ function managedWorkspaceStatePatch(patch: Partial<StoredWorkspaceState>): Parti
   return nextPatch;
 }
 
-function restoreDocumentPathIsWithinRoot(rootPath: string, filePath: string) {
+function documentPathIsWithinWorkspaceRoot(rootPath: string, filePath: string) {
   if (rootPath !== kernelWorkspaceRoot) {
     return managedDocumentRelativePath(rootPath, filePath) !== null;
   }
@@ -510,7 +510,7 @@ export function useMarkdownDocument({
     if (!selectedNewTarget || saveAsWorkspacePolicy.kind !== "primary") return false;
     if (
       saveAsWorkspacePolicy.root &&
-      managedDocumentRelativePath(saveAsWorkspacePolicy.root, savedFile.path) !== null
+      documentPathIsWithinWorkspaceRoot(saveAsWorkspacePolicy.root, savedFile.path)
     ) {
       return false;
     }
@@ -2313,7 +2313,7 @@ export function useMarkdownDocument({
 
     if (restoreWorkspaceRoot) {
       const retainedTabs = tabsRef.current.filter((tab) =>
-        tab.path === null || restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, tab.path)
+        tab.path === null || documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, tab.path)
       );
       if (retainedTabs.length !== tabsRef.current.length) {
         if (retainedTabs.length === 0) {
@@ -2357,7 +2357,7 @@ export function useMarkdownDocument({
             );
           if (restoreWorkspaceRoot) {
             restoreFilePaths = restoreFilePaths.filter(
-              (path) => restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, path)
+              (path) => documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, path)
             );
           }
           const requestedActiveRestoreFilePath = primaryRestoreWindow
@@ -2365,7 +2365,7 @@ export function useMarkdownDocument({
             : workspace.filePath;
           const activeRestoreFilePath = requestedActiveRestoreFilePath && (
             !restoreWorkspaceRoot ||
-            restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, requestedActiveRestoreFilePath)
+            documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, requestedActiveRestoreFilePath)
           )
             ? requestedActiveRestoreFilePath
             : null;
@@ -2374,12 +2374,12 @@ export function useMarkdownDocument({
               .map(activeFilePathFromWindowRestore)
           ).filter((path) =>
             !restoreFilePaths.includes(path) && (
-              !restoreWorkspaceRoot || restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, path)
+              !restoreWorkspaceRoot || documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, path)
             )
           );
           const restoredDraftTabs = restoreWorkspaceRoot
             ? (workspace.draftTabs ?? []).filter((draft) =>
-              draft.path === null || restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, draft.path)
+              draft.path === null || documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, draft.path)
             )
             : workspace.draftTabs ?? [];
           const restoredActiveDraftId = workspace.activeDraftId && restoredDraftTabs.some(
