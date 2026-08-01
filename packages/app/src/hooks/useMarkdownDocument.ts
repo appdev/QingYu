@@ -167,7 +167,8 @@ type UseMarkdownDocumentOptions = {
     path: string,
     name: string,
     clearFilePath?: boolean,
-    openTree?: boolean
+    openTree?: boolean,
+    options?: { persistWorkspace?: boolean }
   ) => unknown | Promise<unknown>;
   onTreeRootFromFilePath: (path: string) => unknown;
   onSwitchNotebookDirectory?: (path: string) => unknown | Promise<unknown>;
@@ -469,6 +470,7 @@ export function useMarkdownDocument({
   }, [activeTabId]);
 
   useEffect(() => {
+    if (!workspaceReady) startupWorkspaceRestoreKeyRef.current = null;
     setWorkspaceSurface((currentSurface) => {
       if (!workspaceReady) return "recovery";
       return currentSurface === "recovery" ? "restoring" : currentSurface;
@@ -2407,7 +2409,8 @@ export function useMarkdownDocument({
               folderPath,
               folderName,
               restoreFilePaths.length === 0 && restoredDraftTabs.length === 0,
-              workspace.fileTreeOpen
+              workspace.fileTreeOpen,
+              { persistWorkspace: false }
             );
             folderRestorePromise = Promise.resolve().then(restoreFolderRoot).catch(() => null);
           }

@@ -981,7 +981,7 @@ export function mockDesktopPrimaryWorkspace({
   return controller;
 }
 
-export function renderApp() {
+function prepareConfiguredPrimaryWorkspace() {
   if (
     !primaryWorkspaceHarnessState.desktopController &&
     window.location.search.length === 0
@@ -1008,6 +1008,23 @@ export function renderApp() {
       window.history.replaceState({}, "", url);
     }
   }
+}
+
+export function renderApp() {
+  prepareConfiguredPrimaryWorkspace();
+
+  if (
+    !primaryWorkspaceHarnessState.desktopController &&
+    window.location.search.length === 0
+  ) {
+    mockDesktopPrimaryWorkspace({ root: null, status: "ready" });
+  }
+
+  return render(<App />);
+}
+
+export function renderEditorApp() {
+  prepareConfiguredPrimaryWorkspace();
 
   if (
     !primaryWorkspaceHarnessState.desktopController &&

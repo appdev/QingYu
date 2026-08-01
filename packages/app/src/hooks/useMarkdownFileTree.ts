@@ -45,6 +45,7 @@ type UseMarkdownFileTreeOptions = {
 export type OpenFolderPathOptions = {
   coalesce?: boolean;
   managed?: boolean;
+  persistWorkspace?: boolean;
   restoreDocumentPath?: string | null;
 };
 export type OpenFolderPathResult = {
@@ -665,7 +666,7 @@ export function useMarkdownFileTree({
     };
     replaceFileTreeFiles(nextFiles);
     setProjectRoot(path);
-    if (!options.managed) {
+    if (!options.managed && options.persistWorkspace !== false) {
       // Opening a folder replaces the startup workspace, so clear the previous file path in the same write.
       persistWorkspaceState({
         ...(clearFilePath ? { filePath: null, openFilePaths: [] } : {}),

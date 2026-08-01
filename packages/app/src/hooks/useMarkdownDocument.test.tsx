@@ -253,6 +253,34 @@ describe("useMarkdownDocument", () => {
     expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalled();
   });
 
+  it("reconciles again after the same workspace recovers from being unavailable", async () => {
+    const onTreeRootFromFilePath = vi.fn();
+    const onTreeRootFromFolderPath = vi.fn();
+    const { result, rerender } = renderHook(({ workspaceReady }) =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath,
+        onTreeRootFromFolderPath,
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true,
+        restoreWorkspaceRoot: "/mock-files/vault",
+        workspaceReady
+      }), {
+        initialProps: { workspaceReady: true }
+      }
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+    expect(mockedGetStoredWorkspaceState).toHaveBeenCalledTimes(1);
+
+    rerender({ workspaceReady: false });
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("recovery"));
+
+    rerender({ workspaceReady: true });
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+    expect(mockedGetStoredWorkspaceState).toHaveBeenCalledTimes(2);
+  });
+
   it("opens a managed tree document without desktop recent, window, or workspace mutations", async () => {
     const filePath = "/mobile/workspace/notes/managed.md";
     mockedReadNativeMarkdownFile.mockResolvedValue({
@@ -3120,6 +3148,54 @@ describe("useMarkdownDocument", () => {
     });
   });
 
+  it("restores a remembered folder with one reconciled workspace write", async () => {
+    const onTreeRootFromFolderPath = vi.fn(async (
+      path: string,
+      name: string,
+      clearFilePath?: boolean,
+      openTree?: boolean,
+      options?: { persistWorkspace?: boolean }
+    ) => {
+      if (options?.persistWorkspace !== false) {
+        await mockedSaveStoredWorkspaceState({
+          ...(clearFilePath ? { filePath: null, openFilePaths: [] } : {}),
+          fileTreeOpen: openTree,
+          folderName: name,
+          folderPath: path
+        });
+      }
+      return { name, path };
+    });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: true,
+      folderName: "notes",
+      folderPath: "/mock-files/notes",
+      openFilePaths: []
+    });
+
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath,
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true
+      })
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+
+    expect(onTreeRootFromFolderPath).toHaveBeenCalledWith(
+      "/mock-files/notes",
+      "notes",
+      true,
+      true,
+      { persistWorkspace: false }
+    );
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledTimes(1);
+  });
+
   it("shows Home when the remembered folder cannot open and no file or dirty draft survives", async () => {
     const onTreeRootFromFolderPath = vi.fn(async () => null);
     mockedGetStoredWorkspaceState.mockResolvedValue({
@@ -3145,7 +3221,8 @@ describe("useMarkdownDocument", () => {
         "/mock-files/deleted-notes",
         "notes",
         true,
-        true
+        true,
+        { persistWorkspace: false }
       )
     );
     await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
@@ -3341,7 +3418,8 @@ describe("useMarkdownDocument", () => {
       "/mock-files/metadata-root",
       "metadata-root",
       false,
-      true
+      true,
+      { persistWorkspace: false }
     );
     expect(onTreeRootFromFilePath).not.toHaveBeenCalled();
     expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
@@ -3390,7 +3468,8 @@ describe("useMarkdownDocument", () => {
       "/mock-files/slow-root",
       "slow-root",
       false,
-      true
+      true,
+      { persistWorkspace: false }
     );
   });
 
@@ -3443,7 +3522,13 @@ describe("useMarkdownDocument", () => {
     });
     expect(result.current.tabs.map((tab) => tab.path)).toEqual([guidePath, notesPath]);
     expect(result.current.activeTabId).toBe(`file:${notesPath}`);
-    expect(onTreeRootFromFolderPath).toHaveBeenCalledWith("/mock-files/vault", "vault", false, true);
+    expect(onTreeRootFromFolderPath).toHaveBeenCalledWith(
+      "/mock-files/vault",
+      "vault",
+      false,
+      true,
+      { persistWorkspace: false }
+    );
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(guidePath);
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(notesPath);
   });
@@ -3550,7 +3635,8 @@ describe("useMarkdownDocument", () => {
       "/mock-files/vault",
       "vault",
       false,
-      false
+      false,
+      { persistWorkspace: false }
     );
     expect(onTreeRootFromFilePath).not.toHaveBeenCalled();
     expect(mockedSaveStoredWorkspaceState).not.toHaveBeenCalledWith(expect.objectContaining({

@@ -8,7 +8,7 @@ import {
   mockedReadNativeMarkdownFileHistory,
   mockedResolveDesktopPlatform,
   mockedSaveNativeMarkdownFile,
-  renderApp
+  renderEditorApp as renderApp
 } from "./test/app-harness";
 
 const editorControllerSpies = vi.hoisted(() => ({

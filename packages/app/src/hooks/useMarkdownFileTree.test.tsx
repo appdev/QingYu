@@ -369,6 +369,30 @@ describe("useMarkdownFileTree", () => {
     expect(mockedSaveStoredWorkspaceState).not.toHaveBeenCalled();
   });
 
+  it("loads an unmanaged restoration root without persisting an intermediate workspace patch", async () => {
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([
+      { path: "/vault/index.md", name: "index.md", relativePath: "index.md" }
+    ]);
+    const restorationOptions = {
+      managed: false,
+      persistWorkspace: false
+    };
+    const { result } = renderHook(() => useMarkdownFileTree());
+
+    await act(async () => {
+      await result.current.openFolderPath(
+        "/vault",
+        "vault",
+        true,
+        true,
+        restorationOptions
+      );
+    });
+
+    expect(result.current.projectRoot).toBe("/vault");
+    expect(mockedSaveStoredWorkspaceState).not.toHaveBeenCalled();
+  });
+
   it("does not expose a project root until the selected folder finishes loading", async () => {
     const folderLoad = createDeferredMarkdownFileList();
     mockedOpenNativeMarkdownFolder.mockResolvedValue({

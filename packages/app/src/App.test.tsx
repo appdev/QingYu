@@ -93,7 +93,8 @@ import {
   mockedTakeNativeOpenedMarkdownPaths,
   mockedWatchNativeMarkdownFile,
   mockedWriteNativeMarkdownTemplateFile,
-  renderApp,
+  renderEditorApp as renderApp,
+  renderApp as renderFreshApp,
   rerenderApp
 } from "./test/app-harness";
 import App, {
@@ -9020,14 +9021,22 @@ describe("QingYu workspace", () => {
     await waitFor(() => expect(view?.state.selection.main.from).toBe(headingB));
   });
 
-  it("keeps a fresh empty launch out of the editor without consuming welcome state", async () => {
-    mockDesktopPrimaryWorkspace({ root: null, status: "deferred" });
-    renderApp();
+  it("settles a ready workspace with an empty retained layout on Home", async () => {
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    renderFreshApp();
 
-    await waitFor(() => expect(mockedGetStoredEditorPreferences).toHaveBeenCalled());
+    await waitFor(() => expect(mockedGetStoredWorkspaceState).toHaveBeenCalledTimes(1));
 
     expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Unsaved changes")).not.toBeInTheDocument();
+    expect(mockedSaveStoredWorkspaceState).not.toHaveBeenCalled();
   });
 
   it("does not render an editor or Workspace Home action while restoration is pending", async () => {
