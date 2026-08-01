@@ -222,6 +222,7 @@ function InitializeForm({
 }) {
   const [passwordInvalid, setPasswordInvalid] = useState(false);
   const [confirmationError, setConfirmationError] = useState<"invalid" | "mismatch" | null>(null);
+  const tokenInput = useRef<HTMLInputElement | null>(null);
   const passwordInput = useRef<HTMLInputElement | null>(null);
   const confirmInput = useRef<HTMLInputElement | null>(null);
   const submitInitialization = (event: FormEvent<HTMLFormElement>) => {
@@ -231,6 +232,10 @@ function InitializeForm({
     const initializationToken = readSecret(fields, "initializationToken");
     const password = readSecret(fields, "password");
     const confirmation = readSecret(fields, "confirmPassword");
+    if (initializationToken.length === 0) {
+      tokenInput.current?.focus({ preventScroll: true });
+      return;
+    }
     const isPasswordValid = isValidServerPassword(password);
     const isConfirmationValid = isValidServerPassword(confirmation);
     const nextConfirmationError = !isConfirmationValid
@@ -280,6 +285,7 @@ function InitializeForm({
           autoComplete="off"
           helper={copy.tokenHelper}
           invalid={error?.kind === "invalid-credentials"}
+          inputRef={tokenInput}
           label={copy.initializationToken}
           name="initializationToken"
           required

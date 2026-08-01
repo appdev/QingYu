@@ -321,6 +321,26 @@ describe("server Web application gate", () => {
     },
   );
 
+  it("blocks an empty initialization token and focuses it before calling the owner", () => {
+    const owner = inertOwner();
+    owner.initialize = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        owner={owner}
+        snapshot={{ phase: "initialize", error: null }}
+      />,
+    );
+    const token = screen.getByLabelText("One-time initialization token") as HTMLInputElement;
+    const password = screen.getByLabelText("Owner password") as HTMLInputElement;
+    const confirmation = screen.getByLabelText("Confirm password") as HTMLInputElement;
+    fireEvent.change(password, { target: { value: "Valid-Owner-Password!9" } });
+    fireEvent.change(confirmation, { target: { value: "Valid-Owner-Password!9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
+
+    expect(owner.initialize).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(token);
+  });
+
   it("rejects an invalid confirmation after a valid initialization password", () => {
     const owner = inertOwner();
     owner.initialize = vi.fn(async () => undefined);

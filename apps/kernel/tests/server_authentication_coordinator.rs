@@ -16,7 +16,7 @@ use qingyu_kernel::{
 use tempfile::tempdir;
 
 const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
-const INCORRECT_PASSWORD: &str = "incorrect owner password material";
+const INCORRECT_PASSWORD: &str = "Incorrect-Owner-Password-Material!9";
 
 fn fixture_paths(root: &Path) -> KernelPaths {
     let workspace = root.join("workspace");
