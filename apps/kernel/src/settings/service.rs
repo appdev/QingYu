@@ -212,7 +212,7 @@ impl SettingsRuntimeCoordinator {
         first_error.map_or(Ok(()), Err)
     }
 
-    fn ensure_available(&self) -> Result<(), SettingsServiceError> {
+    pub(crate) fn ensure_available(&self) -> Result<(), SettingsServiceError> {
         let state = self
             .publications
             .lock()
@@ -224,7 +224,7 @@ impl SettingsRuntimeCoordinator {
         }
     }
 
-    fn require_recovery(&self) {
+    pub(crate) fn require_recovery(&self) {
         if let Ok(mut state) = self.publications.lock() {
             state.recovery_required = true;
         }
@@ -456,7 +456,9 @@ impl SettingsService {
         Ok(true)
     }
 
-    fn read_exposed_unlocked(&self) -> Result<SettingsSnapshotDto, SettingsServiceError> {
+    pub(crate) fn read_exposed_unlocked(
+        &self,
+    ) -> Result<SettingsSnapshotDto, SettingsServiceError> {
         let mut values = BTreeMap::new();
         values.insert(
             "appearance.mode".to_string(),

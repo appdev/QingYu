@@ -1,4 +1,7 @@
-use std::{collections::HashSet, fmt, io};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt, io,
+};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
@@ -434,6 +437,16 @@ where
     Option::<T>::deserialize(deserializer).map(Nullable)
 }
 
+fn deserialize_optional_nullable<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Nullable<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Nullable::<T>::deserialize(deserializer).map(Some)
+}
+
 const MAX_DOCUMENT_NAME_BYTES: usize = 255;
 const MAX_DOCUMENT_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SEARCH_QUERY_SCALARS: usize = 512;
@@ -708,7 +721,7 @@ impl fmt::Display for InvalidSearchQuery {
 
 impl std::error::Error for InvalidSearchQuery {}
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LiveHealthResponse {
     pub status: LiveStatus,
@@ -1427,6 +1440,373 @@ impl PatchSettingsRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidSettingsPatch;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, ToSchema)]
+#[serde(transparent)]
+pub struct WindowLabel(String);
+
+impl WindowLabel {
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, InvalidWindowLabel> {
+        let value = value.as_ref().trim();
+        if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+            return Err(InvalidWindowLabel);
+        }
+        Ok(Self(value.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for WindowLabel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(|_| D::Error::custom("invalid window label"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidWindowLabel;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FileTreeSortKey {
+    CreatedAt,
+    ModifiedAt,
+    Name,
+}
+wire_enum!(FileTreeSortDirection {
+    Ascending,
+    Descending,
+});
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StoredFileTreeSortDto {
+    pub key: FileTreeSortKey,
+    pub direction: FileTreeSortDirection,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RecentMarkdownFileDto {
+    pub name: String,
+    pub path: WorkspaceRelativePath,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StoredWorkspaceDraftDto {
+    pub content: DocumentContents,
+    pub id: String,
+    pub name: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub path: Nullable<WorkspaceRelativePath>,
+}
+
+impl fmt::Debug for StoredWorkspaceDraftDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoredWorkspaceDraftDto([REDACTED])")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StoredWorkspaceSplitGroupDto {
+    pub primary_file_path: WorkspaceRelativePath,
+    pub side_file_path: WorkspaceRelativePath,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StoredWorkspaceWindowDto {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub file_path: Nullable<WorkspaceRelativePath>,
+    pub label: WindowLabel,
+    pub open_file_paths: Vec<WorkspaceRelativePath>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StoredWorkspaceWindowStateDto {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub active_draft_id: Nullable<String>,
+    pub draft_tabs: Vec<StoredWorkspaceDraftDto>,
+    pub file_tree_assets_visible: bool,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub file_path: Nullable<WorkspaceRelativePath>,
+    pub file_tree_open: bool,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub folder_name: Nullable<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub folder_path: Nullable<WorkspaceRelativePath>,
+    pub open_file_paths: Vec<WorkspaceRelativePath>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub side_by_side_group: Nullable<StoredWorkspaceSplitGroupDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StoredWorkspaceLayoutDto {
+    pub schema_version: u8,
+    pub window_states: BTreeMap<String, StoredWorkspaceWindowStateDto>,
+    pub open_windows: Vec<StoredWorkspaceWindowDto>,
+}
+
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceLayoutPatchDto {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub active_draft_id: Option<Nullable<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub draft_tabs: Option<Vec<StoredWorkspaceDraftDto>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_tree_assets_visible: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_path: Option<Nullable<WorkspaceRelativePath>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_tree_open: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub folder_name: Option<Nullable<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub folder_path: Option<Nullable<WorkspaceRelativePath>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub open_file_paths: Option<Vec<WorkspaceRelativePath>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub open_windows: Option<Vec<StoredWorkspaceWindowDto>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub side_by_side_group: Option<Nullable<StoredWorkspaceSplitGroupDto>>,
+}
+
+impl fmt::Debug for WorkspaceLayoutPatchDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("WorkspaceLayoutPatchDto([REDACTED])")
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(
+    deny_unknown_fields,
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AppConfigStateOperationDto {
+    PatchUiLayout {
+        window_label: WindowLabel,
+        patch: WorkspaceLayoutPatchDto,
+    },
+    RememberRecentFile {
+        file: RecentMarkdownFileDto,
+    },
+    RemoveRecentFile {
+        path: WorkspaceRelativePath,
+    },
+    ClearRecentFiles,
+    SetFileTreeSort {
+        sort: StoredFileTreeSortDto,
+    },
+    SetPandocPath {
+        path: Nullable<String>,
+    },
+}
+
+impl fmt::Debug for AppConfigStateOperationDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PatchUiLayout { .. } => "AppConfigStateOperationDto::PatchUiLayout([REDACTED])",
+            Self::RememberRecentFile { .. } => {
+                "AppConfigStateOperationDto::RememberRecentFile([REDACTED])"
+            }
+            Self::RemoveRecentFile { .. } => {
+                "AppConfigStateOperationDto::RemoveRecentFile([REDACTED])"
+            }
+            Self::ClearRecentFiles => "AppConfigStateOperationDto::ClearRecentFiles",
+            Self::SetFileTreeSort { .. } => "AppConfigStateOperationDto::SetFileTreeSort",
+            Self::SetPandocPath { .. } => "AppConfigStateOperationDto::SetPandocPath([REDACTED])",
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    tag = "type",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+enum AppConfigStateOperationWire {
+    PatchUiLayout {
+        window_label: WindowLabel,
+        patch: WorkspaceLayoutPatchDto,
+    },
+    RememberRecentFile {
+        file: RecentMarkdownFileDto,
+    },
+    RemoveRecentFile {
+        path: WorkspaceRelativePath,
+    },
+    ClearRecentFiles {},
+    SetFileTreeSort {
+        sort: StoredFileTreeSortDto,
+    },
+    SetPandocPath {
+        path: Nullable<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for AppConfigStateOperationDto {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(
+            match AppConfigStateOperationWire::deserialize(deserializer)? {
+                AppConfigStateOperationWire::PatchUiLayout {
+                    window_label,
+                    patch,
+                } => Self::PatchUiLayout {
+                    window_label,
+                    patch,
+                },
+                AppConfigStateOperationWire::RememberRecentFile { file } => {
+                    Self::RememberRecentFile { file }
+                }
+                AppConfigStateOperationWire::RemoveRecentFile { path } => {
+                    Self::RemoveRecentFile { path }
+                }
+                AppConfigStateOperationWire::ClearRecentFiles {} => Self::ClearRecentFiles,
+                AppConfigStateOperationWire::SetFileTreeSort { sort } => {
+                    Self::SetFileTreeSort { sort }
+                }
+                AppConfigStateOperationWire::SetPandocPath { path } => Self::SetPandocPath { path },
+            },
+        )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PatchAppConfigStateRequest {
+    pub workspace_generation: WorkspaceGeneration,
+    pub operations: Vec<AppConfigStateOperationDto>,
+}
+
+impl PatchAppConfigStateRequest {
+    pub fn validate(&self) -> Result<(), InvalidAppConfigPatch> {
+        if self.operations.is_empty() {
+            return Err(InvalidAppConfigPatch);
+        }
+        let mut targets = HashSet::with_capacity(self.operations.len());
+        for operation in &self.operations {
+            let target = match operation {
+                AppConfigStateOperationDto::PatchUiLayout { window_label, .. } => {
+                    format!("layout:{}", window_label.as_str())
+                }
+                AppConfigStateOperationDto::RememberRecentFile { file } => {
+                    format!("remember:{}", file.path.as_str())
+                }
+                AppConfigStateOperationDto::RemoveRecentFile { path } => {
+                    format!("remove:{}", path.as_str())
+                }
+                AppConfigStateOperationDto::ClearRecentFiles => "clear-recent".to_string(),
+                AppConfigStateOperationDto::SetFileTreeSort { .. } => "file-tree-sort".to_string(),
+                AppConfigStateOperationDto::SetPandocPath { .. } => "pandoc-path".to_string(),
+            };
+            if !targets.insert(target) {
+                return Err(InvalidAppConfigPatch);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidAppConfigPatch;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AppConfigWorkspaceDto {
+    pub id: WorkspaceId,
+    pub generation: WorkspaceGeneration,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AppConfigLocalStateDto {
+    pub revision: Revision,
+    pub ui_layout: StoredWorkspaceLayoutDto,
+    pub recent_markdown_files: Vec<RecentMarkdownFileDto>,
+    pub file_tree_sort: StoredFileTreeSortDto,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub pandoc_path: Nullable<String>,
+}
+
+impl fmt::Debug for AppConfigLocalStateDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppConfigLocalStateDto")
+            .field("revision", &self.revision)
+            .field("ui_layout", &"[REDACTED]")
+            .field("recent_markdown_files", &"[REDACTED]")
+            .field("file_tree_sort", &self.file_tree_sort)
+            .field("pandoc_path", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AppConfigSnapshotDto {
+    pub app_config_version: u8,
+    pub settings: SettingsSnapshotDto,
+    pub workspace: AppConfigWorkspaceDto,
+    pub local_state: AppConfigLocalStateDto,
+}
 
 #[derive(Clone, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
 #[serde(
@@ -2692,6 +3072,10 @@ pub enum ResourceRefDto {
         id: DocumentId,
     },
     Settings {},
+    AppConfig {
+        workspace_id: WorkspaceId,
+        workspace_generation: WorkspaceGeneration,
+    },
     SyncConfig {},
     SyncStatus {
         #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -2728,6 +3112,11 @@ pub enum DomainEvent {
     },
     SettingsChanged {
         settings: SettingsSnapshotDto,
+    },
+    AppConfigStateChanged {
+        workspace_id: WorkspaceId,
+        workspace_generation: WorkspaceGeneration,
+        revision: Revision,
     },
     SyncConfigChanged {
         config: SyncConfigViewDto,

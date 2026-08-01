@@ -1,6 +1,7 @@
 //! Platform-neutral QingYu domain services and transport contracts.
 
 pub mod api;
+pub mod app_config;
 pub mod composition;
 pub mod config;
 pub mod contract;

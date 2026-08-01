@@ -5,7 +5,8 @@ use std::{collections::BTreeMap, fmt, sync::Mutex};
 use serde_json::{Map, Value};
 
 use crate::{
-    settings::model::{PORTABLE_SETTINGS_KEYS, PORTABLE_SETTINGS_MAX_BYTES},
+    app_config::model::{APP_CONFIG_MAX_BYTES, APP_CONFIG_VERSION, APP_CONFIG_VERSION_KEY},
+    settings::model::PORTABLE_SETTINGS_KEYS,
     storage::{
         CommitState, DurableFileFailure, DurableFileFailureKind, DurableFileStore, ExpectedFile,
         FileRevision, PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
@@ -51,7 +52,7 @@ impl AtomicJsonSettingsStore {
         }
         let target = StorageFileName::parse("settings.json").map_err(map_durable_failure)?;
         let stored = durable
-            .read(&target, PORTABLE_SETTINGS_MAX_BYTES as u64)
+            .read(&target, APP_CONFIG_MAX_BYTES as u64)
             .map_err(map_durable_failure)?;
         let (values, revision) = match stored {
             Some(stored) => {
@@ -59,9 +60,18 @@ impl AtomicJsonSettingsStore {
                     .ok()
                     .and_then(|value| value.as_object().cloned())
                     .ok_or_else(SettingsStoreError::unavailable)?;
+                if values.get(APP_CONFIG_VERSION_KEY) != Some(&Value::from(APP_CONFIG_VERSION)) {
+                    return Err(SettingsStoreError::unavailable());
+                }
                 (values.into_iter().collect(), Some(stored.revision.clone()))
             }
-            None => (BTreeMap::new(), None),
+            None => (
+                BTreeMap::from([(
+                    APP_CONFIG_VERSION_KEY.to_string(),
+                    Value::from(APP_CONFIG_VERSION),
+                )]),
+                None,
+            ),
         };
         Ok(Self {
             durable,
@@ -152,6 +162,10 @@ impl SettingsStore for AtomicJsonSettingsStore {
             .state
             .lock()
             .map_err(|_| SettingsStoreError::unavailable())?;
+        state.values.insert(
+            APP_CONFIG_VERSION_KEY.to_string(),
+            Value::from(APP_CONFIG_VERSION),
+        );
         let bytes =
             serde_json::to_vec(&state.values).map_err(|_| SettingsStoreError::unavailable())?;
         self.persist_locked(&mut state, &bytes)
@@ -179,6 +193,10 @@ impl SettingsStore for AtomicJsonSettingsStore {
             desired
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        next.insert(
+            APP_CONFIG_VERSION_KEY.to_string(),
+            Value::from(APP_CONFIG_VERSION),
         );
         let bytes = serde_json::to_vec(&next).map_err(|_| SettingsStoreError::unavailable())?;
         let result = self.persist_locked(&mut state, &bytes);
