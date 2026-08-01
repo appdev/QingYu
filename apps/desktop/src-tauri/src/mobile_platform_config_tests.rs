@@ -432,7 +432,19 @@ fn mobile_platform_config_has_no_reset_or_workspace_switch_command() {
 #[test]
 fn mobile_platform_config_exposes_no_desktop_mcp_commands() {
     let library = source("src/lib.rs");
-    assert!(library.contains("#[cfg(any(not(mobile), feature = \"desktop-sidecar\"))]\nmod mcp;"));
+    assert!(library.contains("#[cfg(not(mobile))]\nmod mcp;"));
+    assert!(library.contains(
+        "#[cfg(all(not(mobile), any(desktop, feature = \"desktop-sidecar\")))]\npub async fn run_mcp_bridge"
+    ));
+    assert!(!library.contains("#[cfg(any(not(mobile), feature = \"desktop-sidecar\"))]"));
+    assert!(!library.contains(
+        "#[cfg(any(desktop, feature = \"desktop-sidecar\"))]\npub async fn run_mcp_bridge"
+    ));
+    let markdown_files = source("src/markdown_files.rs");
+    assert!(markdown_files.contains(
+        "#[cfg(all(not(mobile), any(desktop, feature = \"desktop-sidecar\")))]\n#[allow(dead_code)]\nmod service;"
+    ));
+    assert!(!markdown_files.contains("#[cfg(any(desktop, feature = \"desktop-sidecar\"))]"));
     let native_runtime = source("src/mobile_runtime.rs");
     for forbidden in [
         "get_mcp_settings",

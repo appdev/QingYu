@@ -16,7 +16,7 @@ pub(crate) mod path;
 pub(crate) mod resource;
 mod resource_writer;
 pub(crate) mod search;
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(all(not(mobile), any(desktop, feature = "desktop-sidecar")))]
 #[allow(dead_code)]
 mod service;
 #[cfg(desktop)]
@@ -30,7 +30,7 @@ mod types;
 pub(crate) use ignore_rules::MarkdownIgnoreRules;
 #[cfg(desktop)]
 pub(crate) use path::markdown_open_path_for_path;
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(all(not(mobile), any(desktop, feature = "desktop-sidecar")))]
 #[allow(unused_imports)]
 pub(crate) use service::{
     CreateDocument, DeleteDocument, DocumentScope, DocumentService, MoveDocument, MutationOptions,

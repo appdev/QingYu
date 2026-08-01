@@ -714,8 +714,10 @@ fn builder_boundary_mobile_kernel_is_in_process_memory_only_and_origin_bound() {
 #[test]
 fn builder_boundary_dispatcher_cfg_gates_desktop_only_modules() {
     let lib = source("src/lib.rs");
-    assert!(lib.contains("\nmod mcp;"));
-    assert!(!lib.contains("#[cfg(any(desktop, feature = \"desktop-sidecar\"))]\nmod mcp;"));
+    assert!(lib.contains("#[cfg(not(mobile))]\nmod mcp;"));
+    assert!(lib.contains(
+        "#[cfg(all(not(mobile), any(desktop, feature = \"desktop-sidecar\")))]\npub async fn run_mcp_bridge"
+    ));
     let mcp = source("src/mcp/mod.rs");
     assert!(mcp.contains("pub(crate) mod config;"));
     assert!(!mcp

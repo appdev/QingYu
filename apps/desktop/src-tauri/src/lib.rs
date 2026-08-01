@@ -22,7 +22,7 @@ mod kernel_process;
 mod language;
 mod managed_workspace;
 mod markdown_files;
-#[cfg(any(not(mobile), feature = "desktop-sidecar"))]
+#[cfg(not(mobile))]
 mod mcp;
 #[cfg(desktop)]
 mod menu;
@@ -66,7 +66,7 @@ mod mobile_kernel_runtime_tests;
 #[cfg(test)]
 mod mobile_platform_config_tests;
 
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(all(not(mobile), any(desktop, feature = "desktop-sidecar")))]
 pub async fn run_mcp_bridge() -> Result<(), impl std::error::Error> {
     mcp::bridge::run_bridge_for_app().await
 }
