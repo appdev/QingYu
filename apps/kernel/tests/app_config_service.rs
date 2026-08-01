@@ -590,6 +590,23 @@ fn intrinsically_invalid_requests_are_rejected_before_any_store_read() {
             { "content": chunk, "id": "4", "name": "4.md", "path": null }
         ] }
     }]));
+
+    let chunk = "x".repeat(15 * 1024 * 1024);
+    assert_preflight_rejects_without_reads(json!([{
+        "type": "patch-ui-layout",
+        "windowLabel": "main",
+        "patch": { "draftTabs": [
+            { "content": chunk, "id": "main-1", "name": "main-1.md", "path": null },
+            { "content": chunk, "id": "main-2", "name": "main-2.md", "path": null }
+        ] }
+    }, {
+        "type": "patch-ui-layout",
+        "windowLabel": "secondary",
+        "patch": { "draftTabs": [
+            { "content": chunk, "id": "secondary-1", "name": "secondary-1.md", "path": null },
+            { "content": chunk, "id": "secondary-2", "name": "secondary-2.md", "path": null }
+        ] }
+    }]));
 }
 
 #[test]

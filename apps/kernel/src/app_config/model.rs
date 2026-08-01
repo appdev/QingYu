@@ -272,12 +272,21 @@ fn validate_split_group(group: &StoredWorkspaceSplitGroupDto) -> Result<(), ()> 
 }
 
 fn validate_aggregate_drafts(layout: &StoredWorkspaceLayoutDto) -> Result<(), ()> {
-    let aggregate = layout
-        .window_states
-        .values()
-        .flat_map(|state| &state.draft_tabs)
-        .try_fold(0usize, |total, draft| {
-            total.checked_add(draft.content.as_str().len())
+    validate_aggregate_draft_contents(
+        layout
+            .window_states
+            .values()
+            .flat_map(|state| &state.draft_tabs)
+            .map(|draft| &draft.content),
+    )
+}
+
+pub(crate) fn validate_aggregate_draft_contents<'a>(
+    mut contents: impl Iterator<Item = &'a DocumentContents>,
+) -> Result<(), ()> {
+    let aggregate = contents
+        .try_fold(0usize, |total, content| {
+            total.checked_add(content.as_str().len())
         })
         .ok_or(())?;
     if aggregate > MAX_AGGREGATE_DRAFT_BYTES {

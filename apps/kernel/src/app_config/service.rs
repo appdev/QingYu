@@ -23,8 +23,8 @@ use crate::{
 use super::model::{
     default_layout, default_sort, default_window_state, local_revision, local_state, markdown_path,
     normalize_layout, normalize_pandoc_path, normalize_recent_file, remember_recent_file,
-    validate_layout_patch, APP_CONFIG_VERSION, APP_CONFIG_VERSION_KEY, FILE_TREE_SORT_KEY,
-    PANDOC_PATH_KEY, RECENT_FILES_KEY, UI_LAYOUT_KEY,
+    validate_aggregate_draft_contents, validate_layout_patch, APP_CONFIG_VERSION,
+    APP_CONFIG_VERSION_KEY, FILE_TREE_SORT_KEY, PANDOC_PATH_KEY, RECENT_FILES_KEY, UI_LAYOUT_KEY,
 };
 
 pub struct AppConfigService {
@@ -235,6 +235,19 @@ impl AppConfigService {
 fn preflight_operations(
     operations: &[AppConfigStateOperationDto],
 ) -> Result<(), AppConfigServiceError> {
+    validate_aggregate_draft_contents(
+        operations
+            .iter()
+            .filter_map(|operation| match operation {
+                AppConfigStateOperationDto::PatchUiLayout { patch, .. } => {
+                    patch.draft_tabs.as_ref()
+                }
+                _ => None,
+            })
+            .flatten()
+            .map(|draft| &draft.content),
+    )
+    .map_err(|_| AppConfigServiceError::invalid())?;
     for operation in operations {
         match operation {
             AppConfigStateOperationDto::PatchUiLayout { patch, .. } => {
