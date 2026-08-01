@@ -131,7 +131,7 @@ Use fresh uniquely named fixtures. After each successful import, record the resu
 
 ## E. Sync Parity and Error Handling
 
-Use one disposable remote target per provider and one isolated prefix/path per case group. Synchronization always uses the selected managed notebook and the one application-wide provider configuration. Switching A to B changes only the named child below remote `notes/`; it must not clone provider settings or synchronize every remote notebook. Do not modify the sync algorithm, manifest, conflict naming, checkpoint behavior, deletion propagation, or save-trigger semantics for mobile.
+Use one disposable remote target per provider and one isolated prefix/path per case group. Synchronization always uses the fixed application-managed workspace and the one application-wide provider configuration. Mobile exposes no local directory selector, remote notebook catalog, or A/B workspace switch; every run remains bound to that fixed workspace's established remote notes scope. Do not modify the sync algorithm, manifest, conflict naming, checkpoint behavior, deletion propagation, or save-trigger semantics for mobile.
 
 | ID | Applies to | Procedure and expected UI/behavior | Failure evidence if unmet |
 | --- | --- | --- | --- |

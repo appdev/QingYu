@@ -2,7 +2,8 @@
 
 > Status snapshot: 2026-08-01 (Asia/Shanghai)
 >
-> Implementation snapshot commit: `2f465b29320945e6172a7238267083b2e647b0bc`
+> AppConfig implementation status: in independent review. No final candidate SHA
+> has been frozen, and no final automated or live acceptance gate is claimed.
 >
 > This is the progress source of truth for the active Desktop, Server Web/Docker,
 > and Mobile Kernel migration. Historical test reports remain evidence for their
@@ -51,10 +52,10 @@
 | P1 — Kernel foundation and service boundaries | Complete | Kernel HTTP/WS contract, document/settings/resource/history/sync services, runtime ownership, and generated contract checks are in `main`. | Revalidated as part of the final combined suite. |
 | P2 — Desktop production Kernel cutover | Code complete | `db20eb2a` completed the production cutover; later commits added atomic workspace switching, startup readiness, child supervision, MCP-to-Kernel routing, writer fencing, and recovery handling. | Repeat the real macOS GUI/Desktop regression on the final combined SHA. |
 | P3 — Server Web and runtime-only Docker | Code complete; final-candidate acceptance pending | Fixed `/data`, one-user initialization, browser KernelClient, HTTP/HTTPS cookie profiles, WS/WSS, runtime-only packaging, restart persistence, and Linux container security were implemented. Earlier Linux candidates passed the core runtime/browser matrix. | Rebuild and repeat macOS/Linux runtime acceptance on the final combined SHA. Two live S3 endpoints run only when credentials can be injected without disclosure. |
-| P4 — Mobile in-process Kernel | Code complete; final native acceptance pending | In-process mobile Kernel ownership, shared runtime composition, lifecycle settlement, portable settings, mobile image-import integration, fixed managed workspace, and Kernel AppConfig ownership are present on the current feature snapshot. | Run fresh Android/iOS builds and the applicable native AppConfig/Home acceptance matrix on the final frozen SHA. |
+| P4 — Mobile in-process Kernel | AppConfig integration in review; final native acceptance pending | The candidate integrates in-process Kernel ownership, shared runtime composition, lifecycle settlement, portable settings, mobile image import, a fixed managed workspace, and Kernel AppConfig ownership. | Complete independent review, freeze a final SHA, then run fresh Android/iOS builds and the applicable native AppConfig/Home matrix. |
 | Resource batch durability | Complete | `e1b409da` added durable journal/receipt replay and crash recovery; `a7d3a7bc` integrated the rollout, with later image/import fixes through downstream baseline `31ee52ce`. | Revalidate as part of the final combined suite; do not reuse the earlier candidate as evidence for later AppConfig changes. |
-| Kernel AppConfig and Workspace Home | Code complete; final verification and live acceptance pending | Commits `289e02ec` through `2f465b29` moved configuration to ConfigRoot, added the aggregate AppConfig service/API/client, unified official client bootstrap and writes, added deterministic restoration/Home, and removed obsolete native/local writers. | Complete Task 9 automated gates, then run final-SHA desktop, Docker, Android, and iOS acceptance where tooling exists. |
-| Final combined verification | Pending for the current feature snapshot | Earlier candidates passed Kernel/Desktop Rust and workspace pnpm gates, but those results predate the AppConfig and Workspace Home cutover. | Run one complete Kernel/Desktop Rust, pnpm test/typecheck/build, OpenAPI/generated-contract, and applicable native build gate on one frozen SHA. |
+| Kernel AppConfig and Workspace Home | Implementation in independent review; final SHA and all final gates pending | The candidate moves configuration to ConfigRoot, adds the aggregate AppConfig service/API/client, unifies official client bootstrap and writes, adds deterministic restoration/Home, and removes obsolete native/local writers. Review fixes are still being applied, so this row is not a completion claim. | Approve the implementation and fixes, freeze one final SHA, complete Task 9 automated gates, then run desktop, Docker, Android, and iOS acceptance where tooling exists. |
+| Final combined verification | Pending; no final SHA frozen | Earlier candidates passed Kernel/Desktop Rust and workspace pnpm gates, but those results predate the AppConfig and Workspace Home cutover and its review fixes. | After independent review closes, run one complete Kernel/Desktop Rust, pnpm test/typecheck/build, OpenAPI/generated-contract, and applicable native build gate on the frozen SHA. |
 | Final live acceptance | Pending | Earlier macOS/Linux and HTTP/HTTPS/WSS evidence is baseline-only. | Use new worktrees and artifacts built from the frozen final SHA. Do not reuse an older candidate as release evidence. |
 
 ## Current Release Blockers
@@ -93,7 +94,7 @@
 - The server sync lifecycle plan records the completed implementation steps for
   that bounded Kernel task; its checkboxes do not describe the entire migration.
 - Docker and mobile acceptance documents describe their own artifact/candidate.
-  When their candidate differs from this page's snapshot or final frozen SHA,
+  When their candidate differs from the current review candidate or final frozen SHA,
   treat them as historical evidence.
 - Update this page whenever a phase changes state, a release blocker is added or
   removed, or the final candidate SHA changes.
