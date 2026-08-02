@@ -8,7 +8,15 @@ import {
   type Node as JsonNode,
   type ParseError,
 } from "jsonc-parser";
-import { Document, isMap, parseDocument as parseYamlDocument } from "yaml";
+import {
+  Document,
+  isMap,
+  isNode,
+  isScalar,
+  parseDocument as parseYamlDocument,
+  type Node as YamlNode,
+  type YAMLMap,
+} from "yaml";
 
 export type MarkdownFrontmatterKind = "yaml" | "toml" | "json";
 
@@ -239,16 +247,43 @@ function replaceRange(source: string, from: number, to: number, replacement: str
   return `${source.slice(0, from)}${replacement}${source.slice(to)}`;
 }
 
-function yamlIndent(content: string) {
-  const indents = [...content.matchAll(/^( +)\S/gmu)].map((match) => match[1]?.length ?? 0);
-  return indents.length > 0 ? Math.min(...indents) : 2;
+function topLevelYamlValue(map: YAMLMap, key: string): YamlNode | null {
+  const pair = map.items.find((item) => isScalar(item.key) && item.key.value === key);
+  return isNode(pair?.value) ? pair.value : null;
+}
+
+function encodeYamlTitle(title: string, newline: string) {
+  const entry = new Document({ title }).toString();
+  const document = parseYamlDocument(entry);
+  if (document.errors.length > 0 || !isMap(document.contents)) return null;
+  const node = topLevelYamlValue(document.contents, "title");
+  if (!node?.range) return null;
+  return {
+    entry: entry.replace(/\n/gu, newline),
+    value: entry.slice(node.range[0], node.range[1]).replace(/\n/gu, newline),
+  };
 }
 
 function patchYaml(content: string, title: string, newline: string) {
   const document = parseYamlDocument(content);
   if (document.errors.length > 0 || !isMap(document.contents)) return null;
-  document.set("title", title);
-  return document.toString({ indent: yamlIndent(content) }).replace(/\n/gu, newline);
+  const encoded = encodeYamlTitle(title, newline);
+  if (!encoded) return null;
+  const node = topLevelYamlValue(document.contents, "title");
+  if (!node?.range) {
+    const separator = content.length > 0 && !content.endsWith("\n") ? newline : "";
+    return `${content}${separator}${encoded.entry}`;
+  }
+
+  const [from, to] = node.range;
+  const existingValue = content.slice(from, to);
+  let replacement = encoded.value;
+  if (from === to && content[from - 1] === ":") replacement = ` ${replacement}`;
+  if (from === to && content[from] === "#") replacement = `${replacement} `;
+  if (existingValue.endsWith("\n") && !replacement.endsWith(newline)) {
+    replacement = `${replacement}${newline}`;
+  }
+  return replaceRange(content, from, to, replacement);
 }
 
 function patchTomlContent(content: string, title: string) {

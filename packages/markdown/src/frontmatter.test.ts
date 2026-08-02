@@ -167,6 +167,18 @@ describe("upsertMarkdownFrontmatterTitle", () => {
     });
   });
 
+  it("preserves block-scalar content beside four-space YAML nesting", () => {
+    const source = "---\ndescription: |\n  prose\nroot:\n    child: value\ntitle: Old\n---\n\n# Body\n";
+    const expected = "---\ndescription: |\n  prose\nroot:\n    child: value\ntitle: New\n---\n\n# Body\n";
+
+    expect(upsertMarkdownFrontmatterTitle(source, "New")).toEqual({
+      ok: true,
+      changed: true,
+      kind: "yaml",
+      source: expected,
+    });
+  });
+
   it("adds a YAML title after existing top-level keys", () => {
     const source = "---\n# identity\nauthor: Ying\noptions:\n  enabled: true\n---\n\n# Body\n";
     const expected = "---\n# identity\nauthor: Ying\noptions:\n  enabled: true\ntitle: Untitled\n---\n\n# Body\n";
