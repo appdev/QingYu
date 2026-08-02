@@ -1,6 +1,7 @@
 import {
   createUnavailableKernelDomainPort,
   type KernelDomainPort,
+  type KernelDocumentEntrySnapshot,
   type KernelResourceSnapshot,
   type KernelRevision,
   type KernelWorkspaceGeneration,
@@ -163,6 +164,121 @@ describe("Kernel AppRuntime adapter", () => {
 
     expect(update).toHaveBeenCalledOnce();
     expect(legacySave).not.toHaveBeenCalled();
+  });
+
+  it("returns exact Kernel rename identity and preserves both files on collision without numbering", async () => {
+    const sourceContents = "# A\n\0original source";
+    const targetContents = "# B\noriginal target 🐉";
+    const source: KernelDocumentEntrySnapshot = {
+      kind: "file" as const,
+      locator: "document-a" as never,
+      modifiedAt: "2026-07-31T00:00:00Z",
+      name: "A.md",
+      parent: "" as never,
+      relativePath: "A.md" as never,
+      revision,
+      sizeBytes: new TextEncoder().encode(sourceContents).byteLength,
+      workspaceGeneration: generation,
+    };
+    const target: KernelDocumentEntrySnapshot = {
+      ...source,
+      locator: "document-b" as never,
+      name: "B.md",
+      relativePath: "B.md" as never,
+      sizeBytes: new TextEncoder().encode(targetContents).byteLength,
+    };
+    const entries = new Map<string, { contents: string; entry: KernelDocumentEntrySnapshot }>([
+      [source.locator, { contents: sourceContents, entry: source }],
+      [target.locator, { contents: targetContents, entry: target }],
+    ]);
+    const unavailable = createUnavailableKernelDomainPort();
+    const move = vi.fn<KernelDomainPort["documents"]["move"]>(async (input) => {
+      const current = entries.get(input.locator);
+      if (current === undefined) throw new Error("document unavailable");
+      const relativePath = input.targetParent === ""
+        ? input.name
+        : `${input.targetParent}/${input.name}`;
+      if ([...entries.values()].some(({ entry }) => entry.relativePath === relativePath)) {
+        throw Object.assign(new Error("document already exists"), {
+          code: "document_already_exists",
+        });
+      }
+      const moved = {
+        ...current.entry,
+        modifiedAt: "2026-07-31T00:00:01Z",
+        name: input.name,
+        parent: input.targetParent,
+        relativePath: relativePath as never,
+        revision: "revision-2" as KernelRevision,
+      } satisfies KernelDocumentEntrySnapshot;
+      entries.delete(input.locator);
+      entries.set(moved.locator, { contents: current.contents, entry: moved });
+      return moved;
+    });
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: {
+        ...unavailable.documents,
+        list: vi.fn(async () => ({
+          items: [...entries.values()].map(({ entry }) => entry),
+          nextCursor: null,
+          workspaceGeneration: generation,
+        })),
+        move,
+        read: vi.fn(async ({ locator }) => {
+          const document = entries.get(locator);
+          if (document === undefined) throw new Error("document unavailable");
+          return { ...document.entry, contents: document.contents, kind: "file" as const };
+        }),
+      },
+      resources: {
+        ...unavailable.resources,
+        list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
+      },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const files = createKernelFileRuntime(kernel);
+
+    await expect(files.renameMarkdownTreeFile(
+      kernelWorkspaceRoot,
+      `${kernelWorkspaceRoot}/A.md`,
+      "B.md",
+    )).rejects.toMatchObject({ code: "document_already_exists" });
+    expect(move).toHaveBeenCalledOnce();
+    expect(move).toHaveBeenLastCalledWith(expect.objectContaining({ name: "B.md" }));
+    const sourceAfterCollision = await files.readMarkdownFile(`${kernelWorkspaceRoot}/A.md`);
+    const targetAfterCollision = await files.readMarkdownFile(`${kernelWorkspaceRoot}/B.md`);
+    expect(sourceAfterCollision.name).toBe("A.md");
+    expect(targetAfterCollision.name).toBe("B.md");
+    expect(new TextEncoder().encode(sourceAfterCollision.content))
+      .toEqual(new TextEncoder().encode(sourceContents));
+    expect(new TextEncoder().encode(targetAfterCollision.content))
+      .toEqual(new TextEncoder().encode(targetContents));
+    move.mockClear();
+    const renamed = await files.renameMarkdownTreeFile(
+      kernelWorkspaceRoot,
+      `${kernelWorkspaceRoot}/A.md`,
+      "C.md",
+    );
+    expect({
+      name: renamed.name,
+      path: renamed.path,
+      relativePath: renamed.relativePath,
+    }).toEqual({
+      name: "C.md",
+      path: `${kernelWorkspaceRoot}/C.md`,
+      relativePath: "C.md",
+    });
+    expect(move).toHaveBeenCalledOnce();
   });
 
   it("allocates a numbered name when a new Markdown document already exists", async () => {

@@ -2119,6 +2119,42 @@ mod tests {
     }
 
     #[test]
+    fn rename_markdown_tree_file_rejects_a_collision_without_overwriting_or_numbering() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-tree-rename-collision-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let source_contents = [0_u8, 1, 2, 3, 255];
+        let target_contents = [255_u8, 3, 2, 1, 0];
+
+        fs::create_dir_all(&root).expect("test folder should be created");
+        fs::write(root.join("A.md"), source_contents).expect("source file should be created");
+        fs::write(root.join("B.md"), target_contents).expect("target file should be created");
+
+        let result = rename_markdown_tree_file(
+            root.to_string_lossy().to_string(),
+            root.join("A.md").to_string_lossy().to_string(),
+            "B.md".to_string(),
+        );
+
+        assert_eq!(result, Err("File already exists".to_string()));
+        assert_eq!(
+            fs::read(root.join("A.md")).expect("source file should remain readable"),
+            source_contents
+        );
+        assert_eq!(
+            fs::read(root.join("B.md")).expect("target file should remain readable"),
+            target_contents
+        );
+        assert!(!root.join("B 1.md").exists());
+
+        fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    #[test]
     fn renames_markdown_tree_folders_inside_the_root() {
         let root = std::env::temp_dir().join(format!(
             "markra-tree-folder-rename-test-{}",
