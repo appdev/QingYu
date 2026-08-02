@@ -2252,8 +2252,7 @@ mod tests {
             serde_json::json!({
                 "fileName": "weekly-review.md",
                 "id": "weekly-review",
-                "name": "Weekly review",
-                "suggestedName": ""
+                "name": "Weekly review"
             })
         );
         assert_eq!(
@@ -3339,6 +3338,7 @@ mod tests {
         editor["markdownTemplates"] = serde_json::json!([{
             "id": "weekly-review",
             "name": "Weekly review",
+            "suggestedName": "obsolete-name",
             "legacyLocalField": "preserve locally"
         }]);
         editor["titlebarActions"] = serde_json::json!([

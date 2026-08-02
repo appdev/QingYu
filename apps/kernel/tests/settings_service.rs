@@ -547,6 +547,7 @@ fn portable_snapshot_upgrades_legacy_markdown_template_metadata_without_rewritin
     editor["markdownTemplates"] = serde_json::json!([{
         "id": "weekly-review",
         "name": "Weekly review",
+        "suggestedName": "obsolete-name",
         "legacyLocalField": "preserve locally"
     }]);
     let preserved = editor.clone();
@@ -562,7 +563,7 @@ fn portable_snapshot_upgrades_legacy_markdown_template_metadata_without_rewritin
     assert_eq!(template["fileName"], "weekly-review.md");
     assert_eq!(template["id"], "weekly-review");
     assert_eq!(template["name"], "Weekly review");
-    assert_eq!(template["suggestedName"], "");
+    assert!(template.get("suggestedName").is_none());
     assert!(template.get("legacyLocalField").is_none());
     assert_eq!(store.values.lock().unwrap()["editorPreferences"], preserved);
     assert_eq!(store.replaces.load(Ordering::Relaxed), 0);

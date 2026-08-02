@@ -1519,13 +1519,10 @@ fn project_editor_publication(stored: Value) -> Value {
 fn project_markdown_templates(templates: &mut [Value]) {
     let mut used_file_names = BTreeSet::new();
     for template in templates {
-        retain_value_fields(template, &["fileName", "id", "name", "suggestedName"]);
+        retain_value_fields(template, &["fileName", "id", "name"]);
         let Some(template) = template.as_object_mut() else {
             continue;
         };
-        template
-            .entry("suggestedName".to_string())
-            .or_insert_with(|| Value::String(String::new()));
         if !template.contains_key("fileName") {
             if let Some(id) = template.get("id").and_then(Value::as_str) {
                 let base_name = markdown_template_file_stem(id);
