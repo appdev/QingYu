@@ -184,6 +184,7 @@ describe("native menu", () => {
         formatBold: "CmdOrCtrl+Alt+B",
         syncNow: "CmdOrCtrl+Shift+U"
       },
+      enabledCommands: ["saveDocument"],
       language: "fr",
       recentFiles
     });
@@ -358,6 +359,7 @@ describe("native menu", () => {
         insertLink: "CmdOrCtrl+Alt+K",
         insertTable: "CmdOrCtrl+Shift+T"
       },
+      enabledCommands: [],
       language: "en",
       recentFiles: []
     });
@@ -471,6 +473,7 @@ describe("native menu", () => {
         toggleReadOnlyMode: "CmdOrCtrl+Alt+Y",
         toggleSourceMode: "CmdOrCtrl+Alt+U"
       },
+      enabledCommands: [],
       language: "en",
       recentFiles: []
     });

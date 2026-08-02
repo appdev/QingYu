@@ -195,6 +195,21 @@ describe("server Web application gate", () => {
     expect(markup).not.toContain("密码只会发送到当前服务器");
   });
 
+  it("omits password guidance from untouched login fields", () => {
+    render(
+      <ServerStartupShell
+        owner={inertOwner()}
+        snapshot={{ phase: "login", error: null }}
+      />,
+    );
+    const input = screen.getByLabelText("Server password") as HTMLInputElement;
+
+    expect(input.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(
+      "Use 1–1024 characters: English letters, numbers, and special symbols only. Spaces are not allowed.",
+    )).toBeNull();
+  });
+
   it("reveals and conceals a password without retaining it in component state", () => {
     render(
       <ServerStartupShell

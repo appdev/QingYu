@@ -395,6 +395,7 @@ export function SettingsWindow({
           ) : null}
           {activeSettingsCategory === "templates" ? (
             <TemplatesSettings
+              mutationAllowed={appFeatures.templateMutation}
               preferences={editorPreferences}
               templates={markdownTemplates}
               translate={translate}

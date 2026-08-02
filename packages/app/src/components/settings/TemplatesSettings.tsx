@@ -74,6 +74,7 @@ function SettingsMarkdownTemplatePreview({
 }
 
 export function TemplatesSettings({
+  mutationAllowed = true,
   onCreateTemplate,
   onDeleteTemplate,
   onUpdateTemplate,
@@ -81,6 +82,7 @@ export function TemplatesSettings({
   templates,
   translate
 }: {
+  mutationAllowed?: boolean;
   onCreateTemplate: (template: MarkdownTemplate) => unknown;
   onDeleteTemplate: (template: MarkdownTemplate) => unknown;
   onUpdateTemplate: (template: MarkdownTemplate) => unknown;
@@ -101,7 +103,9 @@ export function TemplatesSettings({
     visibleMarkdownTemplates.find((template) => template.id === selectedTemplateId) ??
     visibleMarkdownTemplates[0] ??
     null;
-  const selectedTemplateEditing = selectedTemplate ? editingTemplateId === selectedTemplate.id : false;
+  const selectedTemplateEditing = mutationAllowed && selectedTemplate
+    ? editingTemplateId === selectedTemplate.id
+    : false;
   const selectedTemplateBuiltIn = selectedTemplate ? builtInTemplateIds.has(selectedTemplate.id) : false;
 
   useEffect(() => {
@@ -113,11 +117,13 @@ export function TemplatesSettings({
   }, [visibleMarkdownTemplates, selectedTemplateId]);
 
   const updateSelectedTemplate = (updatedTemplate: MarkdownTemplate) => {
+    if (!mutationAllowed) return;
+
     setSelectedTemplateId(updatedTemplate.id);
     onUpdateTemplate(updatedTemplate);
   };
   const deleteSelectedTemplate = () => {
-    if (!selectedTemplate || selectedTemplateBuiltIn) return;
+    if (!mutationAllowed || !selectedTemplate || selectedTemplateBuiltIn) return;
 
     const selectedIndex = visibleMarkdownTemplates.findIndex((template) => template.id === selectedTemplate.id);
     const nextVisibleMarkdownTemplates = visibleMarkdownTemplates.filter((template) => template.id !== selectedTemplate.id);
@@ -132,11 +138,13 @@ export function TemplatesSettings({
     setEditingTemplateId(null);
   };
   const toggleSelectedTemplateEditing = () => {
-    if (!selectedTemplate) return;
+    if (!mutationAllowed || !selectedTemplate) return;
 
     setEditingTemplateId(selectedTemplateEditing ? null : selectedTemplate.id);
   };
   const addTemplate = () => {
+    if (!mutationAllowed) return;
+
     const template = createDefaultCustomMarkdownTemplate([
       ...preferences.markdownTemplates,
       ...templates
@@ -152,7 +160,7 @@ export function TemplatesSettings({
       <SettingsRow
         title={translate("settings.templates.custom")}
         description={translate("settings.templates.description")}
-        action={
+        action={mutationAllowed ? (
           <SettingsButton
             label={translate("settings.templates.add")}
             onClick={addTemplate}
@@ -160,7 +168,7 @@ export function TemplatesSettings({
             <Plus aria-hidden="true" size={13} />
             {translate("settings.templates.add")}
           </SettingsButton>
-        }
+        ) : undefined}
       />
       {visibleMarkdownTemplates.length === 0 ? (
         <div className="settings-row py-14">
@@ -221,28 +229,30 @@ export function TemplatesSettings({
                       {selectedTemplate.suggestedName}
                     </p>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <IconButton
-                      className="rounded-md"
-                      label={`${translate(selectedTemplateEditing ? "settings.templates.showPreview" : "settings.templates.edit")}: ${selectedTemplate.name}`}
-                      onClick={toggleSelectedTemplateEditing}
-                    >
-                      {selectedTemplateEditing ? (
-                        <Eye aria-hidden="true" size={14} />
-                      ) : (
-                        <Pencil aria-hidden="true" size={14} />
-                      )}
-                    </IconButton>
-                    {selectedTemplateBuiltIn ? null : (
+                  {mutationAllowed ? (
+                    <div className="flex items-center gap-1">
                       <IconButton
                         className="rounded-md"
-                        label={`${translate("settings.templates.delete")}: ${selectedTemplate.name}`}
-                        onClick={deleteSelectedTemplate}
+                        label={`${translate(selectedTemplateEditing ? "settings.templates.showPreview" : "settings.templates.edit")}: ${selectedTemplate.name}`}
+                        onClick={toggleSelectedTemplateEditing}
                       >
-                        <Trash2 aria-hidden="true" size={14} />
+                        {selectedTemplateEditing ? (
+                          <Eye aria-hidden="true" size={14} />
+                        ) : (
+                          <Pencil aria-hidden="true" size={14} />
+                        )}
                       </IconButton>
-                    )}
-                  </div>
+                      {selectedTemplateBuiltIn ? null : (
+                        <IconButton
+                          className="rounded-md"
+                          label={`${translate("settings.templates.delete")}: ${selectedTemplate.name}`}
+                          onClick={deleteSelectedTemplate}
+                        >
+                          <Trash2 aria-hidden="true" size={14} />
+                        </IconButton>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
                 {selectedTemplateEditing ? (
                   <SettingsMarkdownTemplateSourceEditor

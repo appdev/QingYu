@@ -129,6 +129,7 @@ export function createDesktopRuntime({
     export: true,
     fileDrop: true,
     imageImport: true,
+    localFileImport: true,
     markdownBundle: true,
     nativeWindowChrome: true,
     openLocalAttachments: true,
@@ -136,7 +137,9 @@ export function createDesktopRuntime({
     projectSync: true,
     resources: true,
     settingsWindow: true,
+    standaloneDocuments: true,
     systemFonts: true,
+    templateMutation: true,
     updater: true
   },
   files: {
@@ -529,6 +532,7 @@ export function createDesktopKernelRuntimeOwner(
       detectPandocPath: shell.files.detectPandocPath,
       listenOpenedMarkdownPaths: shell.files.listenOpenedMarkdownPaths,
       openLocalImages: shell.files.openLocalImages,
+      openContainingFolder: shell.files.openContainingFolder,
       openSettingsFile: shell.files.openSettingsFile,
       readMarkdownTemplateFile: shell.files.readMarkdownTemplateFile,
       saveHtmlFile: shell.files.saveHtmlFile,
@@ -545,9 +549,12 @@ export function createDesktopKernelRuntimeOwner(
       dejavuSync: false,
       fileDrop: false,
       imageImport: true,
+      localFileImport: false,
       openLocalAttachments: false,
       projectSync: true,
       resources: false,
+      standaloneDocuments: false,
+      templateMutation: false,
     },
     files: {
       ...fileOwner.files,

@@ -1872,6 +1872,16 @@ describe("native file access", () => {
     });
   });
 
+  it("opens a Kernel workspace path through the primary workspace host boundary", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+
+    await openNativeContainingFolder("kernel-workspace://primary/notes/%E6%97%A5%E8%AE%B0.md");
+
+    expect(mockedInvoke).toHaveBeenCalledWith("open_primary_workspace_containing_folder", {
+      relativePath: "notes/日记.md"
+    });
+  });
+
   it("opens markdown attachments through Tauri with root and document context", async () => {
     mockedInvoke.mockResolvedValue(undefined);
 

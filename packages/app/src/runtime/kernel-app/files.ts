@@ -26,6 +26,7 @@ export type KernelFileNativeShellFallback = Partial<Pick<AppFileRuntime,
   | "listenOpenedMarkdownPaths"
   | "openLocalFiles"
   | "openLocalImages"
+  | "openContainingFolder"
   | "openMarkdownFile"
   | "openSettingsFile"
   | "readMarkdownTemplateFile"
@@ -1127,6 +1128,9 @@ function pickNativeShellFallback(
     }),
     ...(shell.openLocalFiles === undefined ? {} : { openLocalFiles: shell.openLocalFiles }),
     ...(shell.openLocalImages === undefined ? {} : { openLocalImages: shell.openLocalImages }),
+    ...(shell.openContainingFolder === undefined ? {} : {
+      openContainingFolder: shell.openContainingFolder,
+    }),
     ...(shell.openMarkdownFile === undefined ? {} : { openMarkdownFile: shell.openMarkdownFile }),
     ...(shell.openSettingsFile === undefined ? {} : { openSettingsFile: shell.openSettingsFile }),
     ...(shell.readMarkdownTemplateFile === undefined ? {} : {
@@ -1164,7 +1168,8 @@ function createKernelFileFallback(
     listMarkdownFilesForPath: async () => [],
     listMarkdownReferenceFilesForPath: async () => [],
     moveMarkdownTreeFile: () => unavailableFileCapability("moveMarkdownTreeFile"),
-    openContainingFolder: () => unavailableFileCapability("openContainingFolder"),
+    openContainingFolder:
+      native.openContainingFolder ?? (() => unavailableFileCapability("openContainingFolder")),
     openLocalImages: native.openLocalImages ?? (async () => []),
     openLocalFiles: native.openLocalFiles ?? (async () => []),
     openMarkdownAttachment: () => unavailableFileCapability("openMarkdownAttachment"),

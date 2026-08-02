@@ -6,6 +6,32 @@ import { markdownTemplateEntryFromTemplate, type MarkdownTemplate } from "../../
 import { TemplatesSettings } from "./TemplatesSettings";
 
 describe("TemplatesSettings", () => {
+  it("keeps templates readable when mutation is unavailable", () => {
+    const onCreateTemplate = vi.fn();
+    const onDeleteTemplate = vi.fn();
+    const onUpdateTemplate = vi.fn();
+
+    render(
+      <TemplatesSettings
+        mutationAllowed={false}
+        preferences={defaultEditorPreferences}
+        templates={[]}
+        translate={translate}
+        onCreateTemplate={onCreateTemplate}
+        onDeleteTemplate={onDeleteTemplate}
+        onUpdateTemplate={onUpdateTemplate}
+      />
+    );
+
+    expect(screen.getByRole("region", { name: "Template preview: Daily note" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add template" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit template: Daily note" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Delete template:/u })).not.toBeInTheDocument();
+    expect(onCreateTemplate).not.toHaveBeenCalled();
+    expect(onDeleteTemplate).not.toHaveBeenCalled();
+    expect(onUpdateTemplate).not.toHaveBeenCalled();
+  });
+
   it("edits the selected lightweight markdown template from a two-pane settings layout", () => {
     const onDeleteTemplate = vi.fn();
     const onUpdateTemplate = vi.fn();

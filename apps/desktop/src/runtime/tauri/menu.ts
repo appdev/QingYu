@@ -152,6 +152,7 @@ export async function installNativeApplicationMenu(
   try {
     await invokeNative("install_application_menu", {
       accelerators: nativeAcceleratorsForMarkdownShortcuts(markdownShortcuts),
+      enabledCommands: Object.keys(handlers).sort(),
       language,
       recentFiles: normalizeRecentFilesForNativeMenu(recentFiles)
     });

@@ -407,6 +407,7 @@ const messages: LocaleMessages = {
   "app.newMarkdownFileFromTemplate": "從範本新增",
   "app.saveMarkdownFileAsTemplate": "儲存為範本",
   "app.openContainingFolder": "開啟所在資料夾",
+  "app.openContainingFolderFailed": "無法開啟檔案所在資料夾。",
   "app.markdownTemplateSaved": "已儲存為範本。",
   "app.markdownTemplateSaveFailed": "無法儲存範本。",
   "app.syncPathGuarded": "正在同步此檔案。",

@@ -60,6 +60,7 @@ import {
   mockedOpenNativeLocalImages,
   mockedOpenNativeLocalFiles,
   mockedOpenNativeMarkdownAttachment,
+  mockedOpenNativeContainingFolder,
   mockedOpenNativeMarkdownFolder,
   mockedOpenNativeExternalUrl,
   mockedOpenSettingsWindow,
@@ -2391,13 +2392,16 @@ describe("QingYu workspace", () => {
         export: false,
         fileDrop: false,
         imageImport: true,
+        localFileImport: false,
         nativeWindowChrome: false,
         openLocalAttachments: false,
         pandoc: false,
         projectSync: true,
         resources: false,
         settingsWindow: false,
+        standaloneDocuments: false,
         systemFonts: false,
+        templateMutation: false,
         updater: false
       },
       mcp: {
@@ -3553,6 +3557,37 @@ describe("QingYu workspace", () => {
     });
   });
 
+  it("requires a saved Kernel document before opening the local image picker", async () => {
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, imageImport: true },
+      kernel: { ...runtime.kernel, availability: "available" },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: true,
+          commitRoot: async () => kernelWorkspaceRoot,
+          kind: "host-selectable",
+          resolveRoot: async () => kernelWorkspaceRoot,
+          selectRoot: async () => null
+        }
+      }
+    });
+
+    renderApp();
+
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
+
+    await act(async () => {
+      await menuHandlers.importLocalImages?.();
+    });
+
+    expect(mockedOpenNativeLocalImages).not.toHaveBeenCalled();
+    expect(await screen.findByText("Save the document before pasting images.")).toBeInTheDocument();
+  });
+
   it("imports a native seven-format selection through one Kernel image batch", async () => {
     const notePath = `${kernelWorkspaceRoot}/notes/seven-formats.md`;
     const images = [
@@ -4315,10 +4350,13 @@ describe("QingYu workspace", () => {
         applicationMenu: true,
         applicationShortcuts: true,
         export: false,
+        localFileImport: false,
         nativeWindowChrome: false,
         pandoc: false,
         projectSync: false,
         resources: false,
+        standaloneDocuments: false,
+        templateMutation: false,
         updater: false
       }
     });
@@ -4335,6 +4373,12 @@ describe("QingYu workspace", () => {
     expect(menuHandlers.exportHtml).toBeUndefined();
     expect(menuHandlers.exportLatex).toBeUndefined();
     expect(menuHandlers.exportPdf).toBeUndefined();
+    expect(menuHandlers.importLocalFiles).toBeUndefined();
+    expect(menuHandlers.openDocument).toBeUndefined();
+    expect(menuHandlers.openRecentFile).toBeUndefined();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(mockedOpenNativeMarkdownFile).not.toHaveBeenCalled();
 
     await act(async () => {
       await menuHandlers.checkForUpdates?.();
@@ -4359,6 +4403,11 @@ describe("QingYu workspace", () => {
     expect(screen.queryByText("Updates")).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "Automatically check for updates" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Check for updates" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Templates" }));
+    expect(screen.getByRole("region", { name: "Template preview: Daily note" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add template" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit template: Daily note" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
   });
@@ -5331,7 +5380,8 @@ describe("QingYu workspace", () => {
       ...runtime,
       features: {
         ...runtime.features,
-        applicationShortcuts: true
+        applicationShortcuts: true,
+        standaloneDocuments: true
       },
       syncConfig: {
         ...runtime.syncConfig,
@@ -6486,6 +6536,33 @@ describe("QingYu workspace", () => {
     expect(screen.queryByRole("button", { name: "docs/guide.md" })).not.toBeInTheDocument();
   });
 
+  it("reports a containing-folder failure from the file tree", async () => {
+    const notePath = "/mock-files/note.md";
+    const note = { name: "note.md", path: notePath, relativePath: "note.md" };
+    mockOpenMarkdownTarget({
+      kind: "folder",
+      folder: {
+        path: mockFolderPath,
+        name: "vault"
+      }
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([note]);
+    mockedOpenNativeContainingFolder.mockRejectedValueOnce(new Error("Finder unavailable"));
+
+    renderApp();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    const noteButton = await screen.findByRole("button", { name: "note.md" });
+    fireEvent.contextMenu(noteButton);
+    const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls.at(-1)?.[0];
+
+    await act(async () => {
+      await contextHandlers?.openContainingFolder?.(note);
+    });
+
+    expect(await screen.findByText("Could not open the containing folder.")).toBeInTheDocument();
+  });
+
   it("keeps the web file tree usable for new unsaved files before a folder is opened", async () => {
     configureAppRuntime({
       ...createDefaultAppRuntime(),
@@ -7085,6 +7162,48 @@ describe("QingYu workspace", () => {
         })
       ]
     }));
+  });
+
+  it("hides unsupported Kernel workspace mutation actions", async () => {
+    const notePath = `${mockFolderPath}/readonly.md`;
+    const noteFile = { name: "readonly.md", path: notePath, relativePath: "readonly.md" };
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: {
+        ...runtime.features,
+        localFileImport: false,
+        resources: false,
+        templateMutation: false
+      }
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: notePath,
+      fileTreeOpen: true,
+      folderName: "mock-files",
+      folderPath: mockFolderPath,
+      openFilePaths: [notePath]
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([noteFile]);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Read only capability surface",
+      name: noteFile.name,
+      path: noteFile.path
+    });
+
+    renderApp();
+
+    const fileButton = await screen.findByRole("button", { name: "readonly.md" });
+    expect(screen.queryByRole("button", { name: "Clean up unused images" })).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(fileButton);
+    const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls.at(-1)?.[0];
+    expect(contextHandlers?.saveFileAsTemplate).toBeUndefined();
+
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
+    expect(menuHandlers.importLocalFiles).toBeUndefined();
   });
 
   it("opens a markdown file from the current folder tree", async () => {
@@ -12097,7 +12216,8 @@ describe("QingYu workspace", () => {
         ...runtime.features,
         applicationMenu: true,
         export: true,
-        markdownBundle: true
+        markdownBundle: true,
+        standaloneDocuments: true
       }
     });
     const markdown = [

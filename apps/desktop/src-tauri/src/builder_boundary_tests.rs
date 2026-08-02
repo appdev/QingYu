@@ -66,6 +66,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "open_markdown_file_in_new_window",
     "open_markdown_folder_in_new_window",
     "open_containing_folder",
+    "open_primary_workspace_containing_folder",
     "open_markdown_attachment",
     "resolve_markdown_path",
     "resolve_markdown_folder",

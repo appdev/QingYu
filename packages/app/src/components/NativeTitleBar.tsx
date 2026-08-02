@@ -88,7 +88,7 @@ type NativeTitleBarProps = {
   onCreateMarkdownFile?: () => unknown;
   onExitApp?: () => unknown;
   onOpenBlankEditorWindow?: () => unknown;
-  onOpenMarkdown: () => unknown;
+  onOpenMarkdown?: () => unknown;
   onOpenMarkdownFolder?: () => unknown;
   onOpenSettings?: () => unknown;
   onSaveMarkdown: () => unknown;
@@ -168,7 +168,6 @@ export function NativeTitleBar({
   const label = (key: Parameters<typeof t>[1]) => t(language, key);
   const themeActionLabel = theme === "dark" ? label("app.switchToLightTheme") : label("app.switchToDarkTheme");
   const editorViewMode = splitMode ? "split" : sourceMode ? "source" : "visual";
-  const openChoiceMenuAvailable = Boolean(onOpenMarkdownFolder);
   const openChoiceMenuAlignmentClassName = platform === "windows" ? "right-0" : "left-0";
   const titlebarSideSlotWidth = 196;
   const normalizedTitlebarActions = useMemo(
@@ -346,12 +345,15 @@ export function NativeTitleBar({
   const renderFixedOpenAction = (className = dimTitlebarIconButtonClassName) => {
     if (!openMarkdownButtonVisible) return null;
 
-    if (!openChoiceMenuAvailable || !onOpenMarkdownFolder) {
+    if (!onOpenMarkdown || !onOpenMarkdownFolder) {
+      const directOpenAction = onOpenMarkdown ?? onOpenMarkdownFolder;
+      if (!directOpenAction) return null;
+
       return (
         <IconButton
-          label={label("app.openMarkdownOrFolder")}
+          label={label(onOpenMarkdown ? "app.openMarkdownOrFolder" : "app.openFolderDialog")}
           className={className}
-          onClick={(event) => handleOpenActionClick(event, onOpenMarkdown)}
+          onClick={(event) => handleOpenActionClick(event, directOpenAction)}
         >
           <FolderOpen aria-hidden="true" size={15} />
         </IconButton>

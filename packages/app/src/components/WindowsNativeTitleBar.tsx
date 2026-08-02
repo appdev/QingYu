@@ -52,7 +52,7 @@ type WindowsNativeTitleBarProps = {
   onCreateMarkdownFile?: () => unknown;
   onExitApp?: () => unknown;
   onOpenBlankEditorWindow?: () => unknown;
-  onOpenMarkdown: () => unknown;
+  onOpenMarkdown?: () => unknown;
   onOpenMarkdownFolder?: () => unknown;
   onOpenSettings?: () => unknown;
   onSaveMarkdown: () => unknown;
@@ -206,7 +206,9 @@ export function WindowsNativeTitleBar({
           "Ctrl+N",
           onOpenBlankEditorWindow ?? onCreateMarkdownFile
         ),
-        contextMenuItem("openDocument", label("menu.openDocument"), "Ctrl+O", onOpenMarkdown),
+        onOpenMarkdown
+          ? contextMenuItem("openDocument", label("menu.openDocument"), "Ctrl+O", onOpenMarkdown)
+          : disabledWindowsMenuItem("openDocument", label("menu.openDocument"), "Ctrl+O"),
         onOpenMarkdownFolder
           ? contextMenuItem("openFolder", label("app.openFolderDialog"), "Ctrl+Shift+O", onOpenMarkdownFolder)
           : disabledWindowsMenuItem("openFolder", label("app.openFolderDialog"), "Ctrl+Shift+O"),

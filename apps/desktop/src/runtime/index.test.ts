@@ -166,6 +166,7 @@ describe("desktop runtime retained capabilities", () => {
       export: true,
       fileDrop: true,
       imageImport: true,
+      localFileImport: true,
       markdownBundle: true,
       nativeWindowChrome: true,
       openLocalAttachments: true,
@@ -173,7 +174,9 @@ describe("desktop runtime retained capabilities", () => {
       projectSync: true,
       resources: true,
       settingsWindow: true,
+      standaloneDocuments: true,
       systemFonts: true,
+      templateMutation: true,
       updater: true
     });
   });

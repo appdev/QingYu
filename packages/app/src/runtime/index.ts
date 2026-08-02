@@ -411,6 +411,7 @@ export type AppFeatureRuntime = {
   export: boolean;
   fileDrop: boolean;
   imageImport: boolean;
+  localFileImport: boolean;
   markdownBundle?: boolean;
   nativeWindowChrome: boolean;
   openLocalAttachments: boolean;
@@ -418,7 +419,9 @@ export type AppFeatureRuntime = {
   projectSync: boolean;
   resources: boolean;
   settingsWindow: boolean;
+  standaloneDocuments: boolean;
   systemFonts: boolean;
+  templateMutation: boolean;
   updater: boolean;
 };
 
@@ -651,13 +654,16 @@ export function createDefaultAppRuntime(): AppRuntime {
       export: false,
       fileDrop: false,
       imageImport: false,
+      localFileImport: false,
       nativeWindowChrome: false,
       openLocalAttachments: false,
       pandoc: false,
       projectSync: false,
       resources: false,
       settingsWindow: false,
+      standaloneDocuments: false,
       systemFonts: false,
+      templateMutation: false,
       updater: false
     },
     files: createDefaultFileRuntime(),

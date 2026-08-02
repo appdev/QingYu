@@ -253,6 +253,7 @@ const messages: LocaleMessages = {
   "app.newMarkdownFileFromTemplate": "Criar a partir de modelo",
   "app.saveMarkdownFileAsTemplate": "Salvar como modelo",
   "app.openContainingFolder": "Abrir pasta que contém",
+  "app.openContainingFolderFailed": "Não foi possível abrir a pasta que contém o arquivo.",
   "app.markdownTemplateSaved": "Modelo salvo.",
   "app.markdownTemplateSaveFailed": "Não foi possível salvar o modelo.",
   "app.syncPathGuarded": "Este arquivo está sendo sincronizado.",

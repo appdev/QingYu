@@ -490,7 +490,7 @@ function WorkspaceApp() {
     ? kernelWorkspaceRoot
     : undefined;
   const assetCleanupAvailable = Boolean(
-    appFiles.listMarkdownReferenceFilesForPath && appFiles.trashMarkdownAssets
+    appFeatures.resources && appFiles.listMarkdownReferenceFilesForPath && appFiles.trashMarkdownAssets
   );
   const mcpRuntime = getAppRuntime().mcp;
   const exportFeatureEnabled = appFeatures.export;
@@ -3636,6 +3636,13 @@ function WorkspaceApp() {
   }, [document.content, document.revision, getEditorCurrentMarkdown, handleMarkdownChange, mainEditorReadOnly, splitMode]);
   const handleImportLocalImages = useCallback(async () => {
     if (mainEditorReadOnly || !hasOpenDocument || activeImageFile || sourceMode) return;
+    if (managedWorkspaceRoot && !document.path) {
+      showAppToast({
+        message: translate("app.clipboardImageRequiresSavedDocument"),
+        status: "error"
+      });
+      return;
+    }
 
     const selectedImages = await openNativeLocalImages({
       title: translate("menu.importLocalImages")
@@ -3703,6 +3710,7 @@ function WorkspaceApp() {
     handleSaveEditorResources,
     insertEditorMarkdownImages,
     mainEditorReadOnly,
+    managedWorkspaceRoot,
     refreshMarkdownFileTree,
     sourceMode,
     syncVisualMarkdownAfterEditorCommand,
@@ -4113,8 +4121,14 @@ function WorkspaceApp() {
     primaryWindowOwner
   ]);
   const handleOpenContainingFolder = useCallback((path: string) => {
-    openNativeContainingFolder(path).catch(() => {});
-  }, []);
+    return openNativeContainingFolder(path).catch(() => {
+      showAppToast({
+        id: "open-containing-folder",
+        message: translate("app.openContainingFolderFailed"),
+        status: "error"
+      });
+    });
+  }, [translate]);
   const clearExportSnapshot = useCallback((id: number) => {
     setExportSnapshot((current) => current?.id === id ? null : current);
   }, []);
@@ -4332,17 +4346,17 @@ function WorkspaceApp() {
     exportLatex: exportFeatureEnabled && pandocFeatureEnabled ? exportLatexDocument : undefined,
     exportMarkdown: markdownBundleFeatureEnabled ? exportMarkdownDocument : undefined,
     exportPdf: exportFeatureEnabled ? exportPdfDocument : undefined,
-    importLocalFiles: handleImportLocalFiles,
-    importLocalImages: handleImportLocalImages,
+    importLocalFiles: appFeatures.localFileImport ? handleImportLocalFiles : undefined,
+    importLocalImages: appFeatures.imageImport ? handleImportLocalImages : undefined,
     insertMarkdownImage: handleInsertMarkdownImage,
     insertMarkdownLink: handleInsertMarkdownLink,
     insertMarkdownSnippet: handleInsertMarkdownSnippet,
     insertMarkdownTable: handleInsertMarkdownTable,
     language: appLanguage.language,
     markdownShortcuts: editorPreferences.preferences.markdownShortcuts,
-    openDocument: handleOpenMarkdownFile,
-    openRecentFile: handleOpenRecentMarkdownFile,
-    clearRecentFiles: clearRecentMarkdownFiles,
+    openDocument: appFeatures.standaloneDocuments ? handleOpenMarkdownFile : undefined,
+    openRecentFile: appFeatures.standaloneDocuments ? handleOpenRecentMarkdownFile : undefined,
+    clearRecentFiles: appFeatures.standaloneDocuments ? clearRecentMarkdownFiles : undefined,
     openFolder: canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined,
     openQuickOpen: handleQuickOpenOpen,
     openSettings: handleOpenSettings,
@@ -4365,7 +4379,7 @@ function WorkspaceApp() {
   useNativeMenus(nativeMenuHandlers, appLanguage.ready ? appLanguage.language : null, {
     enabled: appFeatures.applicationMenu && settingsModalRequest === null,
     markdownShortcuts: editorPreferences.preferences.markdownShortcuts,
-    recentFiles: recentMarkdownFiles
+    recentFiles: appFeatures.standaloneDocuments ? recentMarkdownFiles : undefined
   });
   useApplicationShortcuts({
     enabled: appFeatures.applicationShortcuts && settingsModalRequest === null,
@@ -4374,7 +4388,7 @@ function WorkspaceApp() {
     exportPdf: exportFeatureEnabled ? exportPdfDocument : undefined,
     markdownShortcuts: editorPreferences.preferences.markdownShortcuts,
     openBlankEditorWindow: windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined,
-    openDocument: handleOpenMarkdownFile,
+    openDocument: appFeatures.standaloneDocuments ? handleOpenMarkdownFile : undefined,
     openDocumentReplace: handleDocumentReplaceOpen,
     openDocumentSearch: handleDocumentSearchOpen,
     openSettings: handleOpenSettings,
@@ -5033,7 +5047,7 @@ function WorkspaceApp() {
           onCreateMarkdownFile={handleQuickCreateMarkdownTreeFile}
           onExitApp={handleExitApp}
           onOpenBlankEditorWindow={windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined}
-          onOpenMarkdown={handleOpenMarkdownFile}
+          onOpenMarkdown={appFeatures.standaloneDocuments ? handleOpenMarkdownFile : undefined}
           onOpenMarkdownFolder={canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined}
           onOpenSettings={handleOpenSettings}
           onSaveMarkdown={handleSaveDocument}
@@ -5128,7 +5142,7 @@ function WorkspaceApp() {
             onResize: compactViewport ? undefined : resizeFileTree,
             onResizeEnd: compactViewport ? undefined : endFileTreeResize,
             onResizeStart: compactViewport ? undefined : startFileTreeResize,
-            onSaveFileAsTemplate: handleSaveMarkdownFileAsTemplate,
+            onSaveFileAsTemplate: appFeatures.templateMutation ? handleSaveMarkdownFileAsTemplate : undefined,
             onSelectOutlineItem: editor.selectOutlineItem,
             onToggleMarkdownFiles: handleFileTreeToggle
           }}

@@ -880,6 +880,7 @@ export type I18nKey =
   | "app.newMarkdownFileFromTemplate"
   | "app.saveMarkdownFileAsTemplate"
   | "app.openContainingFolder"
+  | "app.openContainingFolderFailed"
   | "app.markdownTemplateSaved"
   | "app.markdownTemplateSaveFailed"
   | "app.markdownFileCreateFailed"

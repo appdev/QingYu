@@ -126,13 +126,16 @@ describe("web runtime", () => {
       export: true,
       fileDrop: true,
       imageImport: false,
+      localFileImport: false,
       nativeWindowChrome: false,
       openLocalAttachments: true,
       pandoc: false,
       projectSync: false,
       resources: false,
       settingsWindow: false,
+      standaloneDocuments: true,
       systemFonts: false,
+      templateMutation: true,
       updater: false
     });
     expect(Object.keys(runtime.features)).not.toContain(["s3", "ImageUpload"].join(""));

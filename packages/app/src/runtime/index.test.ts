@@ -90,13 +90,16 @@ describe("default app runtime capabilities", () => {
       export: false,
       fileDrop: false,
       imageImport: false,
+      localFileImport: false,
       nativeWindowChrome: false,
       openLocalAttachments: false,
       pandoc: false,
       projectSync: false,
       resources: false,
       settingsWindow: false,
+      standaloneDocuments: false,
       systemFonts: false,
+      templateMutation: false,
       updater: false
     });
   });

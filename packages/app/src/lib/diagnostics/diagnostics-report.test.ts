@@ -29,13 +29,16 @@ describe("generateDiagnosticsReport", () => {
         export: true,
         fileDrop: true,
         imageImport: true,
+        localFileImport: true,
         nativeWindowChrome: true,
         openLocalAttachments: true,
         pandoc: true,
         projectSync: true,
         resources: true,
         settingsWindow: true,
+        standaloneDocuments: true,
         systemFonts: true,
+        templateMutation: true,
         updater: true
       },
       generatedAt: new Date("2030-01-02T03:04:05.000Z"),
@@ -55,12 +58,15 @@ describe("generateDiagnosticsReport", () => {
     expect(report).toContain("- Export feature enabled: true");
     expect(report).toContain("- File drop enabled: true");
     expect(report).toContain("- Image import enabled: true");
+    expect(report).toContain("- Local file import enabled: true");
     expect(report).toContain("- Native window chrome enabled: true");
     expect(report).toContain("- Local attachment opening enabled: true");
     expect(report).toContain("- Pandoc feature enabled: true");
     expect(report).toContain("- Primary notes sync enabled: true");
     expect(report).toContain("- Settings window enabled: true");
+    expect(report).toContain("- Standalone documents enabled: true");
     expect(report).toContain("- System fonts enabled: true");
+    expect(report).toContain("- Template mutation enabled: true");
     expect(report).toContain("- Updater feature enabled: true");
     expect(report).not.toContain("Network proxy");
     expect(report).not.toContain("Bypass local addresses");

@@ -1106,6 +1106,7 @@ const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
     "minimize_current_window",
     "open_blank_editor_window",
     "open_containing_folder",
+    "open_primary_workspace_containing_folder",
     "open_log_folder",
     "open_markdown_attachment",
     "open_markdown_file_in_new_window",

@@ -27,15 +27,15 @@ type NativeMenuHandlerOptions = {
   exportLatex?: () => unknown | Promise<unknown>;
   exportMarkdown?: () => unknown | Promise<unknown>;
   exportPdf?: () => unknown | Promise<unknown>;
-  importLocalFiles: () => unknown | Promise<unknown>;
-  importLocalImages: () => unknown | Promise<unknown>;
+  importLocalFiles?: () => unknown | Promise<unknown>;
+  importLocalImages?: () => unknown | Promise<unknown>;
   insertMarkdownImage: () => unknown;
   insertMarkdownLink: () => unknown;
   insertMarkdownSnippet: (open: string, close: string, placeholder: string) => unknown;
   insertMarkdownTable: () => unknown;
   language?: AppLanguage;
   markdownShortcuts?: MarkdownShortcutMap;
-  openDocument: () => unknown | Promise<unknown>;
+  openDocument?: () => unknown | Promise<unknown>;
   openFolder?: () => unknown | Promise<unknown>;
   openQuickOpen?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
@@ -61,7 +61,7 @@ type ApplicationShortcutOptions = {
   exportHtml?: () => unknown | Promise<unknown>;
   exportPdf?: () => unknown | Promise<unknown>;
   markdownShortcuts?: MarkdownShortcutMap;
-  openDocument: () => unknown | Promise<unknown>;
+  openDocument?: () => unknown | Promise<unknown>;
   openDocumentReplace?: () => unknown | Promise<unknown>;
   openDocumentSearch?: () => unknown | Promise<unknown>;
   openBlankEditorWindow?: () => unknown | Promise<unknown>;
@@ -227,7 +227,6 @@ export function useNativeMenuHandlers({
   return useMemo<NativeMenuHandlers>(
     () => {
       const handlers: NativeMenuHandlers = {
-        openDocument: () => latestOptionsRef.current.openDocument(),
         saveDocument: () => latestOptionsRef.current.saveDocument(),
         saveDocumentAs: () => latestOptionsRef.current.saveDocumentAs(),
         editUndo: () => {
@@ -254,12 +253,13 @@ export function useNativeMenuHandlers({
         formatCodeBlock: () => runMarkdownShortcut("codeBlock"),
         insertLink: () => latestOptionsRef.current.insertMarkdownLink(),
         insertImage: () => latestOptionsRef.current.insertMarkdownImage(),
-        importLocalImages: () => latestOptionsRef.current.importLocalImages(),
-        importLocalFiles: () => latestOptionsRef.current.importLocalFiles(),
         insertTable: () => latestOptionsRef.current.insertMarkdownTable(),
         toggleAllFolds: () => runMarkdownShortcut("toggleAllFolds")
       };
 
+      if (importLocalFiles) handlers.importLocalFiles = () => latestOptionsRef.current.importLocalFiles?.();
+      if (importLocalImages) handlers.importLocalImages = () => latestOptionsRef.current.importLocalImages?.();
+      if (openDocument) handlers.openDocument = () => latestOptionsRef.current.openDocument?.();
       if (openFolder) handlers.openFolder = () => latestOptionsRef.current.openFolder?.();
       if (clearRecentFiles) handlers.clearRecentFiles = () => latestOptionsRef.current.clearRecentFiles?.();
       if (checkForUpdates) handlers.checkForUpdates = () => latestOptionsRef.current.checkForUpdates?.();
@@ -525,7 +525,7 @@ export function useApplicationShortcuts({
       } else if (key === "o" && event.shiftKey && openFolder) {
         event.preventDefault();
         openFolder();
-      } else if (key === "o" && !event.shiftKey) {
+      } else if (key === "o" && !event.shiftKey && openDocument) {
         event.preventDefault();
         openDocument();
       } else if (key === "p" && !event.shiftKey && exportPdf) {

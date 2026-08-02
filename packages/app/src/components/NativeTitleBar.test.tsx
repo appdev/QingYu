@@ -1291,6 +1291,28 @@ describe("NativeTitleBar", () => {
     expect(openMarkdownFolder).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the folder picker directly when standalone Markdown files are unavailable", () => {
+    const openMarkdownFolder = vi.fn();
+    render(
+      <NativeTitleBar
+        dirty={false}
+        documentName="Draft.md"
+        markdownFilesOpen={false}
+        theme="light"
+        platform="macos"
+        onOpenMarkdownFolder={openMarkdownFolder}
+        onSaveMarkdown={() => {}}
+        onToggleMarkdownFiles={() => {}}
+        onToggleTheme={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch Notebook Directory..." }));
+
+    expect(openMarkdownFolder).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu", { name: "Open Markdown or Folder" })).not.toBeInTheDocument();
+  });
+
   it("shows a quick new file button next to the markdown files toggle when the sidebar is collapsed", () => {
     const createMarkdownFile = vi.fn();
     const { container } = render(

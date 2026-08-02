@@ -1087,10 +1087,14 @@ export function installAppTestHarness() {
         applicationShortcuts: true,
         export: true,
         fileDrop: true,
+        imageImport: true,
+        localFileImport: true,
         nativeWindowChrome: true,
         openLocalAttachments: true,
         pandoc: true,
         settingsWindow: true,
+        standaloneDocuments: true,
+        templateMutation: true,
         updater: true
       },
       mcp: createApplicationMcpRuntime()

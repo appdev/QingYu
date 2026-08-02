@@ -82,6 +82,18 @@ function batchKernel(
 }
 
 describe("Kernel AppRuntime adapter", () => {
+  it("delegates containing-folder actions to an explicitly injected native shell", async () => {
+    const openContainingFolder = vi.fn(async () => undefined);
+    const files = createKernelFileRuntime(createUnavailableKernelDomainPort(), {
+      nativeShell: { openContainingFolder },
+    });
+    const path = `${kernelWorkspaceRoot}/notes/note.md`;
+
+    await expect(files.openContainingFolder(path)).resolves.toBeUndefined();
+
+    expect(openContainingFolder).toHaveBeenCalledWith(path);
+  });
+
   it("routes workspace writes to Kernel and ignores a full legacy file fallback", async () => {
     const legacySave = vi.fn(() => Promise.reject(new Error("legacy writer called")));
     const unavailable = createUnavailableKernelDomainPort();

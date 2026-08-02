@@ -3,10 +3,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { debug, fileNameFromPath } from "@markra/shared";
 import { listenNativeEvent } from "../events";
-import type {
-  ImportNativeLocalFileInput,
-  TrashWorkspaceResourceInput,
-  TrashWorkspaceResourceResult
+import {
+  kernelWorkspaceRoot,
+  relativePathFromServerPath,
+  type ImportNativeLocalFileInput,
+  type TrashWorkspaceResourceInput,
+  type TrashWorkspaceResourceResult
 } from "@markra/app/runtime";
 import {
   readNativeMarkdownFile,
@@ -435,6 +437,13 @@ export async function openNativeMarkdownFolderInNewWindow(path: string) {
 }
 
 export async function openNativeContainingFolder(path: string) {
+  if (path === kernelWorkspaceRoot || path.startsWith(`${kernelWorkspaceRoot}/`)) {
+    await invokeNative("open_primary_workspace_containing_folder", {
+      relativePath: relativePathFromServerPath(path)
+    });
+    return;
+  }
+
   await invokeNative("open_containing_folder", { path });
 }
 

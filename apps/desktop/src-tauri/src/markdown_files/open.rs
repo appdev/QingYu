@@ -4,6 +4,8 @@ use std::{
     process::Command,
 };
 
+use qingyu_kernel::contract::WorkspaceRelativePath;
+
 use crate::windows::{
     editor_window_url_for_folder, editor_window_url_for_path, spawn_editor_window,
 };
@@ -251,15 +253,9 @@ fn open_default_application_command_for_path(
     }
 }
 
-#[tauri::command]
-pub(crate) fn open_containing_folder(path: String) -> Result<(), String> {
-    let target_path = PathBuf::from(path);
-    if !target_path.exists() {
-        return Err("Path does not exist.".to_string());
-    }
-
+fn spawn_file_manager_for_path(target_path: &Path) -> Result<(), String> {
     let command = file_manager_command_for_path(
-        &target_path,
+        target_path,
         target_path.is_dir(),
         current_file_manager_platform(),
     )?;
@@ -270,6 +266,54 @@ pub(crate) fn open_containing_folder(path: String) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     Ok(())
+}
+
+fn resolve_primary_workspace_reveal_target(
+    root: &Path,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
+    let relative_path = WorkspaceRelativePath::parse(relative_path)
+        .map_err(|_| "Primary workspace path is invalid.".to_string())?;
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    let target = relative_path
+        .as_str()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .fold(canonical_root.clone(), |path, segment| path.join(segment));
+    let canonical_target = target.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err("Primary workspace path is outside the current workspace.".to_string());
+    }
+
+    Ok(canonical_target)
+}
+
+#[tauri::command]
+pub(crate) fn open_containing_folder(path: String) -> Result<(), String> {
+    let target_path = PathBuf::from(path);
+    if !target_path.exists() {
+        return Err("Path does not exist.".to_string());
+    }
+
+    spawn_file_manager_for_path(&target_path)
+}
+
+#[tauri::command]
+pub(crate) fn open_primary_workspace_containing_folder(
+    app: tauri::AppHandle,
+    relative_path: String,
+) -> Result<(), String> {
+    let root = match crate::primary_workspace::resolve_desktop_primary_workspace(&app)
+        .map_err(|error| error.to_string())?
+    {
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(root) => root,
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected => {
+            return Err("Desktop primary workspace is not selected.".to_string());
+        }
+    };
+    let target = resolve_primary_workspace_reveal_target(&root, &relative_path)?;
+
+    spawn_file_manager_for_path(&target)
 }
 
 #[tauri::command]
@@ -550,6 +594,45 @@ mod tests {
                 args: vec!["/mock-project/docs".to_string()]
             }
         );
+    }
+
+    #[test]
+    fn resolves_primary_workspace_reveal_targets_without_escaping_the_root() {
+        let temporary = tempfile::tempdir().expect("temporary workspace");
+        let root = temporary.path().join("Notes");
+        let nested = root.join("notes");
+        let note = nested.join("日记.md");
+        fs::create_dir_all(&nested).expect("nested folder");
+        fs::write(&note, "# Note").expect("note file");
+
+        assert_eq!(
+            resolve_primary_workspace_reveal_target(&root, "")
+                .expect("workspace root should resolve"),
+            root.canonicalize().expect("canonical root")
+        );
+        assert_eq!(
+            resolve_primary_workspace_reveal_target(&root, "notes/日记.md")
+                .expect("workspace file should resolve"),
+            note.canonicalize().expect("canonical note")
+        );
+        assert!(resolve_primary_workspace_reveal_target(&root, "../outside.md").is_err());
+        assert!(resolve_primary_workspace_reveal_target(&root, "notes/missing.md").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_primary_workspace_reveal_targets_that_escape_through_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary workspace");
+        let root = temporary.path().join("Notes");
+        let outside = temporary.path().join("Outside");
+        fs::create_dir_all(&root).expect("workspace root");
+        fs::create_dir_all(&outside).expect("outside folder");
+        fs::write(outside.join("secret.md"), "secret").expect("outside file");
+        symlink(&outside, root.join("escape")).expect("escape symlink");
+
+        assert!(resolve_primary_workspace_reveal_target(&root, "escape/secret.md").is_err());
     }
 
     #[test]

@@ -184,7 +184,7 @@ function LoginForm({
         <PromptError copy={copy} error={visibleError} retrySeconds={retrySeconds} />
         <SecretField
           autoComplete="current-password"
-          helper={passwordInvalid ? copy.passwordInvalid : copy.passwordHelper}
+          helper={passwordInvalid ? copy.passwordInvalid : undefined}
           helperTone={passwordInvalid ? "error" : undefined}
           inputRef={passwordInput}
           invalid={passwordInvalid || visibleError?.kind === "invalid-credentials"}
@@ -343,7 +343,7 @@ function SecretField({
   ...inputProps
 }: InputHTMLAttributes<HTMLInputElement> & {
   readonly concealLabel: string;
-  readonly helper: string;
+  readonly helper?: string;
   readonly helperTone?: "error";
   readonly inputRef?: RefObject<HTMLInputElement | null>;
   readonly invalid?: boolean;
@@ -365,7 +365,7 @@ function SecretField({
       <span className="server-startup__field-control">
         <input
           {...inputProps}
-          aria-describedby={helperId}
+          aria-describedby={helper === undefined ? undefined : helperId}
           aria-invalid={invalid || undefined}
           className="server-startup__field-input"
           id={inputId}
@@ -385,13 +385,15 @@ function SecretField({
           {revealed ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
         </button>
       </span>
-      <span
-        className="server-startup__field-message"
-        data-tone={helperTone}
-        id={helperId}
-      >
-        {helper}
-      </span>
+      {helper === undefined ? null : (
+        <span
+          className="server-startup__field-message"
+          data-tone={helperTone}
+          id={helperId}
+        >
+          {helper}
+        </span>
+      )}
     </div>
   );
 }

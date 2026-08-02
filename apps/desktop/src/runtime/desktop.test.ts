@@ -65,10 +65,13 @@ describe("desktop runtime composition", () => {
       dejavuSync: false,
       fileDrop: false,
       imageImport: true,
+      localFileImport: false,
       markdownBundle: true,
       openLocalAttachments: false,
       projectSync: true,
-      resources: false
+      resources: false,
+      standaloneDocuments: false,
+      templateMutation: false
     });
     expect(runtime.nativeShell.capabilities).toEqual({
       absolutePathClassification: "unavailable",

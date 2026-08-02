@@ -1,5 +1,5 @@
 use crate::language::{resolve_startup_language, AppLanguage};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::{
     menu::{
@@ -25,6 +25,49 @@ const EDIT_REDO_COMMAND: &str = "editRedo";
 const MARKRA_GITHUB_URL: &str = "https://github.com/appdev/QingYu";
 const OPEN_RECENT_FILE_SUBMENU_ID: &str = "markra:file:open-recent";
 const EMPTY_OPEN_RECENT_FILE_COMMAND: &str = "markra:file:open-recent:empty";
+const FRONTEND_MENU_ITEM_COMMANDS: &[&str] = &[
+    CHECK_FOR_UPDATES_COMMAND,
+    QUIT_APPLICATION_COMMAND,
+    CLEAR_RECENT_FILES_COMMAND,
+    SETTINGS_WINDOW_COMMAND,
+    EDIT_UNDO_COMMAND,
+    EDIT_REDO_COMMAND,
+    "openDocument",
+    "openFolder",
+    "openQuickOpen",
+    "closeDocument",
+    "saveDocument",
+    "saveDocumentAs",
+    "syncNow",
+    "exportPdf",
+    "exportHtml",
+    "exportMarkdown",
+    "exportDocx",
+    "exportEpub",
+    "exportLatex",
+    "formatBold",
+    "formatItalic",
+    "formatStrikethrough",
+    "formatInlineCode",
+    "formatParagraph",
+    "formatHeading1",
+    "formatHeading2",
+    "formatHeading3",
+    "formatBulletList",
+    "formatOrderedList",
+    "formatQuote",
+    "formatCodeBlock",
+    "insertLink",
+    "insertImage",
+    "importLocalImages",
+    "importLocalFiles",
+    "insertTable",
+    "toggleFullscreen",
+    "toggleMarkdownFiles",
+    "toggleAllFolds",
+    "toggleReadOnlyMode",
+    "toggleSourceMode",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +109,7 @@ enum NativeFullscreenMenuKind {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct NativeApplicationMenuConfig {
     accelerators: Option<HashMap<String, String>>,
+    enabled_commands: Option<HashSet<String>>,
     language: Option<AppLanguage>,
     recent_files: Vec<NativeRecentFile>,
 }
@@ -89,10 +133,12 @@ impl NativeApplicationMenuState {
     fn requested_config(
         language: AppLanguage,
         accelerators: Option<HashMap<String, String>>,
+        enabled_commands: Option<HashSet<String>>,
         recent_files: Vec<NativeRecentFile>,
     ) -> NativeApplicationMenuConfig {
         NativeApplicationMenuConfig {
             accelerators,
+            enabled_commands,
             language: Some(language),
             recent_files,
         }
@@ -556,7 +602,7 @@ pub(crate) fn create_application_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> tauri::Result<Menu<R>> {
     let language = resolve_startup_language(&app.config().identifier);
-    create_application_menu_for_language(app, language, None, &[])
+    create_application_menu_for_language(app, language, None, None, &[])
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -564,20 +610,24 @@ pub(crate) fn create_settings_window_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> tauri::Result<Menu<R>> {
     let language = resolve_startup_language(&app.config().identifier);
-    create_settings_menu_for_language(app, language)
+    create_settings_menu_for_language(app, language, None)
 }
 
 fn create_settings_menu_for_language<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     language: AppLanguage,
+    enabled_commands: Option<&HashSet<String>>,
 ) -> tauri::Result<Menu<R>> {
     let labels = crate::menu_labels::for_language(language);
     let app_menu = create_markra_app_submenu(app, labels)?;
     let edit_menu = create_edit_submenu(app, labels)?;
 
-    MenuBuilder::new(app)
+    let menu = MenuBuilder::new(app)
         .items(&[&app_menu, &edit_menu])
-        .build()
+        .build()?;
+    apply_frontend_menu_command_availability(&menu, enabled_commands)?;
+
+    Ok(menu)
 }
 
 fn create_application_menu_for_profile<R: tauri::Runtime>(
@@ -585,13 +635,20 @@ fn create_application_menu_for_profile<R: tauri::Runtime>(
     profile: NativeApplicationMenuProfile,
     language: AppLanguage,
     accelerators: Option<&HashMap<String, String>>,
+    enabled_commands: Option<&HashSet<String>>,
     recent_files: &[NativeRecentFile],
 ) -> tauri::Result<Menu<R>> {
     match profile {
-        NativeApplicationMenuProfile::Editor => {
-            create_application_menu_for_language(app, language, accelerators, recent_files)
+        NativeApplicationMenuProfile::Editor => create_application_menu_for_language(
+            app,
+            language,
+            accelerators,
+            enabled_commands,
+            recent_files,
+        ),
+        NativeApplicationMenuProfile::Settings => {
+            create_settings_menu_for_language(app, language, enabled_commands)
         }
-        NativeApplicationMenuProfile::Settings => create_settings_menu_for_language(app, language),
     }
 }
 
@@ -617,9 +674,11 @@ fn native_application_menu_install_equivalent(
         NativeApplicationMenuProfile::Editor => {
             installed.config.language == requested.config.language
                 && installed.config.accelerators == requested.config.accelerators
+                && installed.config.enabled_commands == requested.config.enabled_commands
         }
         NativeApplicationMenuProfile::Settings => {
             installed.config.language == requested.config.language
+                && installed.config.enabled_commands == requested.config.enabled_commands
         }
     }
 }
@@ -681,6 +740,7 @@ fn apply_native_application_menu_for_window_label<R: tauri::Runtime>(
             profile,
             language,
             config.accelerators.as_ref(),
+            config.enabled_commands.as_ref(),
             &config.recent_files,
         ) {
             Ok(menu) => match app.set_menu(menu) {
@@ -705,6 +765,7 @@ fn create_application_menu_for_language<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     language: AppLanguage,
     accelerators: Option<&HashMap<String, String>>,
+    enabled_commands: Option<&HashSet<String>>,
     recent_files: &[NativeRecentFile],
 ) -> tauri::Result<Menu<R>> {
     let labels = crate::menu_labels::for_language(language);
@@ -930,9 +991,49 @@ fn create_application_menu_for_language<R: tauri::Runtime>(
         ])
         .build()?;
 
-    MenuBuilder::new(app)
+    let menu = MenuBuilder::new(app)
         .items(&[&app_menu, &file_menu, &edit_menu, &format_menu, &view_menu])
-        .build()
+        .build()?;
+    apply_frontend_menu_command_availability(&menu, enabled_commands)?;
+
+    Ok(menu)
+}
+
+fn set_menu_item_enabled<R: tauri::Runtime>(
+    item: &tauri::menu::MenuItemKind<R>,
+    enabled: bool,
+) -> tauri::Result<()> {
+    match item {
+        tauri::menu::MenuItemKind::MenuItem(item) => item.set_enabled(enabled),
+        tauri::menu::MenuItemKind::Submenu(item) => item.set_enabled(enabled),
+        tauri::menu::MenuItemKind::Check(item) => item.set_enabled(enabled),
+        tauri::menu::MenuItemKind::Icon(item) => item.set_enabled(enabled),
+        tauri::menu::MenuItemKind::Predefined(_) => Ok(()),
+    }
+}
+
+fn apply_frontend_menu_command_availability<R: tauri::Runtime>(
+    menu: &Menu<R>,
+    enabled_commands: Option<&HashSet<String>>,
+) -> tauri::Result<()> {
+    let Some(enabled_commands) = enabled_commands else {
+        return Ok(());
+    };
+
+    for command in FRONTEND_MENU_ITEM_COMMANDS {
+        if let Some(item) = menu.get(*command) {
+            set_menu_item_enabled(&item, enabled_commands.contains(*command))?;
+        }
+    }
+
+    if let Some(open_recent) = menu.get(OPEN_RECENT_FILE_SUBMENU_ID) {
+        set_menu_item_enabled(
+            &open_recent,
+            enabled_commands.contains(OPEN_RECENT_FILE_COMMAND),
+        )?;
+    }
+
+    Ok(())
 }
 
 fn menu_accelerator(
@@ -987,12 +1088,18 @@ pub(crate) fn install_application_menu(
     app: tauri::AppHandle,
     language: String,
     accelerators: Option<HashMap<String, String>>,
+    enabled_commands: Option<Vec<String>>,
     recent_files: Option<Vec<NativeRecentFile>>,
 ) -> Result<(), String> {
     let language = AppLanguage::from_code(&language)
         .ok_or_else(|| format!("Unsupported application menu language: {language}"))?;
     let recent_files = normalize_recent_files(recent_files.unwrap_or_default());
-    let config = NativeApplicationMenuState::requested_config(language, accelerators, recent_files);
+    let config = NativeApplicationMenuState::requested_config(
+        language,
+        accelerators,
+        enabled_commands.map(|commands| commands.into_iter().collect()),
+        recent_files,
+    );
 
     #[cfg(target_os = "macos")]
     let profile = current_native_application_menu_profile(&app);
@@ -1011,6 +1118,7 @@ pub(crate) fn install_application_menu(
         profile,
         language,
         config.accelerators.as_ref(),
+        config.enabled_commands.as_ref(),
         &config.recent_files,
     )
     .map_err(|error| error.to_string())?;
@@ -1027,54 +1135,8 @@ pub(crate) fn is_native_new_window_command(command: &str) -> bool {
 }
 
 pub(crate) fn is_frontend_menu_command(command: &str) -> bool {
-    if recent_file_index_from_command(command).is_some() {
-        return true;
-    }
-
-    matches!(
-        command,
-        CHECK_FOR_UPDATES_COMMAND
-            | QUIT_APPLICATION_COMMAND
-            | CLEAR_RECENT_FILES_COMMAND
-            | SETTINGS_WINDOW_COMMAND
-            | EDIT_UNDO_COMMAND
-            | EDIT_REDO_COMMAND
-            | "openDocument"
-            | "openFolder"
-            | "openQuickOpen"
-            | "closeDocument"
-            | "saveDocument"
-            | "saveDocumentAs"
-            | "syncNow"
-            | "exportPdf"
-            | "exportHtml"
-            | "exportMarkdown"
-            | "exportDocx"
-            | "exportEpub"
-            | "exportLatex"
-            | "formatBold"
-            | "formatItalic"
-            | "formatStrikethrough"
-            | "formatInlineCode"
-            | "formatParagraph"
-            | "formatHeading1"
-            | "formatHeading2"
-            | "formatHeading3"
-            | "formatBulletList"
-            | "formatOrderedList"
-            | "formatQuote"
-            | "formatCodeBlock"
-            | "insertLink"
-            | "insertImage"
-            | "importLocalImages"
-            | "importLocalFiles"
-            | "insertTable"
-            | "toggleFullscreen"
-            | "toggleMarkdownFiles"
-            | "toggleAllFolds"
-            | "toggleReadOnlyMode"
-            | "toggleSourceMode"
-    )
+    recent_file_index_from_command(command).is_some()
+        || FRONTEND_MENU_ITEM_COMMANDS.contains(&command)
 }
 
 #[cfg(test)]
@@ -1306,6 +1368,27 @@ mod tests {
     }
 
     #[test]
+    fn editor_menu_install_equivalence_observes_command_availability() {
+        let installed = NativeApplicationMenuInstall {
+            config: menu_config(vec![]),
+            profile: NativeApplicationMenuProfile::Editor,
+        };
+        let mut requested_config = menu_config(vec![]);
+        requested_config.enabled_commands = Some(HashSet::from([
+            "openFolder".to_string(),
+            "saveDocument".to_string(),
+        ]));
+        let requested = NativeApplicationMenuInstall {
+            config: requested_config,
+            profile: NativeApplicationMenuProfile::Editor,
+        };
+
+        assert!(!native_application_menu_install_equivalent(
+            &installed, &requested
+        ));
+    }
+
+    #[test]
     fn settings_menu_install_equivalence_ignores_editor_recent_files() {
         let installed = NativeApplicationMenuInstall {
             config: menu_config(vec![]),
@@ -1317,6 +1400,7 @@ mod tests {
                     "formatBold".to_string(),
                     "CmdOrCtrl+Alt+B".to_string(),
                 )])),
+                enabled_commands: None,
                 language: Some(AppLanguage::En),
                 recent_files: vec![recent_file("guide.md", "/mock-files/guide.md")],
             },
@@ -1373,6 +1457,7 @@ mod tests {
     fn menu_config(recent_files: Vec<NativeRecentFile>) -> NativeApplicationMenuConfig {
         NativeApplicationMenuConfig {
             accelerators: None,
+            enabled_commands: None,
             language: Some(AppLanguage::En),
             recent_files,
         }
