@@ -144,8 +144,19 @@ function ControllerTitleEditorHarness({ operations }: { operations: TestOperatio
   return model ? (
     <>
       <DocumentTitleEditor language="en" {...model} />
+      <button
+        type="button"
+        onClick={() => controller.handleSourceTitleChange(
+          "notes-tab",
+          tabs[0]?.content ?? "",
+          "---\ntag: repair edit\n---\n\nRepaired body\n"
+        )}
+      >
+        Remove source title
+      </button>
       <output data-testid="controller-model-title">{model.title}</output>
       <output data-testid="controller-file-name">{tabs[0]?.name}</output>
+      <output data-testid="controller-source">{tabs[0]?.content}</output>
     </>
   ) : null;
 }
@@ -602,6 +613,77 @@ describe("useDocumentTitleController", () => {
       expect(screen.getByTestId("controller-file-name")).toHaveTextContent("Newer.md");
     }
   );
+
+  it.each(["collision", "error"] as const)(
+    "syncs filename authority when a newer title-removal repair follows an older %s",
+    async (failure) => {
+      const operations = createOperations();
+      const olderRename = deferred<NativeMarkdownFolderFile | null>();
+      operations.renameMarkdownTreeFile.mockImplementationOnce(() => olderRename.promise);
+      render(<ControllerTitleEditorHarness operations={operations} />);
+      const editor = screen.getByRole("textbox", { name: "Document title" });
+
+      editor.focus();
+      editor.textContent = "Rejected older draft";
+      fireEvent.input(editor);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(256);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Remove source title" }));
+
+      if (failure === "error") {
+        olderRename.reject(new Error("older rename failed"));
+      } else {
+        olderRename.resolve(null);
+      }
+      await settle();
+
+      const repairedSource = "---\ntag: repair edit\ntitle: Notes\n---\n\nRepaired body\n";
+      expect(editor).toHaveTextContent("Notes");
+      expect(editor).toHaveFocus();
+      expect(screen.getByTestId("controller-model-title")).toHaveTextContent("Notes");
+      expect(screen.getByTestId("controller-file-name")).toHaveTextContent("Notes.md");
+      expect(screen.getByTestId("controller-source").textContent).toBe(repairedSource);
+      expect(operations.saveMarkdownTabContentById).toHaveBeenCalledWith(
+        "notes-tab",
+        repairedSource,
+        { skipHistorySnapshot: true }
+      );
+    }
+  );
+
+  it("does not let a stale title-removal repair clobber a still-newer visual draft", async () => {
+    const operations = createOperations();
+    const olderRename = deferred<NativeMarkdownFolderFile | null>();
+    operations.renameMarkdownTreeFile
+      .mockImplementationOnce(() => olderRename.promise)
+      .mockImplementationOnce(async (file, fileName) => renamedFile(file, fileName));
+    render(<ControllerTitleEditorHarness operations={operations} />);
+    const editor = screen.getByRole("textbox", { name: "Document title" });
+
+    editor.focus();
+    editor.textContent = "Rejected older draft";
+    fireEvent.input(editor);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove source title" }));
+    editor.textContent = "Newest visual";
+    fireEvent.input(editor);
+
+    olderRename.resolve(null);
+    await settle();
+    expect(editor).toHaveTextContent("Newest visual");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    await settle();
+
+    expect(editor).toHaveTextContent("Newest visual");
+    expect(screen.getByTestId("controller-model-title")).toHaveTextContent("Newest visual");
+    expect(screen.getByTestId("controller-file-name")).toHaveTextContent("Newest visual.md");
+  });
 
   it.each([
     {

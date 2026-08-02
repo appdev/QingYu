@@ -247,7 +247,10 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     const title = markdownDocumentTitleFromFileName(authoritativeFile.name);
     const patched = upsertMarkdownFrontmatterTitle(source, title);
     if (!patched.ok) return;
-    if (request.kind === "repair" && !patched.changed) return;
+    if (request.kind === "repair") {
+      syncTitleModelIfCurrent(tabId, request.generation);
+      if (!patched.changed) return;
+    }
 
     await routeAndSaveSource(latest, patched.source);
   }, [currentFileForTab, routeAndSaveSource, syncTitleModelIfCurrent]);
