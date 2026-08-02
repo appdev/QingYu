@@ -648,27 +648,23 @@ fn valid_markdown_templates(value: &Value) -> bool {
     let mut ids = BTreeSet::new();
     let mut file_names = BTreeSet::new();
     templates.iter().all(|template| {
-        object_has_exact(template, &["fileName", "id", "name", "suggestedName"]).is_some_and(
-            |object| {
-                let file_name = object.get("fileName").and_then(Value::as_str);
-                let id = object.get("id").and_then(Value::as_str);
-                let name = object.get("name").and_then(Value::as_str);
-                let suggested = object.get("suggestedName").and_then(Value::as_str);
-                file_name.is_some_and(|file_name| {
-                    !file_name.is_empty()
-                        && file_name.trim() == file_name
-                        && file_name != "."
-                        && file_name != ".."
-                        && file_name.to_ascii_lowercase().ends_with(".md")
-                        && !file_name.contains('/')
-                        && !file_name.contains('\\')
-                        && file_names.insert(file_name.to_lowercase())
-                }) && id.is_some_and(|id| {
-                    !id.is_empty() && id.trim() == id && ids.insert(id.to_string())
-                }) && name.is_some_and(|name| !name.is_empty() && name.trim() == name)
-                    && suggested.is_some_and(|name| name.trim() == name)
-            },
-        )
+        object_has_exact(template, &["fileName", "id", "name"]).is_some_and(|object| {
+            let file_name = object.get("fileName").and_then(Value::as_str);
+            let id = object.get("id").and_then(Value::as_str);
+            let name = object.get("name").and_then(Value::as_str);
+            file_name.is_some_and(|file_name| {
+                !file_name.is_empty()
+                    && file_name.trim() == file_name
+                    && file_name != "."
+                    && file_name != ".."
+                    && file_name.to_ascii_lowercase().ends_with(".md")
+                    && !file_name.contains('/')
+                    && !file_name.contains('\\')
+                    && file_names.insert(file_name.to_lowercase())
+            }) && id
+                .is_some_and(|id| !id.is_empty() && id.trim() == id && ids.insert(id.to_string()))
+                && name.is_some_and(|name| !name.is_empty() && name.trim() == name)
+        })
     })
 }
 

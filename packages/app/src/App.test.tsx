@@ -7173,8 +7173,7 @@ describe("QingYu workspace", () => {
         expect.objectContaining({
           fileName: "custom-template.md",
           id: "custom-template",
-          name: "standup",
-          suggestedName: "standup"
+          name: "standup"
         })
       ]
     }));
@@ -7183,8 +7182,7 @@ describe("QingYu workspace", () => {
         expect.objectContaining({
           fileName: "custom-template.md",
           id: "custom-template",
-          name: "standup",
-          suggestedName: "standup"
+          name: "standup"
         })
       ]
     }));

@@ -52,8 +52,7 @@
         {
           "fileName": "daily.md",
           "id": "daily",
-          "name": "Daily",
-          "suggestedName": ""
+          "name": "Daily"
         }
       ],
       "paragraphSpacingPx": 8,

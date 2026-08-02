@@ -682,7 +682,6 @@ export type I18nKey =
   | "settings.templates.preview"
   | "settings.templates.showPreview"
   | "settings.templates.name"
-  | "settings.templates.suggestedName"
   | "settings.templates.content"
   | "settings.templates.source"
   | "settings.templates.delete"

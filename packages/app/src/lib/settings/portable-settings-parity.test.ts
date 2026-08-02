@@ -54,13 +54,13 @@ describe("portable settings Rust/TypeScript schema parity", () => {
     const duplicateTemplateId = editorWith({
       markdownTemplates: [
         ...golden.validStore.editorPreferences.markdownTemplates,
-        { fileName: "second.md", id: "daily", name: "Second", suggestedName: "" }
+        { fileName: "second.md", id: "daily", name: "Second" }
       ]
     });
     const duplicateTemplateFileName = editorWith({
       markdownTemplates: [
         ...golden.validStore.editorPreferences.markdownTemplates,
-        { fileName: "DAILY.MD", id: "second", name: "Second", suggestedName: "" }
+        { fileName: "DAILY.MD", id: "second", name: "Second" }
       ]
     });
 
@@ -84,8 +84,7 @@ describe("portable settings Rust/TypeScript schema parity", () => {
       markdownTemplates: [{
         fileName: `${longPart}.md`,
         id: longPart,
-        name: longPart,
-        suggestedName: longPart
+        name: longPart
       }]
     });
 

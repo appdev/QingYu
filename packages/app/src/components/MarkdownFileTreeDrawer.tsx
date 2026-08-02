@@ -76,10 +76,9 @@ import {
   type WorkspaceLinkIndex
 } from "../lib/workspace-links";
 import {
-  markdownTemplateTitleFromFileName,
+  markdownTemplateInitialDocumentName,
   mergeMarkdownTemplates,
   renderMarkdownTemplate,
-  suggestedMarkdownTemplateFileName,
   type MarkdownTemplate
 } from "../lib/templates";
 import {
@@ -1193,14 +1192,11 @@ export function MarkdownFileTreeDrawer({
 
     const startedAt = new Date();
     const normalizedParentPath = normalizeTreeCreateParentPath(parentPath);
-    const suggestedName = "Untitled.md";
+    const suggestedName = template
+      ? markdownTemplateInitialDocumentName(template.id, language, startedAt)
+      : "Untitled.md";
     const contents = template
-      ? renderMarkdownTemplate(template, {
-        now: startedAt,
-        title: markdownTemplateTitleFromFileName(
-          suggestedMarkdownTemplateFileName(template, { now: startedAt, title: "" })
-        )
-      })
+      ? renderMarkdownTemplate(template, { now: startedAt })
       : undefined;
 
     setCreatingFolder(false);

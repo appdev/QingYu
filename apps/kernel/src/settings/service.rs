@@ -1314,7 +1314,7 @@ fn editor_storage_values(stored: Option<Value>) -> Map<String, Value> {
         .and_then(Value::as_array_mut)
     {
         for template in templates {
-            retain_value_fields(template, &["fileName", "id", "name", "suggestedName"]);
+            retain_value_fields(template, &["fileName", "id", "name"]);
         }
     }
     if let Some(actions) = values

@@ -2793,7 +2793,7 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(createFolder).not.toHaveBeenCalled();
   });
 
-  it("creates an untitled markdown file from a template without changing its default rendering", () => {
+  it("creates the locally dated daily note without a generated title heading", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-21T09:30:00"));
     const createFile = vi.fn();
@@ -2817,15 +2817,13 @@ describe("MarkdownFileTreeDrawer", () => {
       fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
 
       expect(createFile).toHaveBeenCalledWith(
-        "Untitled.md",
+        "2026-05-21.md",
         undefined,
-        `# 2026-05-21
+        `Date: 2026-05-21
 
-Date: 2026-05-21
+# Notes
 
-## Notes
-
-## Tasks
+# Tasks
 
 - [ ]
 `
@@ -2883,9 +2881,9 @@ Date: 2026-05-21
       fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
 
       expect(createFile).toHaveBeenLastCalledWith(
-        "Untitled.md",
+        "2026-05-21.md",
         "/vault/deploy",
-        expect.stringContaining("# 2026-05-21")
+        expect.stringContaining("Date: 2026-05-21")
       );
 
       fireEvent.click(screen.getByRole("button", { name: "New" }));
@@ -2977,7 +2975,6 @@ Date: 2026-05-21
             {
               id: "standup",
               name: "Standup",
-              suggestedName: "{{date}} standup",
               content: "# {{title}}\n\n## Yesterday"
             }
           ]}
@@ -2997,7 +2994,7 @@ Date: 2026-05-21
       expect(createFile).toHaveBeenCalledWith(
         "Untitled.md",
         undefined,
-        "# 2026-05-21 standup\n\n## Yesterday"
+        "# {{title}}\n\n## Yesterday"
       );
       expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
     } finally {
@@ -3013,7 +3010,6 @@ Date: 2026-05-21
           {
             id: "daily-note",
             name: "Daily note edited",
-            suggestedName: "{{date}} edited",
             content: "# Edited daily"
           }
         ]}
@@ -3199,7 +3195,7 @@ Date: 2026-05-21
       });
 
       expect(createFile).toHaveBeenCalledWith(
-        "Untitled.md",
+        "2026-05-21.md",
         undefined,
         expect.stringContaining("Date: 2026-05-21")
       );

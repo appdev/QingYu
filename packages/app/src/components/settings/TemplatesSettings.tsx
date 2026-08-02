@@ -207,12 +207,6 @@ export function TemplatesSettings({
                       onClick={() => selectTemplate(template.id)}
                     >
                       <span className="block w-full truncate text-[12px] leading-5 font-[650]">{template.name}</span>
-                      <span
-                        className="block w-full truncate text-[11px] leading-4 font-[450] text-(--text-secondary)"
-                        aria-hidden="true"
-                      >
-                        {template.suggestedName}
-                      </span>
                     </button>
                   </li>
                 );
@@ -224,9 +218,6 @@ export function TemplatesSettings({
                   <div className="min-w-0">
                     <p className="m-0 truncate text-[13px] leading-5 font-[680] text-(--text-heading)">
                       {selectedTemplate.name}
-                    </p>
-                    <p className="m-0 mt-0.5 truncate text-[12px] leading-4.5 text-(--text-secondary)">
-                      {selectedTemplate.suggestedName}
                     </p>
                   </div>
                   {mutationAllowed ? (

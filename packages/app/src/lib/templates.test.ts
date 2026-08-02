@@ -1,77 +1,118 @@
 import {
+  createDefaultCustomMarkdownTemplate,
   createMarkdownTemplateFromEntry,
   createCustomMarkdownTemplateFromFile,
   defaultMarkdownTemplates,
   loadMarkdownTemplatesFromEntries,
   markdownTemplateEntryFromTemplate,
+  markdownTemplateInitialDocumentName,
   markdownTemplateToSource,
   mergeMarkdownTemplates,
   normalizeMarkdownTemplateEntries,
   renderMarkdownTemplate,
-  suggestedMarkdownTemplateFileName,
   updateMarkdownTemplateFromSource
 } from "./templates";
 
 describe("markdown templates", () => {
-  const now = new Date("2026-05-21T09:30:00");
+  const now = new Date(2026, 4, 21, 9, 30);
 
-  it("renders lightweight template variables into ordinary markdown", () => {
-    const dailyNote = defaultMarkdownTemplates.find((template) => template.id === "daily-note");
+  it("renders built-in templates without generated document-title headings", () => {
+    expect(defaultMarkdownTemplates.map((template) => [
+      template.id,
+      renderMarkdownTemplate(template, { now })
+    ])).toEqual([
+      ["daily-note", `Date: 2026-05-21
 
-    expect(dailyNote).toBeDefined();
-    expect(suggestedMarkdownTemplateFileName(dailyNote!, { now, title: "" })).toBe("2026-05-21");
-    expect(renderMarkdownTemplate(dailyNote!, { now, title: "2026-05-21" })).toContain("# 2026-05-21");
-    expect(renderMarkdownTemplate(dailyNote!, { now, title: "2026-05-21" })).toContain("Date: 2026-05-21");
+# Notes
+
+# Tasks
+
+- [ ]
+`],
+      ["meeting-note", `Date: 2026-05-21
+
+# Attendees
+
+# Notes
+
+# Decisions
+
+# Follow up
+
+- [ ]
+`],
+      ["reading-note", `Date: 2026-05-21
+
+# Source
+
+# Summary
+
+# Highlights
+
+# Questions
+`],
+      ["project-note", `Date: 2026-05-21
+
+# Goal
+
+# Context
+
+# Plan
+
+- [ ]
+
+# Notes
+`]
+    ]);
+  });
+
+  it("uses a local calendar name only for the stable daily-note id", () => {
+    expect(markdownTemplateInitialDocumentName("daily-note", "en", now)).toBe("2026-05-21.md");
+    expect(markdownTemplateInitialDocumentName("meeting-note", "en", now)).toBe("Untitled.md");
+    expect(markdownTemplateInitialDocumentName("reading-note", "zh-CN", now)).toBe("未命名.md");
+    expect(markdownTemplateInitialDocumentName("project-note", "en", now)).toBe("Untitled.md");
+    expect(markdownTemplateInitialDocumentName("custom-template", "zh-CN", now)).toBe("未命名.md");
+  });
+
+  it("substitutes supported date variables while leaving title literal", () => {
+    const template = {
+      id: "custom",
+      name: "Custom",
+      content: "# User heading\n\n{{title}}\n\n{{date}} | {{datetime}} | {{weekday}}"
+    };
+
+    expect(renderMarkdownTemplate(template, { now })).toBe(
+      "# User heading\n\n{{title}}\n\n2026-05-21 | 2026-05-21 09:30 | Thursday"
+    );
   });
 
   it("normalizes the persisted template list without markdown contents", () => {
     expect(normalizeMarkdownTemplateEntries([
       {
-        content: "# Legacy content should live in the template file",
+        content: "# Content belongs in the template file",
         fileName: " weekly-review.md ",
         id: " custom-template ",
-        name: " Weekly review ",
-        suggestedName: " {{date}} weekly "
+        name: " Weekly review "
       },
       {
         fileName: "../unsafe.md",
         id: "",
-        name: "",
-        suggestedName: ""
+        name: ""
       },
       "invalid"
     ])).toEqual([
       {
         fileName: "weekly-review.md",
         id: "custom-template",
-        name: "Weekly review",
-        suggestedName: "{{date}} weekly"
+        name: "Weekly review"
       }
     ]);
   });
 
-  it("keeps templates with an empty suggested file name", () => {
-    expect(normalizeMarkdownTemplateEntries([
-      {
-        fileName: "blank-name.md",
-        id: "blank-name",
-        name: "Blank name",
-        suggestedName: " "
-      }
-    ])).toEqual([
-      {
-        fileName: "blank-name.md",
-        id: "blank-name",
-        name: "Blank name",
-        suggestedName: ""
-      }
-    ]);
-  });
-
-  it("loads runtime templates from the persisted list and template files", async () => {
+  it("loads readable template files including empty content", async () => {
     const readTemplateFile = vi.fn(async (fileName: string) => {
       if (fileName === "standup.md") return "# Standup\n\n## Yesterday";
-      if (fileName === "empty.md") return "   ";
+      if (fileName === "empty.md") return "";
       throw new Error("missing template file");
     });
 
@@ -79,139 +120,115 @@ describe("markdown templates", () => {
       {
         fileName: "standup.md",
         id: "standup",
-        name: "Standup",
-        suggestedName: "{{date}} standup"
+        name: "Standup"
       },
       {
         fileName: "empty.md",
         id: "empty",
-        name: "Empty",
-        suggestedName: "empty"
+        name: "Empty"
       },
       {
         fileName: "missing.md",
         id: "missing",
-        name: "Missing",
-        suggestedName: "missing"
+        name: "Missing"
       }
     ], readTemplateFile)).resolves.toEqual([
       {
         content: "# Standup\n\n## Yesterday",
         fileName: "standup.md",
         id: "standup",
-        name: "Standup",
-        suggestedName: "{{date}} standup"
+        name: "Standup"
+      },
+      {
+        content: "",
+        fileName: "empty.md",
+        id: "empty",
+        name: "Empty"
       }
     ]);
-    expect(readTemplateFile).toHaveBeenCalledWith("standup.md");
-    expect(readTemplateFile).toHaveBeenCalledWith("empty.md");
-    expect(readTemplateFile).toHaveBeenCalledWith("missing.md");
   });
 
-  it("creates a runtime template from a settings entry and markdown file content", () => {
+  it("creates a runtime template from settings metadata and the unchanged markdown body", () => {
     expect(createMarkdownTemplateFromEntry({
       fileName: "standup.md",
       id: "standup",
-      name: "Standup",
-      suggestedName: "{{date}} standup"
-    }, "# {{title}}\n\n## Yesterday")).toEqual({
-      content: "# {{title}}\n\n## Yesterday",
+      name: "Standup"
+    }, "# User title\n\n###### Detail")).toEqual({
+      content: "# User title\n\n###### Detail",
       fileName: "standup.md",
       id: "standup",
-      name: "Standup",
-      suggestedName: "{{date}} standup"
+      name: "Standup"
     });
   });
 
-  it("serializes custom templates as markdown source with lightweight metadata", () => {
+  it("serializes custom templates with name as their only source metadata", () => {
     expect(markdownTemplateToSource({
       id: "weekly-review",
       name: "Weekly review",
-      suggestedName: "{{date}} weekly",
-      content: "# {{title}}\n\n## Wins"
+      content: "# User title\n\n## Wins"
     })).toBe(`---
 name: Weekly review
-suggestedName: {{date}} weekly
 ---
 
-# {{title}}
+# User title
 
 ## Wins`);
   });
 
-  it("updates custom templates from markdown source frontmatter", () => {
+  it("updates custom template names without treating body headings as document titles", () => {
     expect(updateMarkdownTemplateFromSource({
       id: "standup",
       name: "Standup",
-      suggestedName: "{{date}} standup",
-      content: "# {{title}}\n\n## Yesterday"
+      content: "# Existing user heading\n\n## Yesterday"
     }, `---
 name: Daily review
-suggestedName: {{date}} daily
 ---
 
-# {{title}}
+# User heading
 
 - [ ] Ship it`)).toEqual({
       id: "standup",
       name: "Daily review",
-      suggestedName: "{{date}} daily",
-      content: "# {{title}}\n\n- [ ] Ship it"
+      content: "# User heading\n\n- [ ] Ship it"
     });
   });
 
-  it("allows custom template source frontmatter to clear the suggested file name", () => {
+  it("keeps the existing template name when markdown source has no name metadata", () => {
     expect(updateMarkdownTemplateFromSource({
       id: "standup",
       name: "Standup",
-      suggestedName: "{{date}} standup",
-      content: "# {{title}}\n\n## Yesterday"
-    }, `---
-name: Daily review
-suggestedName:
----
-
-# {{title}}
-
-- [ ] Ship it`)).toEqual({
-      id: "standup",
-      name: "Daily review",
-      suggestedName: "",
-      content: "# {{title}}\n\n- [ ] Ship it"
-    });
-  });
-
-  it("keeps existing metadata when markdown source has no frontmatter", () => {
-    expect(updateMarkdownTemplateFromSource({
+      content: "# Existing user heading"
+    }, "# User heading\n\nStill a template")).toEqual({
       id: "standup",
       name: "Standup",
-      suggestedName: "{{date}} standup",
-      content: "# {{title}}\n\n## Yesterday"
-    }, "# Sprint notes\n\n- [ ] Ship it")).toEqual({
-      id: "standup",
-      name: "Sprint notes",
-      suggestedName: "{{date}} standup",
-      content: "# Sprint notes\n\n- [ ] Ship it"
+      content: "# User heading\n\nStill a template"
     });
   });
 
-  it("creates a custom template from a markdown file", () => {
+  it("creates a new custom template with an empty body", () => {
+    expect(createDefaultCustomMarkdownTemplate([])).toEqual({
+      content: "",
+      fileName: "custom-template.md",
+      id: "custom-template",
+      name: "New template"
+    });
+  });
+
+  it("creates a custom template from a markdown file without changing its body headings", () => {
     expect(createCustomMarkdownTemplateFromFile({
-      content: "# Standup\n\n## Yesterday",
+      content: "# Standup\n\n###### Yesterday",
       name: "standup.md"
     }, [
       {
         id: "custom-template",
         name: "Existing",
-        suggestedName: "Existing",
         content: "# Existing"
       }
     ])).toEqual({
       fileName: "custom-template-2.md",
       id: "custom-template-2",
       name: "standup",
-      suggestedName: "standup",
-      content: "# Standup\n\n## Yesterday"
+      content: "# Standup\n\n###### Yesterday"
     });
   });
 
@@ -220,13 +237,11 @@ suggestedName:
       content: "# Standup",
       fileName: "standup.md",
       id: "standup",
-      name: "Standup",
-      suggestedName: "{{date}} standup"
+      name: "Standup"
     })).toEqual({
       fileName: "standup.md",
       id: "standup",
-      name: "Standup",
-      suggestedName: "{{date}} standup"
+      name: "Standup"
     });
   });
 
@@ -235,13 +250,11 @@ suggestedName:
       {
         id: "daily-note",
         name: "Daily note edited",
-        suggestedName: "{{date}} daily",
         content: "# Edited daily"
       },
       {
         id: "custom-template",
         name: "Standup",
-        suggestedName: "standup",
         content: "# Standup"
       }
     ]).map((template) => template.id)).toEqual([
@@ -255,13 +268,11 @@ suggestedName:
       {
         id: "daily-note",
         name: "Daily note edited",
-        suggestedName: "{{date}} daily",
         content: "# Edited daily"
       }
     ])[0]).toEqual({
       id: "daily-note",
       name: "Daily note edited",
-      suggestedName: "{{date}} daily",
       content: "# Edited daily"
     });
   });
