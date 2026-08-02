@@ -155,6 +155,18 @@ describe("upsertMarkdownFrontmatterTitle", () => {
     });
   });
 
+  it("preserves four-space YAML nesting when replacing a title", () => {
+    const source = "---\nroot:\n    child: value\ntitle: Old\n---\n\n# Body\n";
+    const expected = "---\nroot:\n    child: value\ntitle: New\n---\n\n# Body\n";
+
+    expect(upsertMarkdownFrontmatterTitle(source, "New")).toEqual({
+      ok: true,
+      changed: true,
+      kind: "yaml",
+      source: expected,
+    });
+  });
+
   it("adds a YAML title after existing top-level keys", () => {
     const source = "---\n# identity\nauthor: Ying\noptions:\n  enabled: true\n---\n\n# Body\n";
     const expected = "---\n# identity\nauthor: Ying\noptions:\n  enabled: true\ntitle: Untitled\n---\n\n# Body\n";
@@ -224,6 +236,32 @@ describe("upsertMarkdownFrontmatterTitle", () => {
       kind: "json",
       source: "{\r\n  \"title\": \"Untitled\"\r\n}\r\n\r\n# Body\r\n",
     });
+  });
+
+  it.each([
+    {
+      source: "{\"title\":0,\"title\":\"Old\"}\n",
+      expected: "{\"title\":0,\"title\":\"New\"}\n",
+    },
+    {
+      source: "{\"title\":\"Old\",\"title\":0}\n",
+      expected: "{\"title\":\"Old\",\"title\":\"New\"}\n",
+    },
+  ])("updates the effective last duplicate JSON title", ({ source, expected }) => {
+    const result = upsertMarkdownFrontmatterTitle(source, "New");
+
+    expect(result).toEqual({
+      ok: true,
+      changed: true,
+      kind: "json",
+      source: expected,
+    });
+    if (result.ok) {
+      expect(readMarkdownFrontmatter(result.source)).toMatchObject({
+        status: "valid",
+        title: "New",
+      });
+    }
   });
 
   it.each([

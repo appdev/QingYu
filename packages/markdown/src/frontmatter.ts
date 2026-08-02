@@ -239,11 +239,16 @@ function replaceRange(source: string, from: number, to: number, replacement: str
   return `${source.slice(0, from)}${replacement}${source.slice(to)}`;
 }
 
+function yamlIndent(content: string) {
+  const indents = [...content.matchAll(/^( +)\S/gmu)].map((match) => match[1]?.length ?? 0);
+  return indents.length > 0 ? Math.min(...indents) : 2;
+}
+
 function patchYaml(content: string, title: string, newline: string) {
   const document = parseYamlDocument(content);
   if (document.errors.length > 0 || !isMap(document.contents)) return null;
   document.set("title", title);
-  return document.toString().replace(/\n/gu, newline);
+  return document.toString({ indent: yamlIndent(content) }).replace(/\n/gu, newline);
 }
 
 function patchTomlContent(content: string, title: string) {
@@ -281,8 +286,26 @@ function preserveJsonInsertionLayout(content: string, edits: Edit[], newline: st
   }];
 }
 
+function lastJsonPropertyValue(root: JsonNode, key: string) {
+  const properties = root.children ?? [];
+  for (let index = properties.length - 1; index >= 0; index -= 1) {
+    const [keyNode, valueNode] = properties[index]?.children ?? [];
+    if (keyNode?.value === key && valueNode) return valueNode;
+  }
+  return null;
+}
+
 function patchJson(content: string, title: string, newline: string) {
-  if (!parseJsonObject(content)) return null;
+  const root = parseJsonObject(content);
+  if (!root) return null;
+  const existingTitle = lastJsonPropertyValue(root, "title");
+  if (existingTitle) {
+    return applyEdits(content, [{
+      offset: existingTitle.offset,
+      length: existingTitle.length,
+      content: JSON.stringify(title),
+    }]);
+  }
   const rawEdits = modify(content, ["title"], title, {});
   const edits = preserveJsonInsertionLayout(content, rawEdits, newline);
   return applyEdits(content, edits);
