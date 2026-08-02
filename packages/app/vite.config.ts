@@ -35,7 +35,6 @@ export default defineConfig(({ mode }) => ({
     environment: "jsdom",
     globals: true,
     ...localTestWorkerConfig,
-    sequence: { hooks: "list" },
     setupFiles: "./src/test/setup.ts",
     // waitFor polls for up to 5s (see src/test/setup.ts); leave headroom so a
     // slow machine hits a waitFor diagnostic instead of a bare test timeout.

@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
 import { redoDepth } from "@codemirror/commands";
@@ -2295,6 +2295,7 @@ describe("QingYu workspace", () => {
   });
 
   afterEach(() => {
+    cleanup();
     resetAppRuntimeForTests();
     // jsdom shares one document selection across tests. A selection left on a
     // destroyed editor makes the next CodeMirror view treat the mismatching
@@ -5840,14 +5841,16 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "catppuccin-latte"));
-    expect(container.querySelector(".markdown-paper")).toHaveAttribute("data-editor-theme", "catppuccin-latte");
+    await waitFor(() => expect(container.querySelector(".markdown-paper"))
+      .toHaveAttribute("data-editor-theme", "catppuccin-latte"));
 
     act(() => {
       systemColorScheme.setSystemDark(false);
     });
 
     expect(document.documentElement).toHaveAttribute("data-theme", "catppuccin-latte");
-    expect(container.querySelector(".markdown-paper")).toHaveAttribute("data-editor-theme", "catppuccin-latte");
+    await waitFor(() => expect(container.querySelector(".markdown-paper"))
+      .toHaveAttribute("data-editor-theme", "catppuccin-latte"));
     expect(mockedSaveStoredThemePreferences).not.toHaveBeenCalled();
   });
 
