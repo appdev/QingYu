@@ -141,7 +141,13 @@ function ControllerTitleEditorHarness({ operations }: { operations: TestOperatio
   });
   const model = controller.modelForTab("notes-tab");
 
-  return model ? <DocumentTitleEditor language="en" {...model} /> : null;
+  return model ? (
+    <>
+      <DocumentTitleEditor language="en" {...model} />
+      <output data-testid="controller-model-title">{model.title}</output>
+      <output data-testid="controller-file-name">{tabs[0]?.name}</output>
+    </>
+  ) : null;
 }
 
 function deferred<T>() {
@@ -554,6 +560,84 @@ describe("useDocumentTitleController", () => {
       "Rejected.md",
       "Accepted.md"
     ]);
+  });
+
+  it.each(["collision", "error"] as const)(
+    "keeps a newer focused draft when an older in-flight rename ends with %s",
+    async (failure) => {
+      const operations = createOperations();
+      const olderRename = deferred<NativeMarkdownFolderFile | null>();
+      operations.renameMarkdownTreeFile
+        .mockImplementationOnce(() => olderRename.promise)
+        .mockImplementationOnce(async (file, fileName) => renamedFile(file, fileName));
+      render(<ControllerTitleEditorHarness operations={operations} />);
+      const editor = screen.getByRole("textbox", { name: "Document title" });
+
+      editor.focus();
+      editor.textContent = "Older";
+      fireEvent.input(editor);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(256);
+      });
+
+      editor.textContent = "Newer";
+      fireEvent.input(editor);
+      if (failure === "error") {
+        olderRename.reject(new Error("older rename failed"));
+      } else {
+        olderRename.resolve(null);
+      }
+      await settle();
+
+      expect(editor).toHaveTextContent("Newer");
+      expect(editor).toHaveFocus();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(256);
+      });
+      await settle();
+
+      expect(editor).toHaveTextContent("Newer");
+      expect(screen.getByTestId("controller-model-title")).toHaveTextContent("Newer");
+      expect(screen.getByTestId("controller-file-name")).toHaveTextContent("Newer.md");
+    }
+  );
+
+  it.each([
+    {
+      draft: "Unsafe/Title",
+      expectedTitle: "Unsafe／Title",
+      returnedName: "Unsafe／Title.md"
+    },
+    {
+      draft: "Numbered",
+      expectedTitle: "Numbered 2",
+      returnedName: "Numbered 2.md"
+    }
+  ])("shows the authoritative $expectedTitle stem after the current rename", async ({
+    draft,
+    expectedTitle,
+    returnedName
+  }) => {
+    const operations = createOperations();
+    operations.renameMarkdownTreeFile.mockImplementationOnce(async (file) => (
+      renamedFile(file, returnedName)
+    ));
+    render(<ControllerTitleEditorHarness operations={operations} />);
+    const editor = screen.getByRole("textbox", { name: "Document title" });
+
+    editor.focus();
+    editor.textContent = draft;
+    fireEvent.input(editor);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    await settle();
+
+    expect(editor).toHaveTextContent(expectedTitle);
+    expect(editor).toHaveFocus();
+    expect(screen.getByTestId("controller-model-title")).toHaveTextContent(expectedTitle);
+    expect(screen.getByTestId("controller-file-name")).toHaveTextContent(returnedName);
   });
 
   it("renames only the latest of two rapid visual edits", async () => {

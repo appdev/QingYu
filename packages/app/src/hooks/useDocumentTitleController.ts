@@ -124,7 +124,9 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
   const runtimeFilesRef = useRef(new Map<string, RuntimeFileIdentity>());
   const resetTokensRef = useRef(new Map<string, number>());
 
-  const resetTitleModel = useCallback((tabId: string) => {
+  const syncTitleModelIfCurrent = useCallback((tabId: string, generation: number) => {
+    if (transactionStatesRef.current.get(tabId)?.generation !== generation) return;
+
     resetTokensRef.current.set(tabId, (resetTokensRef.current.get(tabId) ?? 0) + 1);
     setControllerRevision((current) => current + 1);
   }, []);
@@ -202,7 +204,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     if (request.kind === "title") {
       const normalized = normalizeMarkdownDocumentTitle(request.title);
       if (!normalized.ok) {
-        resetTitleModel(tabId);
+        syncTitleModelIfCurrent(tabId, request.generation);
         return;
       }
 
@@ -215,11 +217,11 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
             normalized.fileName
           );
         } catch {
-          resetTitleModel(tabId);
+          syncTitleModelIfCurrent(tabId, request.generation);
           return;
         }
         if (!renamed) {
-          resetTitleModel(tabId);
+          syncTitleModelIfCurrent(tabId, request.generation);
           return;
         }
 
@@ -232,6 +234,11 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
         optionsRef.current.applyRenamedTreeFile(previousPath, renamed);
         authoritativeFile = renamed;
       }
+
+      const authoritativeTitle = markdownDocumentTitleFromFileName(authoritativeFile.name);
+      if (authoritativeTitle !== request.title) {
+        syncTitleModelIfCurrent(tabId, request.generation);
+      }
     }
 
     const latest = latestTab(optionsRef.current.tabs, tabId);
@@ -243,7 +250,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     if (request.kind === "repair" && !patched.changed) return;
 
     await routeAndSaveSource(latest, patched.source);
-  }, [currentFileForTab, resetTitleModel, routeAndSaveSource]);
+  }, [currentFileForTab, routeAndSaveSource, syncTitleModelIfCurrent]);
 
   const queueTransaction = useCallback((tabId: string, request: TransactionRequest) => {
     const state = transactionState(tabId);
