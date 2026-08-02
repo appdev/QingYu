@@ -738,7 +738,9 @@ describe("CodeMirrorPaperSurface", () => {
     const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
 
     expect(container.querySelector(".markra-callout-header")).not.toBeNull();
-    expect(container.querySelector(".cm-markra-frontmatter")).not.toBeNull();
+    expect(container.querySelector(".cm-markra-frontmatter")).toBeNull();
+    expect(container.querySelector(".cm-markra-frontmatter-editor")).toBeNull();
+    expect(container.querySelector(".cm-content")?.textContent).not.toContain("title: Synthetic");
     expect(container.querySelector(".markra-math-render-inline .katex")).not.toBeNull();
     expect(container.querySelector(".cm-markra-footnote-reference")).not.toBeNull();
     expect(container.querySelector(".cm-markra-inline-html")?.tagName).toBe("KBD");

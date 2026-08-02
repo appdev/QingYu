@@ -1,7 +1,7 @@
 import { Decoration, EditorView, WidgetType, type EditorView as CodeMirrorView } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin.ts";
 import { markraRenderer } from "./renderers.ts";
-import { readCodeMirrorFrontmatter } from "./frontmatter-preview.ts";
+import { readMarkdownFrontmatter } from "@markra/markdown";
 
 class HorizontalRuleWidget extends WidgetType {
   constructor(readonly from: number) {
@@ -52,9 +52,12 @@ export function horizontalRulePlugin() {
         id: "markra.horizontal-rule",
         nodeNames: ["HorizontalRule"],
         render(context) {
-          const frontmatter = readCodeMirrorFrontmatter(
+          const frontmatterResult = readMarkdownFrontmatter(
             context.state.doc.toString(),
           );
+          const frontmatter = frontmatterResult.status === "valid"
+            ? frontmatterResult.range
+            : null;
           if (
             frontmatter &&
             context.node.from >= frontmatter.from &&

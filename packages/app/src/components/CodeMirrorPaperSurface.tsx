@@ -11,7 +11,7 @@ import {
   footnotePreviewPlugin,
   foldTogglePlugin,
   formattingPlugin,
-  frontmatterPreviewPlugin,
+  frontmatterHiddenPlugin,
   horizontalRulePlugin,
   imagePreviewPlugin,
   insertionsPlugin,
@@ -234,7 +234,7 @@ function markdownExtension({
           "format.strikethrough": t(language, "menu.strikethrough"),
         },
       }),
-      frontmatterPreviewPlugin(),
+      frontmatterHiddenPlugin(),
       horizontalRulePlugin(),
       imagePreviewPlugin(imageOptions),
       insertionsPlugin({

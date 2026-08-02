@@ -17,7 +17,7 @@ import {
   type EditorView as CodeMirrorView,
   type ViewUpdate,
 } from "@codemirror/view";
-import { readCodeMirrorFrontmatter } from "./frontmatter-preview.ts";
+import { readMarkdownFrontmatter } from "@markra/markdown";
 import { defineMarkraPlugin } from "./plugin.ts";
 import { openMarkraSlashMenu } from "./slash-menu.ts";
 
@@ -91,7 +91,10 @@ function readCodeMirrorBlockRangesIn(
     decoratedStarts.add(range.from);
     ranges.push(range);
   };
-  const frontmatter = readCodeMirrorFrontmatter(state.doc.toString());
+  const frontmatterResult = readMarkdownFrontmatter(state.doc.toString());
+  const frontmatter = frontmatterResult.status === "valid"
+    ? frontmatterResult.range
+    : null;
   if (frontmatter) {
     appendRange({
       from: state.doc.lineAt(frontmatter.from).from,

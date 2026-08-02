@@ -99,14 +99,7 @@ export { footnotePreviewPlugin } from "./footnote-preview.ts";
 export type { FoldToggleLabels, FoldTogglePluginOptions } from "./fold-toggle.ts";
 export { foldTogglePlugin } from "./fold-toggle.ts";
 export { toggleAllCodeMirrorFolds } from "./folding.ts";
-export type {
-  CodeMirrorFrontmatterKind,
-  CodeMirrorFrontmatterRange,
-} from "./frontmatter-preview.ts";
-export {
-  frontmatterPreviewPlugin,
-  readCodeMirrorFrontmatter,
-} from "./frontmatter-preview.ts";
+export { frontmatterHiddenPlugin } from "./frontmatter-preview.ts";
 export type {
   ImagePreviewPluginOptions,
   MarkraImageSourceContext,
