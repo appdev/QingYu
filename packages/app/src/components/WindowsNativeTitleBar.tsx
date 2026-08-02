@@ -51,7 +51,6 @@ type WindowsNativeTitleBarProps = {
   renderTitleContent: (className: string, style?: CSSProperties) => ReactNode;
   onCreateMarkdownFile?: () => unknown;
   onExitApp?: () => unknown;
-  onOpenBlankEditorWindow?: () => unknown;
   onOpenMarkdown?: () => unknown;
   onOpenMarkdownFolder?: () => unknown;
   onOpenSettings?: () => unknown;
@@ -118,7 +117,6 @@ export function WindowsNativeTitleBar({
   renderTitleContent,
   onCreateMarkdownFile,
   onExitApp,
-  onOpenBlankEditorWindow,
   onOpenMarkdown,
   onOpenMarkdownFolder,
   onOpenSettings,
@@ -204,7 +202,7 @@ export function WindowsNativeTitleBar({
           "newDocument",
           label("menu.newDocument"),
           "Ctrl+N",
-          onOpenBlankEditorWindow ?? onCreateMarkdownFile
+          onCreateMarkdownFile
         ),
         onOpenMarkdown
           ? contextMenuItem("openDocument", label("menu.openDocument"), "Ctrl+O", onOpenMarkdown)

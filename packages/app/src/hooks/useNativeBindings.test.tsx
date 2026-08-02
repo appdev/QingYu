@@ -371,6 +371,20 @@ describe("useNativeMenuHandlers", () => {
     expect(openFolder).toHaveBeenCalledTimes(1);
   });
 
+  it("routes the native new document menu command to document creation", () => {
+    const createDocument = vi.fn();
+    const { result } = renderHook(() =>
+      useNativeMenuHandlers({
+        ...baseOptions,
+        createDocument
+      })
+    );
+
+    result.current.newDocument?.();
+
+    expect(createDocument).toHaveBeenCalledTimes(1);
+  });
+
   it("omits the native open folder command when local workspace selection is unavailable", () => {
     const { openFolder: _openFolder, ...options } = baseOptions;
     const { result } = renderHook(() => useNativeMenuHandlers(options));
@@ -444,12 +458,12 @@ describe("useApplicationShortcuts", () => {
     expect(openSettings).toHaveBeenCalledTimes(1);
   });
 
-  it("opens a blank editor window from Ctrl+N on Windows", () => {
-    const openBlankEditorWindow = vi.fn();
+  it("creates a document in the current window from Ctrl+N on Windows", () => {
+    const createDocument = vi.fn();
     renderHook(() =>
       useApplicationShortcuts({
         ...baseOptions,
-        openBlankEditorWindow,
+        createDocument,
         platform: "windows"
       })
     );
@@ -460,7 +474,15 @@ describe("useApplicationShortcuts", () => {
     });
 
     expect(handled).toBe(false);
-    expect(openBlankEditorWindow).toHaveBeenCalledTimes(1);
+    expect(createDocument).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(window, {
+      ctrlKey: true,
+      key: "n",
+      repeat: true
+    });
+
+    expect(createDocument).toHaveBeenCalledTimes(1);
   });
 
   it("does not treat Control+Meta as the platform modifier for static shortcuts", () => {

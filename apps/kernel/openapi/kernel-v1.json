@@ -2828,6 +2828,9 @@
           "content": {
             "$ref": "#/components/schemas/DocumentContents"
           },
+          "creationDirectory": {
+            "$ref": "#/components/schemas/WorkspaceRelativePath"
+          },
           "id": {
             "type": "string"
           },

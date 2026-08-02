@@ -9313,6 +9313,62 @@ describe("QingYu workspace", () => {
     expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument();
   });
 
+  it("uses the workspace root as the contextual directory from Workspace Home with no open Markdown note", async () => {
+    const workspacePath = "/vault";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockDesktopPrimaryWorkspace({ root: workspacePath, status: "ready" });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Untitled.md",
+      path: `${workspacePath}/Untitled.md`
+    });
+
+    renderFreshApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Markdown" }));
+
+    await waitFor(() =>
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultDirectory: workspacePath,
+          path: null,
+          suggestedName: "Untitled.md"
+        })
+      )
+    );
+  });
+
+  it("creates a new document in the current window from menu New", async () => {
+    mockDesktopPrimaryWorkspace({ root: "/vault", status: "ready" });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+
+    renderFreshApp();
+
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
+
+    await act(async () => {
+      await menuHandlers.newDocument?.();
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument()
+    );
+  });
+
   it("reports Kernel allocation failures from quick document creation", async () => {
     mockDesktopPrimaryWorkspace({ root: kernelWorkspaceRoot, status: "ready" });
     mockedGetStoredWorkspaceState.mockResolvedValue({
@@ -9950,25 +10006,27 @@ describe("QingYu workspace", () => {
     expect(screen.getByRole("tab", { name: /original\.md/u })).toBeInTheDocument();
   });
 
-  it("starts untitled document saves in the open markdown folder", async () => {
+  it("starts a new tab save in the current note's nested directory", async () => {
+    const workspacePath = "/vault";
+    const notePath = `${workspacePath}/abc/note.md`;
     mockOpenMarkdownTarget({
       kind: "folder",
       folder: {
-        path: mockFolderPath,
+        path: workspacePath,
         name: "vault"
       }
     });
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([
-      { name: "note.md", path: `${mockFolderPath}/note.md`, relativePath: "note.md" }
+      { name: "note.md", path: notePath, relativePath: "abc/note.md" }
     ]);
     mockedReadNativeMarkdownFile.mockResolvedValue({
       content: "# Note\n\nExisting file.",
       name: "note.md",
-      path: `${mockFolderPath}/note.md`
+      path: notePath
     });
     mockedSaveNativeMarkdownFile.mockResolvedValue({
       name: "Untitled.md",
-      path: `${mockFolderPath}/Untitled.md`
+      path: `${workspacePath}/abc/Untitled.md`
     });
 
     renderApp();
@@ -9976,7 +10034,8 @@ describe("QingYu workspace", () => {
     fireEvent.keyDown(window, { key: "o", metaKey: true });
     expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
 
-    fireEvent.click(await screen.findByRole("button", { name: "note.md" }));
+    fireEvent.click(await screen.findByRole("button", { name: "abc" }));
+    fireEvent.click(await screen.findByRole("button", { name: "abc/note.md" }));
     await expectVisibleMarkdownText("Note");
 
     fireEvent.click(screen.getByRole("button", { name: "New tab" }));
@@ -9985,7 +10044,73 @@ describe("QingYu workspace", () => {
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
         expect.objectContaining({
-          defaultDirectory: mockFolderPath,
+          defaultDirectory: "/vault/abc",
+          path: null,
+          suggestedName: "Untitled.md"
+        })
+      )
+    );
+  });
+
+  it("starts a new tab save in the focused side note's contextual directory", async () => {
+    const workspacePath = "/vault";
+    const mainPath = `${workspacePath}/main/main.md`;
+    const sidePath = `${workspacePath}/side/side.md`;
+    mockOpenMarkdownTarget({
+      kind: "folder",
+      folder: {
+        path: workspacePath,
+        name: "vault"
+      }
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([
+      { name: "main.md", path: mainPath, relativePath: "main.md" },
+      { name: "side.md", path: sidePath, relativePath: "side.md" }
+    ]);
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === mainPath
+      ? {
+        content: "# Main",
+        name: "main.md",
+        path: mainPath
+      }
+      : {
+        content: "# Side",
+        name: "side.md",
+        path: sidePath
+      });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Untitled.md",
+      path: `${workspacePath}/side/Untitled.md`
+    });
+
+    const { container } = renderApp();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "main.md" }));
+    await expectVisibleMarkdownText("Main");
+
+    fireEvent.click(await screen.findByRole("button", { name: "side.md" }));
+    await expectVisibleMarkdownText("Side");
+
+    fireEvent.click(screen.getByRole("tab", { name: /main\.md/u }));
+    fireEvent.contextMenu(screen.getByRole("tab", { name: /side\.md/u }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open to side" }));
+    await waitFor(() => expect(container.querySelector(".editor-side-by-side-surface")).toBeInTheDocument());
+
+    await selectEditorViewMode("Source code");
+    const sidePane = container.querySelector(".side-document-pane") as HTMLElement;
+    const sideSource = await within(sidePane).findByRole("textbox", { name: "Markdown source" });
+    fireEvent.focus(sideSource);
+
+    fireEvent.click(screen.getByRole("button", { name: "New tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Markdown" }));
+
+    await waitFor(() =>
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultDirectory: "/vault/side",
           path: null,
           suggestedName: "Untitled.md"
         })

@@ -1156,6 +1156,7 @@ export interface components {
         };
         StoredWorkspaceDraftDto: {
             content: components["schemas"]["DocumentContents"];
+            creationDirectory?: components["schemas"]["WorkspaceRelativePath"];
             id: string;
             name: string;
             path: components["schemas"]["Nullable_WorkspaceRelativePath"];

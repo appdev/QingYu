@@ -57,6 +57,7 @@ import {
   createDocumentTab,
   createInitialDocumentState,
   defaultSaveDirectoryInput,
+  documentSaveDirectory,
   documentFromDraftTab,
   documentFromTab,
   draftWorkspacePatchFromTabs,
@@ -83,6 +84,7 @@ import {
   type EditorWindowContext
 } from "../lib/editor-window-context";
 import { workspaceSurfaceForRestore } from "./markdown-document/restore-outcome";
+import { directoryPathIsWithinWorkspaceRoot } from "../app/workspace-directory";
 
 export type { MarkdownDocumentTab } from "./markdown-document/document-model";
 export type WorkspaceSurface = "restoring" | "editor" | "home" | "recovery";
@@ -120,6 +122,7 @@ function availableBlankDocumentName(
 
 type CreateBlankDocumentOptions = {
   content?: string;
+  creationDirectory?: string | null;
   name?: string;
 };
 
@@ -897,6 +900,7 @@ export function useMarkdownDocument({
       : blankDocumentName(options.name));
     const nextDocument = {
       path: savedFile?.path ?? null,
+      creationDirectory: savedFile ? null : options.creationDirectory ?? null,
       name,
       content,
       deleted: false,
@@ -965,13 +969,15 @@ export function useMarkdownDocument({
   ]);
 
   const createBlankDocument = useCallback(async (options: CreateBlankDocumentOptions = {}) => {
+    const creationDirectory = options.creationDirectory?.trim() || defaultSaveDirectory;
+    const createOptions = { ...options, creationDirectory };
     const create = async () => {
       if (!isKernelWorkspaceDirectory(defaultSaveDirectory)) {
-        return resetToBlankDocument(options);
+        return resetToBlankDocument(createOptions);
       }
 
       const savedFile = await saveNativeMarkdownFile({
-        ...defaultSaveDirectoryInput(defaultSaveDirectory, null),
+        ...defaultSaveDirectoryInput(creationDirectory, null),
         contents: options.content ?? "",
         path: null,
         suggestedName: documentTabsEnabled
@@ -983,7 +989,7 @@ export function useMarkdownDocument({
       });
       if (!savedFile) return false;
 
-      return resetToBlankDocument(options, savedFile);
+      return resetToBlankDocument(createOptions, savedFile);
     };
 
     if (documentTabsEnabled) return create();
@@ -1655,6 +1661,7 @@ export function useMarkdownDocument({
     const nextDocument = {
       ...targetDocument,
       path: savedFile.path,
+      creationDirectory: null,
       name: savedFile.name,
       content: contentChangedAfterSaveStarted ? targetDocument.content : contents,
       deleted: false,
@@ -1709,7 +1716,7 @@ export function useMarkdownDocument({
       const contents = currentMarkdownForSave(current, targetTabId);
       const savePath = saveAs || current.deleted ? null : current.path;
       const savedFile = await saveNativeMarkdownFile({
-        ...defaultSaveDirectoryInput(defaultSaveDirectory, savePath),
+        ...defaultSaveDirectoryInput(documentSaveDirectory(current, defaultSaveDirectory), savePath),
         path: savePath,
         suggestedName: current.name || "Untitled.md",
         contents
@@ -1744,7 +1751,7 @@ export function useMarkdownDocument({
     ) => {
       const savePath = tab.deleted ? null : tab.path;
       const savedFile = await saveNativeMarkdownFile({
-        ...defaultSaveDirectoryInput(defaultSaveDirectory, savePath),
+        ...defaultSaveDirectoryInput(documentSaveDirectory(tab, defaultSaveDirectory), savePath),
         historyCursorId: options.historyCursorId,
         path: savePath,
         skipHistorySnapshot: options.skipHistorySnapshot,
@@ -1790,7 +1797,7 @@ export function useMarkdownDocument({
       let savedFile: Awaited<ReturnType<typeof saveNativeMarkdownFile>>;
       try {
         savedFile = await saveNativeMarkdownFile({
-          ...defaultSaveDirectoryInput(defaultSaveDirectory, savePath),
+          ...defaultSaveDirectoryInput(documentSaveDirectory(current, defaultSaveDirectory), savePath),
           historyCursorId: options.historyCursorId,
           path: savePath,
           skipHistorySnapshot: options.skipHistorySnapshot,
@@ -1838,7 +1845,7 @@ export function useMarkdownDocument({
         : tab.content;
       const savePath = saveAs || tab.deleted ? null : tab.path;
       const savedFile = await saveNativeMarkdownFile({
-        ...defaultSaveDirectoryInput(defaultSaveDirectory, savePath),
+        ...defaultSaveDirectoryInput(documentSaveDirectory(tab, defaultSaveDirectory), savePath),
         path: savePath,
         suggestedName: tab.name || "Untitled.md",
         contents
@@ -1853,6 +1860,7 @@ export function useMarkdownDocument({
       const nextDocument = {
         ...sourceDocument,
         path: savedFile.path,
+        creationDirectory: null,
         name: savedFile.name,
         content: contents,
         deleted: false,
@@ -2478,9 +2486,21 @@ export function useMarkdownDocument({
             )
           );
           const restoredDraftTabs = restoreWorkspaceRoot
-            ? (workspace.draftTabs ?? []).filter((draft) =>
-              draft.path === null || documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, draft.path)
-            )
+            ? (workspace.draftTabs ?? []).flatMap((draft) => {
+              if (draft.path !== null) {
+                return documentPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, draft.path) ? [draft] : [];
+              }
+
+              const creationDirectory = draft.creationDirectory?.trim();
+              if (!creationDirectory) return [draft];
+
+              return [{
+                ...draft,
+                creationDirectory: directoryPathIsWithinWorkspaceRoot(restoreWorkspaceRoot, creationDirectory)
+                  ? creationDirectory
+                  : restoreWorkspaceRoot
+              }];
+            })
             : workspace.draftTabs ?? [];
           const restoredActiveDraftId = workspace.activeDraftId && restoredDraftTabs.some(
             (draft) => draft.id === workspace.activeDraftId

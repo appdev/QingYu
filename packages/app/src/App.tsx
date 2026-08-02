@@ -161,7 +161,6 @@ import {
   closeNativeWindow,
   hideSettingsWindow,
   listenNativeApplicationMenuCommands,
-  openBlankEditorWindow,
   openNativeExternalUrl,
   showNativeAppAbout,
   toggleNativeWindowFullscreen,
@@ -244,6 +243,7 @@ import {
   imageDocumentTabId,
   replaceTextRange,
   replaceTextRanges,
+  resolveNewDocumentCreationDirectory,
   restoreElementScrollTop,
   selectionAnchorsEqual,
   unsavedMarkdownFileNameFromTreeInput,
@@ -2866,9 +2866,14 @@ function WorkspaceApp() {
     }
   }, [captureActiveDocumentViewState, createBlankDocument, createMarkdownTreeFile, fileTree.sourcePath, openTreeMarkdownFile, translate]);
   const handleQuickCreateMarkdownTreeFile = useCallback(() => {
+    const creationDirectory = resolveNewDocumentCreationDirectory({
+      activeDocument: hasOpenDocument ? document : null,
+      focusedDocument: focusedSideDocumentTabId ? sideDocumentTab : null,
+      workspaceSourcePath: fileTreeSourcePath
+    });
     captureActiveDocumentViewState();
     setActiveImageFile(null);
-    createBlankDocument()
+    createBlankDocument({ creationDirectory })
       .then((created) => {
         if (created) return;
         showAppToast({
@@ -2882,7 +2887,16 @@ function WorkspaceApp() {
           status: "error"
         });
       });
-  }, [captureActiveDocumentViewState, createBlankDocument, translate]);
+  }, [
+    captureActiveDocumentViewState,
+    createBlankDocument,
+    document,
+    fileTreeSourcePath,
+    focusedSideDocumentTabId,
+    hasOpenDocument,
+    sideDocumentTab,
+    translate
+  ]);
   const openImageTab = useCallback((file: NativeMarkdownFolderFile) => {
     const tab = createImageDocumentTab(file);
     setImageTabs((currentTabs) =>
@@ -3387,9 +3401,6 @@ function WorkspaceApp() {
       fileTreeSourcePath ?? primaryRoot
     ).catch(() => {});
   }, [fileTreeSourcePath, openSettingsModal, primaryRoot]);
-  const handleOpenBlankEditorWindow = useCallback(() => {
-    openBlankEditorWindow().catch(() => {});
-  }, []);
   const handleShowAbout = useCallback(() => {
     showNativeAppAbout().catch(() => {});
   }, []);
@@ -4353,6 +4364,7 @@ function WorkspaceApp() {
   const nativeMenuHandlers = useNativeMenuHandlers({
     checkForUpdates: updaterFeatureEnabled ? appUpdater.checkForUpdates : undefined,
     closeDocument: handleCloseCurrentFile,
+    createDocument: handleQuickCreateMarkdownTreeFile,
     exportDocx: exportFeatureEnabled && pandocFeatureEnabled ? exportDocxDocument : undefined,
     exportEpub: exportFeatureEnabled && pandocFeatureEnabled ? exportEpubDocument : undefined,
     exportHtml: exportFeatureEnabled ? exportHtmlDocument : undefined,
@@ -4400,7 +4412,7 @@ function WorkspaceApp() {
     exportHtml: exportFeatureEnabled ? exportHtmlDocument : undefined,
     exportPdf: exportFeatureEnabled ? exportPdfDocument : undefined,
     markdownShortcuts: editorPreferences.preferences.markdownShortcuts,
-    openBlankEditorWindow: windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined,
+    createDocument: handleQuickCreateMarkdownTreeFile,
     openDocument: appFeatures.standaloneDocuments ? handleOpenMarkdownFile : undefined,
     openDocumentReplace: handleDocumentReplaceOpen,
     openDocumentSearch: handleDocumentSearchOpen,
@@ -5059,7 +5071,6 @@ function WorkspaceApp() {
           onSelectViewMode={handleViewModeSelect}
           onCreateMarkdownFile={handleQuickCreateMarkdownTreeFile}
           onExitApp={handleExitApp}
-          onOpenBlankEditorWindow={windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined}
           onOpenMarkdown={appFeatures.standaloneDocuments ? handleOpenMarkdownFile : undefined}
           onOpenMarkdownFolder={canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined}
           onOpenSettings={handleOpenSettings}

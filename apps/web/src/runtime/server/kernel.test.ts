@@ -19,6 +19,9 @@ import {
 
 const INSTANCE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const GENERATION = "workspace-generation-1" as KernelWorkspaceGeneration;
+type AppConfigSnapshotSource = Awaited<ReturnType<KernelClient["appConfig"]["get"]>>;
+type AppConfigWindowStateSource = AppConfigSnapshotSource["localState"]["uiLayout"]["windowStates"][string];
+type AppConfigDraftSource = AppConfigWindowStateSource["draftTabs"][number];
 
 describe("Server Kernel domain adapter", () => {
   it("fetches app config once before exposing a ready kernel port", async () => {
@@ -31,6 +34,131 @@ describe("Server Kernel domain adapter", () => {
       id: "workspace-1",
     });
     expect(Object.isFrozen(adapter.port.appConfig.bootstrap.localState)).toBe(true);
+  });
+
+  it("maps draft creation directories from bootstrap and read AppConfig snapshots", async () => {
+    const client = kernelClient();
+    vi.mocked(client.appConfig.get)
+      .mockResolvedValueOnce(appConfigSnapshot({
+        draftTabs: [{
+          content: "Bootstrap draft",
+          creationDirectory: "projects/alpha",
+          id: "bootstrap-with-directory",
+          name: "Bootstrap with directory",
+          path: null,
+        }, {
+          content: "Bootstrap draft without directory",
+          id: "bootstrap-without-directory",
+          name: "Bootstrap without directory",
+          path: null,
+        }],
+      }))
+      .mockResolvedValueOnce(appConfigSnapshot({
+        draftTabs: [{
+          content: "Read draft",
+          creationDirectory: "archive",
+          id: "read-with-directory",
+          name: "Read with directory",
+          path: null,
+        }, {
+          content: "Read draft without directory",
+          id: "read-without-directory",
+          name: "Read without directory",
+          path: null,
+        }],
+      }));
+
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    const bootstrapDrafts = adapter.port.appConfig.bootstrap.localState.uiLayout
+      .windowStates.main?.draftTabs;
+    expect(bootstrapDrafts).toStrictEqual([{
+      content: "Bootstrap draft",
+      creationDirectory: "projects/alpha",
+      id: "bootstrap-with-directory",
+      name: "Bootstrap with directory",
+      path: null,
+    }, {
+      content: "Bootstrap draft without directory",
+      id: "bootstrap-without-directory",
+      name: "Bootstrap without directory",
+      path: null,
+    }]);
+    expect(Object.hasOwn(bootstrapDrafts?.[1] ?? {}, "creationDirectory")).toBe(false);
+
+    const readSnapshot = await adapter.port.appConfig.read();
+    const readDrafts = readSnapshot.localState.uiLayout.windowStates.main?.draftTabs;
+    expect(readDrafts).toStrictEqual([{
+      content: "Read draft",
+      creationDirectory: "archive",
+      id: "read-with-directory",
+      name: "Read with directory",
+      path: null,
+    }, {
+      content: "Read draft without directory",
+      id: "read-without-directory",
+      name: "Read without directory",
+      path: null,
+    }]);
+    expect(Object.hasOwn(readDrafts?.[1] ?? {}, "creationDirectory")).toBe(false);
+  });
+
+  it("maps draft creation directories to patch-ui-layout wire operations without nulls", async () => {
+    const client = kernelClient();
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    await adapter.port.appConfig.patchState({
+      operations: [{
+        patch: {
+          draftTabs: [{
+            content: "Draft with directory",
+            creationDirectory: "projects/alpha" as KernelWorkspaceRelativePath,
+            id: "with-directory",
+            name: "With directory",
+            path: null,
+          }, {
+            content: "Draft with null directory",
+            creationDirectory: null,
+            id: "with-null-directory",
+            name: "With null directory",
+            path: null,
+          }, {
+            content: "Draft without directory",
+            id: "without-directory",
+            name: "Without directory",
+            path: null,
+          }],
+        },
+        type: "patch-ui-layout",
+        windowLabel: "main",
+      }],
+      workspaceGeneration: GENERATION,
+    });
+
+    const request = vi.mocked(client.appConfig.patchState).mock.calls[0]?.[0];
+    const operation = request?.operations[0];
+    expect(operation?.type).toBe("patch-ui-layout");
+    if (operation?.type !== "patch-ui-layout") throw new Error("Expected patch-ui-layout operation.");
+    const wireDrafts = operation.patch.draftTabs;
+    expect(wireDrafts).toStrictEqual([{
+      content: "Draft with directory",
+      creationDirectory: "projects/alpha",
+      id: "with-directory",
+      name: "With directory",
+      path: null,
+    }, {
+      content: "Draft with null directory",
+      id: "with-null-directory",
+      name: "With null directory",
+      path: null,
+    }, {
+      content: "Draft without directory",
+      id: "without-directory",
+      name: "Without directory",
+      path: null,
+    }]);
+    expect(Object.hasOwn(wireDrafts?.[1] ?? {}, "creationDirectory")).toBe(false);
+    expect(Object.hasOwn(wireDrafts?.[2] ?? {}, "creationDirectory")).toBe(false);
   });
 
   it.each([
@@ -687,12 +815,14 @@ function kernelClient(overrides: {
 }
 
 function appConfigSnapshot({
+  draftTabs,
   generation = GENERATION,
   workspaceId = "workspace-1",
 }: {
+  draftTabs?: AppConfigDraftSource[];
   generation?: string;
   workspaceId?: string;
-} = {}) {
+} = {}): AppConfigSnapshotSource {
   return {
     appConfigVersion: 1 as const,
     localState: {
@@ -700,7 +830,23 @@ function appConfigSnapshot({
       pandocPath: null,
       recentMarkdownFiles: [{ name: "Note", path: "note.md" }],
       revision: "app-config-revision-1",
-      uiLayout: { openWindows: [], schemaVersion: 1 as const, windowStates: {} },
+      uiLayout: {
+        openWindows: [],
+        schemaVersion: 1 as const,
+        windowStates: draftTabs === undefined ? {} : {
+          main: {
+            activeDraftId: null,
+            draftTabs,
+            filePath: null,
+            fileTreeAssetsVisible: true,
+            fileTreeOpen: true,
+            folderName: null,
+            folderPath: null,
+            openFilePaths: [],
+            sideBySideGroup: null,
+          },
+        },
+      },
     },
     settings: { revision: "settings-revision-1", values: [] },
     workspace: { generation, id: workspaceId },

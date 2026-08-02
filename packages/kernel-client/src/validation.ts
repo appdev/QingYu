@@ -165,13 +165,16 @@ function isStoredWorkspaceWindowState(
 function isStoredWorkspaceDraft(
   value: unknown,
 ): value is Schemas["StoredWorkspaceDraftDto"] {
+  if (!isRecord(value)) return false;
+  const keys = ["content", "id", "name", "path"];
+  if ("creationDirectory" in value) keys.push("creationDirectory");
   return (
-    isRecord(value) &&
     isContents(value.content) &&
+    (!("creationDirectory" in value) || isWorkspaceRelativePath(value.creationDirectory)) &&
     isCanonicalString(value.id, 128) &&
     isCanonicalString(value.name, 255) &&
     (value.path === null || isMarkdownPath(value.path)) &&
-    exact(value, ["content", "id", "name", "path"])
+    exact(value, keys)
   );
 }
 

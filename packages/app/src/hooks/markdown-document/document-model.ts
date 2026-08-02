@@ -36,6 +36,9 @@ export function createDocumentTab(document: DocumentState, id: string): Markdown
 export function documentFromTab(tab: MarkdownDocumentTab): DocumentState {
   return {
     path: tab.path,
+    ...(tab.creationDirectory !== undefined
+      ? { creationDirectory: tab.creationDirectory }
+      : {}),
     name: tab.name,
     content: tab.content,
     sizeBytes: tab.sizeBytes,
@@ -49,6 +52,9 @@ export function documentFromTab(tab: MarkdownDocumentTab): DocumentState {
 export function documentFromDraftTab(draft: StoredWorkspaceDraftTab, revision: number): DocumentState {
   return {
     path: draft.path,
+    ...(draft.creationDirectory !== undefined
+      ? { creationDirectory: draft.creationDirectory }
+      : {}),
     name: draft.name,
     content: draft.content,
     deleted: false,
@@ -108,12 +114,15 @@ export function isPristineUntitledDocument(document: DocumentState) {
   return document.open && document.path === null && document.content === "" && !document.dirty && document.revision === 0;
 }
 
-function draftTabFromDocumentTab(tab: MarkdownDocumentTab): StoredWorkspaceDraftTab | null {
+export function draftTabFromDocumentTab(tab: MarkdownDocumentTab): StoredWorkspaceDraftTab | null {
   if (!tab.open || !tab.dirty) return null;
   if (tab.path === null && tab.content.trim().length === 0) return null;
 
   return {
     content: tab.content,
+    ...(tab.creationDirectory !== undefined
+      ? { creationDirectory: tab.creationDirectory }
+      : {}),
     id: tab.id,
     name: tab.name || (tab.path ? pathNameFromPath(tab.path) : "Untitled.md"),
     path: tab.path
@@ -356,4 +365,14 @@ export function defaultSaveDirectoryInput(defaultSaveDirectory: string | null | 
 
   const directory = defaultSaveDirectory?.trim();
   return directory ? { defaultDirectory: directory } : {};
+}
+
+export function documentSaveDirectory(
+  document: Pick<DocumentState, "creationDirectory" | "path">,
+  fallbackDirectory: string | null | undefined
+) {
+  const directory = document.path === null
+    ? document.creationDirectory?.trim() || fallbackDirectory?.trim()
+    : fallbackDirectory?.trim();
+  return directory || null;
 }

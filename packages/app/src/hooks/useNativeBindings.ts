@@ -21,6 +21,7 @@ type NativeMenuHandlerOptions = {
   checkForUpdates?: () => unknown | Promise<unknown>;
   clearRecentFiles?: () => unknown | Promise<unknown>;
   closeDocument?: () => unknown | Promise<unknown>;
+  createDocument?: () => unknown | Promise<unknown>;
   exportDocx?: () => unknown | Promise<unknown>;
   exportEpub?: () => unknown | Promise<unknown>;
   exportHtml?: () => unknown | Promise<unknown>;
@@ -57,6 +58,7 @@ type NativeMenuHandlerOptions = {
 
 type ApplicationShortcutOptions = {
   closeDocument?: () => unknown | Promise<unknown>;
+  createDocument?: () => unknown | Promise<unknown>;
   enabled?: boolean;
   exportHtml?: () => unknown | Promise<unknown>;
   exportPdf?: () => unknown | Promise<unknown>;
@@ -64,7 +66,6 @@ type ApplicationShortcutOptions = {
   openDocument?: () => unknown | Promise<unknown>;
   openDocumentReplace?: () => unknown | Promise<unknown>;
   openDocumentSearch?: () => unknown | Promise<unknown>;
-  openBlankEditorWindow?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
   openWorkspaceSearch?: () => unknown | Promise<unknown>;
   openFolder?: () => unknown | Promise<unknown>;
@@ -121,6 +122,7 @@ export function useNativeMenuHandlers({
   checkForUpdates,
   clearRecentFiles,
   closeDocument,
+  createDocument,
   exportDocx,
   exportEpub,
   exportHtml,
@@ -167,6 +169,7 @@ export function useNativeMenuHandlers({
     importLocalFiles,
     importLocalImages,
     closeDocument,
+    createDocument,
     insertMarkdownImage,
     insertMarkdownLink,
     insertMarkdownSnippet,
@@ -201,6 +204,7 @@ export function useNativeMenuHandlers({
     importLocalFiles,
     importLocalImages,
     closeDocument,
+    createDocument,
     insertMarkdownImage,
     insertMarkdownLink,
     insertMarkdownSnippet,
@@ -259,6 +263,7 @@ export function useNativeMenuHandlers({
 
       if (importLocalFiles) handlers.importLocalFiles = () => latestOptionsRef.current.importLocalFiles?.();
       if (importLocalImages) handlers.importLocalImages = () => latestOptionsRef.current.importLocalImages?.();
+      if (createDocument) handlers.newDocument = () => latestOptionsRef.current.createDocument?.();
       if (openDocument) handlers.openDocument = () => latestOptionsRef.current.openDocument?.();
       if (openFolder) handlers.openFolder = () => latestOptionsRef.current.openFolder?.();
       if (clearRecentFiles) handlers.clearRecentFiles = () => latestOptionsRef.current.clearRecentFiles?.();
@@ -412,11 +417,11 @@ export function useSettingsWindowShortcut(openSettings?: () => unknown | Promise
 
 export function useApplicationShortcuts({
   closeDocument,
+  createDocument,
   enabled = true,
   exportHtml,
   exportPdf,
   markdownShortcuts,
-  openBlankEditorWindow,
   openDocument,
   openDocumentReplace,
   openDocumentSearch,
@@ -508,11 +513,11 @@ export function useApplicationShortcuts({
         event.ctrlKey &&
         !event.metaKey &&
         !event.shiftKey &&
-        openBlankEditorWindow
+        createDocument
       ) {
         event.preventDefault();
         event.stopPropagation();
-        if (!event.repeat) openBlankEditorWindow();
+        if (!event.repeat) createDocument();
       } else if (key === "s" && event.shiftKey) {
         event.preventDefault();
         saveDocumentAs();
@@ -545,9 +550,9 @@ export function useApplicationShortcuts({
     exportHtml,
     exportPdf,
     closeDocument,
+    createDocument,
     enabled,
     normalizedMarkdownShortcuts,
-    openBlankEditorWindow,
     openDocument,
     openDocumentReplace,
     openDocumentSearch,

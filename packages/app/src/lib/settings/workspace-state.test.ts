@@ -106,7 +106,13 @@ describe("workspace state settings", () => {
     expect(normalizeWorkspaceState({
       ...defaultWorkspaceState,
       activeDraftId: "draft-1",
-      draftTabs: [{ content: "draft", id: "draft-1", name: " Draft.md ", path: null }],
+      draftTabs: [{
+        content: "draft",
+        creationDirectory: " kernel-workspace://primary/abc ",
+        id: "draft-1",
+        name: " Draft.md ",
+        path: null
+      }],
       openFilePaths: ["kernel-workspace://primary/a.md", " ", "kernel-workspace://primary/a.md"],
       openWindows: [{
         filePath: "kernel-workspace://primary/a.md",
@@ -119,7 +125,13 @@ describe("workspace state settings", () => {
       }
     })).toEqual({
       activeDraftId: "draft-1",
-      draftTabs: [{ content: "draft", id: "draft-1", name: "Draft.md", path: null }],
+      draftTabs: [{
+        content: "draft",
+        creationDirectory: "kernel-workspace://primary/abc",
+        id: "draft-1",
+        name: "Draft.md",
+        path: null
+      }],
       filePath: null,
       fileTreeOpen: false,
       folderName: null,

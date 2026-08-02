@@ -22,6 +22,13 @@ const CREDENTIAL = "kernel-credential-must-remain-private";
 const BASE_URL = "http://127.0.0.1:49152/";
 const PROCESS_GENERATION = "7";
 const WORKSPACE_GENERATION = "123e4567-e89b-42d3-a456-426614174003";
+type AppConfigDraftBody = {
+  content: string;
+  creationDirectory?: string;
+  id: string;
+  name: string;
+  path: string | null;
+};
 
 describe("desktop Kernel domain adapter", () => {
   it("accepts both the native bootstrap and the explicit connection contract", () => {
@@ -59,6 +66,135 @@ describe("desktop Kernel domain adapter", () => {
       id: WORKSPACE_ID,
     });
     expect(Object.isFrozen(adapter.port.appConfig.bootstrap.localState)).toBe(true);
+  });
+
+  it("maps draft creation directories from bootstrap and read AppConfig responses", async () => {
+    let appConfigRequests = 0;
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname !== "/api/v1/app-config") return handshakeResponse(pathname);
+      appConfigRequests += 1;
+      return jsonResponse(appConfigBody({
+        draftTabs: appConfigRequests === 1 ? [{
+          content: "Bootstrap draft",
+          creationDirectory: "projects/alpha",
+          id: "bootstrap-with-directory",
+          name: "Bootstrap with directory",
+          path: null,
+        }, {
+          content: "Bootstrap draft without directory",
+          id: "bootstrap-without-directory",
+          name: "Bootstrap without directory",
+          path: null,
+        }] : [{
+          content: "Read draft",
+          creationDirectory: "archive",
+          id: "read-with-directory",
+          name: "Read with directory",
+          path: null,
+        }, {
+          content: "Read draft without directory",
+          id: "read-without-directory",
+          name: "Read without directory",
+          path: null,
+        }],
+      }));
+    };
+
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+
+    const bootstrapDrafts = adapter.port.appConfig.bootstrap.localState.uiLayout
+      .windowStates.main?.draftTabs;
+    expect(bootstrapDrafts).toStrictEqual([{
+      content: "Bootstrap draft",
+      creationDirectory: "projects/alpha",
+      id: "bootstrap-with-directory",
+      name: "Bootstrap with directory",
+      path: null,
+    }, {
+      content: "Bootstrap draft without directory",
+      id: "bootstrap-without-directory",
+      name: "Bootstrap without directory",
+      path: null,
+    }]);
+    expect(Object.hasOwn(bootstrapDrafts?.[1] ?? {}, "creationDirectory")).toBe(false);
+
+    const readSnapshot = await adapter.port.appConfig.read();
+    const readDrafts = readSnapshot.localState.uiLayout.windowStates.main?.draftTabs;
+    expect(readDrafts).toStrictEqual([{
+      content: "Read draft",
+      creationDirectory: "archive",
+      id: "read-with-directory",
+      name: "Read with directory",
+      path: null,
+    }, {
+      content: "Read draft without directory",
+      id: "read-without-directory",
+      name: "Read without directory",
+      path: null,
+    }]);
+    expect(Object.hasOwn(readDrafts?.[1] ?? {}, "creationDirectory")).toBe(false);
+  });
+
+  it("maps draft creation directories to patch-ui-layout request bodies without nulls", async () => {
+    let patchBody: {
+      operations: Array<{ patch: { draftTabs?: unknown[] }; type: string }>;
+    } | undefined;
+    const fetch: FetchLike = async (url, init = {}) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/app-config/state" && init.method === "PATCH") {
+        patchBody = JSON.parse(String(init.body));
+        return jsonResponse(appConfigBody());
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+
+    await adapter.port.appConfig.patchState({
+      operations: [{
+        patch: {
+          draftTabs: [{
+            content: "Draft with directory",
+            creationDirectory: "projects/alpha" as KernelWorkspaceRelativePath,
+            id: "with-directory",
+            name: "With directory",
+            path: null,
+          }, {
+            content: "Draft with null directory",
+            creationDirectory: null,
+            id: "with-null-directory",
+            name: "With null directory",
+            path: null,
+          }, {
+            content: "Draft without directory",
+            id: "without-directory",
+            name: "Without directory",
+            path: null,
+          }],
+        },
+        type: "patch-ui-layout",
+        windowLabel: "main",
+      }],
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    });
+
+    expect(patchBody?.operations[0]?.patch.draftTabs).toEqual([{
+      content: "Draft with directory",
+      creationDirectory: "projects/alpha",
+      id: "with-directory",
+      name: "With directory",
+      path: null,
+    }, {
+      content: "Draft with null directory",
+      id: "with-null-directory",
+      name: "With null directory",
+      path: null,
+    }, {
+      content: "Draft without directory",
+      id: "without-directory",
+      name: "Without directory",
+      path: null,
+    }]);
   });
 
   it.each([
@@ -1450,9 +1586,11 @@ function settingsBody(revision: string) {
 }
 
 function appConfigBody({
+  draftTabs,
   generation = WORKSPACE_GENERATION,
   workspaceId = WORKSPACE_ID,
 }: {
+  draftTabs?: AppConfigDraftBody[];
   generation?: string;
   workspaceId?: string;
 } = {}) {
@@ -1466,7 +1604,19 @@ function appConfigBody({
       uiLayout: {
         openWindows: [],
         schemaVersion: 1 as const,
-        windowStates: {},
+        windowStates: draftTabs === undefined ? {} : {
+          main: {
+            activeDraftId: null,
+            draftTabs,
+            filePath: null,
+            fileTreeAssetsVisible: true,
+            fileTreeOpen: true,
+            folderName: null,
+            folderPath: null,
+            openFilePaths: [],
+            sideBySideGroup: null,
+          },
+        },
       },
     },
     settings: settingsBody("settings-1"),

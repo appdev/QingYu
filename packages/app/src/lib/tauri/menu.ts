@@ -43,6 +43,7 @@ export type NativeStaticMenuCommand =
   | "quitApplication"
   | "editUndo"
   | "editRedo"
+  | "newDocument"
   | "openDocument"
   | "openFolder"
   | "openQuickOpen"

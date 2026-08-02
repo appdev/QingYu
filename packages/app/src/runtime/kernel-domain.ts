@@ -360,6 +360,7 @@ export type KernelSettingsSnapshot = {
 
 export type KernelStoredWorkspaceDraft = {
   content: string;
+  creationDirectory?: KernelWorkspaceRelativePath | null;
   id: string;
   name: string;
   path: KernelWorkspaceRelativePath | null;

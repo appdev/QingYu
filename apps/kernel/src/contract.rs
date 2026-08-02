@@ -1506,6 +1506,8 @@ pub struct RecentMarkdownFileDto {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StoredWorkspaceDraftDto {
     pub content: DocumentContents,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_directory: Option<WorkspaceRelativePath>,
     pub id: String,
     pub name: String,
     #[serde(deserialize_with = "deserialize_required_nullable")]

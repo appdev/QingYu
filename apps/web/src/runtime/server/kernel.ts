@@ -791,7 +791,12 @@ function mapAppConfig(source: AppConfigSource): KernelAppConfigSnapshot {
           .map(([label, state]) => [label, {
             activeDraftId: state.activeDraftId,
             draftTabs: state.draftTabs.map((draft) => ({
-              ...draft,
+              content: draft.content,
+              ...(draft.creationDirectory === undefined
+                ? {}
+                : { creationDirectory: draft.creationDirectory as KernelWorkspaceRelativePath }),
+              id: draft.id,
+              name: draft.name,
               path: draft.path as KernelWorkspaceRelativePath | null,
             })),
             filePath: state.filePath as KernelWorkspaceRelativePath | null,
@@ -823,7 +828,15 @@ function mapAppConfigOperation(
       return {
         patch: {
           ...operation.patch,
-          draftTabs: operation.patch.draftTabs?.map((draft) => ({ ...draft })),
+          draftTabs: operation.patch.draftTabs?.map((draft) => ({
+            content: draft.content,
+            ...(draft.creationDirectory === undefined || draft.creationDirectory === null
+              ? {}
+              : { creationDirectory: draft.creationDirectory }),
+            id: draft.id,
+            name: draft.name,
+            path: draft.path,
+          })),
           openFilePaths: operation.patch.openFilePaths === undefined
             ? undefined
             : [...operation.patch.openFilePaths],

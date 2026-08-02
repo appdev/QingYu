@@ -24,6 +24,7 @@ export type StoredFileTreeSortByWorkspace = Record<string, StoredFileTreeSort>;
 
 export type StoredWorkspaceDraftTab = {
   content: string;
+  creationDirectory?: string | null;
   id: string;
   name: string;
   path: string | null;
@@ -122,6 +123,22 @@ function managedPathIsBelowRoot(rootPath: NormalizedManagedPath, filePath: Norma
 
   const rootPrefix = managedPathPrefix({ ...rootPath, value: rootComparison });
   return fileComparison.startsWith(rootPrefix);
+}
+
+export function managedDirectoryPathIsWithinRoot(rootPath: string, directoryPath: string) {
+  const normalizedRoot = normalizeManagedPath(rootPath);
+  const normalizedDirectory = normalizeManagedPath(directoryPath);
+  if (
+    !normalizedRoot.value ||
+    !normalizedDirectory.value ||
+    normalizedRoot.kind === "relative" ||
+    normalizedDirectory.kind !== normalizedRoot.kind ||
+    normalizedRoot.value.split("/").some((segment) => segment === "." || segment === "..") ||
+    normalizedDirectory.value.split("/").some((segment) => segment === "." || segment === "..")
+  ) return false;
+
+  return managedPathComparisonValue(normalizedRoot) === managedPathComparisonValue(normalizedDirectory)
+    || managedPathIsBelowRoot(normalizedRoot, normalizedDirectory);
 }
 
 export function managedDocumentRelativePath(rootPath: string, filePath: string): string | null {
@@ -235,10 +252,12 @@ function normalizeWorkspaceDraftTabs(value: unknown): StoredWorkspaceDraftTab[] 
     const path = normalizeDraftString(candidate.path);
     if (!path && candidate.content.trim().length === 0) return;
 
+    const creationDirectory = normalizeDraftString(candidate.creationDirectory);
     const name = normalizeDraftString(candidate.name) ?? (path ? pathNameFromPath(path) : "Untitled.md");
     seenIds.add(id);
     draftTabs.push({
       content: candidate.content,
+      ...(creationDirectory ? { creationDirectory } : {}),
       id,
       name,
       path

@@ -66,6 +66,26 @@ describe("Kernel AppConfig runtime", () => {
     });
   });
 
+  it("restores a draft creation directory under the canonical Kernel workspace root", async () => {
+    const harness = appConfigHarness(snapshot({
+      mainDrafts: [{
+        content: "draft",
+        creationDirectory: "abc" as KernelWorkspaceRelativePath,
+        id: "draft-1",
+        name: "Draft.md",
+        path: null,
+      }],
+    }));
+    const runtime = createKernelAppConfigRuntime(harness.kernel, async () => "main");
+
+    await expect(runtime.readWorkspaceState()).resolves.toMatchObject({
+      draftTabs: [{
+        creationDirectory: `${kernelWorkspaceRoot}/abc`,
+        id: "draft-1",
+      }],
+    });
+  });
+
   it("round-trips canonical pseudo-root paths and rejects paths outside it", () => {
     const relative = "notes/My draft #1.md" as KernelWorkspaceRelativePath;
     const canonical = `${kernelWorkspaceRoot}/notes/My%20draft%20%231.md`;
@@ -161,12 +181,11 @@ describe("Kernel AppConfig runtime", () => {
   });
 });
 
-function appConfigHarness() {
+function appConfigHarness(bootstrap = snapshot()) {
   const unavailable = createUnavailableKernelDomainPort();
   const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
-  const read = vi.fn(async () => snapshot());
-  const patchState = vi.fn(async () => snapshot());
-  const bootstrap = snapshot();
+  const read = vi.fn(async () => bootstrap);
+  const patchState = vi.fn(async () => bootstrap);
   const kernel = {
     ...unavailable,
     appConfig: { bootstrap, patchState, read },
@@ -192,10 +211,12 @@ function appConfigHarness() {
 
 function snapshot({
   generation: nextGeneration = generation,
+  mainDrafts = [],
   mainFilePath = "notes/main.md" as KernelWorkspaceRelativePath,
   revision = "local-1",
 }: {
   generation?: KernelWorkspaceGeneration | string;
+  mainDrafts?: KernelAppConfigSnapshot["localState"]["uiLayout"]["windowStates"][string]["draftTabs"];
   mainFilePath?: KernelWorkspaceRelativePath;
   revision?: string;
 } = {}): KernelAppConfigSnapshot {
@@ -217,7 +238,7 @@ function snapshot({
         windowStates: {
           main: {
             activeDraftId: null,
-            draftTabs: [],
+            draftTabs: mainDrafts,
             filePath: mainFilePath,
             fileTreeAssetsVisible: true,
             fileTreeOpen: false,

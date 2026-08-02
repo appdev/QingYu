@@ -233,6 +233,37 @@ fn semantic_operations_merge_without_replacing_unmentioned_fields() {
 }
 
 #[test]
+fn draft_creation_directory_survives_normalization_and_persistence() {
+    let fixture = Fixture::new(1, "generation-a");
+    fixture
+        .patch(json!([{
+            "type": "patch-ui-layout",
+            "windowLabel": "main",
+            "patch": { "draftTabs": [{
+                "content": "draft",
+                "creationDirectory": "abc",
+                "id": "draft-1",
+                "name": "Draft.md",
+                "path": null
+            }] }
+        }]))
+        .unwrap();
+
+    let layout = fixture.app_config.read().unwrap().local_state.ui_layout;
+    let persisted_draft = &layout.window_states["main"].draft_tabs[0];
+    assert_eq!(
+        serde_json::to_value(persisted_draft).unwrap(),
+        json!({
+            "content": "draft",
+            "creationDirectory": "abc",
+            "id": "draft-1",
+            "name": "Draft.md",
+            "path": null
+        })
+    );
+}
+
+#[test]
 fn stale_workspace_generation_rejects_without_mutating_the_store() {
     let fixture = Fixture::new(1, "generation-a");
     let before = fixture.store.snapshot();

@@ -3,6 +3,7 @@ import type { MarkdownTabsBarDocumentItem } from "../components/MarkdownTabsBar"
 import type { NativeMarkdownFolderFile } from "../lib/tauri";
 import type { SelectionAnchor } from "../lib/selection-anchor";
 import type { WorkspaceSearchResponse } from "../lib/workspace-search";
+import { directoryPathIsWithinWorkspaceRoot } from "./workspace-directory";
 
 const globalSearchRecentQueryLimit = 8;
 
@@ -51,6 +52,30 @@ export function defaultSaveDirectoryFromFileTree(sourcePath: string | null) {
   if (!isMarkdownPath(trimmedSourcePath)) return trimmedSourcePath;
 
   return parentPathFromPath(trimmedSourcePath);
+}
+
+export type NewDocumentDirectoryDocument = {
+  creationDirectory?: string | null;
+  path: string | null;
+};
+
+export function resolveNewDocumentCreationDirectory({
+  activeDocument,
+  focusedDocument,
+  workspaceSourcePath
+}: {
+  activeDocument: NewDocumentDirectoryDocument | null;
+  focusedDocument: NewDocumentDirectoryDocument | null;
+  workspaceSourcePath: string | null;
+}): string | null {
+  const root = defaultSaveDirectoryFromFileTree(workspaceSourcePath);
+  for (const document of [focusedDocument, activeDocument]) {
+    const candidate = document?.path
+      ? parentPathFromPath(document.path)
+      : document?.creationDirectory?.trim() || null;
+    if (candidate && directoryPathIsWithinWorkspaceRoot(root, candidate)) return candidate;
+  }
+  return root;
 }
 
 export function selectionAnchorsEqual(left: SelectionAnchor | null, right: SelectionAnchor | null) {

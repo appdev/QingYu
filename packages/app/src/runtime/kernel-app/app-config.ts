@@ -198,6 +198,9 @@ function mapWindowState(state: KernelStoredWorkspaceWindowState): StoredWorkspac
 function mapDraft(draft: KernelStoredWorkspaceDraft): StoredWorkspaceDraftTab {
   return {
     content: draft.content,
+    ...(draft.creationDirectory === undefined || draft.creationDirectory === null
+      ? {}
+      : { creationDirectory: kernelWorkspacePathFromRelativePath(draft.creationDirectory) }),
     id: draft.id,
     name: draft.name,
     path: mapNullablePath(draft.path),
@@ -253,7 +256,12 @@ function requireWindowState(state: KernelStoredWorkspaceWindowState) {
     requireWorkspaceRelativePath(state.folderPath, { allowEmpty: true, markdown: false });
   }
   state.openFilePaths.forEach(requireMarkdownPath);
-  state.draftTabs.forEach((draft) => requireNullableMarkdownPath(draft.path));
+  state.draftTabs.forEach((draft) => {
+    requireNullableMarkdownPath(draft.path);
+    if (draft.creationDirectory !== undefined && draft.creationDirectory !== null) {
+      requireWorkspaceRelativePath(draft.creationDirectory, { allowEmpty: true, markdown: false });
+    }
+  });
   if (state.sideBySideGroup !== null) {
     requireMarkdownPath(state.sideBySideGroup.primaryFilePath);
     requireMarkdownPath(state.sideBySideGroup.sideFilePath);

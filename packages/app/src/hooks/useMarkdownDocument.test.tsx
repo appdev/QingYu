@@ -679,6 +679,42 @@ describe("useMarkdownDocument", () => {
     }));
   });
 
+  it("uses the planned directory when allocating a Kernel filename", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const creationDirectory = `${workspaceRoot}/abc`;
+    const documentPath = `${creationDirectory}/Untitled.md`;
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Untitled.md",
+      path: documentPath
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument({ creationDirectory })).toBe(true);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
+      contents: "",
+      defaultDirectory: creationDirectory,
+      path: null,
+      suggestedName: "Untitled.md"
+    });
+    expect(result.current.document).toMatchObject({
+      creationDirectory: null,
+      path: documentPath
+    });
+  });
+
   it("does not append a duplicate tab when a Kernel allocation path is already open", async () => {
     const workspaceRoot = "kernel-workspace://primary";
     const documentPath = `${workspaceRoot}/Untitled.md`;
@@ -751,6 +787,38 @@ describe("useMarkdownDocument", () => {
       "Untitled 1.md",
       "Untitled 2.md"
     ]);
+  });
+
+  it("uses and retains a native draft creation directory until first save succeeds", async () => {
+    mockedSaveNativeMarkdownFile
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ name: "Untitled.md", path: "/vault/abc/Untitled.md" });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: "/vault",
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.createBlankDocument({ creationDirectory: "/vault/abc" });
+      await result.current.saveCurrentDocument();
+    });
+    expect(result.current.document.creationDirectory).toBe("/vault/abc");
+
+    await act(async () => {
+      await result.current.saveCurrentDocument();
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(expect.objectContaining({
+      defaultDirectory: "/vault/abc",
+      path: null
+    }));
+    expect(result.current.document.creationDirectory).toBeNull();
   });
 
   it("does not ask to discard a clean file after an editor-only trailing newline normalization", async () => {
@@ -1965,6 +2033,56 @@ describe("useMarkdownDocument", () => {
       dirty: false,
       name: "notes.md",
       path: "/mock-files/notes.md"
+    });
+  });
+
+  it("uses a background draft tab's own creation directory on first save", async () => {
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "First.md",
+      path: "/vault/first/First.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: "/vault",
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.createBlankDocument({
+        creationDirectory: "/vault/first",
+        name: "First.md"
+      });
+      await result.current.createBlankDocument({
+        creationDirectory: "/vault/second",
+        name: "Second.md"
+      });
+    });
+    const backgroundTab = result.current.tabs.find((tab) => tab.name === "First.md");
+    expect(backgroundTab).toBeTruthy();
+
+    await act(async () => {
+      await result.current.saveMarkdownTab(backgroundTab!.id);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      defaultDirectory: "/vault/first",
+      path: null,
+      suggestedName: "First.md"
+    }));
+    expect(result.current.document).toMatchObject({
+      creationDirectory: "/vault/second",
+      name: "Second.md",
+      path: null
+    });
+    expect(result.current.tabs.find((tab) => tab.id === backgroundTab!.id)).toMatchObject({
+      creationDirectory: null,
+      path: "/vault/first/First.md"
     });
   });
 
@@ -3928,6 +4046,108 @@ describe("useMarkdownDocument", () => {
       })
     ]);
     expect(result.current.activeTabId).toBe("untitled:1");
+  });
+
+  it("restores a typed draft creation directory for its first content save", async () => {
+    const content = "# Scratch\n\nRecovered typed draft.";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      activeDraftId: "untitled:planned",
+      draftTabs: [{
+        content,
+        creationDirectory: "/vault/abc",
+        id: "untitled:planned",
+        name: "Scratch.md",
+        path: null
+      }],
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Scratch.md",
+      path: "/vault/abc/Scratch.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: "/vault",
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true
+      })
+    );
+
+    await waitFor(() => expect(result.current.document.name).toBe("Scratch.md"));
+    expect(result.current.document).toMatchObject({
+      content,
+      creationDirectory: "/vault/abc",
+      path: null
+    });
+
+    await act(async () => {
+      await result.current.saveCurrentDocumentContent(content);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      contents: content,
+      defaultDirectory: "/vault/abc",
+      path: null
+    }));
+    expect(result.current.document.creationDirectory).toBeNull();
+  });
+
+  it("replaces a restored draft traversal directory with the current workspace root", async () => {
+    const content = "# Scratch\n\nRecovered stale draft.";
+    const workspaceRoot = "/current";
+    const unsafeCreationDirectory = `${workspaceRoot}/drafts/../../outside`;
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      activeDraftId: "untitled:stale-directory",
+      draftTabs: [{
+        content,
+        creationDirectory: unsafeCreationDirectory,
+        id: "untitled:stale-directory",
+        name: "Scratch.md",
+        path: null
+      }],
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Scratch.md",
+      path: `${workspaceRoot}/Scratch.md`
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true,
+        restoreWorkspaceRoot: workspaceRoot
+      })
+    );
+
+    await waitFor(() => expect(result.current.document.name).toBe("Scratch.md"));
+    expect(result.current.document.creationDirectory).toBe(workspaceRoot);
+    expect(result.current.document.creationDirectory).not.toBe(unsafeCreationDirectory);
+
+    await act(async () => {
+      await result.current.saveCurrentDocumentContent(content);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      defaultDirectory: workspaceRoot,
+      path: null
+    }));
   });
 
   it("persists dirty untitled drafts as markdown changes", async () => {

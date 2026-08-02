@@ -125,6 +125,36 @@ describe("Kernel AppConfig application state", () => {
     }]);
   });
 
+  it("maps a draft creation directory to a Kernel workspace-relative path", async () => {
+    const { patchState } = appConfigHarness();
+
+    await saveStoredWorkspaceState({
+      draftTabs: [{
+        content: "draft",
+        creationDirectory: "kernel-workspace://primary/abc",
+        id: "draft-1",
+        name: "Draft.md",
+        path: null
+      }]
+    });
+    await flushAppConfigStatePersistence();
+
+    expect(patchState).toHaveBeenCalledWith([{
+      patch: {
+        draftTabs: [{
+          content: "draft",
+          creationDirectory: "abc",
+          id: "draft-1",
+          name: "Draft.md",
+          path: null
+        }],
+        openWindows: []
+      },
+      type: "patch-ui-layout",
+      windowLabel: "main"
+    }]);
+  });
+
   it("preserves workspace-level open windows and independent window labels", async () => {
     const { appConfig, patchState } = appConfigHarness();
     appConfig.readWorkspaceState.mockImplementation(async (label: string | null | undefined) => ({

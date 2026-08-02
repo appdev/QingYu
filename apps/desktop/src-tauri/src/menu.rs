@@ -32,6 +32,7 @@ const FRONTEND_MENU_ITEM_COMMANDS: &[&str] = &[
     SETTINGS_WINDOW_COMMAND,
     EDIT_UNDO_COMMAND,
     EDIT_REDO_COMMAND,
+    NEW_DOCUMENT_COMMAND,
     "openDocument",
     "openFolder",
     "openQuickOpen",
@@ -1130,10 +1131,6 @@ pub(crate) fn install_application_menu(
     Ok(())
 }
 
-pub(crate) fn is_native_new_window_command(command: &str) -> bool {
-    command == NEW_DOCUMENT_COMMAND
-}
-
 pub(crate) fn is_frontend_menu_command(command: &str) -> bool {
     recent_file_index_from_command(command).is_some()
         || FRONTEND_MENU_ITEM_COMMANDS.contains(&command)
@@ -1168,7 +1165,7 @@ mod tests {
 
     #[test]
     fn recognizes_frontend_menu_commands() {
-        assert!(!is_frontend_menu_command("newDocument"));
+        assert!(is_frontend_menu_command("newDocument"));
         assert!(is_frontend_menu_command("checkForUpdates"));
         assert!(is_frontend_menu_command("quitApplication"));
         assert!(is_frontend_menu_command("openDocument"));
@@ -1248,12 +1245,6 @@ mod tests {
         assert!(message.contains("Name: QingYu"));
         assert!(message.contains(&format!("Version: {}", env!("CARGO_PKG_VERSION"))));
         assert!(message.contains(&format!("Website: GitHub {MARKRA_GITHUB_URL}")));
-    }
-
-    #[test]
-    fn recognizes_native_new_window_menu_command() {
-        assert!(is_native_new_window_command("newDocument"));
-        assert!(!is_native_new_window_command("saveDocument"));
     }
 
     #[test]

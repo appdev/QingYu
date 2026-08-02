@@ -340,8 +340,12 @@ function nullableRelativePath(path: string | null | undefined) {
 }
 
 function mapDraftTab(draft: StoredWorkspaceDraftTab) {
+  const creationDirectory = normalizeNullableString(draft.creationDirectory);
   return {
-    ...draft,
+    content: draft.content,
+    ...(creationDirectory === null ? {} : { creationDirectory: relativePath(creationDirectory) }),
+    id: draft.id,
+    name: draft.name,
     path: nullableRelativePath(draft.path)
   };
 }

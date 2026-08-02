@@ -10,7 +10,7 @@ use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mcp;
 use crate::menu::{
     apply_native_application_menu_for_window_event, create_application_menu,
-    emit_native_menu_command_payload, is_native_new_window_command, native_menu_command_from_id,
+    emit_native_menu_command_payload, native_menu_command_from_id,
     remember_native_menu_webview_window, remember_native_menu_window_from_event,
     NativeApplicationMenuState, NativeMenuTargetState,
 };
@@ -23,7 +23,7 @@ use crate::window_state::{remove_editor_window_restore_state, EditorWindowRestor
 use crate::windows::{
     apply_main_window_chrome, apply_settings_window_lifecycle, apply_webview_window_chrome,
     apply_window_event_chrome, editor_window_url_for_path, is_editor_window_label,
-    spawn_blank_editor_window, spawn_editor_window,
+    spawn_editor_window,
 };
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
@@ -815,11 +815,6 @@ pub(crate) fn run() {
         .menu(create_application_menu)
         .on_menu_event(|app, event| {
             let command = event.id().as_ref();
-            if is_native_new_window_command(command) {
-                spawn_blank_editor_window(app.clone());
-                return;
-            }
-
             let Some(payload) = native_menu_command_from_id(app, command) else {
                 return;
             };
@@ -1339,9 +1334,24 @@ mod tests {
 
     #[test]
     fn exposes_native_command_classification_from_menu_module() {
+        assert!(crate::menu::is_frontend_menu_command("newDocument"));
         assert!(crate::menu::is_frontend_menu_command("saveDocument"));
         assert!(crate::menu::is_frontend_menu_command("openSettings"));
-        assert!(crate::menu::is_native_new_window_command("newDocument"));
+    }
+
+    #[test]
+    fn desktop_menu_events_route_new_document_through_the_frontend() {
+        let source = include_str!("desktop_runtime.rs");
+        let start = source
+            .find(".on_menu_event(|app, event| {")
+            .expect("desktop menu event handler should exist");
+        let end = source[start..]
+            .find(".invoke_handler")
+            .map(|offset| start + offset)
+            .expect("desktop menu event handler should have a boundary");
+        let menu_event_source = &source[start..end];
+
+        assert!(!menu_event_source.contains("spawn_blank_editor_window"));
     }
 
     #[test]
