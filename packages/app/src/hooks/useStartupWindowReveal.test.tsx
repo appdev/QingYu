@@ -1,4 +1,5 @@
 import { render } from "@testing-library/react";
+import { StrictMode } from "react";
 import { useStartupWindowReveal } from "./useStartupWindowReveal";
 
 function StartupWindowRevealTest({
@@ -32,6 +33,9 @@ describe("useStartupWindowReveal", () => {
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       return window.setTimeout(() => callback(performance.now()), 1);
     });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+      window.clearTimeout(handle);
+    });
   });
 
   afterEach(() => {
@@ -57,6 +61,22 @@ describe("useStartupWindowReveal", () => {
         revealWindow={revealWindow}
       />
     );
+    await vi.advanceTimersByTimeAsync(2);
+
+    expect(revealWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("reschedules a ready reveal after StrictMode restarts the effect before paint", async () => {
+    const revealWindow = vi.fn().mockResolvedValue(undefined);
+    render(
+      <StrictMode>
+        <StartupWindowRevealTest
+          ready
+          revealWindow={revealWindow}
+        />
+      </StrictMode>
+    );
+
     await vi.advanceTimersByTimeAsync(2);
 
     expect(revealWindow).toHaveBeenCalledTimes(1);
