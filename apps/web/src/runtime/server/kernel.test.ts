@@ -221,6 +221,42 @@ describe("Server Kernel domain adapter", () => {
     });
   });
 
+  it("reads an accepted sync run through the authenticated fixed-workspace adapter", async () => {
+    const client = kernelClient();
+    vi.mocked(client.sync.getRun).mockResolvedValue({
+      acceptedAt: "2026-07-30T00:00:00Z",
+      completionState: "succeeded",
+      configRevision: "sync-2",
+      error: null,
+      finishedAt: "2026-07-30T00:00:01Z",
+      provider: "s3",
+      runId: "123e4567-e89b-42d3-a456-426614174060",
+      summary: {
+        bytesDownloaded: 1,
+        bytesUploaded: 2,
+        conflictFiles: 0,
+        downloadedFiles: 1,
+        scannedFiles: 3,
+        skippedFiles: 0,
+        uploadedFiles: 2,
+      },
+    });
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    await expect(
+      adapter.port.sync.readRun("123e4567-e89b-42d3-a456-426614174060"),
+    ).resolves.toMatchObject({
+      completionState: "succeeded",
+      configRevision: "sync-2",
+      provider: "s3",
+      runId: "123e4567-e89b-42d3-a456-426614174060",
+    });
+    expect(client.sync.getRun).toHaveBeenCalledWith(
+      "123e4567-e89b-42d3-a456-426614174060",
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
   it("rejects a caller generation mismatch before issuing a document request", async () => {
     const client = kernelClient();
     const adapter = await createServerKernelDomainAdapter(client, options());
@@ -805,6 +841,7 @@ function kernelClient(overrides: {
     },
     settings: { get: vi.fn(), patch: vi.fn() },
     sync: {
+      getRun: vi.fn(),
       getConfig: vi.fn(),
       getStatus: vi.fn(),
       patchConfig: vi.fn(),

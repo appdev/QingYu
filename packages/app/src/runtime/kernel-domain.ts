@@ -568,6 +568,17 @@ export type KernelSyncRunSnapshot = {
   runId: string;
 };
 
+export type KernelSyncRunStatusSnapshot = {
+  acceptedAt: string;
+  completionState: "attempting" | "failed" | "succeeded";
+  configRevision: KernelRevision;
+  error: KernelSyncSafeErrorSnapshot | null;
+  finishedAt: string | null;
+  provider: KernelSyncProvider;
+  runId: string;
+  summary: KernelSyncSummarySnapshot | null;
+};
+
 export type KernelRemoteNotebookSnapshot = {
   available: boolean;
   disabledReason: string | null;
@@ -629,6 +640,7 @@ export type KernelDomainPort = {
     readKeyState: () => Promise<{ configured: boolean }>;
     patchConfig: (input: KernelPatchSyncConfigInput) => Promise<KernelSyncConfigSnapshot>;
     readConfig: () => Promise<KernelSyncConfigSnapshot>;
+    readRun: (runId: string) => Promise<KernelSyncRunStatusSnapshot>;
     readStatus: () => Promise<KernelSyncStatusSnapshot>;
     testConnection: (
       input: KernelTestSyncConnectionInput,
@@ -700,6 +712,7 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       patchConfig: rejectUnavailable,
       readKeyState: rejectUnavailable,
       readConfig: rejectUnavailable,
+      readRun: rejectUnavailable,
       readStatus: rejectUnavailable,
       testConnection: rejectUnavailable,
       trigger: rejectUnavailable,

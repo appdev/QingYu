@@ -72,6 +72,17 @@ describe("mobile Kernel runtime boundary", () => {
 
   it("composes document, settings, and sync over one ready Kernel port", async () => {
     const kernel = readyKernelPort();
+    const readRun = vi.fn(async () => ({
+      acceptedAt: "2026-08-02T10:00:00Z",
+      completionState: "succeeded" as const,
+      configRevision: "sync-mobile-1" as KernelRevision,
+      error: null,
+      finishedAt: "2026-08-02T10:00:01Z",
+      provider: "s3" as const,
+      runId: "00000000-0000-4000-8000-0000000000d2",
+      summary: null,
+    }));
+    Object.assign(kernel.sync, { readRun });
     const committed = {
       ...kernel.appConfig.bootstrap,
       localState: {
@@ -128,6 +139,14 @@ describe("mobile Kernel runtime boundary", () => {
     });
     expect(owner.runtime.syncConfig.load).not.toBe(mobileRuntime.syncConfig.load);
     expect(owner.runtime.syncConfig.patch).not.toBe(mobileRuntime.syncConfig.patch);
+    await expect(owner.runtime.syncConfig.loadJob({
+      jobId: "00000000-0000-4000-8000-0000000000d2",
+    })).resolves.toMatchObject({
+      completionState: "succeeded",
+      jobId: "00000000-0000-4000-8000-0000000000d2",
+      revision: "sync-mobile-1",
+    });
+    expect(readRun).toHaveBeenCalledWith("00000000-0000-4000-8000-0000000000d2");
     expect(owner.runtime.workspace.rootPolicy).toMatchObject({
       canChooseLocalRoot: false,
       kind: "fixed",

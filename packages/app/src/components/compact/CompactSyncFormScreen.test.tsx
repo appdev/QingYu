@@ -126,6 +126,7 @@ describe("CompactSyncFormScreen application config", () => {
     expect(setup.patch).toHaveBeenCalledWith({ field: "s3.requestTimeoutSeconds", value: 120 });
     expect(setup.patch).toHaveBeenCalledWith({ field: "s3.addressingStyle", value: "virtual-hosted" });
     expect(setup.patch).toHaveBeenCalledWith({ field: "s3.tlsVerification", value: "skip" });
+    expect(screen.getByText(/return to Sync.*Repository access.*import a shared key.*cloud notebook/i)).toBeVisible();
   });
 
   it("keeps an empty S3 region while showing the automatic runtime value", () => {

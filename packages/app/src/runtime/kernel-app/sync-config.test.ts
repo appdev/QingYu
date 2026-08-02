@@ -88,6 +88,62 @@ const request = {
 };
 
 describe("Kernel sync apply settlement", () => {
+  it("loads the exact accepted repository job through the Kernel run contract", async () => {
+    const kernel = createKernel("succeeded");
+    const readRun = vi.fn(async () => ({
+      acceptedAt: "2026-07-31T00:00:00Z",
+      completionState: "failed" as const,
+      configRevision: revision,
+      error: {
+        code: "repository_auth_failed",
+        operation: "repository_recovery",
+        provider: "s3" as const,
+        runId: "123e4567-e89b-42d3-a456-426614174060",
+      },
+      finishedAt: "2026-07-31T00:00:01Z",
+      provider: "s3" as const,
+      runId: "123e4567-e89b-42d3-a456-426614174060",
+      summary: null,
+    }));
+    Object.assign(kernel.sync, { readRun });
+    const shared = createDefaultAppRuntime().syncConfig;
+    const runtime = createKernelSyncConfigRuntime(kernel, {
+      local: {
+        cancelApply: shared.cancelApply,
+        loadEditing: shared.loadEditing,
+        requestApply: shared.requestApply,
+        setEditing: shared.setEditing,
+        settleApply: shared.settleApply,
+      },
+    });
+
+    await expect(runtime.loadJob({
+      jobId: "123e4567-e89b-42d3-a456-426614174060",
+    })).resolves.toEqual({
+      acceptedAt: "2026-07-31T00:00:00Z",
+      completionState: "failed",
+      error: {
+        category: null,
+        code: "repository_auth_failed",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "repository_recovery",
+        provider: "s3",
+        providerErrorCode: null,
+        relativePath: null,
+        requestId: null,
+        runId: "123e4567-e89b-42d3-a456-426614174060",
+      },
+      finishedAt: "2026-07-31T00:00:01Z",
+      jobId: "123e4567-e89b-42d3-a456-426614174060",
+      provider: "s3",
+      revision: "revision-1",
+      summary: null,
+    });
+    expect(readRun).toHaveBeenCalledWith("123e4567-e89b-42d3-a456-426614174060");
+  });
+
   it("rejects repository bindings for a non-Kernel workspace before calling Kernel", async () => {
     const kernel = createKernel("succeeded");
     const bindRepository = vi.fn(async () => ({

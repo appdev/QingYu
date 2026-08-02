@@ -54,6 +54,7 @@ export function createKernelSyncConfigRuntime(
       ...mapConfig(await kernel.sync.readConfig()),
       status: "loaded",
     }),
+    loadJob: async ({ jobId }) => mapJob(await kernel.sync.readRun(jobId)),
     exportGlobalKey: () => kernel.sync.exportKey(),
     initializeGlobalKey: (input) => kernel.sync.importKey(input.key),
     loadEditing: options.local.loadEditing,
@@ -369,6 +370,21 @@ function mapStatus(
     revision: status.configRevision,
     summary: status.summary === null ? null : { ...status.summary },
     version: 1,
+  };
+}
+
+function mapJob(
+  status: Awaited<ReturnType<KernelDomainPort["sync"]["readRun"]>>,
+) {
+  return {
+    acceptedAt: status.acceptedAt,
+    completionState: status.completionState,
+    error: status.error === null ? null : mapSyncSafeError(status.error),
+    finishedAt: status.finishedAt,
+    jobId: status.runId,
+    provider: status.provider,
+    revision: status.configRevision,
+    summary: status.summary === null ? null : { ...status.summary },
   };
 }
 

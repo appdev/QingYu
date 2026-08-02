@@ -22,6 +22,7 @@ import type {
   KernelSyncConfigSnapshot,
   KernelSyncConnectionTestSnapshot,
   KernelSyncRunSnapshot,
+  KernelSyncRunStatusSnapshot,
   KernelSyncStatusSnapshot,
   KernelWorkspaceGeneration,
   KernelWorkspaceRelativePath,
@@ -601,6 +602,14 @@ export async function createDesktopKernelDomainAdapter(
           await confirmWorkspaceIdentity();
           return mapSyncConfig(config);
         },
+        readRun: async (runId) => {
+          await prepareInstanceOperation();
+          const run = await client.sync.getRun(runId, { signal: requests.signal });
+          assertActive();
+          if (run.runId !== runId) protocolMismatch();
+          await confirmWorkspaceIdentity();
+          return mapSyncRunStatus(run);
+        },
         readStatus: async () => {
           await prepareInstanceOperation();
           const status = await client.sync.getStatus({ signal: requests.signal });
@@ -679,6 +688,7 @@ type AppConfigSource = Awaited<ReturnType<KernelClient["appConfig"]["get"]>>;
 type SyncConfigSource = Awaited<ReturnType<KernelClient["sync"]["getConfig"]>>;
 type SyncConnectionTestSource = Awaited<ReturnType<KernelClient["sync"]["testConnection"]>>;
 type SyncRunSource = Awaited<ReturnType<KernelClient["sync"]["trigger"]>>;
+type SyncRunStatusSource = Awaited<ReturnType<KernelClient["sync"]["getRun"]>>;
 type SyncStatusSource = Awaited<ReturnType<KernelClient["sync"]["getStatus"]>>;
 type SettingsPatchInput = Parameters<KernelDomainPort["settings"]["patch"]>[0];
 type SettingsPatchRequest = Parameters<KernelClient["settings"]["patch"]>[0];
@@ -1060,26 +1070,25 @@ function mapSyncRun(run: SyncRunSource): KernelSyncRunSnapshot {
   };
 }
 
+function mapSyncRunStatus(run: SyncRunStatusSource): KernelSyncRunStatusSnapshot {
+  return {
+    acceptedAt: run.acceptedAt,
+    completionState: run.completionState,
+    configRevision: run.configRevision as KernelRevision,
+    error: run.error === null ? null : mapSyncSafeError(run.error),
+    finishedAt: run.finishedAt,
+    provider: run.provider,
+    runId: run.runId,
+    summary: run.summary === null ? null : { ...run.summary },
+  };
+}
+
 function mapSyncStatus(status: SyncStatusSource): KernelSyncStatusSnapshot {
   return {
     activeRunId: status.activeRunId,
     completionState: status.completionState,
     configRevision: status.configRevision as KernelRevision | null,
-    error:
-      status.error === null
-        ? null
-        : {
-            category: status.error.category,
-            code: status.error.code,
-            httpStatus: status.error.httpStatus,
-            method: status.error.method,
-            operation: status.error.operation,
-            provider: status.error.provider,
-            providerErrorCode: status.error.providerErrorCode,
-            relativePath: status.error.relativePath as KernelWorkspaceRelativePath | undefined,
-            requestId: status.error.requestId,
-            runId: status.error.runId,
-          },
+    error: status.error === null ? null : mapSyncSafeError(status.error),
     lastAttemptAt: status.lastAttemptAt,
     lastSuccessfulSyncAt: status.lastSuccessfulSyncAt,
     lastTrigger: status.lastTrigger,
@@ -1096,6 +1105,21 @@ function mapSyncStatus(status: SyncStatusSource): KernelSyncStatusSnapshot {
             skippedFiles: status.summary.skippedFiles,
             uploadedFiles: status.summary.uploadedFiles,
           },
+  };
+}
+
+function mapSyncSafeError(error: NonNullable<SyncStatusSource["error"]>) {
+  return {
+    category: error.category,
+    code: error.code,
+    httpStatus: error.httpStatus,
+    method: error.method,
+    operation: error.operation,
+    provider: error.provider,
+    providerErrorCode: error.providerErrorCode,
+    relativePath: error.relativePath as KernelWorkspaceRelativePath | undefined,
+    requestId: error.requestId,
+    runId: error.runId,
   };
 }
 

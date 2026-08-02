@@ -730,6 +730,7 @@ export function createDefaultAppRuntime(): AppRuntime {
       exportGlobalKey: () => unsupportedFeature("exportDejavuGlobalKey"),
       initializeGlobalKey: async () => ({ configured: true }),
       load: () => unsupportedFeature("loadSyncConfig"),
+      loadJob: () => unsupportedFeature("loadSyncJob"),
       loadKeyState: async () => ({ configured: false }),
       listNotebooks: () => unsupportedFeature("listRemoteNotebooks"),
       listDejavuConflictHistory: async () => [],

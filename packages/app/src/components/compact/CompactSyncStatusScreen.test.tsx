@@ -2,6 +2,11 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { CompactNavigation } from "../../hooks/useCompactNavigation";
 import type { CompactSyncSettingsController } from "../../hooks/useCompactSyncSettings";
 import type { SyncConfigDocument } from "../../lib/sync-config";
+import {
+  configureAppRuntime,
+  createDefaultAppRuntime,
+  resetAppRuntimeForTests
+} from "../../runtime";
 import { CompactSyncStatusScreen } from "./CompactSyncStatusScreen";
 
 function document(): SyncConfigDocument {
@@ -72,6 +77,39 @@ function controller(overrides: Partial<CompactSyncSettingsController> = {}): Com
 }
 
 describe("CompactSyncStatusScreen application scope", () => {
+  afterEach(() => {
+    resetAppRuntimeForTests();
+  });
+
+  it("renders repository access for a disabled S3 config in the fixed compact workspace", async () => {
+    const runtime = createDefaultAppRuntime();
+    const loadKeyState = vi.fn(async () => ({ configured: false }));
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true },
+      kernel: { ...runtime.kernel, availability: "available" },
+      syncConfig: { ...runtime.syncConfig, loadKeyState }
+    });
+    const configDocument = document();
+    configDocument.config = {
+      ...configDocument.config,
+      enabled: false,
+      provider: "s3"
+    };
+    configDocument.readiness = "disabled";
+    const setup = controller({
+      configDocument,
+      loadResult: { ...configDocument, status: "loaded" },
+      primaryRoot: "kernel-workspace://primary"
+    });
+
+    render(<CompactSyncStatusScreen controller={setup} language="en" navigation={navigation()} />);
+
+    expect(await screen.findByRole("region", { name: "Repository access" })).toBeVisible();
+    expect(screen.getByText("No repository key has been created on this device.")).toBeVisible();
+    expect(loadKeyState).toHaveBeenCalledOnce();
+  });
+
   it("allows configuration but not synchronization when there is no primary notes workspace", () => {
     const setup = controller({ primaryRoot: null });
     const compactNavigation = navigation();

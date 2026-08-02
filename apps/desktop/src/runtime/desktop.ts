@@ -243,6 +243,7 @@ export function createDesktopRuntime({
     exportGlobalKey: syncConfig.exportNativeDejavuGlobalKey,
     initializeGlobalKey: syncConfig.initializeNativeDejavuGlobalKey,
     load: syncConfig.loadNativeSyncConfig,
+    loadJob: () => Promise.reject(new Error("Kernel sync jobs are unavailable before the Kernel runtime is active.")),
     loadKeyState: syncConfig.loadNativeDejavuKeyState,
     listNotebooks: syncConfig.listNativeNotebooks,
     listDejavuConflictHistory: syncConfig.listNativeDejavuConflictHistory,

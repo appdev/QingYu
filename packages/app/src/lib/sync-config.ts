@@ -301,6 +301,17 @@ export type AcceptedSyncJob = {
   repositoryId: string;
 };
 
+export type SyncJobStatus = {
+  acceptedAt: string;
+  completionState: "attempting" | "failed" | "succeeded";
+  error: SyncSafeError | null;
+  finishedAt: string | null;
+  jobId: string;
+  provider: SyncProvider;
+  revision: string;
+  summary: SyncSummary | null;
+};
+
 export type AcceptedMaintenanceJob = {
   jobId: string;
   operation:
@@ -381,6 +392,7 @@ export type AppSyncConfigRuntime = {
   exportGlobalKey(input: { confirmed: true }): Promise<string>;
   initializeGlobalKey(input: { key: string }): Promise<DejavuKeyState>;
   load(): Promise<SyncConfigLoadResult>;
+  loadJob(input: { jobId: string }): Promise<SyncJobStatus>;
   loadKeyState(): Promise<DejavuKeyState>;
   listNotebooks(input: { revision: string }): Promise<RemoteNotebookCatalogEntry[]>;
   listDejavuConflictHistory(input: { repositoryId: string }): Promise<SyncConflictRecord[]>;

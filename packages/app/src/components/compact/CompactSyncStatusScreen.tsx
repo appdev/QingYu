@@ -4,6 +4,7 @@ import { sanitizeDiagnosticText, t, type AppLanguage } from "@markra/shared";
 import type { CompactSyncSettingsController } from "../../hooks/useCompactSyncSettings";
 import type { CompactNavigation } from "../../hooks/useCompactNavigation";
 import type { SyncStatus } from "../../lib/sync-config";
+import { CompactRepositoryAccess } from "./CompactRepositoryAccess";
 
 type CompactSyncStatusScreenProps = {
   controller: CompactSyncSettingsController;
@@ -235,6 +236,13 @@ export function CompactSyncStatusScreen({
             {t(language, "compact.sync.edit")}
           </button>
         </div>
+        <CompactRepositoryAccess
+          configDocument={loadResult}
+          dirty={controller.dirty}
+          language={language}
+          primaryRoot={controller.primaryRoot}
+          saving={controller.saving}
+        />
       </div>
     );
   }

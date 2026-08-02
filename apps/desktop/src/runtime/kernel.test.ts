@@ -1353,6 +1353,27 @@ describe("desktop Kernel domain adapter", () => {
           runId: "123e4567-e89b-42d3-a456-426614174060",
         }, 202);
       }
+      if (pathname === "/api/v1/sync/runs/123e4567-e89b-42d3-a456-426614174060") {
+        requests.push({ body: undefined, method: String(init.method), pathname });
+        return jsonResponse({
+          acceptedAt: "2026-07-30T00:00:00Z",
+          completionState: "succeeded",
+          configRevision: "sync-2",
+          error: null,
+          finishedAt: "2026-07-30T00:00:01Z",
+          provider: "s3",
+          runId: "123e4567-e89b-42d3-a456-426614174060",
+          summary: {
+            bytesDownloaded: 1,
+            bytesUploaded: 2,
+            conflictFiles: 0,
+            downloadedFiles: 1,
+            scannedFiles: 3,
+            skippedFiles: 0,
+            uploadedFiles: 2,
+          },
+        });
+      }
       return handshakeResponse(pathname);
     };
     const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
@@ -1391,6 +1412,13 @@ describe("desktop Kernel domain adapter", () => {
     await expect(
       adapter.port.sync.trigger("sync-2" as KernelRevision),
     ).resolves.toMatchObject({ configRevision: "sync-2" });
+    await expect(
+      adapter.port.sync.readRun("123e4567-e89b-42d3-a456-426614174060"),
+    ).resolves.toMatchObject({
+      completionState: "succeeded",
+      configRevision: "sync-2",
+      runId: "123e4567-e89b-42d3-a456-426614174060",
+    });
 
     expect(requests).toEqual([
       { body: undefined, method: "GET", pathname: "/api/v1/settings" },
@@ -1421,6 +1449,11 @@ describe("desktop Kernel domain adapter", () => {
         body: { expectedConfigRevision: "sync-2" },
         method: "POST",
         pathname: "/api/v1/sync/runs",
+      },
+      {
+        body: undefined,
+        method: "GET",
+        pathname: "/api/v1/sync/runs/123e4567-e89b-42d3-a456-426614174060",
       },
     ]);
     expect(JSON.stringify(requests)).not.toContain(CREDENTIAL);

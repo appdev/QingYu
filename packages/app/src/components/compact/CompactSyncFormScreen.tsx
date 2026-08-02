@@ -507,6 +507,9 @@ export function CompactSyncFormScreen({
                   <option value="skip">{t(language, "settings.sync.s3TlsVerification.skip")}</option>
                 </select>
               </Field>
+              <p className="m-0 min-w-0 break-words text-xs leading-5 text-(--text-secondary)">
+                {t(language, "compact.sync.repository.formHint")}
+              </p>
             </div>
           )}
 

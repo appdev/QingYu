@@ -366,4 +366,143 @@ describe("Compact acceptance", () => {
     );
     expect(screen.getByRole("dialog", { name: `Rename ${currentFile.name}` })).toBeInTheDocument();
   });
+
+  it("exposes repository key import from the true-mobile fixed Kernel workspace", async () => {
+    const runtime = createDefaultAppRuntime();
+    const loadKeyState = vi.fn(async () => ({ configured: false }));
+    const initializeGlobalKey = vi.fn(async () => ({ configured: true }));
+    const listNotebooks = vi.fn(async () => [{
+      available: true,
+      disabledReason: null,
+      displayName: "Shared notes",
+      name: "Shared notes",
+      provider: "s3" as const,
+      repositoryId: "00000000-0000-4000-8000-0000000000d1"
+    }]);
+    const bindRepository = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-0000000000d2",
+      notesRoot: managedRoot,
+      repositoryId: "00000000-0000-4000-8000-0000000000d1"
+    }));
+    const loadJob = vi.fn(async () => ({
+      acceptedAt: "2026-08-02T10:00:00Z",
+      completionState: "succeeded" as const,
+      error: null,
+      finishedAt: "2026-08-02T10:00:01Z",
+      jobId: "00000000-0000-4000-8000-0000000000d2",
+      provider: "s3" as const,
+      revision: "sync-mobile-1",
+      summary: {
+        bytesDownloaded: 4,
+        bytesUploaded: 0,
+        conflictFiles: 0,
+        downloadedFiles: 1,
+        scannedFiles: 1,
+        skippedFiles: 0,
+        uploadedFiles: 0
+      }
+    }));
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true, projectSync: true },
+      kernel: { ...runtime.kernel, availability: "available" },
+      platform: {
+        ...runtime.platform,
+        resolveFormFactor: () => "mobile"
+      },
+      syncConfig: {
+        ...runtime.syncConfig,
+        bindRepository,
+        initializeGlobalKey,
+        listNotebooks,
+        load: async () => ({
+          config: {
+            enabled: false,
+            generateConflictDocument: false,
+            intervalSeconds: 30,
+            mode: "automatic",
+            provider: "s3",
+            remoteRoot: "qingyu",
+            s3: {
+              accessKeyId: "",
+              addressingStyle: "auto",
+              bucket: "notes",
+              endpointUrl: "https://s3.example.test",
+              region: "auto",
+              requestTimeoutSeconds: 60,
+              secretAccessKey: "",
+              tlsVerification: "verify"
+            },
+            version: 3,
+            webdav: { password: "", serverUrl: "", username: "" }
+          },
+          configured: true,
+          issues: [],
+          readiness: "disabled",
+          revision: "sync-mobile-1",
+          status: "loaded"
+        }),
+        loadJob,
+        loadKeyState
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
+      }
+    });
+    const currentFile = {
+      name: "Current.md",
+      path: `${managedRoot}/Current.md`,
+      relativePath: "Current.md"
+    };
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: currentFile.path,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [currentFile.path]
+    }));
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([currentFile]);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Current",
+      name: currentFile.name,
+      path: currentFile.path
+    });
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: currentFile.name })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+
+    expect(await screen.findByRole("region", { name: "Repository access" })).toBeVisible();
+    expect(screen.getByText("No repository key has been created on this device.")).toBeVisible();
+    expect(loadKeyState).toHaveBeenCalledOnce();
+
+    fireEvent.change(screen.getByLabelText("Repository key or passphrase"), {
+      target: { value: "creator-key" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import key" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Join notebook" }));
+
+    expect(await screen.findByText("Notebook joined and recovered.")).toBeVisible();
+    expect(initializeGlobalKey).toHaveBeenCalledWith({ key: "creator-key" });
+    expect(listNotebooks).toHaveBeenCalledWith({ revision: "sync-mobile-1" });
+    expect(bindRepository).toHaveBeenCalledWith({
+      displayName: "Shared notes",
+      notesRoot: managedRoot,
+      repositoryId: "00000000-0000-4000-8000-0000000000d1",
+      revision: "sync-mobile-1"
+    });
+    expect(loadJob).toHaveBeenCalledWith({
+      jobId: "00000000-0000-4000-8000-0000000000d2"
+    });
+  });
 });
