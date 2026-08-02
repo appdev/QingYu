@@ -6,7 +6,9 @@ import {
   hasTauriRuntime,
   isMarkdownPath,
   isRecord,
+  markdownDocumentTitleFromFileName,
   normalizeNullableString,
+  normalizeMarkdownDocumentTitle,
   numberedMarkdownDocumentName,
   normalizedExternalAutolinkUrl,
   parentPathFromPath,
@@ -14,7 +16,8 @@ import {
   runtimeDiagnosticEvent,
   sanitizeDiagnosticDetails,
   sanitizeDiagnosticText,
-  stableTextKey
+  stableTextKey,
+  untitledMarkdownDocumentName
 } from ".";
 
 describe("utilities", () => {
@@ -38,6 +41,53 @@ describe("utilities", () => {
     expect(numberedMarkdownDocumentName("Untitled.md", 3)).toBe("Untitled 3.md");
     expect(numberedMarkdownDocumentName("Untitled 1.md", 1)).toBe("Untitled 2.md");
     expect(numberedMarkdownDocumentName("Draft 7.MaRkDoWn", 2)).toBe("Draft 9.MaRkDoWn");
+    expect(numberedMarkdownDocumentName("未命名.md", 7)).toBe("未命名 7.md");
+  });
+
+  it.each([
+    ["Meeting.md", "Meeting"],
+    ["Meeting.markdown", "Meeting"],
+    ["Meeting.MARKDOWN", "Meeting"],
+    ["Ideas", "Ideas"]
+  ])("extracts the title stem from %s", (fileName, expectedTitle) => {
+    expect(markdownDocumentTitleFromFileName(fileName)).toBe(expectedTitle);
+  });
+
+  it.each([
+    ["  launch ✨ plan  ", { ok: true, title: "launch ✨ plan", fileName: "launch ✨ plan.md" }],
+    ["First\r\n\tsecond", { ok: true, title: "First second", fileName: "First second.md" }],
+    [
+      'plan/part\\notes:*?"<>|',
+      { ok: true, title: "plan／part＼notes：＊？＂＜＞｜", fileName: "plan／part＼notes：＊？＂＜＞｜.md" }
+    ],
+    ["Draft...  ", { ok: true, title: "Draft", fileName: "Draft.md" }],
+    ["CON", { ok: true, title: "_CON", fileName: "_CON.md" }]
+  ])("normalizes a document title safely", (input, expected) => {
+    expect(normalizeMarkdownDocumentTitle(input)).toEqual(expected);
+  });
+
+  it.each([
+    ["\r\n\t .", { ok: false, reason: "empty" }],
+    ["a".repeat(252), { ok: true, title: "a".repeat(252), fileName: `${"a".repeat(252)}.md` }],
+    ["a".repeat(253), { ok: false, reason: "too-long" }]
+  ])("reports document title validation errors", (input, expected) => {
+    expect(normalizeMarkdownDocumentTitle(input)).toEqual(expected);
+  });
+
+  it.each([
+    ["en", "Untitled.md"],
+    ["zh-CN", "未命名.md"],
+    ["zh-TW", "未命名.md"],
+    ["ja", "無題.md"],
+    ["ko", "제목 없음.md"],
+    ["fr", "Sans titre.md"],
+    ["de", "Unbenannt.md"],
+    ["es", "Sin título.md"],
+    ["pt-BR", "Sem título.md"],
+    ["it", "Senza titolo.md"],
+    ["ru", "Без названия.md"]
+  ])("returns the localized default document name for %s", (language, expectedName) => {
+    expect(untitledMarkdownDocumentName(language as Parameters<typeof untitledMarkdownDocumentName>[0])).toBe(expectedName);
   });
 
   it("recognizes non-null object records", () => {
