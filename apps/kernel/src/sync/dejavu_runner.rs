@@ -882,9 +882,10 @@ fn prepare_repository_layout(
     let workspace_directory = validated_workspace_directory(workspace.as_ref())?;
     let instance_path = instance_data.canonical_path();
     let workspace_path = workspace.canonical_path();
+    let repository_storage_path = instance_path.join("sync");
     if !path_is_normal_absolute(instance_path)
         || !path_is_normal_absolute(workspace_path)
-        || paths_overlap(instance_path, workspace_path)
+        || paths_overlap(&repository_storage_path, workspace_path)
         || directory_identity(&instance_directory)
             .map_err(|_| DejavuRunError::InvalidConfiguration)?
             == directory_identity(&workspace_directory)

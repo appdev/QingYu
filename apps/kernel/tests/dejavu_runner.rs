@@ -384,6 +384,46 @@ fn overlapping_workspace_and_instance_capabilities_are_rejected() {
     assert_eq!(error, DejavuRunError::InvalidConfiguration);
 }
 
+#[test]
+fn managed_workspace_below_instance_data_is_allowed_beside_repository_storage() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let (_unused_workspace, mut inputs) = runner_inputs(root.path(), "managed-workspace");
+    let instance = root.path().join("instance");
+    let workspace = instance.join("workspaces/primary");
+    fs::create_dir_all(&workspace).expect("managed workspace");
+    inputs.workspace = Arc::new(TestWorkspaceCapability::new(&workspace));
+    inputs.instance_data = Arc::new(TestInstanceDataCapability::new(&instance));
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud)
+        .expect("managed workspace and repository storage are disjoint siblings");
+
+    assert_eq!(
+        runner.remote_prefix(),
+        "qingyu/repositories/323df833-764a-44b3-a534-492640c258f2/repo"
+    );
+}
+
+#[test]
+fn workspace_below_repository_storage_is_rejected() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let (_unused_workspace, mut inputs) = runner_inputs(root.path(), "repository-overlap");
+    let instance = root.path().join("instance");
+    let workspace = instance.join("sync/workspace");
+    fs::create_dir_all(&workspace).expect("overlapping workspace");
+    inputs.workspace = Arc::new(TestWorkspaceCapability::new(&workspace));
+    inputs.instance_data = Arc::new(TestInstanceDataCapability::new(&instance));
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+
+    let Err(error) = KernelDejavuRunner::new_with_cloud(inputs, cloud) else {
+        panic!("workspace inside repository storage must fail closed");
+    };
+
+    assert_eq!(error, DejavuRunError::InvalidConfiguration);
+}
+
 #[tokio::test]
 async fn workspace_syncignore_is_the_only_source_of_ignore_options() {
     let cloud_root = tempfile::tempdir().expect("cloud root");

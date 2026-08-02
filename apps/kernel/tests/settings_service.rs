@@ -451,6 +451,27 @@ fn portable_snapshot_upgrades_missing_export_font_family_without_writing_back() 
 }
 
 #[test]
+fn portable_snapshot_projects_supported_editor_fields_without_rewriting_local_values() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["aiQuickActionPrompts"] = serde_json::json!({ "continue": "local prompt" });
+    editor["showWordCount"] = serde_json::json!(true);
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let snapshot = service.portable_snapshot().expect("portable snapshot");
+    let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+
+    assert_eq!(portable["editorPreferences"]["showWordCount"], true);
+    assert!(portable["editorPreferences"]
+        .get("aiQuickActionPrompts")
+        .is_none());
+    assert_eq!(
+        store.values.lock().unwrap()["editorPreferences"]["aiQuickActionPrompts"],
+        serde_json::json!({ "continue": "local prompt" })
+    );
+}
+
+#[test]
 fn atomic_json_store_survives_reopen_and_preserves_non_portable_values() {
     let root = tempdir().unwrap();
     let workspace = root.path().join("workspace");

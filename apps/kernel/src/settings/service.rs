@@ -680,7 +680,10 @@ impl SettingsService {
                 if is_local_only_storage_group(key, &value) {
                     continue;
                 }
-                let normalized = normalize_portable_value(key, value);
+                let mut normalized = normalize_portable_value(key, value);
+                if key == "editorPreferences" {
+                    retain_value_fields(&mut normalized, EDITOR_PUBLICATION_FIELDS);
+                }
                 portable.insert(key.to_string(), normalized);
             }
         }
