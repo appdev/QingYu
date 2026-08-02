@@ -29,6 +29,7 @@ use tauri::Emitter;
 const MARKDOWN_TREE_LOAD_EVENT: &str = "markra://markdown-tree-load";
 const MARKDOWN_TREE_INITIAL_LOAD_BATCH_SIZE: usize = 128;
 const MARKDOWN_TREE_LOAD_BATCH_SIZE: usize = 1024;
+const MAXIMUM_NEW_MARKDOWN_DOCUMENT_CREATE_ATTEMPTS: usize = 10_000;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -559,6 +560,34 @@ fn normalize_markdown_tree_file_name(file_name: &str) -> Result<String, String> 
     Ok(trimmed_name)
 }
 
+fn numbered_markdown_tree_file_name(file_name: &str, attempt: usize) -> Result<String, String> {
+    if attempt == 0 {
+        return Ok(file_name.to_string());
+    }
+
+    let candidate = Path::new(file_name);
+    let stem = candidate
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Document name is unavailable".to_string())?;
+    let extension = candidate
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Document extension is unavailable".to_string())?;
+    let (base_stem, initial_index) = match stem.rsplit_once(' ') {
+        Some((base, suffix)) if !base.is_empty() => match suffix.parse::<usize>() {
+            Ok(index) => (base, index),
+            Err(_) => (stem, 0),
+        },
+        _ => (stem, 0),
+    };
+    let next_index = initial_index
+        .checked_add(attempt)
+        .ok_or_else(|| "Document name index is unavailable".to_string())?;
+
+    Ok(format!("{base_stem} {next_index}.{extension}"))
+}
+
 fn normalize_markdown_tree_rename_file_name(
     file_name: &str,
     source_path: &Path,
@@ -996,20 +1025,34 @@ pub(crate) fn create_markdown_tree_file(
     let root = canonical_markdown_tree_root(&root_path)?;
     let normalized_file_name = normalize_markdown_tree_file_name(&file_name)?;
     let parent = markdown_tree_target_parent(&root, parent_path)?;
-    let target_path = parent.join(normalized_file_name);
+    let contents = contents.unwrap_or_default();
 
     ensure_markdown_tree_parent(&root, &parent)?;
-    let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
-        target_path.clone(),
-    ])?;
+    for attempt in 0..MAXIMUM_NEW_MARKDOWN_DOCUMENT_CREATE_ATTEMPTS {
+        let target_path = parent.join(numbered_markdown_tree_file_name(
+            &normalized_file_name,
+            attempt,
+        )?);
+        let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
+            target_path.clone(),
+        ])?;
 
-    if target_path.exists() {
-        return Err("File already exists".to_string());
+        if target_path.exists() {
+            continue;
+        }
+
+        match create_trusted_file_atomic(&target_path, contents.as_bytes()) {
+            Ok(()) => {
+                return markdown_folder_file(&root, &target_path, MarkdownFolderEntryKind::File);
+            }
+            Err(_) if target_path.exists() => continue,
+            Err(error) => return Err(error),
+        }
     }
 
-    create_trusted_file_atomic(&target_path, contents.unwrap_or_default().as_bytes())?;
-
-    markdown_folder_file(&root, &target_path, MarkdownFolderEntryKind::File)
+    Err(format!(
+        "Unable to allocate a unique Markdown filename after {MAXIMUM_NEW_MARKDOWN_DOCUMENT_CREATE_ATTEMPTS} attempts."
+    ))
 }
 
 #[tauri::command]
@@ -2024,6 +2067,53 @@ mod tests {
             .expect("image asset should be deleted");
 
         assert!(!assets.join("renamed-image.png").exists());
+
+        fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    #[test]
+    fn allocates_numbered_markdown_tree_file_names_without_overwriting() {
+        assert_eq!(
+            numbered_markdown_tree_file_name("Untitled 1.md", 1)
+                .expect("numbered name should be available"),
+            "Untitled 2.md"
+        );
+
+        let root = std::env::temp_dir().join(format!(
+            "markra-tree-unique-create-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+
+        fs::create_dir_all(&root).expect("test folder should be created");
+        fs::write(root.join("Untitled.md"), "# First").expect("first file should be created");
+        fs::write(root.join("Untitled 1.md"), "# Second").expect("second file should be created");
+
+        let created = create_markdown_tree_file(
+            root.to_string_lossy().to_string(),
+            "Untitled.md".to_string(),
+            None,
+            Some("# Third".to_string()),
+        )
+        .expect("a numbered file should be created");
+
+        assert_eq!(created.relative_path, "Untitled 2.md");
+        assert_eq!(
+            fs::read_to_string(root.join("Untitled.md"))
+                .expect("first file should remain readable"),
+            "# First"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Untitled 1.md"))
+                .expect("second file should remain readable"),
+            "# Second"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Untitled 2.md")).expect("third file should be readable"),
+            "# Third"
+        );
 
         fs::remove_dir_all(root).expect("test tree should be removed");
     }

@@ -2455,8 +2455,11 @@ describe("QingYu workspace", () => {
     expect(screen.queryByText(/Export|Pandoc|MCP|Update|Window chrome/i)).not.toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
-    expect(screen.getByRole("dialog", { name: "New file name" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      kernelWorkspaceRoot,
+      "Untitled.md"
+    ));
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(prompt).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Files" }));
@@ -6591,12 +6594,9 @@ describe("QingYu workspace", () => {
       contextHandlers?.createFile?.();
     });
 
-    const fileNameInput = screen.getByRole("textbox", { name: "New file name" });
-    fireEvent.change(fileNameInput, { target: { value: "Scratch.md" } });
-    fireEvent.keyDown(fileNameInput, { key: "Enter" });
-
     expect(mockedCreateNativeMarkdownTreeFile).not.toHaveBeenCalled();
-    expect(screen.getByRole("tab", { name: /Scratch\.md/ })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Untitled 1\.md/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
   });
 
@@ -6940,8 +6940,8 @@ describe("QingYu workspace", () => {
 
   it("keeps a newly created Windows tree file selected without opening duplicate tabs", async () => {
     const rootPath = "C:\\mock-vault";
-    const treeFilePath = "C:\\mock-vault\\Created.md";
-    const createdFilePath = "\\\\?\\C:\\mock-vault\\Created.md";
+    const treeFilePath = "C:\\mock-vault\\Untitled.md";
+    const createdFilePath = "\\\\?\\C:\\mock-vault\\Untitled.md";
     mockOpenMarkdownFolder({
       path: rootPath,
       name: "mock-vault"
@@ -6949,16 +6949,16 @@ describe("QingYu workspace", () => {
     mockedListNativeMarkdownFilesForPath
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
-        { name: "Created.md", path: treeFilePath, relativePath: "Created.md" }
+        { name: "Untitled.md", path: treeFilePath, relativePath: "Untitled.md" }
       ]);
     mockedCreateNativeMarkdownTreeFile.mockResolvedValue({
-      name: "Created.md",
+      name: "Untitled.md",
       path: createdFilePath,
-      relativePath: "Created.md"
+      relativePath: "Untitled.md"
     });
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => ({
-      content: "# Created\n\nSynthetic note.",
-      name: "Created.md",
+      content: "# Untitled\n\nSynthetic note.",
+      name: "Untitled.md",
       path
     }));
 
@@ -6969,20 +6969,17 @@ describe("QingYu workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-    const fileNameInput = screen.getByRole("textbox", { name: "New file name" });
-    fireEvent.change(fileNameInput, { target: { value: "Created" } });
-    fireEvent.keyDown(fileNameInput, { key: "Enter" });
 
-    const createdTreeButton = await screen.findByRole("button", { name: "Created.md" });
+    const createdTreeButton = await screen.findByRole("button", { name: "Untitled.md" });
     expect(createdTreeButton).toHaveAttribute("aria-current", "page");
-    expect(screen.getAllByRole("tab", { name: /Created\.md/ })).toHaveLength(1);
+    expect(screen.getAllByRole("tab", { name: /Untitled\.md/ })).toHaveLength(1);
 
     fireEvent.click(createdTreeButton);
 
     await waitFor(() =>
-      expect(screen.getAllByRole("tab", { name: /Created\.md/ })).toHaveLength(1)
+      expect(screen.getAllByRole("tab", { name: /Untitled\.md/ })).toHaveLength(1)
     );
-    expect(screen.getByRole("tab", { name: /Created\.md/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /Untitled\.md/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("shows native file tree create and rename errors", async () => {
@@ -7005,9 +7002,6 @@ describe("QingYu workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-    const fileNameInput = screen.getByRole("textbox", { name: "New file name" });
-    fireEvent.change(fileNameInput, { target: { value: "index.md" } });
-    fireEvent.keyDown(fileNameInput, { key: "Enter" });
 
     await waitFor(() => expect(document.querySelector(".app-toast")).toHaveTextContent("Could not create file. File already exists"));
 
@@ -9285,6 +9279,46 @@ describe("QingYu workspace", () => {
 
     await expectVisibleCodeMirrorText(container, "Opened from Home");
     expect(screen.queryByRole("heading", { name: "Welcome to QingYu" })).not.toBeInTheDocument();
+  });
+
+  it("reports Kernel allocation failures from quick document creation", async () => {
+    mockDesktopPrimaryWorkspace({ root: kernelWorkspaceRoot, status: "ready" });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedSaveNativeMarkdownFile.mockRejectedValueOnce(new Error("storage unavailable"));
+
+    renderFreshApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
+
+    await waitFor(() => expect(document.querySelector(".app-toast")).toHaveTextContent(
+      "Could not create file. storage unavailable"
+    ));
+  });
+
+  it("reports an empty Kernel allocation result from quick document creation", async () => {
+    mockDesktopPrimaryWorkspace({ root: kernelWorkspaceRoot, status: "ready" });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValueOnce(null);
+
+    renderFreshApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
+
+    await waitFor(() => expect(document.querySelector(".app-toast")).toHaveTextContent(
+      "Could not create file."
+    ));
   });
 
   it("returns to Workspace Home after the final document closes", async () => {

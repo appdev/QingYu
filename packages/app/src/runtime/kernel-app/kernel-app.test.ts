@@ -235,9 +235,83 @@ describe("Kernel AppRuntime adapter", () => {
     });
   });
 
+  it("uses the same numbered allocation for file-tree and template document creation", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    const collision = Object.assign(new Error("document already exists"), {
+      code: "document_already_exists",
+    });
+    const create: KernelDomainPort["documents"]["create"] = vi.fn(async (input) => {
+      if (input.name !== "Untitled 2.md") throw collision;
+      return {
+        contents: input.kind === "file" ? input.contents : "",
+        kind: "file" as const,
+        locator: "document-3" as never,
+        modifiedAt: "2026-07-31T00:00:00Z",
+        name: input.name,
+        parent: "notes" as never,
+        relativePath: `notes/${input.name}` as never,
+        revision,
+        sizeBytes: input.kind === "file" ? input.contents.length : 0,
+        workspaceGeneration: generation,
+      };
+    });
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: { ...unavailable.documents, create },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const files = createKernelFileRuntime(kernel);
+
+    await expect(files.createMarkdownTreeFile(
+      kernelWorkspaceRoot,
+      "Untitled.md",
+      {
+        contents: "# Template body",
+        parentPath: `${kernelWorkspaceRoot}/notes`,
+      },
+    )).resolves.toMatchObject({
+      name: "Untitled 2.md",
+      path: `${kernelWorkspaceRoot}/notes/Untitled%202.md`,
+      relativePath: "notes/Untitled 2.md",
+    });
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create).toHaveBeenNthCalledWith(1, {
+      contents: "# Template body",
+      kind: "file",
+      name: "Untitled.md",
+      parent: "notes",
+      workspaceGeneration: generation,
+    });
+    expect(create).toHaveBeenNthCalledWith(2, {
+      contents: "# Template body",
+      kind: "file",
+      name: "Untitled 1.md",
+      parent: "notes",
+      workspaceGeneration: generation,
+    });
+    expect(create).toHaveBeenNthCalledWith(3, {
+      contents: "# Template body",
+      kind: "file",
+      name: "Untitled 2.md",
+      parent: "notes",
+      workspaceGeneration: generation,
+    });
+  });
+
   it.each([
     ["Draft.Md", "Draft 1.Md", `${kernelWorkspaceRoot}/Draft%201.Md`],
     ["Draft.MaRkDoWn", "Draft 1.MaRkDoWn", `${kernelWorkspaceRoot}/Draft%201.MaRkDoWn`],
+    ["Draft 1.md", "Draft 2.md", `${kernelWorkspaceRoot}/Draft%202.md`],
   ])(
     "preserves the supported Markdown extension when allocating from %s",
     async (suggestedName, numberedName, expectedPath) => {

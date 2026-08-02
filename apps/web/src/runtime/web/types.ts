@@ -26,6 +26,10 @@ export type WebDirectoryHandle = {
   values?: () => AsyncIterable<WebFileHandle | WebDirectoryHandle>;
 };
 
+export type WebLockManager = {
+  request: <T>(name: string, operation: () => Promise<T>) => Promise<T>;
+};
+
 export type WebDownloadFile = {
   contents: BlobPart;
   name: string;
@@ -38,6 +42,7 @@ export type WebRuntimeOptions = IndexedDbSettingsRuntimeOptions & {
   downloadFile?: (download: WebDownloadFile) => Promise<unknown> | unknown;
   eventTarget?: EventTarget;
   fetch?: typeof fetch;
+  lockManager?: WebLockManager | null;
   openExternalUrl?: (url: string) => Promise<unknown> | unknown;
   pickDirectoryFiles?: () => Promise<File[]>;
   printFile?: (download: WebDownloadFile) => Promise<unknown> | unknown;
