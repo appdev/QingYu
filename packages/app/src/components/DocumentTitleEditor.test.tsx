@@ -41,13 +41,22 @@ describe("DocumentTitleEditor", () => {
     expect(onInput).toHaveBeenCalledWith("A launch plan 🚀");
   });
 
-  it("normalizes hard line breaks in input to spaces", () => {
+  it("normalizes hard line breaks in focused input to one logical line", () => {
     const { onInput, titleEditor } = renderEditor();
 
+    titleEditor.focus();
     titleEditor.textContent = "First line\nSecond line";
     fireEvent.input(titleEditor);
 
     expect(onInput).toHaveBeenCalledWith("First line Second line");
+    expect(titleEditor).toHaveTextContent("First line Second line");
+    expect(titleEditor.textContent).not.toContain("\n");
+    expect(window.getSelection()?.isCollapsed).toBe(true);
+    expect(window.getSelection()?.anchorOffset).toBe("First line Second line".length);
+
+    fireEvent.blur(titleEditor);
+
+    expect(titleEditor).toHaveTextContent("First line Second line");
   });
 
   it("waits for IME composition to finish before reporting input", () => {
@@ -62,6 +71,22 @@ describe("DocumentTitleEditor", () => {
 
     expect(onInput).toHaveBeenCalledTimes(1);
     expect(onInput).toHaveBeenCalledWith("输入中");
+  });
+
+  it("does not publish the same IME value again when the final input event arrives", () => {
+    const { onInput, titleEditor } = renderEditor();
+
+    fireEvent.compositionStart(titleEditor);
+    titleEditor.textContent = "完成";
+    fireEvent.input(titleEditor);
+    fireEvent.compositionEnd(titleEditor);
+    fireEvent.input(titleEditor);
+    titleEditor.textContent = "完成了";
+    fireEvent.input(titleEditor);
+
+    expect(onInput).toHaveBeenCalledTimes(2);
+    expect(onInput).toHaveBeenNthCalledWith(1, "完成");
+    expect(onInput).toHaveBeenNthCalledWith(2, "完成了");
   });
 
   it("commits on Enter without inserting a hard line break", () => {
