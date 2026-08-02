@@ -1216,6 +1216,30 @@ fn public_error_debug_never_echoes_untrusted_strings() {
 }
 
 #[test]
+fn portable_name_required_is_a_stable_safe_sync_error_code() {
+    let safe: SyncSafeErrorDto = serde_json::from_value(json!({
+        "category": "storage",
+        "code": "portable-name-required",
+        "operation": "sync_run",
+        "provider": "s3",
+        "relativePath": "CON.md",
+        "runId": "00000000-0000-4000-8000-000000000012"
+    }))
+    .expect("portable-name-required safe error");
+
+    assert_eq!(safe.code(), "portable-name-required");
+    assert_eq!(safe.category(), Some("storage"));
+    assert_eq!(safe.operation(), "sync_run");
+    assert_eq!(
+        safe.relative_path().map(WorkspaceRelativePath::as_str),
+        Some("CON.md")
+    );
+    let serialized = serde_json::to_string(&safe).expect("serialize safe error");
+    assert!(!serialized.contains("/Users/"));
+    assert!(!serialized.contains(r"C:\Users\"));
+}
+
+#[test]
 fn event_frame_scalars_enforce_protocol_and_sequence_ranges() {
     assert!(ProtocolVersion::new(1).is_ok());
     assert!(ProtocolVersion::new(2).is_err());

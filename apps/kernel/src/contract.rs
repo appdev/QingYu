@@ -2211,6 +2211,7 @@ sync_safe_value_enum!(SyncSafeErrorCode {
     ConnectionFailed => "connection_failed",
     LocalIo => "local_io",
     PermissionDenied => "permission_denied",
+    PortableNameRequired => "portable-name-required",
     RateLimited => "rate_limited",
     RemoteUnavailable => "remote_unavailable",
     RequestFailed => "request_failed",
