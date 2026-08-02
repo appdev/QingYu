@@ -260,8 +260,6 @@ fn destination_is_case_only_source_alias(
     target_metadata: &cap_std::fs::Metadata,
 ) -> Result<bool, String> {
     if source_name == target_name
-        || source_name.to_string_lossy().to_lowercase()
-            != target_name.to_string_lossy().to_lowercase()
         || crate::storage_capability::directory_identity(source_parent)
             .map_err(|error| error.to_string())?
             != crate::storage_capability::directory_identity(target_parent)
@@ -526,6 +524,29 @@ mod tests {
                 .map(|entry| entry.expect("fixture entry should be readable").file_name())
                 .collect::<Vec<_>>(),
             vec![std::ffi::OsString::from("Note.md")]
+        );
+    }
+
+    #[test]
+    fn move_trusted_path_allows_a_filesystem_equivalent_unicode_case_change() {
+        let root = tempfile::tempdir().expect("fixture should be created");
+        let source_path = root.path().join("ẞ.md");
+        let target_path = root.path().join("ss.md");
+        std::fs::write(&source_path, b"unicode case rename").expect("source should be created");
+
+        move_trusted_path_noreplace(&source_path, &target_path)
+            .expect("filesystem-equivalent Unicode case rename should succeed");
+
+        assert_eq!(
+            std::fs::read(&target_path).expect("renamed file should remain readable"),
+            b"unicode case rename"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("fixture directory should be readable")
+                .map(|entry| entry.expect("fixture entry should be readable").file_name())
+                .collect::<Vec<_>>(),
+            vec![std::ffi::OsString::from("ss.md")]
         );
     }
 
