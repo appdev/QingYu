@@ -279,6 +279,23 @@ function PrimaryRootRow({
   );
 }
 
+function downloadRepositoryKey(key: string) {
+  const blob = new Blob([key], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = window.document.createElement("a");
+  link.href = url;
+  link.download = "qingyu-repository-key.txt";
+  link.rel = "noopener";
+  link.style.display = "none";
+  try {
+    window.document.body.appendChild(link);
+    link.click();
+  } finally {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+}
+
 export function SyncSettings({
   configDocument,
   dejavuSyncAvailable,
@@ -325,6 +342,10 @@ export function SyncSettings({
   const visibleOverlays = revisionVisible && draft ? draft.overlays : {};
   const failedOverlays = overlayValues(visibleOverlays).filter((overlay) => overlay.status === "failed");
   const hasUncommittedDraft = overlayValues(visibleOverlays).length > 0;
+  const downloadsRepositoryKey = window.isSecureContext === false;
+  const exportKeyAction = downloadsRepositoryKey
+    ? "settings.sync.key.download"
+    : "settings.sync.key.export";
 
   useEffect(() => {
     if (!dejavuSyncAvailable) {
@@ -607,15 +628,23 @@ export function SyncSettings({
     }
   };
   const exportGlobalKey = async () => {
+    const confirmation = downloadsRepositoryKey
+      ? "settings.sync.key.downloadConfirm"
+      : "settings.sync.key.exportConfirm";
     if (
       !dejavuSyncAvailable
-      || !window.confirm(translate("settings.sync.key.exportConfirm"))
+      || !window.confirm(translate(confirmation))
     ) return;
     setKeyFeedback(null);
     try {
       const key = await getAppRuntime().syncConfig.exportGlobalKey({ confirmed: true });
-      await navigator.clipboard.writeText(key);
-      setKeyFeedback(translate("settings.sync.key.copied"));
+      if (downloadsRepositoryKey) {
+        downloadRepositoryKey(key);
+        setKeyFeedback(translate("settings.sync.key.downloaded"));
+      } else {
+        await navigator.clipboard.writeText(key);
+        setKeyFeedback(translate("settings.sync.key.copied"));
+      }
     } catch {
       setKeyFeedback(translate("settings.sync.operationFailed"));
     }
@@ -717,10 +746,10 @@ export function SyncSettings({
                 </SettingsButton>
                 <SettingsButton
                   disabled={!dejavuKeyState?.configured || pendingRepositoryOperation === "key"}
-                  label={translate("settings.sync.key.export")}
+                  label={translate(exportKeyAction)}
                   onClick={exportGlobalKey}
                 >
-                  {translate("settings.sync.key.export")}
+                  {translate(exportKeyAction)}
                 </SettingsButton>
               </div>
             }

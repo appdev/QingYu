@@ -178,8 +178,58 @@ function renderS3Settings() {
   })} />);
 }
 
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
+function restoreClipboard() {
+  if (originalClipboardDescriptor) {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor);
+    return;
+  }
+  Reflect.deleteProperty(navigator, "clipboard");
+}
+
+function configureKeyExportRuntime(exportedKey: string) {
+  const runtime = createDefaultAppRuntime();
+  const exportGlobalKey = vi.fn(async () => exportedKey);
+  runtime.syncConfig.exportGlobalKey = exportGlobalKey;
+  runtime.syncConfig.loadKeyState = vi.fn(async () => ({ configured: true }));
+  runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => null);
+  configureAppRuntime(runtime);
+
+  return exportGlobalKey;
+}
+
+function installClipboard(writeText: (text: string) => Promise<unknown>) {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText }
+  });
+}
+
+async function configuredKeyAction(name: string) {
+  const action = await screen.findByRole("button", { name });
+  await waitFor(() => expect(action).toBeEnabled());
+  return action;
+}
+
+async function blobText(blob: Blob) {
+  if (typeof blob.text === "function") return blob.text();
+
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.addEventListener("load", () => resolve(String(reader.result)));
+    reader.readAsText(blob);
+  });
+}
+
 describe("SyncSettings application scope", () => {
-  afterEach(() => resetAppRuntimeForTests());
+  afterEach(() => {
+    resetAppRuntimeForTests();
+    restoreClipboard();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it("groups S3 settings from basic choices through connection status", () => {
     const s3Document = document({ config: { ...config, provider: "s3" } });
@@ -381,6 +431,137 @@ describe("SyncSettings application scope", () => {
       resetAppRuntimeForTests();
       vi.restoreAllMocks();
     }
+  });
+
+  it("copies a confirmed repository key only through the secure-context clipboard", async () => {
+    const exportedKey = "test-repository-key-material";
+    const exportGlobalKey = configureKeyExportRuntime(exportedKey);
+    const writeText = vi.fn(async () => undefined);
+    installClipboard(writeText);
+    vi.stubGlobal("isSecureContext", true);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction("Copy key"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(exportedKey));
+    expect(confirm).toHaveBeenCalledWith(
+      "Copy the repository key to the clipboard? Anyone with this key can read the encrypted repository."
+    );
+    expect(exportGlobalKey).toHaveBeenCalledWith({ confirmed: true });
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(await screen.findByText("Repository key copied.")).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+  });
+
+  it("downloads a confirmed repository key from a non-secure HTTP context without exposing it in the DOM", async () => {
+    const exportedKey = "test-repository-key-material";
+    const exportGlobalKey = configureKeyExportRuntime(exportedKey);
+    vi.stubGlobal("isSecureContext", false);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:key-export");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const clickedLink = { current: null as HTMLAnchorElement | null };
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clickedLink.current = this;
+    });
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction("Download key"));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledOnce());
+    expect(confirm).toHaveBeenCalledWith(
+      "Download the repository key as a plaintext file? Anyone with this file can read the encrypted repository. Store it securely."
+    );
+    expect(exportGlobalKey).toHaveBeenCalledWith({ confirmed: true });
+    const blob = createObjectURL.mock.calls[0]?.[0] as Blob;
+    expect(blob.type).toBe("text/plain;charset=utf-8");
+    await expect(blobText(blob)).resolves.toBe(exportedKey);
+    expect(clickedLink.current).toMatchObject({
+      download: "qingyu-repository-key.txt",
+      href: "blob:key-export",
+      rel: "noopener"
+    });
+    expect(clickedLink.current?.textContent).toBe("");
+    expect(clickedLink.current?.isConnected).toBe(false);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:key-export");
+    expect(await screen.findByText("Repository key downloaded.")).toBeVisible();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+  });
+
+  it.each([
+    { action: "Copy key", secure: true },
+    { action: "Download key", secure: false }
+  ])("does not read or release the repository key when $action confirmation is cancelled", async ({ action, secure }) => {
+    const exportedKey = "test-repository-key-material";
+    const exportGlobalKey = configureKeyExportRuntime(exportedKey);
+    const writeText = vi.fn(async () => undefined);
+    installClipboard(writeText);
+    vi.stubGlobal("isSecureContext", secure);
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction(action));
+
+    await Promise.resolve();
+    expect(exportGlobalKey).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(screen.queryByText("Repository key copied.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Repository key downloaded.")).not.toBeInTheDocument();
+    expect(screen.queryByText("The operation could not be started.")).not.toBeInTheDocument();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+  });
+
+  it("fails closed when a secure-context clipboard write is rejected", async () => {
+    const exportedKey = "test-repository-key-material";
+    const exportGlobalKey = configureKeyExportRuntime(exportedKey);
+    const writeText = vi.fn(async () => Promise.reject(
+      new DOMException("Clipboard denied", "NotAllowedError")
+    ));
+    installClipboard(writeText);
+    vi.stubGlobal("isSecureContext", true);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction("Copy key"));
+
+    expect(await screen.findByText("The operation could not be started.")).toBeVisible();
+    expect(exportGlobalKey).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith(exportedKey);
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain(exportedKey);
+  });
+
+  it("cleans up a non-secure key download that the browser rejects without disclosing the key", async () => {
+    const exportedKey = "test-repository-key-material";
+    configureKeyExportRuntime(exportedKey);
+    vi.stubGlobal("isSecureContext", false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:key-export");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const clickedLink = { current: null as HTMLAnchorElement | null };
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clickedLink.current = this;
+      throw new Error("Download blocked");
+    });
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction("Download key"));
+
+    expect(await screen.findByText("The operation could not be started.")).toBeVisible();
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:key-export");
+    expect(clickedLink.current?.isConnected).toBe(false);
+    expect(globalThis.document.body.querySelector('a[download="qingyu-repository-key.txt"]')).toBeNull();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+    expect(consoleError.mock.calls.flat().join(" ")).not.toContain(exportedKey);
   });
 
   it("shows the active Dejavu phase trigger attempt time and next schedule", async () => {
