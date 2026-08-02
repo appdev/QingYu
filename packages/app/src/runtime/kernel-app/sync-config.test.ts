@@ -3,6 +3,7 @@ import {
   createUnavailableKernelDomainPort,
   type KernelDomainPort,
   type KernelRevision,
+  type KernelWorkspaceRelativePath,
 } from "../index";
 
 import { createKernelSyncConfigRuntime } from "./sync-config";
@@ -21,9 +22,16 @@ function createKernel(completionState: "failed" | "succeeded"): KernelDomainPort
         completionState,
         configRevision: revision,
         error: completionState === "failed" ? {
-          code: "sync-run-failed",
-          operation: "sync",
+          category: "configuration",
+          code: "configuration_invalid",
+          httpStatus: 400,
+          method: "PUT",
+          operation: "sync_run",
           provider: "s3" as const,
+          providerErrorCode: "InvalidRequest",
+          relativePath: "notes/note.md" as KernelWorkspaceRelativePath,
+          requestId: "request-1",
+          runId: "run-1",
         } : null,
         lastAttemptAt: "2026-07-31T00:00:00Z",
         lastSuccessfulSyncAt: completionState === "succeeded"
@@ -95,11 +103,34 @@ describe("Kernel sync apply settlement", () => {
   it("settles an exact settings apply after Kernel failure", async () => {
     const { runtime, settleApply } = createRuntime("failed");
 
-    await expect(runtime.sync(request)).rejects.toThrow("sync-run-failed");
+    await expect(runtime.sync(request)).rejects.toMatchObject({ code: "run-failed" });
     expect(settleApply).toHaveBeenCalledWith({
       outcome: { status: "failed" },
       revision,
       token: "apply-1",
+    });
+  });
+
+  it("preserves the complete safe Kernel failure on a failed run", async () => {
+    const { runtime } = createRuntime("failed");
+
+    const error = await runtime.sync(request).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "run-failed",
+      runError: {
+        category: "configuration",
+        code: "configuration_invalid",
+        httpStatus: 400,
+        method: "PUT",
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: "InvalidRequest",
+        relativePath: "notes/note.md",
+        requestId: "request-1",
+        runId: "run-1",
+      },
     });
   });
 
@@ -130,7 +161,19 @@ describe("Kernel sync apply settlement", () => {
 
     expect(error).toMatchObject({
       code: "apply-settlement-failed",
-      runError: expect.objectContaining({ code: "run-failed" }),
+      runError: {
+        category: "configuration",
+        code: "configuration_invalid",
+        httpStatus: 400,
+        method: "PUT",
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: "InvalidRequest",
+        relativePath: "notes/note.md",
+        requestId: "request-1",
+        runId: "run-1",
+      },
       settlementError,
     });
   });

@@ -9,6 +9,7 @@ import type {
   SyncConfigDocument,
   SyncConfigPatch,
   SyncDispatchResult,
+  SyncSafeError,
   SyncStatus,
 } from "../index";
 
@@ -77,9 +78,11 @@ export function createKernelSyncConfigRuntime(
         }
         const status = await waitForTerminalRun(kernel, run, options);
         if (status.completionState !== "succeeded" || status.summary === null) {
+          const safeError = status.error === null ? null : mapSyncSafeError(status.error);
           throw new KernelSyncRunError(
             "run-failed",
-            status.error?.code ?? "sync-run-failed",
+            safeError?.code ?? "sync-run-failed",
+            { runError: safeError },
           );
         }
         const notesRoot = "notesRoot" in input ? input.notesRoot : kernelWorkspaceRoot;
@@ -179,9 +182,13 @@ async function settleKernelSyncApply(
     throw new KernelSyncRunError(
       "apply-settlement-failed",
       "sync-apply-settlement-failed",
-      { runError, settlementError },
+      { runError: terminalRunError(runError), settlementError },
     );
   }
+}
+
+function terminalRunError(runError: unknown): unknown {
+  return runError instanceof KernelSyncRunError ? runError.runError : runError;
 }
 
 async function waitForTerminalRun(
@@ -335,19 +342,7 @@ function mapStatus(
   }
   return {
     completionState: status.completionState,
-    error: status.error === null ? null : {
-      category: syncErrorCategory(status.error.category),
-      code: status.error.code,
-      httpStatus: status.error.httpStatus ?? null,
-      method: status.error.method ?? null,
-      objectId: null,
-      operation: status.error.operation,
-      provider: status.error.provider,
-      providerErrorCode: status.error.providerErrorCode ?? null,
-      relativePath: status.error.relativePath ?? null,
-      requestId: status.error.requestId ?? null,
-      runId: status.error.runId ?? null,
-    },
+    error: status.error === null ? null : mapSyncSafeError(status.error),
     lastAttemptAt: status.lastAttemptAt,
     lastSuccessfulSyncAt: status.lastSuccessfulSyncAt,
     lastTrigger: status.lastTrigger,
@@ -360,12 +355,33 @@ function mapStatus(
   };
 }
 
+function mapSyncSafeError(
+  error: NonNullable<Awaited<ReturnType<KernelDomainPort["sync"]["readStatus"]>>["error"]>,
+): SyncSafeError {
+  return {
+    category: syncErrorCategory(error.category),
+    code: error.code,
+    httpStatus: error.httpStatus ?? null,
+    method: error.method ?? null,
+    objectId: null,
+    operation: error.operation,
+    provider: error.provider,
+    providerErrorCode: error.providerErrorCode ?? null,
+    relativePath: error.relativePath ?? null,
+    requestId: error.requestId ?? null,
+    runId: error.runId ?? null,
+  };
+}
+
 function syncErrorCategory(
   category: string | undefined,
-): "http" | "integrity" | "local" | "transport" | null {
+): SyncSafeError["category"] {
   if (
-    category === "http" || category === "integrity" ||
-    category === "local" || category === "transport"
+    category === "authentication" || category === "authorization" ||
+    category === "configuration" || category === "conflict" ||
+    category === "http" || category === "integrity" || category === "local" ||
+    category === "network" || category === "provider" || category === "storage" ||
+    category === "transport"
   ) {
     return category;
   }

@@ -60,18 +60,18 @@ struct LegacyRepositoryBinding {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ServerLocalSyncState<'a> {
+struct FixedLocalSyncState<'a> {
     version: u32,
     device_id: &'a str,
     repo_key: &'a str,
-    bindings: [ServerRepositoryBinding<'a>; 1],
+    bindings: [FixedRepositoryBinding<'a>; 1],
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ServerRepositoryBinding<'a> {
+struct FixedRepositoryBinding<'a> {
     repository_id: &'a str,
-    display_name: &'static str,
+    display_name: &'a str,
     notes_root: &'a std::path::Path,
     enabled: bool,
 }
@@ -110,7 +110,30 @@ pub(crate) fn initialize_server_dejavu_binding(
     workspace: &ActiveWorkspaceAuthority,
     launch_epoch: &KernelLaunchEpoch,
 ) -> Result<(), DejavuLocalStateError> {
-    verify_server_authorities(instance, workspace)?;
+    initialize_fixed_dejavu_binding(
+        instance,
+        workspace,
+        launch_epoch,
+        SERVER_WORKSPACE_DISPLAY_NAME,
+    )
+}
+
+pub(crate) fn initialize_native_dejavu_binding(
+    instance: &ActiveInstanceAuthority,
+    workspace: &ActiveWorkspaceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+    display_name: &str,
+) -> Result<(), DejavuLocalStateError> {
+    initialize_fixed_dejavu_binding(instance, workspace, launch_epoch, display_name)
+}
+
+fn initialize_fixed_dejavu_binding(
+    instance: &ActiveInstanceAuthority,
+    workspace: &ActiveWorkspaceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+    display_name: &str,
+) -> Result<(), DejavuLocalStateError> {
+    verify_fixed_authorities(instance, workspace)?;
     let store = DurableFileStore::at_instance_data(instance.root(), launch_epoch)
         .map_err(|_| DejavuLocalStateError::Storage)?;
     let target = StorageFileName::parse(LOCAL_SYNC_STATE_FILE)
@@ -134,7 +157,7 @@ pub(crate) fn initialize_server_dejavu_binding(
         .map_err(|_| DejavuLocalStateError::Storage)?
         .is_some()
     {
-        return require_active_server_binding(instance, workspace);
+        return require_active_fixed_binding(instance, workspace);
     }
 
     let repository_id = uuid::Uuid::new_v4().to_string();
@@ -142,13 +165,13 @@ pub(crate) fn initialize_server_dejavu_binding(
     let mut repository_key = Zeroizing::new([0_u8; 32]);
     getrandom::fill(repository_key.as_mut()).map_err(|_| DejavuLocalStateError::Storage)?;
     let repository_key_base64 = Zeroizing::new(STANDARD.encode(repository_key.as_slice()));
-    let state = ServerLocalSyncState {
+    let state = FixedLocalSyncState {
         version: LOCAL_SYNC_STATE_VERSION,
         device_id: &device_id,
         repo_key: repository_key_base64.as_str(),
-        bindings: [ServerRepositoryBinding {
+        bindings: [FixedRepositoryBinding {
             repository_id: &repository_id,
-            display_name: SERVER_WORKSPACE_DISPLAY_NAME,
+            display_name,
             notes_root: workspace.root().canonical_path(),
             enabled: true,
         }],
@@ -167,28 +190,28 @@ pub(crate) fn initialize_server_dejavu_binding(
                 expected: ExpectedFile::Absent,
                 preserve_previous: PreservePrevious::None,
             },
-            || verify_server_authorities(instance, workspace).is_ok(),
+            || verify_fixed_authorities(instance, workspace).is_ok(),
         )
         .map_err(|_| DejavuLocalStateError::Storage)?;
     bytes.fill(0);
     if outcome.commit_state == CommitState::PublishedDurabilityUncertain {
         return Err(DejavuLocalStateError::Storage);
     }
-    require_active_server_binding(instance, workspace)
+    require_active_fixed_binding(instance, workspace)
 }
 
-fn require_active_server_binding(
+fn require_active_fixed_binding(
     instance: &ActiveInstanceAuthority,
     workspace: &ActiveWorkspaceAuthority,
 ) -> Result<(), DejavuLocalStateError> {
-    verify_server_authorities(instance, workspace)?;
+    verify_fixed_authorities(instance, workspace)?;
     if read_active_dejavu_binding(instance.root(), workspace.root())?.is_none() {
         return Err(DejavuLocalStateError::InvalidState);
     }
-    verify_server_authorities(instance, workspace)
+    verify_fixed_authorities(instance, workspace)
 }
 
-fn verify_server_authorities(
+fn verify_fixed_authorities(
     instance: &ActiveInstanceAuthority,
     workspace: &ActiveWorkspaceAuthority,
 ) -> Result<(), DejavuLocalStateError> {

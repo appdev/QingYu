@@ -41,7 +41,10 @@ use crate::{
         storage::AtomicJsonSettingsStore,
     },
     storage::DurableFileStore,
-    sync::{config::SyncConfigStore, executor::ProductionSyncExecutor},
+    sync::{
+        config::SyncConfigStore, executor::ProductionSyncExecutor,
+        local_state::initialize_native_dejavu_binding,
+    },
     workspace::{
         managed::ManagedWorkspaceCollection,
         primary::{FixedPrimaryWorkspaceStore, PrimaryWorkspaceStore},
@@ -323,9 +326,20 @@ async fn compose_fixed_native_kernel_services(
             FixedPrimaryWorkspaceStore::new(workspace_state).map_err(|_| NativeCompositionError)?,
         ),
         managed,
-        display_name,
+        display_name.clone(),
     )
     .await
+    .map_err(|_| NativeCompositionError)?;
+    let workspace = runtime
+        .active_workspace_authority()
+        .map_err(|_| NativeCompositionError)?;
+    let instance = runtime.active_instance_authority();
+    initialize_native_dejavu_binding(
+        instance.as_ref(),
+        workspace.as_ref(),
+        runtime.launch_epoch(),
+        &display_name,
+    )
     .map_err(|_| NativeCompositionError)?;
     Ok((runtime, services))
 }
@@ -556,7 +570,7 @@ mod tests {
             KernelSyncTriggerDisposition, KernelSyncTriggerRejection, SyncExecutionError,
             SyncExecutor, SyncRunContext,
         },
-        sync::config::SyncConfig,
+        sync::{config::SyncConfig, local_state::read_active_dejavu_binding},
     };
 
     #[derive(Default)]
@@ -596,6 +610,38 @@ mod tests {
         let state = NativeHostWorkspaceState::for_workspace(&workspace, "Native").unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
         (paths, state, app_data)
+    }
+
+    #[tokio::test]
+    async fn fresh_desktop_native_composition_provisions_a_stable_dejavu_binding() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, app_data) = native_fixture(temporary.path());
+        let runtime = compose_fixed_native_kernel(KernelConfig::generate().unwrap(), paths, state)
+            .await
+            .unwrap();
+        let workspace = runtime.active_workspace_snapshot().unwrap();
+        assert!(read_active_dejavu_binding(
+            runtime.instance_data_root(),
+            workspace.authority().root(),
+        )
+        .unwrap()
+        .is_some());
+        assert!(app_data.join("local-sync.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn fresh_mobile_native_composition_provisions_a_dejavu_binding() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        fs::create_dir(&app_data).unwrap();
+        fs::create_dir(&cache).unwrap();
+        let paths = KernelPaths::mobile(&app_data, &cache, "primary").unwrap();
+        let _launch =
+            compose_fixed_mobile_kernel(KernelConfig::generate().unwrap(), paths, "QingYu")
+                .await
+                .unwrap();
+        assert!(app_data.join("local-sync.json").is_file());
     }
 
     fn write_startup_exit_config(app_data: &std::path::Path) {
