@@ -17,13 +17,16 @@
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
+    "@decimalturn/toml-patch": "3.0.0",
     "@markra/shared": "workspace:*",
     "@tauri-apps/api": "2.11.0",
+    "jsonc-parser": "3.3.1",
     "mdast-util-to-string": "4.0.0",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
     "remark-parse": "11.0.0",
-    "unified": "11.0.5"
+    "unified": "11.0.5",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/node": "24.10.0",
