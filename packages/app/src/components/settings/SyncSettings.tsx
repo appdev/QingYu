@@ -283,16 +283,19 @@ function downloadRepositoryKey(key: string) {
   const blob = new Blob([key], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = window.document.createElement("a");
-  link.href = url;
-  link.download = "qingyu-repository-key.txt";
-  link.rel = "noopener";
-  link.style.display = "none";
   try {
+    link.href = url;
+    link.download = "qingyu-repository-key.txt";
+    link.rel = "noopener";
+    link.style.display = "none";
     window.document.body.appendChild(link);
     link.click();
   } finally {
-    link.remove();
-    URL.revokeObjectURL(url);
+    try {
+      link.remove();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 }
 
@@ -342,7 +345,10 @@ export function SyncSettings({
   const visibleOverlays = revisionVisible && draft ? draft.overlays : {};
   const failedOverlays = overlayValues(visibleOverlays).filter((overlay) => overlay.status === "failed");
   const hasUncommittedDraft = overlayValues(visibleOverlays).length > 0;
-  const downloadsRepositoryKey = window.isSecureContext === false;
+  const runtime = getAppRuntime();
+  const downloadsRepositoryKey = window.isSecureContext === false
+    && runtime.features.nativeWindowChrome === false
+    && runtime.platform.resolveFormFactor() === "desktop";
   const exportKeyAction = downloadsRepositoryKey
     ? "settings.sync.key.download"
     : "settings.sync.key.export";

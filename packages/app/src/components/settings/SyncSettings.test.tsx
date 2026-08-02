@@ -188,12 +188,16 @@ function restoreClipboard() {
   Reflect.deleteProperty(navigator, "clipboard");
 }
 
-function configureKeyExportRuntime(exportedKey: string) {
+function configureKeyExportRuntime(
+  exportedKey: string,
+  configure?: (runtime: ReturnType<typeof createDefaultAppRuntime>) => unknown
+) {
   const runtime = createDefaultAppRuntime();
   const exportGlobalKey = vi.fn(async () => exportedKey);
   runtime.syncConfig.exportGlobalKey = exportGlobalKey;
   runtime.syncConfig.loadKeyState = vi.fn(async () => ({ configured: true }));
   runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => null);
+  configure?.(runtime);
   configureAppRuntime(runtime);
 
   return exportGlobalKey;
@@ -450,6 +454,7 @@ describe("SyncSettings application scope", () => {
       "Copy the repository key to the clipboard? Anyone with this key can read the encrypted repository."
     );
     expect(exportGlobalKey).toHaveBeenCalledWith({ confirmed: true });
+    expect(confirm.mock.invocationCallOrder[0]).toBeLessThan(exportGlobalKey.mock.invocationCallOrder[0]);
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(await screen.findByText("Repository key copied.")).toBeVisible();
     expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
@@ -475,6 +480,7 @@ describe("SyncSettings application scope", () => {
       "Download the repository key as a plaintext file? Anyone with this file can read the encrypted repository. Store it securely."
     );
     expect(exportGlobalKey).toHaveBeenCalledWith({ confirmed: true });
+    expect(confirm.mock.invocationCallOrder[0]).toBeLessThan(exportGlobalKey.mock.invocationCallOrder[0]);
     const blob = createObjectURL.mock.calls[0]?.[0] as Blob;
     expect(blob.type).toBe("text/plain;charset=utf-8");
     await expect(blobText(blob)).resolves.toBe(exportedKey);
@@ -538,6 +544,56 @@ describe("SyncSettings application scope", () => {
     expect(consoleError.mock.calls.flat().join(" ")).not.toContain(exportedKey);
   });
 
+  it.each([
+    {
+      configure: (runtime: ReturnType<typeof createDefaultAppRuntime>) => {
+        runtime.features = { ...runtime.features, nativeWindowChrome: true };
+        runtime.platform = { ...runtime.platform, resolveFormFactor: () => "desktop" };
+      },
+      runtimeKind: "desktop native"
+    },
+    {
+      configure: (runtime: ReturnType<typeof createDefaultAppRuntime>) => {
+        runtime.features = { ...runtime.features, nativeWindowChrome: false };
+        runtime.platform = { ...runtime.platform, resolveFormFactor: () => "mobile" };
+      },
+      runtimeKind: "mobile native"
+    }
+  ])("keeps $runtimeKind key export on the clipboard when its WebView reports a non-secure context", async ({ configure }) => {
+    const exportedKey = "test-repository-key-material";
+    const exportGlobalKey = configureKeyExportRuntime(exportedKey, configure);
+    const writeText = vi.fn(async () => undefined);
+    installClipboard(writeText);
+    vi.stubGlobal("isSecureContext", false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction("Copy key"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(exportedKey));
+    expect(exportGlobalKey).toHaveBeenCalledWith({ confirmed: true });
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+  });
+
+  it("keeps an unspecified secure-context capability on the fail-closed clipboard path", async () => {
+    const exportedKey = "test-repository-key-material";
+    configureKeyExportRuntime(exportedKey);
+    const writeText = vi.fn(async () => undefined);
+    installClipboard(writeText);
+    vi.stubGlobal("isSecureContext", undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const createObjectURL = vi.spyOn(URL, "createObjectURL");
+
+    renderS3Settings();
+    fireEvent.click(await configuredKeyAction("Copy key"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(exportedKey));
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+  });
+
   it("cleans up a non-secure key download that the browser rejects without disclosing the key", async () => {
     const exportedKey = "test-repository-key-material";
     configureKeyExportRuntime(exportedKey);
@@ -562,6 +618,34 @@ describe("SyncSettings application scope", () => {
     expect(globalThis.document.body.querySelector('a[download="qingyu-repository-key.txt"]')).toBeNull();
     expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
     expect(consoleError.mock.calls.flat().join(" ")).not.toContain(exportedKey);
+  });
+
+  it("revokes a non-secure key Blob URL even when anchor removal fails", async () => {
+    const exportedKey = "test-repository-key-material";
+    configureKeyExportRuntime(exportedKey);
+    vi.stubGlobal("isSecureContext", false);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:key-export");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const clickedLink = { current: null as HTMLAnchorElement | null };
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clickedLink.current = this;
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "remove").mockImplementationOnce(() => {
+      throw new Error("Anchor removal blocked");
+    });
+
+    try {
+      renderS3Settings();
+      fireEvent.click(await configuredKeyAction("Download key"));
+
+      expect(await screen.findByText("The operation could not be started.")).toBeVisible();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:key-export");
+      expect(globalThis.document.body).not.toHaveTextContent(exportedKey);
+    } finally {
+      const link = clickedLink.current;
+      if (link?.parentNode) link.parentNode.removeChild(link);
+    }
   });
 
   it("shows the active Dejavu phase trigger attempt time and next schedule", async () => {

@@ -4,7 +4,7 @@
 
 **Goal:** Make confirmed global repository key export work on the deployed LAN HTTP Web client without leaking key material or changing secure/native clipboard semantics.
 
-**Architecture:** `SyncSettings` selects the delivery mechanism at the presentation boundary. Explicit non-secure contexts use a one-shot Blob download; secure or unspecified contexts retain the existing clipboard operation and fail closed when it is unavailable.
+**Architecture:** `SyncSettings` selects the delivery mechanism at the presentation boundary. An explicit non-secure desktop Web runtime uses a one-shot Blob download; secure, unspecified, desktop-native, and mobile-native contexts retain the existing clipboard operation and fail closed when it is unavailable.
 
 **Tech Stack:** React, TypeScript, Vitest, Testing Library, browser Blob/Object URL/download APIs, pnpm workspace.
 
@@ -25,7 +25,7 @@
 
 **Interfaces:**
 - Consumes: `SyncSettings`, `AppSyncConfigRuntime.exportGlobalKey`, `window.confirm`, `window.isSecureContext`, `navigator.clipboard`, `URL.createObjectURL`, and `URL.revokeObjectURL`.
-- Produces: behavioral tests for secure copy, HTTP download, cancellation, cleanup, and secret non-disclosure.
+- Produces: behavioral tests for secure copy, HTTP Web download, native/unspecified context preservation, cancellation, cleanup, and secret non-disclosure.
 
 - [ ] **Step 1: Add a secure-context clipboard regression test**
 
@@ -82,9 +82,9 @@ expect(revokeObjectURL).toHaveBeenCalledWith("blob:key-export");
 expect(document.body).not.toHaveTextContent(exportedKey);
 ```
 
-- [ ] **Step 3: Add negative security tests**
+- [ ] **Step 3: Add negative security and native-boundary tests**
 
-Cover confirmation cancellation for both branches, secure clipboard rejection, and a throwing download click. Assert cancellation performs no runtime export or delivery, secure failure does not create an Object URL, download failure still revokes/removes, feedback stays generic, and neither errors nor `console` calls contain the fixture key.
+Cover confirmation cancellation for both branches, confirmation-before-export ordering, secure clipboard rejection, native WebViews that explicitly report a non-secure context, an unspecified secure-context capability, a throwing download click, and throwing anchor cleanup. Assert cancellation performs no runtime export or delivery, native and secure failures do not create an Object URL, download failures still revoke the Object URL, feedback stays generic, and neither errors nor `console` calls contain the fixture key.
 
 ```tsx
 vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -160,18 +160,24 @@ function downloadRepositoryKey(key: string) {
     document.body.appendChild(link);
     link.click();
   } finally {
-    link.remove();
-    URL.revokeObjectURL(url);
+    try {
+      link.remove();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 }
 ```
 
-- [ ] **Step 3: Branch only on explicit non-secure context**
+- [ ] **Step 3: Branch only on an explicit non-secure desktop Web context**
 
-Derive the branch from `window.isSecureContext === false`. Select the matching label and confirmation before reading the key. After confirmed export, call the download helper for non-secure HTTP; otherwise require and await `navigator.clipboard.writeText`. Preserve the existing generic catch behavior.
+Derive the branch from `window.isSecureContext === false` plus the Web runtime boundary (`nativeWindowChrome === false` and desktop form factor). Select the matching label and confirmation before reading the key. After confirmed export, call the download helper for non-secure HTTP Web; otherwise require and await `navigator.clipboard.writeText`. Preserve the existing generic catch behavior.
 
 ```ts
-const downloadsRepositoryKey = window.isSecureContext === false;
+const runtime = getAppRuntime();
+const downloadsRepositoryKey = window.isSecureContext === false
+  && runtime.features.nativeWindowChrome === false
+  && runtime.platform.resolveFormFactor() === "desktop";
 const actionKey = downloadsRepositoryKey
   ? "settings.sync.key.download"
   : "settings.sync.key.export";
@@ -220,7 +226,7 @@ Expected: both commands exit 0.
 
 - [ ] **Step 1: Inspect and commit only the scoped files**
 
-Run `git diff --check`, inspect `git status --short` and `git diff`, then create one commit named `fix(sync): export repository key over HTTP` without staging unrelated files.
+Run `git diff --check`, inspect `git status --short` and `git diff`, then create a scoped commit named `fix(sync): export repository key over HTTP` without staging unrelated files. Any review-driven correction remains a separate scoped commit on the same branch.
 
 - [ ] **Step 2: Run the full JavaScript gate on the committed tree**
 
