@@ -22,8 +22,8 @@ use qingyu_kernel::{
         ApiErrorEnvelope, BindSyncRepositoryRequest, CredentialChange, DomainEvent, ErrorCode,
         ErrorDetails, PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId,
         SafeUnsignedInteger, SyncCompletionState, SyncConfigChangesDto, SyncConfigReadiness,
-        SyncIntervalSeconds, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
-        SyncSafeErrorDto, SyncSafeErrorOperation, SyncSummaryDto, SyncTrigger,
+        SyncIntervalSeconds, SyncProvider, SyncRunCompletionState, SyncSafeErrorCategory,
+        SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation, SyncSummaryDto, SyncTrigger,
         TriggerSyncRunRequest, WorkspaceDto,
     },
     events::{EventPublication, EventSink, EventSinkError},
@@ -61,7 +61,11 @@ use qingyu_kernel::{
 };
 use sha2::Digest as _;
 use tempfile::tempdir;
-use tokio::sync::{oneshot, Barrier, Notify};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    sync::{oneshot, Barrier, Notify},
+};
 use tower::ServiceExt as _;
 
 const HOST: &str = "127.0.0.1:43125";
@@ -1225,6 +1229,101 @@ async fn active_sync_runtime(
     (runtime, workspace, durable)
 }
 
+struct RepositoryCatalogFixture {
+    endpoint: String,
+    requests: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RepositoryCatalogFixture {
+    async fn start(repository_id: &str, display_name: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let expected_path = format!("/qingyu/repositories/{repository_id}/metadata.json");
+        let body = serde_json::to_vec(&serde_json::json!({
+            "formatVersion": 1,
+            "repositoryId": repository_id,
+            "displayName": display_name,
+            "createdAt": 1,
+            "updatedAt": 1
+        }))
+        .unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_task = requests.clone();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(read, 0, "catalog request ended before its headers");
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            requests_for_task.fetch_add(1, Ordering::SeqCst);
+            let request = String::from_utf8(request).unwrap();
+            let request_target = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .expect("catalog request target");
+            assert!(
+                request_target.contains(&expected_path),
+                "unexpected catalog target: {request_target}"
+            );
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+        Self {
+            endpoint,
+            requests,
+            task,
+        }
+    }
+
+    async fn finish(self) {
+        tokio::time::timeout(Duration::from_secs(2), self.task)
+            .await
+            .expect("catalog fixture timed out")
+            .expect("catalog fixture failed");
+        assert_eq!(self.requests.load(Ordering::SeqCst), 1);
+    }
+}
+
+fn replace_fixture_s3_endpoint(root: &std::path::Path, endpoint: &str) {
+    let config_path = root.join("app-data/sync-config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["s3"]["endpointUrl"] = serde_json::json!(endpoint);
+    config["s3"]["addressingStyle"] = serde_json::json!("path");
+    std::fs::write(config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
+fn seed_local_sync_binding(root: &std::path::Path) -> Vec<u8> {
+    let workspace = std::fs::canonicalize(root.join("workspace")).unwrap();
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+        "version": 1,
+        "deviceId": "eb473600-dace-4d7e-bdad-7dac05933099",
+        "repoKey": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        "bindings": [{
+            "repositoryId": "f56c9192-414e-436b-bf3e-74648a434c54",
+            "displayName": "QingYu",
+            "notesRoot": workspace,
+            "enabled": true
+        }]
+    }))
+    .unwrap();
+    std::fs::write(root.join("app-data/local-sync.json"), &bytes).unwrap();
+    bytes
+}
+
 #[tokio::test]
 async fn existing_v3_anonymous_webdav_config_remains_ready() {
     let temporary = tempdir().unwrap();
@@ -1699,6 +1798,160 @@ async fn stale_repository_bind_revision_mutates_neither_local_state_nor_run_stat
     assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
     let status = SyncApiService::get_sync_status(&service).await.unwrap();
     assert_eq!(status.completion_state, SyncCompletionState::Idle);
+    assert!(status.active_run_id.as_ref().is_none());
+}
+
+#[tokio::test]
+async fn closed_recovery_admission_rejects_repository_bind_before_local_state_mutation() {
+    const REPOSITORY_ID: &str = "5223e8c9-1346-4d59-8c22-12d68ce16fcf";
+    const DISPLAY_NAME: &str = "Server notes";
+
+    let temporary = tempdir().unwrap();
+    let fixture = RepositoryCatalogFixture::start(REPOSITORY_ID, DISPLAY_NAME).await;
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    replace_fixture_s3_endpoint(temporary.path(), &fixture.endpoint);
+    let executor = Arc::new(CountingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    let local_state = temporary.path().join("app-data/local-sync.json");
+    let original = seed_local_sync_binding(temporary.path());
+    runtime.close_sync_admission_for_test().unwrap();
+
+    let error = SyncApiService::bind_sync_repository(
+        &service,
+        BindSyncRepositoryRequest {
+            display_name: DISPLAY_NAME.to_string(),
+            expected_revision: config.revision,
+            repository_id: REPOSITORY_ID.to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    fixture.finish().await;
+    assert_eq!(error.code(), ErrorCode::SyncRunUnavailable);
+    assert_eq!(
+        std::fs::read(local_state).unwrap(),
+        original,
+        "rejected recovery admission must preserve the existing repository binding byte-for-byte"
+    );
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+    let status = SyncApiService::get_sync_status(&service).await.unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Idle);
+    assert!(status.active_run_id.as_ref().is_none());
+}
+
+#[tokio::test]
+async fn active_run_rejects_repository_bind_without_replacing_the_existing_binding() {
+    const REPOSITORY_ID: &str = "5223e8c9-1346-4d59-8c22-12d68ce16fcf";
+    const DISPLAY_NAME: &str = "Server notes";
+
+    let temporary = tempdir().unwrap();
+    let fixture = RepositoryCatalogFixture::start(REPOSITORY_ID, DISPLAY_NAME).await;
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    replace_fixture_s3_endpoint(temporary.path(), &fixture.endpoint);
+    let executor = Arc::new(BlockingExecutor::default());
+    let service = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    let local_state = temporary.path().join("app-data/local-sync.json");
+    let original = seed_local_sync_binding(temporary.path());
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+
+    let error = SyncApiService::bind_sync_repository(
+        &service,
+        BindSyncRepositoryRequest {
+            display_name: DISPLAY_NAME.to_string(),
+            expected_revision: config.revision,
+            repository_id: REPOSITORY_ID.to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    fixture.finish().await;
+    assert_eq!(error.code(), ErrorCode::SyncRunUnavailable);
+    assert_eq!(std::fs::read(local_state).unwrap(), original);
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 1);
+    let attempting = SyncApiService::get_sync_status(&service).await.unwrap();
+    assert_eq!(attempting.completion_state, SyncCompletionState::Attempting);
+    executor.release.notify_one();
+    runtime_wait_for_idle(&service).await;
+}
+
+#[tokio::test]
+async fn repository_bind_spawn_failure_returns_one_accepted_terminal_job_and_one_binding() {
+    const REPOSITORY_ID: &str = "5223e8c9-1346-4d59-8c22-12d68ce16fcf";
+    const DISPLAY_NAME: &str = "Server notes";
+
+    let temporary = tempdir().unwrap();
+    let fixture = RepositoryCatalogFixture::start(REPOSITORY_ID, DISPLAY_NAME).await;
+    let spawner = Arc::new(FailingTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    replace_fixture_s3_endpoint(temporary.path(), &fixture.endpoint);
+    let executor = Arc::new(CountingExecutor::default());
+    let service = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    seed_local_sync_binding(temporary.path());
+
+    let binding = SyncApiService::bind_sync_repository(
+        &service,
+        BindSyncRepositoryRequest {
+            display_name: DISPLAY_NAME.to_string(),
+            expected_revision: config.revision,
+            repository_id: REPOSITORY_ID.to_string(),
+        },
+    )
+    .await
+    .expect("a committed bind must return its accepted recovery job");
+
+    fixture.finish().await;
+    assert_eq!(binding.repository_id, REPOSITORY_ID);
+    assert_eq!(spawner.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temporary.path().join("app-data/local-sync.json")).unwrap(),
+    )
+    .unwrap();
+    let bindings = persisted["bindings"].as_array().unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0]["repositoryId"], REPOSITORY_ID);
+    assert_eq!(bindings[0]["displayName"], DISPLAY_NAME);
+
+    let run_id = RunId::new(uuid::Uuid::parse_str(&binding.job_id).unwrap());
+    let exact = SyncApiService::get_sync_run(&service, run_id)
+        .await
+        .unwrap();
+    assert_eq!(exact.completion_state, SyncRunCompletionState::Failed);
+    assert_eq!(
+        exact.error.as_ref().map(SyncSafeErrorDto::run_id),
+        Some(Some(run_id))
+    );
+    let status = SyncApiService::get_sync_status(&service).await.unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Failed);
     assert!(status.active_run_id.as_ref().is_none());
 }
 
@@ -5379,6 +5632,82 @@ async fn sync_service_with_policy(
         executor,
     ));
     (runtime, service)
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_app_launch_run_reaches_a_safe_terminal_timeout_and_releases_admission() {
+    let temporary = tempdir().unwrap();
+    let executor = Arc::new(BlockingExecutor::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("app-launch-timeout"),
+        true,
+        true,
+        "automatic",
+        test_ports(),
+        executor.clone(),
+    )
+    .await;
+
+    let (disposition, settlement) = service
+        .trigger_kernel_sync(SyncTrigger::AppLaunch)
+        .await
+        .into_parts();
+    let accepted = match disposition {
+        KernelSyncTriggerDisposition::Accepted(accepted) => accepted,
+        other => panic!("expected accepted app-launch trigger, got {other:?}"),
+    };
+    executor.started.notified().await;
+
+    tokio::time::advance(Duration::from_secs(299)).await;
+    tokio::task::yield_now().await;
+    let attempting = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(attempting.completion_state, SyncCompletionState::Attempting);
+    assert_eq!(attempting.active_run_id.as_ref(), Some(&accepted.run_id));
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    settlement.wait().await;
+
+    let terminal = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(terminal.completion_state, SyncCompletionState::Failed);
+    assert!(terminal.active_run_id.as_ref().is_none());
+    assert_eq!(
+        terminal.last_trigger.as_ref(),
+        Some(&SyncTrigger::AppLaunch)
+    );
+    let error = terminal.error.as_ref().expect("safe terminal timeout");
+    assert_eq!(error.code(), "request_failed");
+    assert_eq!(error.category(), Some("network"));
+    assert_eq!(error.operation(), "sync_run");
+    assert_eq!(error.provider_error_code(), Some("RequestTimeout"));
+    assert_eq!(error.run_id(), Some(accepted.run_id));
+
+    let exact = SyncApiService::get_sync_run(service.as_ref(), accepted.run_id)
+        .await
+        .unwrap();
+    assert_eq!(exact.completion_state, SyncRunCompletionState::Failed);
+    assert_eq!(
+        exact.error.as_ref().map(SyncSafeErrorDto::run_id),
+        Some(Some(accepted.run_id))
+    );
+
+    let config = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    SyncApiService::trigger_sync_run(
+        service.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .expect("the terminal launch timeout must release the next manual run");
+    executor.started.notified().await;
+    executor.release.notify_one();
+    runtime_wait_for_idle(service.as_ref()).await;
 }
 
 #[tokio::test]

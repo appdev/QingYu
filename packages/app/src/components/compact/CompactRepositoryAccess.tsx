@@ -32,6 +32,7 @@ type BindState =
   | "accepted"
   | "attempting"
   | "failed"
+  | "run-unavailable"
   | "start-failed"
   | "status-error"
   | "submitting"
@@ -52,6 +53,17 @@ function catalogEntryKey(entry: RemoteNotebookCatalogEntry) {
 function safeRunCode(value: string | null) {
   if (!value) return null;
   return sanitizeDiagnosticText(value).replace(/\b(?:authorization|bearer|password|secret|token)\b.*$/giu, "[redacted]");
+}
+
+function safeBindAdmissionCode(error: unknown) {
+  if (typeof error !== "object" || error === null) return null;
+  try {
+    return Reflect.get(error, "code") === "sync_run_unavailable"
+      ? "sync_run_unavailable"
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function delay(milliseconds: number) {
@@ -283,10 +295,11 @@ export function CompactRepositoryAccess({
       setAcceptedJob(job);
       setBindState("accepted");
       await monitorAcceptedJob(job, generation);
-    } catch {
+    } catch (error) {
       if (!mountedRef.current || bindGenerationRef.current !== generation) return;
-      setBindState("start-failed");
-      setBindErrorCode(null);
+      const safeCode = safeBindAdmissionCode(error);
+      setBindState(safeCode ? "run-unavailable" : "start-failed");
+      setBindErrorCode(safeCode);
     } finally {
       if (bindGenerationRef.current === generation) bindRequestRef.current = false;
     }
@@ -502,11 +515,13 @@ export function CompactRepositoryAccess({
               {t(language, "compact.sync.repository.checkStatus")}
             </button>
           </div>
-        ) : bindState === "failed" || bindState === "start-failed" ? (
+        ) : bindState === "failed" || bindState === "run-unavailable" || bindState === "start-failed" ? (
           <div className="grid min-w-0 gap-1" role="alert">
             <p className="m-0 break-words text-sm text-(--status-error)">
               {t(language, bindState === "failed"
                 ? "compact.sync.repository.failed"
+                : bindState === "run-unavailable"
+                  ? "compact.sync.repository.runUnavailable"
                 : "compact.sync.repository.startFailed")}
             </p>
             {bindErrorCode ? <p className="m-0 break-all text-xs text-(--text-secondary)">{bindErrorCode}</p> : null}

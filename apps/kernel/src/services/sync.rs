@@ -10,6 +10,7 @@ use std::{
         Arc, Condvar, Mutex as StdMutex, Weak,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -29,8 +30,8 @@ use crate::{
         RemoteNotebookCatalogEntryDto, ResourceRefDto, Revision, RunId, SyncConfigReadiness,
         SyncConfigViewDto, SyncConnectionTestDto, SyncMode, SyncProvider, SyncRepositoryBindingDto,
         SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorCategory, SyncSafeErrorCode,
-        SyncSafeErrorDto, SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
-        TestSyncConnectionRequest, TriggerSyncRunRequest,
+        SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeProviderErrorCode, SyncStatusDto,
+        SyncSummaryDto, SyncTrigger, TestSyncConnectionRequest, TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
     ports::BoxTaskFuture,
@@ -52,6 +53,8 @@ use crate::{
         },
     },
 };
+
+const APP_LAUNCH_RUN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[async_trait]
 pub trait SyncExecutor: Send + Sync {
@@ -152,6 +155,18 @@ impl SyncRunSettlementState {
 struct StartedSyncRun {
     accepted: SyncRunAcceptedDto,
     settlement: SyncRunSettlement,
+}
+
+struct ReservedSyncRun {
+    started: StartedSyncRun,
+    settlement_state: Arc<SyncRunSettlementState>,
+    config: SyncConfig,
+    trigger: SyncTrigger,
+}
+
+struct FailedSyncRunStart {
+    started: StartedSyncRun,
+    failure: SyncRunTriggerFailure,
 }
 
 enum SyncRunTriggerFailure {
@@ -636,14 +651,14 @@ impl SyncService {
         Ok(runtime)
     }
 
-    fn start_sync_run(
+    fn reserve_sync_run(
         &self,
         runtime: &Arc<KernelRuntime>,
         trigger: SyncTrigger,
         expected_revision: Option<Revision>,
         admission: SyncRunAdmission,
-        mutation: MutationPermit<'_>,
-    ) -> Result<StartedSyncRun, SyncRunTriggerFailure> {
+        mutation: &MutationPermit<'_>,
+    ) -> Result<ReservedSyncRun, SyncRunTriggerFailure> {
         let gate = self
             .kernel_trigger_gate
             .lock()
@@ -706,7 +721,7 @@ impl SyncService {
                 run_id,
                 accepted_at.clone(),
                 trigger,
-                &mutation,
+                mutation,
             )
             .map_err(|_| SyncRunTriggerFailure::ActiveRun)?;
         publish_status(
@@ -717,9 +732,64 @@ impl SyncService {
         );
 
         let (settlement_state, settlement) = SyncRunSettlement::channel();
+        Ok(ReservedSyncRun {
+            started: StartedSyncRun {
+                accepted: SyncRunAcceptedDto {
+                    run_id,
+                    accepted_at,
+                    config_revision: revision,
+                },
+                settlement,
+            },
+            settlement_state,
+            config,
+            trigger,
+        })
+    }
+
+    fn terminalize_unstarted_sync_run(
+        runtime: &Arc<KernelRuntime>,
+        started: StartedSyncRun,
+        settlement_state: Arc<SyncRunSettlementState>,
+        mutation: MutationPermit<'_>,
+    ) -> FailedSyncRunStart {
+        let run_id = started.accepted.run_id;
+        let terminal = match runtime.fail_queued_sync_spawn(run_id, &mutation) {
+            Ok(terminal) => terminal,
+            Err(_) => {
+                settlement_state.settle();
+                return FailedSyncRunStart {
+                    started,
+                    failure: SyncRunTriggerFailure::Unavailable,
+                };
+            }
+        };
+        drop(mutation);
+        runtime.publish_sync_terminal(&terminal);
+        let _finished = runtime.finish_sync_terminal(run_id);
+        settlement_state.settle();
+        FailedSyncRunStart {
+            started,
+            failure: SyncRunTriggerFailure::Unavailable,
+        }
+    }
+
+    fn spawn_reserved_sync_run(
+        &self,
+        runtime: &Arc<KernelRuntime>,
+        reserved: ReservedSyncRun,
+        mutation: MutationPermit<'_>,
+    ) -> Result<StartedSyncRun, FailedSyncRunStart> {
+        let ReservedSyncRun {
+            started,
+            settlement_state,
+            config,
+            trigger,
+        } = reserved;
+        let run_id = started.accepted.run_id;
+        let fallback_completed_at = started.accepted.accepted_at.clone();
         let background_runtime = Arc::downgrade(runtime);
         let executor = self.executor.clone();
-        let fallback_completed_at = accepted_at.clone();
         let drop_state = Arc::new(SyncBackgroundTaskDropState {
             trigger_active: AtomicBool::new(true),
             dropped: AtomicBool::new(false),
@@ -749,14 +819,30 @@ impl SyncService {
             };
             let provider = config.provider();
             let mut run = executor.run(config, SyncRunContext::new(claimed));
-            let result = poll_fn(|context| {
+            let run_result = poll_fn(|context| {
                 match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(context))) {
                     Ok(Poll::Ready(result)) => Poll::Ready(Ok(result)),
                     Ok(Poll::Pending) => Poll::Pending,
                     Err(_) => Poll::Ready(Err(())),
                 }
-            })
-            .await;
+            });
+            let result = if trigger == SyncTrigger::AppLaunch {
+                match tokio::time::timeout(APP_LAUNCH_RUN_TIMEOUT, run_result).await {
+                    Ok(result) => result,
+                    Err(_) => Ok(Err(SyncExecutionError::new(
+                        SyncSafeErrorDto::new(
+                            provider,
+                            SyncSafeErrorOperation::SyncRun,
+                            SyncSafeErrorCode::RequestFailed,
+                        )
+                        .with_category(SyncSafeErrorCategory::Network)
+                        .with_provider_error_code(SyncSafeProviderErrorCode::RequestTimeout)
+                        .with_run_id(run_id),
+                    ))),
+                }
+            } else {
+                run_result.await
+            };
             drop(run);
             let mutation = runtime.mutation_coordinator().lock().await;
             let completed_at = runtime
@@ -785,29 +871,29 @@ impl SyncService {
         }));
         drop_state.trigger_active.store(false, Ordering::Release);
         if spawn_result.is_err() || drop_state.dropped.load(Ordering::Acquire) {
-            let terminal = match runtime.fail_queued_sync_spawn(run_id, &mutation) {
-                Ok(terminal) => terminal,
-                Err(_) => {
-                    settlement_state.settle();
-                    return Err(SyncRunTriggerFailure::Unavailable);
-                }
-            };
-            drop(mutation);
-            runtime.publish_sync_terminal(&terminal);
-            let finished = runtime.finish_sync_terminal(run_id);
-            settlement_state.settle();
-            finished.map_err(|_| SyncRunTriggerFailure::Unavailable)?;
-            return Err(SyncRunTriggerFailure::Unavailable);
+            return Err(Self::terminalize_unstarted_sync_run(
+                runtime,
+                started,
+                settlement_state,
+                mutation,
+            ));
         }
         drop(mutation);
-        Ok(StartedSyncRun {
-            accepted: SyncRunAcceptedDto {
-                run_id,
-                accepted_at,
-                config_revision: revision,
-            },
-            settlement,
-        })
+        Ok(started)
+    }
+
+    fn start_sync_run(
+        &self,
+        runtime: &Arc<KernelRuntime>,
+        trigger: SyncTrigger,
+        expected_revision: Option<Revision>,
+        admission: SyncRunAdmission,
+        mutation: MutationPermit<'_>,
+    ) -> Result<StartedSyncRun, SyncRunTriggerFailure> {
+        let reserved =
+            self.reserve_sync_run(runtime, trigger, expected_revision, admission, &mutation)?;
+        self.spawn_reserved_sync_run(runtime, reserved, mutation)
+            .map_err(|failed| failed.failure)
     }
 }
 
@@ -1047,37 +1133,39 @@ impl SyncApiService for SyncService {
             .verify_instance_lock()
             .map_err(|_| failure(ErrorCode::SyncNotReady))?;
         self.require_config_revision(&request.expected_revision)?;
-        if runtime
-            .sync_run_registered(&mutation)
-            .map_err(|_| failure(ErrorCode::SyncNotReady))?
-            || self
-                .status
-                .is_attempting()
-                .map_err(|_| failure(ErrorCode::SyncNotReady))?
-        {
-            return Err(failure(ErrorCode::SyncRunUnavailable));
-        }
         let instance = runtime.active_instance_authority();
         let workspace = runtime
             .active_workspace_authority()
             .map_err(|_| failure(ErrorCode::SyncNotReady))?;
-        bind_dejavu_repository(
+        let reserved = self
+            .reserve_sync_run(
+                &runtime,
+                SyncTrigger::Manual,
+                Some(request.expected_revision),
+                SyncRunAdmission::RepositoryRecovery,
+                &mutation,
+            )
+            .map_err(api_trigger_failure)?;
+        if let Err(error) = bind_dejavu_repository(
             instance.as_ref(),
             workspace.as_ref(),
             runtime.launch_epoch(),
             &metadata.repository_id,
             &metadata.display_name,
-        )
-        .map_err(local_state_failure)?;
-        let started = self
-            .start_sync_run(
-                &runtime,
-                SyncTrigger::Manual,
-                Some(request.expected_revision),
-                SyncRunAdmission::RepositoryRecovery,
-                mutation,
-            )
-            .map_err(api_trigger_failure)?;
+        ) {
+            let ReservedSyncRun {
+                started,
+                settlement_state,
+                ..
+            } = reserved;
+            let _failed =
+                Self::terminalize_unstarted_sync_run(&runtime, started, settlement_state, mutation);
+            return Err(local_state_failure(error));
+        }
+        let started = match self.spawn_reserved_sync_run(&runtime, reserved, mutation) {
+            Ok(started) => started,
+            Err(failed) => failed.started,
+        };
         Ok(SyncRepositoryBindingDto {
             job_id: started.accepted.run_id.as_uuid().to_string(),
             repository_id: metadata.repository_id,

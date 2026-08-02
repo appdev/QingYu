@@ -228,6 +228,7 @@ const messages: LocaleMessages = {
   "compact.sync.repository.attempting": "正在恢复仓库…",
   "compact.sync.repository.succeeded": "已加入并恢复笔记。",
   "compact.sync.repository.failed": "仓库恢复失败。",
+  "compact.sync.repository.runUnavailable": "另一个同步任务正在运行或恢复中。请等待其结束后，再重试加入。",
   "compact.sync.repository.startFailed": "无法启动仓库恢复，请重试。",
   "compact.sync.repository.statusUnavailable": "暂时无法读取恢复状态。请先重新查询已接受的任务，不要重复发起恢复。",
   "compact.sync.repository.checkStatus": "查询恢复状态",

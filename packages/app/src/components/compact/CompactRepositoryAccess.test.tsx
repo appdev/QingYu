@@ -359,6 +359,30 @@ describe("CompactRepositoryAccess", () => {
     expect(syncConfig.loadJob).toHaveBeenCalledWith({ jobId });
   });
 
+  it("preserves a safe active-run admission error without automatically repeating the bind", async () => {
+    const bindRepository = vi.fn(async () => Promise.reject({
+      code: "sync_run_unavailable",
+      message: "Authorization: Bearer must-not-render"
+    }));
+    installRuntime({ bindRepository });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join notebook" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Another sync run is active or recovering. Wait for it to finish, then try joining again."
+    );
+    expect(alert).toHaveTextContent("sync_run_unavailable");
+    expect(alert).not.toHaveTextContent(/authorization|bearer|must-not-render/iu);
+    expect(bindRepository).toHaveBeenCalledTimes(1);
+    await act(async () => Promise.resolve());
+    expect(bindRepository).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Join notebook" })).toBeEnabled();
+  });
+
   it("retries an accepted job status read without dispatching a second recovery", async () => {
     const loadJob = vi.fn()
       .mockRejectedValueOnce(new Error("temporary transport failure"))

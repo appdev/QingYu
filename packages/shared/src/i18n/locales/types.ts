@@ -170,6 +170,7 @@ export type I18nKey =
   | "compact.sync.repository.attempting"
   | "compact.sync.repository.succeeded"
   | "compact.sync.repository.failed"
+  | "compact.sync.repository.runUnavailable"
   | "compact.sync.repository.startFailed"
   | "compact.sync.repository.statusUnavailable"
   | "compact.sync.repository.checkStatus"

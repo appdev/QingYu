@@ -176,6 +176,7 @@ export const compactEnMessages = {
   "compact.sync.repository.attempting": "Repository recovery is running…",
   "compact.sync.repository.succeeded": "Notebook joined and recovered.",
   "compact.sync.repository.failed": "Repository recovery failed.",
+  "compact.sync.repository.runUnavailable": "Another sync run is active or recovering. Wait for it to finish, then try joining again.",
   "compact.sync.repository.startFailed": "Repository recovery could not be started. Try again.",
   "compact.sync.repository.statusUnavailable": "Recovery status is unavailable. Check the accepted job again before retrying recovery.",
   "compact.sync.repository.checkStatus": "Check recovery status",
