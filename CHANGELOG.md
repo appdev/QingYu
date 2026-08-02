@@ -1,3 +1,13 @@
+## [2.5.1](https://github.com/markrahq/markra/compare/v2.5.0...v2.5.1) (2026-08-02)
+
+### Bug Fixes
+
+* **editor:** align indented code block chrome ([#629](https://github.com/markrahq/markra/issues/629)) ([8a592c5](https://github.com/markrahq/markra/commit/8a592c514d7afd1adf63607e913fba4ee49e7020))
+* **editor:** remove excess Mermaid preview spacing ([#633](https://github.com/markrahq/markra/issues/633)) ([5cd0a38](https://github.com/markrahq/markra/commit/5cd0a381fcc9971fbb9066b5627237c281301bbc))
+* **editor:** stabilize blank lines across preview blocks ([#630](https://github.com/markrahq/markra/issues/630)) ([8866a0f](https://github.com/markrahq/markra/commit/8866a0f47633ea75efc21a0d167515dc92e95893))
+* **editor:** stabilize visual table line breaks ([#634](https://github.com/markrahq/markra/issues/634)) ([7733205](https://github.com/markrahq/markra/commit/773320529b9661577a6c0bc2b05d4bb154152f0d))
+* **editor:** support line breaks in visual table cells ([#632](https://github.com/markrahq/markra/issues/632)) ([3056b20](https://github.com/markrahq/markra/commit/3056b207b5e37d96950b71e24c141c6bc1ff5f12))
+
 ## [2.5.0](https://github.com/markrahq/markra/compare/v2.4.0...v2.5.0) (2026-08-01)
 
 ### Features
