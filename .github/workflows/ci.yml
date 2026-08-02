@@ -217,6 +217,7 @@ jobs:
       - name: Test
         run: |
           cargo test --manifest-path apps/kernel/Cargo.toml --locked --all-targets --all-features
+          cargo test --manifest-path apps/kernel/Cargo.toml --locked -p qingyu-dejavu --all-targets --all-features
           cargo test --manifest-path apps/kernel/Cargo.toml --locked --doc
 
       - name: Reject Tauri dependencies
