@@ -65,37 +65,6 @@ fn normalize_remote_root(value: &str) -> Option<String> {
         .then_some(normalized)
 }
 
-pub fn notebook_name_available_on_current_platform(name: &str) -> bool {
-    #[cfg(windows)]
-    {
-        let stem = name
-            .split('.')
-            .next()
-            .unwrap_or(name)
-            .trim_end_matches(['.', ' '])
-            .to_ascii_uppercase();
-        let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-            || stem
-                .strip_prefix("COM")
-                .or_else(|| stem.strip_prefix("LPT"))
-                .is_some_and(|suffix| {
-                    suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9')
-                });
-        name.encode_utf16().count() <= 255
-            && !name.chars().any(|character| {
-                character.is_control()
-                    || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*')
-            })
-            && !name.ends_with(['.', ' '])
-            && !reserved
-    }
-
-    #[cfg(not(windows))]
-    {
-        name.len() <= 255
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteSyncFile {
     pub identity: String,
@@ -268,8 +237,8 @@ pub trait RemoteSyncBackend: Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        notebook_name_available_on_current_platform, RemoteSyncDiagnostic, RemoteSyncError,
-        SyncFailureCategory, SyncProviderOperation, ValidRemoteRoot,
+        RemoteSyncDiagnostic, RemoteSyncError, SyncFailureCategory, SyncProviderOperation,
+        ValidRemoteRoot,
     };
 
     #[test]
@@ -331,13 +300,5 @@ mod tests {
             ValidRemoteRoot::parse(r"qingyu\team").unwrap().as_str(),
             "qingyu/team"
         );
-    }
-
-    #[test]
-    fn overlong_notebook_names_are_not_available_on_the_current_platform() {
-        assert!(notebook_name_available_on_current_platform("Notes"));
-        assert!(!notebook_name_available_on_current_platform(
-            &"x".repeat(256)
-        ));
     }
 }

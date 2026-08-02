@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use qingyu_dejavu::RepositoryCatalogEntry;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Url};
 use serde::Serialize;
 
-use super::backend::{notebook_name_available_on_current_platform, ValidRemoteRoot};
+use super::backend::ValidRemoteRoot;
 use super::{
     apply_basic_auth, parse_webdav_propfind_response, raw_relative_href_path,
     validated_remote_path_segments, webdav_propfind_method, webdav_url_with_segments,
@@ -47,14 +48,7 @@ pub(crate) async fn list_remote_notebooks(
             Ok(catalog
                 .entries
                 .into_iter()
-                .map(|entry| RemoteNotebookCatalogEntry {
-                    available: true,
-                    disabled_reason: None,
-                    display_name: entry.display_name.clone(),
-                    name: entry.display_name,
-                    provider: RemoteNotebookProvider::S3,
-                    repository_id: Some(entry.repository_id),
-                })
+                .filter_map(s3_catalog_entry)
                 .collect())
         }
         SyncTarget::Webdav {
@@ -70,9 +64,22 @@ pub(crate) async fn list_remote_notebooks(
     }
 }
 
+fn s3_catalog_entry(entry: RepositoryCatalogEntry) -> Option<RemoteNotebookCatalogEntry> {
+    let name = crate::notebook_scope::validate_notebook_name(&entry.display_name).ok()?;
+    let available = crate::notebook_scope::validate_portable_notebook_name(&name).is_ok();
+    Some(RemoteNotebookCatalogEntry {
+        available,
+        disabled_reason: (!available).then(|| "notebook-name-unavailable".to_string()),
+        display_name: name.clone(),
+        name,
+        provider: RemoteNotebookProvider::S3,
+        repository_id: Some(entry.repository_id),
+    })
+}
+
 fn webdav_catalog_entry(name: String) -> Option<RemoteNotebookCatalogEntry> {
     let name = crate::notebook_scope::validate_notebook_name(&name).ok()?;
-    let available = notebook_name_available_on_current_platform(&name);
+    let available = crate::notebook_scope::validate_portable_notebook_name(&name).is_ok();
     Some(RemoteNotebookCatalogEntry {
         available,
         disabled_reason: (!available).then(|| "notebook-name-unavailable".to_string()),
@@ -193,7 +200,9 @@ mod tests {
 
     use crate::sync_config::model::{SyncConfig, SyncProvider, SyncSnapshot, SyncTarget};
 
-    use super::{list_remote_notebooks, RemoteNotebookProvider};
+    use qingyu_dejavu::RepositoryCatalogEntry;
+
+    use super::{list_remote_notebooks, s3_catalog_entry, RemoteNotebookProvider};
 
     fn webdav_snapshot(server_url: String) -> SyncSnapshot {
         let mut config = SyncConfig {
@@ -279,6 +288,7 @@ mod tests {
   {}
   {}
   {}
+  {}
   <d:response><d:href>/dav/root/notes/file.md</d:href><d:propstat><d:prop><d:resourcetype /></d:prop></d:propstat></d:response>
   {}
   {}
@@ -287,6 +297,7 @@ mod tests {
 </d:multistatus>"#,
             collection_response("/dav/root/notes/"),
             collection_response("/dav/root/notes/Alpha/"),
+            collection_response("/dav/root/notes/CON/"),
             collection_response("/dav/root/notes/R&amp;D/"),
             collection_response("/dav/root/notes/.QINGYU/"),
             collection_response("/dav/root/notes/.MARKRA-SYNC/"),
@@ -311,6 +322,7 @@ mod tests {
 
         let mut expected_names = vec![
             "Alpha".to_string(),
+            "CON".to_string(),
             "R&D".to_string(),
             "  个人 笔记  ".to_string(),
             long_name,
@@ -335,12 +347,23 @@ mod tests {
                 .unwrap()
                 .available
         );
-        assert!(
-            entries
-                .iter()
-                .find(|entry| entry.name == "  个人 笔记  ")
-                .unwrap()
-                .available
+        let legacy = entries
+            .iter()
+            .find(|entry| entry.name == "CON")
+            .expect("legacy WebDAV notebook should remain visible");
+        assert!(!legacy.available);
+        assert_eq!(
+            legacy.disabled_reason.as_deref(),
+            Some("notebook-name-unavailable")
+        );
+        let spaced_legacy = entries
+            .iter()
+            .find(|entry| entry.name == "  个人 笔记  ")
+            .expect("locally safe legacy notebook should remain visible");
+        assert!(!spaced_legacy.available);
+        assert_eq!(
+            spaced_legacy.disabled_reason.as_deref(),
+            Some("notebook-name-unavailable")
         );
         let disabled = entries
             .iter()
@@ -359,6 +382,27 @@ mod tests {
         for forbidden in ["MKCOL ", "PUT ", "DELETE ", "GET "] {
             assert!(!requests[0].starts_with(forbidden), "sent {forbidden}");
         }
+    }
+
+    #[test]
+    fn s3_catalog_keeps_a_legacy_display_name_visible_but_unavailable() {
+        let entry = s3_catalog_entry(RepositoryCatalogEntry {
+            repository_id: "repo-1".to_string(),
+            display_name: "CON".to_string(),
+            created_at: 1,
+            updated_at: 2,
+        })
+        .expect("a locally safe legacy S3 notebook should remain visible");
+
+        assert_eq!(entry.display_name, "CON");
+        assert_eq!(entry.name, "CON");
+        assert_eq!(entry.provider, RemoteNotebookProvider::S3);
+        assert_eq!(entry.repository_id.as_deref(), Some("repo-1"));
+        assert!(!entry.available);
+        assert_eq!(
+            entry.disabled_reason.as_deref(),
+            Some("notebook-name-unavailable")
+        );
     }
 
     #[test]
