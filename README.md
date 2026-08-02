@@ -22,6 +22,18 @@
   <img alt="License" src="https://img.shields.io/badge/License-AGPL--3.0-important" />
 </p>
 
+<h2 align="center">Chief Sponsor</h2>
+
+<p align="center">
+  <a href="https://goaihop.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=markra&amp;utm_content=chief_sponsor">
+    <img src="https://goaihop.com/goaihop-logo.svg" width="72" alt="GoAIHop logo" />
+  </a>
+  <br />
+  <a href="https://goaihop.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=markra&amp;utm_content=chief_sponsor"><strong>GoAIHop</strong></a>
+  <br />
+  AI relay directory, price comparison, and real-world performance testing.
+</p>
+
 <p align="center">
   <a href="https://www.buymeacoffee.com/murong" target="_blank" rel="noopener noreferrer">
     <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" width="195" height="54" />
