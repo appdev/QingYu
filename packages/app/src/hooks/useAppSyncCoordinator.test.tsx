@@ -23,7 +23,10 @@ import {
   resetAppRuntimeForTests
 } from "../runtime";
 import { KernelSyncRunError } from "../runtime/kernel-app/sync-config";
-import { useAppSyncCoordinator } from "./useAppSyncCoordinator";
+import {
+  parseKernelSyncSafeError,
+  useAppSyncCoordinator
+} from "./useAppSyncCoordinator";
 
 vi.mock("../lib/app-toast", () => ({ dismissAppToast: vi.fn(), showAppToast: vi.fn() }));
 vi.mock("../lib/sync", async (importOriginal) => ({
@@ -1868,6 +1871,84 @@ describe("application sync coordinator", () => {
     logSpy.mockRestore();
   });
 
+  it("preserves a persisted portable-name-required component diagnostic", async () => {
+    const logSpy = vi.spyOn(appLogger, "error");
+    const runtime = createDefaultAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadStatus: async () => ({
+          completionState: "failed",
+          error: {
+            category: "storage",
+            code: "portable-name-required",
+            httpStatus: null,
+            method: null,
+            objectId: null,
+            operation: "sync_run",
+            provider: "s3",
+            providerErrorCode: null,
+            relativePath: "CON.md",
+            requestId: null,
+            runId: "00000000-0000-4000-8000-000000000012"
+          },
+          lastAttemptAt: "2026-08-02T00:00:00Z",
+          lastSuccessfulSyncAt: null,
+          lastTrigger: "app-launch",
+          notebookName: "Notes",
+          notesRoot: "/Notes",
+          provider: "s3",
+          revision: "rev-1",
+          summary: null,
+          version: 1
+        })
+      },
+      workspace: { ...runtime.workspace, isDocumentInRoot: async () => true }
+    });
+    mockedRunApplicationSync.mockRejectedValueOnce(
+      new Error("portable-name-required: Application synchronization did not complete.")
+    );
+
+    renderCoordinator({ document: configDocument("rev-1", { provider: "s3" }) });
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization failed",
+      expect.objectContaining({
+        category: "storage",
+        code: "portable-name-required",
+        operation: "sync_run",
+        provider: "s3",
+        runId: "00000000-0000-4000-8000-000000000012"
+      })
+    ));
+    expect(JSON.stringify(logSpy.mock.calls.at(-1)?.[2])).not.toContain("/Users/");
+    expect(JSON.stringify(logSpy.mock.calls.at(-1)?.[2])).not.toContain("C:\\Users\\");
+    logSpy.mockRestore();
+  });
+
+  it("parses a persisted portable-name-required component without losing its relative path", () => {
+    const persisted = {
+      category: "storage",
+      code: "portable-name-required",
+      httpStatus: null,
+      method: null,
+      objectId: null,
+      operation: "sync_run",
+      provider: "s3",
+      providerErrorCode: null,
+      relativePath: "CON.md",
+      requestId: null,
+      runId: "00000000-0000-4000-8000-000000000012"
+    };
+
+    const parsed = parseKernelSyncSafeError(persisted, "s3");
+
+    expect(parsed).toEqual(persisted);
+    expect(parsed?.relativePath).toBe("CON.md");
+  });
+
   it("preserves an uncategorized Kernel safe error instead of degrading it to sync-failed", async () => {
     const logSpy = vi.spyOn(appLogger, "error");
     const failure = Object.assign(new Error("Kernel sync cancelled"), {
@@ -2012,6 +2093,7 @@ describe("application sync coordinator", () => {
     ["an invalid HTTP status", { httpStatus: 99 }, "99"],
     ["a native-incompatible object ID", { objectId: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
     ["an unsafe relative path", { relativePath: "/RAW-CREDENTIAL" }, "/RAW-CREDENTIAL"],
+    ["an absolute-looking relative path", { relativePath: "C:/Users/RAW-CREDENTIAL" }, "C:/Users/RAW-CREDENTIAL"],
     ["an invalid request ID", { requestId: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
     ["an invalid run ID", { runId: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
   ])("rejects a wrapped Kernel error with %s", async (_scenario, patch, injected) => {

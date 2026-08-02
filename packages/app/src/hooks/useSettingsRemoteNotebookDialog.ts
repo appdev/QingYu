@@ -205,6 +205,7 @@ export function useSettingsRemoteNotebookDialog({
   }, [invalidateTransaction, loadCatalog]);
 
   const restore = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
+    if (!entry.available) throw new Error("Cloud notebook restore failed");
     const revision = revisionRef.current;
     if (!revision) throw new Error("Cloud notebook restore failed");
     const notesRoot = primaryRootRef.current;

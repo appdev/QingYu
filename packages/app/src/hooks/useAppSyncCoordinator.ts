@@ -118,6 +118,7 @@ const safeFallbackErrorCodes = new Set([
   ...freshnessErrorCodes,
   "app-data-unavailable",
   "notes-root-unavailable",
+  "portable-name-required",
   "remote-http-error",
   "s3-catalog-http-failed",
   "s3-catalog-request-failed",
@@ -159,6 +160,7 @@ const kernelSyncErrorCodes = new Set([
   "connection_failed",
   "local_io",
   "permission_denied",
+  "portable-name-required",
   "rate_limited",
   "remote_unavailable",
   "request_failed",
@@ -347,7 +349,7 @@ type KernelSyncErrorCategory =
   | "storage"
   | "transport";
 
-function parseKernelSyncSafeError(value: unknown, provider: SyncProvider): SyncSafeError | null {
+export function parseKernelSyncSafeError(value: unknown, provider: SyncProvider): SyncSafeError | null {
   if (!isRecord(value)) return null;
   const keys = [
     "category",

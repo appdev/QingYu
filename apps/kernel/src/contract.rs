@@ -447,7 +447,6 @@ where
     Nullable::<T>::deserialize(deserializer).map(Some)
 }
 
-const MAX_DOCUMENT_NAME_BYTES: usize = 255;
 const MAX_DOCUMENT_CONTENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SEARCH_QUERY_SCALARS: usize = 512;
 
@@ -571,47 +570,19 @@ impl fmt::Display for InvalidResourceName {
 impl std::error::Error for InvalidResourceName {}
 
 fn document_name_is_valid(value: &str) -> bool {
-    if value.is_empty()
-        || value.len() > MAX_DOCUMENT_NAME_BYTES
-        || matches!(value, "." | "..")
-        || value.ends_with(['.', ' '])
-        || value.chars().any(|character| {
-            character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*'
-                )
-        })
-    {
+    if !qingyu_dejavu::portable_path_component_is_valid(value) {
         return false;
     }
 
     let ascii_lower = value.to_ascii_lowercase();
-    if ascii_lower == ".qingyu"
+    !(ascii_lower == ".qingyu"
         || [
             ".qingyu-ui-update-",
             ".qingyu-mcp-update-",
             ".markra-sync-stage-",
         ]
         .iter()
-        .any(|prefix| ascii_lower.starts_with(prefix))
-    {
-        return false;
-    }
-
-    let stem = value.split('.').next().unwrap_or_default();
-    let stem = stem.to_ascii_uppercase();
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
-        return false;
-    }
-    if stem.len() == 4
-        && (stem.starts_with("COM") || stem.starts_with("LPT"))
-        && matches!(stem.as_bytes()[3], b'1'..=b'9')
-    {
-        return false;
-    }
-
-    true
+        .any(|prefix| ascii_lower.starts_with(prefix)))
 }
 
 fn has_markdown_extension(value: &str) -> bool {
@@ -2334,6 +2305,7 @@ sync_safe_value_enum!(SyncSafeErrorCode {
     ConnectionFailed => "connection_failed",
     LocalIo => "local_io",
     PermissionDenied => "permission_denied",
+    PortableNameRequired => "portable-name-required",
     RateLimited => "rate_limited",
     RemoteUnavailable => "remote_unavailable",
     RequestFailed => "request_failed",

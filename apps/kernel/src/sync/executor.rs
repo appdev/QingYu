@@ -2,7 +2,6 @@
 
 use std::{
     collections::BTreeMap,
-    ffi::OsStr,
     fmt,
     path::{Path, PathBuf},
     sync::{
@@ -20,11 +19,10 @@ use qingyu_dejavu::{
 
 use crate::{
     contract::{
-        Revision, RunId, S3AddressingStyle, S3TlsVerification, SafeUnsignedInteger, SyncProvider,
-        SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
-        SyncSummaryDto, MAX_SAFE_INTEGER,
+        DocumentName, Revision, RunId, S3AddressingStyle, S3TlsVerification, SafeUnsignedInteger,
+        SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
+        SyncSafeErrorOperation, SyncSummaryDto, WorkspaceRelativePath, MAX_SAFE_INTEGER,
     },
-    protected_paths::is_qingyu_control_directory_name,
     runtime::{ActiveInstanceAuthority, KernelRuntime},
     services::sync::{SyncExecutionError, SyncExecutor, SyncRunContext},
     settings::{
@@ -35,8 +33,8 @@ use crate::{
     },
     sync::{
         backend::{
-            notebook_name_available_on_current_platform, sync_state_key, RemoteSyncBackend,
-            RemoteSyncError, RemoteSyncFile, SyncFailureCategory, ValidRemoteRoot,
+            sync_state_key, RemoteSyncBackend, RemoteSyncError, RemoteSyncFile,
+            SyncFailureCategory, ValidRemoteRoot,
         },
         catalog::KernelS3RepositoryCatalog,
         config::{SyncConfig, SyncExecutionPlan, SyncExecutionTarget},
@@ -136,6 +134,8 @@ impl ProductionSyncExecutor {
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
         let workspace_root = authority.root().canonical_path().to_path_buf();
+        let notebook_name = workspace_root_portable_name(&workspace_root)
+            .map_err(|error| dejavu_error(provider, run_id, error))?;
         let workspace_directory = authority
             .root()
             .try_clone_dir()
@@ -151,8 +151,6 @@ impl ProductionSyncExecutor {
             .map_err(|_| local_error(provider, run_id))?;
 
         let remote_root = ValidRemoteRoot::parse(&remote_root)
-            .map_err(|_| configuration_error(provider, Some(run_id)))?;
-        let notebook_name = notebook_name(&workspace_root)
             .map_err(|_| configuration_error(provider, Some(run_id)))?;
         let backend = WebDavBackend::connect(WebDavSyncSettings::new(
             server_url,
@@ -370,6 +368,8 @@ impl ProductionSyncExecutor {
         authority
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
+        workspace_root_portable_name(authority.root().canonical_path())
+            .map_err(|error| dejavu_error(provider, run_id, error))?;
         let instance_authority = runtime.active_instance_authority();
         instance_authority
             .verify_held_directory()
@@ -1168,17 +1168,16 @@ impl<Backend: RemoteSyncBackend> RemoteSyncBackend for PrefixedRemoteBackend<'_,
     }
 }
 
-fn notebook_name(root: &Path) -> Result<String, ()> {
-    let name = root.file_name().and_then(OsStr::to_str).ok_or(())?;
-    if name.is_empty()
-        || matches!(name, "." | "..")
-        || name.contains(['/', '\\', '\0'])
-        || is_qingyu_control_directory_name(OsStr::new(name))
-        || !notebook_name_available_on_current_platform(name)
-    {
-        return Err(());
-    }
-    Ok(name.to_string())
+fn workspace_root_portable_name(root: &Path) -> Result<String, DejavuRunError> {
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(DejavuRunError::WorkspaceUnavailable)?;
+    DocumentName::parse(name.to_owned())
+        .map(|name| name.as_str().to_owned())
+        .map_err(|_| DejavuRunError::PortableNameRequired {
+            component: name.to_owned(),
+        })
 }
 
 fn combined_summary(
@@ -1229,6 +1228,18 @@ fn dejavu_error(
         DejavuRunError::InvalidConfiguration => configuration_error(provider, Some(run_id)),
         DejavuRunError::WorkspaceUnavailable | DejavuRunError::RepositoryUnavailable => {
             local_error(provider, run_id)
+        }
+        DejavuRunError::PortableNameRequired { component } => {
+            let relative_path = portable_name_diagnostic_component(&component);
+            let safe = SyncSafeErrorDto::new(
+                provider,
+                SyncSafeErrorOperation::SyncRun,
+                SyncSafeErrorCode::PortableNameRequired,
+            )
+            .with_category(SyncSafeErrorCategory::Storage)
+            .with_relative_path(relative_path)
+            .with_run_id(run_id);
+            SyncExecutionError::new(safe)
         }
         DejavuRunError::WorkingTreeChanged => execution_error(
             provider,
@@ -1312,6 +1323,39 @@ fn catalog_dejavu_error(error: &CloudError) -> DejavuRunError {
         | CloudError::LockFailed { .. }
         | CloudError::UnlockFailed { .. } => DejavuRunError::CloudUnavailable,
     }
+}
+
+fn portable_name_diagnostic_component(component: &str) -> WorkspaceRelativePath {
+    if !component.is_empty() && !component.contains(['/', '\\']) {
+        if let Ok(relative_path) = WorkspaceRelativePath::parse(component.to_owned()) {
+            return relative_path;
+        }
+    }
+
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(component.len().saturating_mul(3));
+    for byte in component.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b' ' | b'-') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    if encoded.is_empty() {
+        encoded.push_str("%00");
+    }
+    if matches!(encoded.as_str(), "." | "..") {
+        encoded = encoded.bytes().fold(String::new(), |mut escaped, byte| {
+            escaped.push('%');
+            escaped.push(char::from(HEX[usize::from(byte >> 4)]));
+            escaped.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            escaped
+        });
+    }
+    WorkspaceRelativePath::parse(encoded)
+        .expect("percent-encoded portable-name diagnostic must be one safe relative component")
 }
 
 fn execution_error(
@@ -1662,6 +1706,94 @@ mod tests {
     }
 
     #[test]
+    fn portable_name_error_keeps_a_directly_safe_component() {
+        let run_id = crate::contract::RunId::new(uuid::Uuid::new_v4());
+        let actual = super::dejavu_error(
+            SyncProvider::S3,
+            run_id,
+            crate::sync::dejavu_runner::DejavuRunError::PortableNameRequired {
+                component: "CON.md".to_owned(),
+            },
+        );
+        let safe = crate::contract::SyncSafeErrorDto::new(
+            SyncProvider::S3,
+            crate::contract::SyncSafeErrorOperation::SyncRun,
+            crate::contract::SyncSafeErrorCode::PortableNameRequired,
+        )
+        .with_category(crate::contract::SyncSafeErrorCategory::Storage)
+        .with_relative_path(crate::contract::WorkspaceRelativePath::parse("CON.md").unwrap())
+        .with_run_id(run_id);
+
+        assert_eq!(
+            actual,
+            crate::services::sync::SyncExecutionError::new(safe.clone())
+        );
+        assert_eq!(safe.code(), "portable-name-required");
+        assert_eq!(safe.category(), Some("storage"));
+        assert_eq!(safe.operation(), "sync_run");
+        assert_eq!(safe.run_id(), Some(run_id));
+        let serialized = serde_json::to_string(&safe).expect("serialize safe error");
+        assert!(!serialized.contains("/Users/"));
+        assert!(!serialized.contains(r"C:\Users\"));
+    }
+
+    #[test]
+    fn portable_name_error_percent_encodes_only_its_unsafe_component() {
+        let run_id = crate::contract::RunId::new(uuid::Uuid::new_v4());
+        let component = "/Users/alice/C:\\Users\\alice\\bad\u{0001}é";
+        let actual = super::dejavu_error(
+            SyncProvider::Webdav,
+            run_id,
+            crate::sync::dejavu_runner::DejavuRunError::PortableNameRequired {
+                component: component.to_owned(),
+            },
+        );
+        let relative_path = crate::contract::WorkspaceRelativePath::parse(
+            "%2FUsers%2Falice%2FC%3A%5CUsers%5Calice%5Cbad%01%C3%A9",
+        )
+        .expect("encoded safe diagnostic component");
+        let safe = crate::contract::SyncSafeErrorDto::new(
+            SyncProvider::Webdav,
+            crate::contract::SyncSafeErrorOperation::SyncRun,
+            crate::contract::SyncSafeErrorCode::PortableNameRequired,
+        )
+        .with_category(crate::contract::SyncSafeErrorCategory::Storage)
+        .with_relative_path(relative_path.clone())
+        .with_run_id(run_id);
+
+        assert_eq!(
+            actual,
+            crate::services::sync::SyncExecutionError::new(safe.clone())
+        );
+        assert_eq!(safe.code(), "portable-name-required");
+        assert_eq!(safe.category(), Some("storage"));
+        assert_eq!(safe.operation(), "sync_run");
+        assert_eq!(safe.run_id(), Some(run_id));
+        assert!(!relative_path.as_str().contains(['/', '\\']));
+        let serialized = serde_json::to_string(&safe).expect("serialize safe error");
+        assert!(!serialized.contains("/Users/"));
+        assert!(!serialized.contains(r"C:\Users\"));
+    }
+
+    #[test]
+    fn portable_name_diagnostic_encoding_is_total_for_nonempty_components() {
+        for (component, expected) in [
+            (".", "%2E"),
+            ("..", "%2E%2E"),
+            ("%", "%"),
+            ("\0", "%00"),
+            ("名", "名"),
+            ("foo/bar", "foo%2Fbar"),
+        ] {
+            assert_eq!(
+                super::portable_name_diagnostic_component(component).as_str(),
+                expected,
+                "wrong diagnostic encoding for {component:?}"
+            );
+        }
+    }
+
+    #[test]
     fn s3_settings_failures_keep_provider_network_conflict_and_authentication_types() {
         let cases = [
             (
@@ -1761,6 +1893,83 @@ mod tests {
                 && !request.starts_with("PUT ")
                 && !request.starts_with("DELETE ")
         }));
+    }
+
+    #[tokio::test]
+    async fn webdav_portable_name_required_precedes_connecting() {
+        let server = WebDavFixture::start();
+        let kernel = TestKernel::start_named(&server.endpoint(), true, "CON.md").await;
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready WebDAV config");
+
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept WebDAV run");
+        let failed = wait_for_settled_sync(&sync).await;
+
+        assert_eq!(failed.completion_state, SyncCompletionState::Failed);
+        let error = failed.error.as_ref().expect("portable workspace error");
+        assert_eq!(error.code(), "portable-name-required");
+        assert_eq!(error.category(), Some("storage"));
+        assert_eq!(error.operation(), "sync_run");
+        assert_eq!(
+            error
+                .relative_path()
+                .map(crate::contract::WorkspaceRelativePath::as_str),
+            Some("CON.md")
+        );
+        assert!(server.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn s3_portable_name_required_precedes_cloud_or_settings_mutation() {
+        let server = S3Fixture::start();
+        let factory = Arc::new(FixedDejavuFactory::default());
+        let kernel =
+            TestKernel::start_s3_named(factory.clone(), &server.endpoint(), "CON.md").await;
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready S3 config");
+
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept S3 run");
+        let failed = wait_for_settled_sync(&sync).await;
+
+        assert_eq!(failed.completion_state, SyncCompletionState::Failed);
+        let error = failed.error.as_ref().expect("portable workspace error");
+        assert_eq!(error.code(), "portable-name-required");
+        assert_eq!(error.category(), Some("storage"));
+        assert_eq!(error.operation(), "sync_run");
+        assert_eq!(
+            error
+                .relative_path()
+                .map(crate::contract::WorkspaceRelativePath::as_str),
+            Some("CON.md")
+        );
+        assert!(server.requests().is_empty());
+        assert_eq!(factory.calls.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -2835,16 +3044,40 @@ mod tests {
 
     impl TestKernel {
         async fn start(endpoint: &str, ready_sync_config: bool) -> Self {
+            Self::start_named(endpoint, ready_sync_config, "Workspace").await
+        }
+
+        async fn start_named(
+            endpoint: &str,
+            ready_sync_config: bool,
+            workspace_name: &str,
+        ) -> Self {
             let config = ready_sync_config.then(|| webdav_config(endpoint, "qingyu", "run-secret"));
-            Self::start_with_config(config, None, LocalBindingFixture::Absent, None).await
+            Self::start_with_config(
+                config,
+                None,
+                LocalBindingFixture::Absent,
+                None,
+                workspace_name,
+            )
+            .await
         }
 
         async fn start_s3(factory: Arc<dyn DejavuRunnerFactory>, endpoint: &str) -> Self {
+            Self::start_s3_named(factory, endpoint, "Workspace").await
+        }
+
+        async fn start_s3_named(
+            factory: Arc<dyn DejavuRunnerFactory>,
+            endpoint: &str,
+            workspace_name: &str,
+        ) -> Self {
             Self::start_with_config(
                 Some(s3_config(endpoint)),
                 Some(factory),
                 LocalBindingFixture::LegacyDesktop,
                 None,
+                workspace_name,
             )
             .await
         }
@@ -2859,6 +3092,7 @@ mod tests {
                 Some(factory),
                 LocalBindingFixture::LegacyDesktop,
                 Some(settings),
+                "Workspace",
             )
             .await
         }
@@ -2872,6 +3106,7 @@ mod tests {
                 Some(factory),
                 LocalBindingFixture::FreshServer,
                 None,
+                "Workspace",
             )
             .await
         }
@@ -2881,6 +3116,7 @@ mod tests {
             dejavu_factory: Option<Arc<dyn DejavuRunnerFactory>>,
             local_binding: LocalBindingFixture,
             settings_fixture: Option<serde_json::Value>,
+            workspace_name: &str,
         ) -> Self {
             let temporary = tempdir().expect("temporary Kernel roots");
             let cache = temporary.path().join("cache");
@@ -2899,7 +3135,7 @@ mod tests {
                     )
                 }
                 LocalBindingFixture::Absent | LocalBindingFixture::LegacyDesktop => {
-                    let workspace = temporary.path().join("Workspace");
+                    let workspace = temporary.path().join(workspace_name);
                     let app_data = temporary.path().join("app-data");
                     std::fs::create_dir(&workspace).expect("workspace");
                     std::fs::create_dir(&app_data).expect("app data");
@@ -3007,6 +3243,22 @@ mod tests {
                 _workspace_service: workspace_service,
             }
         }
+    }
+
+    async fn wait_for_settled_sync(sync: &SyncService) -> crate::contract::SyncStatusDto {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(sync)
+                    .await
+                    .expect("read sync status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("sync should settle")
     }
 
     fn webdav_config(endpoint: &str, remote_root: &str, password: &str) -> SyncConfig {
@@ -3209,7 +3461,7 @@ mod tests {
             _inputs: crate::sync::dejavu_runner::DejavuRunnerInputs,
             _config: crate::sync::dejavu_runner::DejavuS3Config,
         ) -> Result<Box<dyn DejavuAttempt>, crate::sync::dejavu_runner::DejavuRunError> {
-            Ok(Box::new(FailingDejavuAttempt(self.0)))
+            Ok(Box::new(FailingDejavuAttempt(self.0.clone())))
         }
     }
 
@@ -3221,7 +3473,7 @@ mod tests {
             _inputs: crate::sync::dejavu_runner::DejavuRunnerInputs,
             _config: crate::sync::dejavu_runner::DejavuS3Config,
         ) -> Result<Box<dyn DejavuAttempt>, crate::sync::dejavu_runner::DejavuRunError> {
-            Err(self.0)
+            Err(self.0.clone())
         }
     }
 
@@ -3236,7 +3488,7 @@ mod tests {
             crate::sync::dejavu_runner::DejavuRunResult,
             crate::sync::dejavu_runner::DejavuRunError,
         > {
-            Err(self.0)
+            Err(self.0.clone())
         }
     }
 

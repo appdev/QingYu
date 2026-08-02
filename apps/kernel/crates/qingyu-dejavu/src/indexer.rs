@@ -6,7 +6,9 @@ use cap_std::fs::{Dir, Metadata, OpenOptions};
 
 use crate::chunker::StreamingRabinChunker;
 use crate::path_security::cap_metadata_is_reparse;
-use crate::{random_hash, sha1_hex, Chunk, File, Index, Repo, RepoError};
+use crate::{
+    portable_path_component_is_valid, random_hash, sha1_hex, Chunk, File, Index, Repo, RepoError,
+};
 
 const MAX_FILE_ID_COLLISION_ATTEMPTS: usize = 1_024;
 
@@ -140,6 +142,7 @@ fn scan_directory(
             if (hidden || user_ignored) && !protected_descendant {
                 continue;
             }
+            require_portable_component(name_text)?;
             let child = directory
                 .open_dir_nofollow(&name)
                 .map_err(|error| map_nofollow_io(directory, &name, error))?;
@@ -168,6 +171,7 @@ fn scan_directory(
             }
         }
 
+        require_portable_component(name_text)?;
         scanned.push(ScannedFile {
             relative_path,
             repository_path,
@@ -210,10 +214,6 @@ fn repository_path(relative_path: &Path) -> Result<String, RepoError> {
             return Err(RepoError::UnsafePath);
         };
         let component = component.to_str().ok_or(RepoError::UnsafePath)?;
-        if component.is_empty() || component == "." || component == ".." || component.contains('\\')
-        {
-            return Err(RepoError::UnsafePath);
-        }
         result.push('/');
         result.push_str(component);
     }
@@ -222,6 +222,14 @@ fn repository_path(relative_path: &Path) -> Result<String, RepoError> {
     } else {
         Ok(result)
     }
+}
+
+fn require_portable_component(component: &str) -> Result<(), RepoError> {
+    portable_path_component_is_valid(component)
+        .then_some(())
+        .ok_or_else(|| RepoError::PortableNameRequired {
+            component: component.to_owned(),
+        })
 }
 
 fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoError> {
@@ -546,6 +554,67 @@ mod tests {
         assert_eq!(index.count, 1);
         let file = repo.store.get_file(&index.files[0]).unwrap();
         assert_eq!(file.path, "/visible.md");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn included_non_portable_name_is_rejected_before_index_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_paths = paths(temp.path());
+        fs::create_dir_all(&repo_paths.data).unwrap();
+        fs::write(repo_paths.data.join("CON.md"), b"included").unwrap();
+        let repo = open_repo(temp.path(), RepoOptions::default());
+
+        let result = repo.index("portable name required");
+
+        assert!(matches!(
+            result,
+            Err(RepoError::PortableNameRequired { component }) if component == "CON.md"
+        ));
+        assert!(repo.latest().unwrap().is_none());
+        assert_eq!(index_file_count(&repo_paths.repo), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignored_non_portable_names_do_not_fail_the_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_paths = paths(temp.path());
+        fs::create_dir_all(repo_paths.data.join("CON")).unwrap();
+        fs::write(repo_paths.data.join("CON/inside.md"), b"ignored directory").unwrap();
+        fs::write(repo_paths.data.join("CON.tmp"), b"built-in ignored").unwrap();
+        fs::write(repo_paths.data.join("ignored\\name.md"), b"user ignored").unwrap();
+        fs::create_dir_all(repo_paths.data.join("ignored\\directory")).unwrap();
+        fs::write(
+            repo_paths.data.join("ignored\\directory/inside.txt"),
+            b"ignored backslash directory",
+        )
+        .unwrap();
+        fs::write(
+            repo_paths.data.join(".hidden\\file.md"),
+            b"hidden backslash file",
+        )
+        .unwrap();
+        fs::create_dir_all(repo_paths.data.join(".hidden\\directory")).unwrap();
+        fs::write(
+            repo_paths.data.join(".hidden\\directory/inside.txt"),
+            b"hidden backslash directory",
+        )
+        .unwrap();
+        fs::write(repo_paths.data.join("visible.txt"), b"included").unwrap();
+        let repo = open_repo(
+            temp.path(),
+            RepoOptions {
+                ignore_lines: vec!["CON/".to_owned(), "ignored*/".to_owned(), "*.md".to_owned()],
+                protected_include_paths: Vec::new(),
+            },
+        );
+
+        let index = repo.index("ignored portable violations").unwrap();
+
+        assert_eq!(index.count, 1);
+        let file = repo.store.get_file(&index.files[0]).unwrap();
+        assert_eq!(file.path, "/visible.txt");
     }
 
     #[test]

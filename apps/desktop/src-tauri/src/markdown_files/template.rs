@@ -20,6 +20,16 @@ fn normalize_markdown_template_file_name(file_name: &str) -> Result<String, Stri
     Err("Template file must use .md".to_string())
 }
 
+fn normalize_new_markdown_template_file_name(file_name: &str) -> Result<String, String> {
+    let normalized_name = normalize_markdown_template_file_name(file_name)?;
+    if file_name != file_name.trim() {
+        return Err("File name is not portable across supported platforms".to_string());
+    }
+    qingyu_kernel::contract::DocumentName::parse(normalized_name.clone())
+        .map(|_| normalized_name)
+        .map_err(|_| "File name is not portable across supported platforms".to_string())
+}
+
 fn markdown_template_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
@@ -49,12 +59,17 @@ pub(crate) fn write_markdown_template_file(
     contents: String,
 ) -> Result<(), String> {
     let dir = markdown_template_dir(&app)?;
+    write_markdown_template_file_in_dir(&dir, &file_name, &contents)
+}
+
+fn write_markdown_template_file_in_dir(
+    dir: &Path,
+    file_name: &str,
+    contents: &str,
+) -> Result<(), String> {
+    let normalized_file_name = normalize_new_markdown_template_file_name(file_name)?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    fs::write(
-        dir.join(normalize_markdown_template_file_name(&file_name)?),
-        contents,
-    )
-    .map_err(|error| error.to_string())
+    fs::write(dir.join(normalized_file_name), contents).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -84,5 +99,53 @@ mod tests {
         assert!(normalize_markdown_template_file_name("../standup.md").is_err());
         assert!(normalize_markdown_template_file_name("standup.markdown").is_err());
         assert!(normalize_markdown_template_file_name("standup").is_err());
+    }
+
+    #[test]
+    fn template_source_normalization_keeps_legacy_nonportable_names_addressable() {
+        assert_eq!(
+            normalize_markdown_template_file_name(" CON.md ")
+                .expect("legacy template lookup should stay structural"),
+            "CON.md"
+        );
+        assert_eq!(
+            normalize_markdown_template_file_name("bad:name.md")
+                .expect("legacy template lookup should not enforce portability"),
+            "bad:name.md"
+        );
+    }
+
+    #[test]
+    fn template_writes_reject_nonportable_final_names_without_artifacts() {
+        let root = tempfile::tempdir().expect("test root should be created");
+        let template_dir = root.path().join("templates");
+        let overlong_name = format!("{}.md", "x".repeat(253));
+        let cases = [
+            ("CON.md".to_string(), "CON.md".to_string()),
+            ("AUX.md".to_string(), "AUX.md".to_string()),
+            ("bad:name.md".to_string(), "bad:name.md".to_string()),
+            ("bad?.md".to_string(), "bad?.md".to_string()),
+            ("trailing.md.".to_string(), "trailing.md.".to_string()),
+            ("trailing.md ".to_string(), "trailing.md".to_string()),
+            (overlong_name.clone(), overlong_name),
+        ];
+
+        for (requested_name, final_name) in cases {
+            let result = write_markdown_template_file_in_dir(
+                &template_dir,
+                &requested_name,
+                "must not be written",
+            );
+
+            assert!(result.is_err(), "{requested_name:?} should be rejected");
+            assert!(
+                !template_dir.join(&final_name).exists(),
+                "rejected target {final_name:?} must not exist"
+            );
+            assert!(
+                !template_dir.exists(),
+                "rejected writes must not create the template directory"
+            );
+        }
     }
 }

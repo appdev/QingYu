@@ -18,6 +18,7 @@ use super::path::{
     is_markdown_tree_asset_file, is_markdown_tree_attachment_file, is_markdown_tree_file,
     markdown_folder_file, markdown_folder_file_from_retained_metadata, markdown_tree_file_kind,
     markdown_tree_root_for_path, normalize_markdown_tree_single_file_name,
+    require_portable_markdown_tree_name,
 };
 use super::trusted_file::{
     create_trusted_file_atomic, delete_trusted_file, move_trusted_path_noreplace,
@@ -549,20 +550,26 @@ fn normalize_markdown_tree_file_name(file_name: &str) -> Result<String, String> 
     let trimmed_name = normalize_markdown_tree_single_file_name(file_name)?;
     let candidate = Path::new(&trimmed_name);
 
-    if candidate.extension().is_none() {
-        return Ok(format!("{trimmed_name}.md"));
+    let normalized_name = if candidate.extension().is_none() {
+        format!("{trimmed_name}.md")
+    } else {
+        trimmed_name
+    };
+    if file_name != file_name.trim() {
+        return Err("File name is not portable across supported platforms".to_string());
     }
+    let normalized_name = require_portable_markdown_tree_name(normalized_name)?;
 
-    if !is_markdown_tree_file(candidate) {
+    if !is_markdown_tree_file(Path::new(&normalized_name)) {
         return Err("File must use .md or .markdown".to_string());
     }
 
-    Ok(trimmed_name)
+    Ok(normalized_name)
 }
 
 fn numbered_markdown_tree_file_name(file_name: &str, attempt: usize) -> Result<String, String> {
     if attempt == 0 {
-        return Ok(file_name.to_string());
+        return require_portable_markdown_tree_name(file_name.to_string());
     }
 
     let candidate = Path::new(file_name);
@@ -585,7 +592,7 @@ fn numbered_markdown_tree_file_name(file_name: &str, attempt: usize) -> Result<S
         .checked_add(attempt)
         .ok_or_else(|| "Document name index is unavailable".to_string())?;
 
-    Ok(format!("{base_stem} {next_index}.{extension}"))
+    require_portable_markdown_tree_name(format!("{base_stem} {next_index}.{extension}"))
 }
 
 fn normalize_markdown_tree_rename_file_name(
@@ -618,6 +625,10 @@ fn normalize_markdown_tree_rename_file_name(
     } else {
         format!("{trimmed_name}.md")
     };
+    if file_name != file_name.trim() {
+        return Err("File name is not portable across supported platforms".to_string());
+    }
+    let normalized_name = require_portable_markdown_tree_name(normalized_name)?;
     let normalized_candidate = Path::new(&normalized_name);
 
     if is_markdown_tree_file(source_path) && !is_markdown_tree_file(normalized_candidate) {
@@ -661,7 +672,11 @@ fn normalize_markdown_tree_folder_name(folder_name: &str) -> Result<String, Stri
         return Err("Folder name is invalid".to_string());
     }
 
-    Ok(trimmed_name.to_string())
+    if folder_name != folder_name.trim() {
+        return Err("Folder name is not portable across supported platforms".to_string());
+    }
+    require_portable_markdown_tree_name(trimmed_name.to_string())
+        .map_err(|_| "Folder name is not portable across supported platforms".to_string())
 }
 
 fn canonical_markdown_tree_root(root_path: &Path) -> Result<PathBuf, String> {
@@ -2443,5 +2458,281 @@ mod tests {
         assert!(!docs.exists());
 
         fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    fn assert_no_mutation_staging_artifacts(root: &Path) {
+        let entries = fs::read_dir(root)
+            .expect("test root should remain readable")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("test root entries should be readable");
+        assert!(entries.iter().all(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            !name.ends_with(".tmp")
+                && !name.starts_with(".qingyu-ui-update-")
+                && !name.starts_with(".markra-sync-stage-")
+        }));
+    }
+
+    #[test]
+    fn rejects_nonportable_markdown_tree_file_creation_targets_without_artifacts() {
+        let root = tempfile::tempdir().expect("test root should be created");
+        let overlong_stem = "x".repeat(253);
+        let cases = [
+            ("CON".to_string(), "CON.md".to_string()),
+            ("AUX.md".to_string(), "AUX.md".to_string()),
+            ("bad:name".to_string(), "bad:name.md".to_string()),
+            ("bad?.md".to_string(), "bad?.md".to_string()),
+            ("trailing.".to_string(), "trailing.".to_string()),
+            ("trailing ".to_string(), "trailing.md".to_string()),
+            (overlong_stem.clone(), format!("{overlong_stem}.md")),
+        ];
+
+        for (requested_name, final_name) in cases {
+            let result = create_markdown_tree_file(
+                root.path().to_string_lossy().to_string(),
+                requested_name.clone(),
+                None,
+                Some("must not be written".to_string()),
+            );
+
+            assert_eq!(
+                result,
+                Err("File name is not portable across supported platforms".to_string()),
+                "unexpected result for {requested_name:?}"
+            );
+            assert!(
+                !root.path().join(&final_name).exists(),
+                "rejected target {final_name:?} must not exist"
+            );
+            assert_no_mutation_staging_artifacts(root.path());
+        }
+    }
+
+    #[test]
+    fn rejects_nonportable_numbered_markdown_tree_creation_targets() {
+        let root = tempfile::tempdir().expect("test root should be created");
+        let maximum_name = format!("{}.md", "x".repeat(252));
+        fs::write(root.path().join(&maximum_name), "existing")
+            .expect("maximum portable source should be created directly");
+
+        let result = create_markdown_tree_file(
+            root.path().to_string_lossy().to_string(),
+            maximum_name.clone(),
+            None,
+            Some("must not be written".to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("File name is not portable across supported platforms".to_string())
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join(&maximum_name))
+                .expect("existing file should remain readable"),
+            "existing"
+        );
+        assert!(!root
+            .path()
+            .join(format!("{} 1.md", "x".repeat(252)))
+            .exists());
+        assert_no_mutation_staging_artifacts(root.path());
+    }
+
+    #[test]
+    fn rejects_nonportable_markdown_tree_folder_creation_targets_without_artifacts() {
+        let root = tempfile::tempdir().expect("test root should be created");
+        let cases = [
+            "CON".to_string(),
+            "AUX.md".to_string(),
+            "bad:name".to_string(),
+            "bad?".to_string(),
+            "trailing.".to_string(),
+            "trailing ".to_string(),
+            "x".repeat(256),
+        ];
+
+        for requested_name in cases {
+            let normalized_target = requested_name.trim();
+            let result = create_markdown_tree_folder(
+                root.path().to_string_lossy().to_string(),
+                requested_name.clone(),
+                None,
+            );
+
+            assert_eq!(
+                result,
+                Err("Folder name is not portable across supported platforms".to_string()),
+                "unexpected result for {requested_name:?}"
+            );
+            assert!(
+                !root.path().join(normalized_target).exists(),
+                "rejected folder target {normalized_target:?} must not exist"
+            );
+            assert_no_mutation_staging_artifacts(root.path());
+        }
+    }
+
+    #[test]
+    fn rejects_nonportable_rename_targets_for_every_markdown_tree_entry_kind() {
+        let kinds = [
+            ("document.md", MarkdownFolderEntryKind::File, ".md"),
+            ("image.png", MarkdownFolderEntryKind::Asset, ".png"),
+            (
+                "attachment.pdf",
+                MarkdownFolderEntryKind::Attachment,
+                ".pdf",
+            ),
+            ("folder", MarkdownFolderEntryKind::Folder, ""),
+        ];
+
+        for (source_name, kind, inserted_extension) in kinds {
+            let requested_names = [
+                "CON".to_string(),
+                "AUX.md".to_string(),
+                "bad:name".to_string(),
+                "bad?.md".to_string(),
+                "trailing.".to_string(),
+                "trailing ".to_string(),
+                "x".repeat(256 - inserted_extension.len()),
+            ];
+
+            for requested_name in requested_names {
+                let root = tempfile::tempdir().expect("test root should be created");
+                let source = root.path().join(source_name);
+                if matches!(&kind, MarkdownFolderEntryKind::Folder) {
+                    fs::create_dir(&source).expect("source folder should be created");
+                } else {
+                    fs::write(&source, "source").expect("source file should be created");
+                }
+                let trimmed_name = requested_name.trim();
+                let final_name = if Path::new(trimmed_name).extension().is_some()
+                    || inserted_extension.is_empty()
+                {
+                    trimmed_name.to_string()
+                } else {
+                    format!("{trimmed_name}{inserted_extension}")
+                };
+
+                let result = rename_markdown_tree_file(
+                    root.path().to_string_lossy().to_string(),
+                    source.to_string_lossy().to_string(),
+                    requested_name.clone(),
+                );
+
+                let expected_error = if matches!(&kind, MarkdownFolderEntryKind::Folder) {
+                    "Folder name is not portable across supported platforms"
+                } else {
+                    "File name is not portable across supported platforms"
+                };
+                assert_eq!(
+                    result,
+                    Err(expected_error.to_string()),
+                    "unexpected {kind:?} rename result for {requested_name:?}"
+                );
+                assert!(source.exists(), "rejected rename must retain its source");
+                if final_name != source_name {
+                    assert!(
+                        !root.path().join(&final_name).exists(),
+                        "rejected target {final_name:?} must not exist"
+                    );
+                }
+                assert_no_mutation_staging_artifacts(root.path());
+            }
+        }
+    }
+
+    #[test]
+    fn portable_names_still_report_specific_markdown_tree_kind_errors() {
+        let root = tempfile::tempdir().expect("test root should be created");
+        let document = root.path().join("document.md");
+        let image = root.path().join("image.png");
+        let attachment = root.path().join("attachment.pdf");
+        fs::write(&document, "document").expect("document should be created");
+        fs::write(&image, "image").expect("image should be created");
+        fs::write(&attachment, "attachment").expect("attachment should be created");
+
+        assert_eq!(
+            create_markdown_tree_file(
+                root.path().to_string_lossy().to_string(),
+                "portable.txt".to_string(),
+                None,
+                None,
+            ),
+            Err("File must use .md or .markdown".to_string())
+        );
+        assert_eq!(
+            rename_markdown_tree_file(
+                root.path().to_string_lossy().to_string(),
+                document.to_string_lossy().to_string(),
+                "portable.txt".to_string(),
+            ),
+            Err("File must use .md or .markdown".to_string())
+        );
+        assert_eq!(
+            rename_markdown_tree_file(
+                root.path().to_string_lossy().to_string(),
+                image.to_string_lossy().to_string(),
+                "portable.txt".to_string(),
+            ),
+            Err("Image file must use a supported image extension".to_string())
+        );
+        assert_eq!(
+            rename_markdown_tree_file(
+                root.path().to_string_lossy().to_string(),
+                attachment.to_string_lossy().to_string(),
+                "portable.png".to_string(),
+            ),
+            Err("Attachment file must not use a Markdown or image extension".to_string())
+        );
+        assert!(document.exists());
+        assert!(image.exists());
+        assert!(attachment.exists());
+        assert_no_mutation_staging_artifacts(root.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_nonportable_markdown_tree_entries_remain_repairable() {
+        let root = tempfile::tempdir().expect("test root should be created");
+        let legacy_document = root.path().join("CON.md");
+        let legacy_delete = root.path().join("AUX.md");
+        fs::write(&legacy_document, "legacy contents")
+            .expect("legacy document should be created directly");
+        fs::write(&legacy_delete, "delete me")
+            .expect("legacy delete fixture should be created directly");
+
+        let listed = list_markdown_files_for_path_with_asset_scope(
+            root.path().to_string_lossy().to_string(),
+            None,
+            None,
+            |_| Ok(()),
+        )
+        .expect("legacy documents should remain listable");
+        assert!(listed.iter().any(|file| file.relative_path == "CON.md"));
+        assert!(listed.iter().any(|file| file.relative_path == "AUX.md"));
+        assert_eq!(
+            crate::markdown_files::trusted_file::read_trusted_markdown_file(&legacy_document)
+                .expect("legacy document should remain readable")
+                .contents,
+            "legacy contents"
+        );
+
+        let renamed = rename_markdown_tree_file(
+            root.path().to_string_lossy().to_string(),
+            legacy_document.to_string_lossy().to_string(),
+            "portable.md".to_string(),
+        )
+        .expect("legacy document should be renameable to a portable target");
+        assert_eq!(renamed.relative_path, "portable.md");
+        assert!(!legacy_document.exists());
+        assert!(root.path().join("portable.md").exists());
+
+        delete_markdown_tree_file(
+            root.path().to_string_lossy().to_string(),
+            legacy_delete.to_string_lossy().to_string(),
+        )
+        .expect("legacy document should remain deletable");
+        assert!(!legacy_delete.exists());
     }
 }

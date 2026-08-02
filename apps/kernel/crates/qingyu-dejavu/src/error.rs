@@ -45,4 +45,6 @@ pub enum RepoError {
     RepoFatal,
     #[error("repository path is unsafe")]
     UnsafePath,
+    #[error("repository path contains a non-portable component")]
+    PortableNameRequired { component: String },
 }

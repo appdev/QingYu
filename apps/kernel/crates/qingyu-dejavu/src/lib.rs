@@ -9,6 +9,7 @@ pub mod history;
 mod indexer;
 mod lifecycle;
 mod path_security;
+pub mod portable_path;
 pub mod purge;
 pub mod ref_store;
 pub mod repo;
@@ -40,6 +41,7 @@ pub use entity::{
 pub use error::RepoError;
 pub use history::History;
 pub use lifecycle::RepositoryRuntimeState;
+pub use portable_path::{portable_path_component_is_valid, MAX_PORTABLE_PATH_COMPONENT_BYTES};
 pub use purge::PurgeStat;
 pub use ref_store::RefStore;
 pub use repo::{Device, Repo, RepoDirectoryCapabilities, RepoOptions, RepoPaths};

@@ -441,8 +441,10 @@ impl DurableFileStore {
 
         let parent_sync = self.sync_commit_parent();
         let mut commit_state = match parent_sync {
-            Ok(state) => state.into_commit_state(),
-            Err(_) => CommitState::PublishedDurabilityUncertain,
+            Ok(state @ (CommitState::Durable | CommitState::AtomicVisibility)) => state,
+            Ok(CommitState::PublishedDurabilityUncertain) | Err(_) => {
+                CommitState::PublishedDurabilityUncertain
+            }
         };
 
         if parent_sync.is_ok()
@@ -716,29 +718,30 @@ impl DurableFileStore {
         self.write_new_file(name, &bytes).map(drop)
     }
 
-    fn sync_parent_directory(&self) -> Result<ParentSyncState, DurableFileFailure> {
-        sync_directory(&self.directory).map_err(|_| DurableFileFailure::unavailable())
+    fn sync_parent_directory(&self) -> Result<CommitState, DurableFileFailure> {
+        super::capability::sync_directory_commit_state(&self.directory)
+            .map_err(|_| DurableFileFailure::unavailable())
     }
 
-    fn sync_commit_parent(&self) -> Result<ParentSyncState, DurableFileFailure> {
+    fn sync_commit_parent(&self) -> Result<CommitState, DurableFileFailure> {
         if self.faults.fail_at(FaultPoint::ParentSyncFailure) {
             return Err(DurableFileFailure::unavailable());
         }
         #[cfg(test)]
         if self.faults.fail_at(FaultPoint::ParentSyncUncertain) {
-            return Ok(ParentSyncState::PlatformUncertain);
+            return Ok(CommitState::AtomicVisibility);
         }
         self.sync_parent_directory()
     }
 
-    fn sync_recovery_parent(&self) -> Result<ParentSyncState, DurableFileFailure> {
+    fn sync_recovery_parent(&self) -> Result<CommitState, DurableFileFailure> {
         #[cfg(test)]
         if self.faults.fail_at(FaultPoint::RecoverySyncFailure) {
             return Err(DurableFileFailure::unavailable());
         }
         #[cfg(test)]
         if self.faults.fail_at(FaultPoint::RecoverySyncUncertain) {
-            return Ok(ParentSyncState::PlatformUncertain);
+            return Ok(CommitState::AtomicVisibility);
         }
         self.sync_parent_directory()
     }
@@ -897,9 +900,12 @@ impl DurableFileStore {
                 });
             }
             let parent_sync = self.sync_recovery_parent();
-            let commit_state = parent_sync
-                .map(ParentSyncState::into_commit_state)
-                .unwrap_or(CommitState::PublishedDurabilityUncertain);
+            let commit_state = match parent_sync {
+                Ok(state @ (CommitState::Durable | CommitState::AtomicVisibility)) => state,
+                Ok(CommitState::PublishedDurabilityUncertain) | Err(_) => {
+                    CommitState::PublishedDurabilityUncertain
+                }
+            };
             // A returned uncertainty is still a successful observation of the
             // published target. Explicit recovery is the operation that may
             // consume that state. A real sync error must retain every artifact
@@ -1383,26 +1389,6 @@ fn transaction_from_artifact_name(name: &str, suffix: &str) -> Option<RecoveryTr
     (expected == name).then_some(transaction)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ParentSyncState {
-    #[cfg(any(test, unix))]
-    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
-    Durable,
-    #[cfg(any(test, not(unix)))]
-    PlatformUncertain,
-}
-
-impl ParentSyncState {
-    const fn into_commit_state(self) -> CommitState {
-        match self {
-            #[cfg(any(test, unix))]
-            Self::Durable => CommitState::Durable,
-            #[cfg(any(test, not(unix)))]
-            Self::PlatformUncertain => CommitState::AtomicVisibility,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct RegularFileIdentity {
     device: u64,
@@ -1575,22 +1561,6 @@ impl FaultInjector for DurableFileTestFaultInjector {
 }
 
 #[cfg(unix)]
-fn sync_directory(directory: &Dir) -> io::Result<ParentSyncState> {
-    super::capability::sync_directory(directory)?;
-    Ok(ParentSyncState::Durable)
-}
-
-#[cfg(windows)]
-fn sync_directory(_directory: &Dir) -> io::Result<ParentSyncState> {
-    Ok(ParentSyncState::PlatformUncertain)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn sync_directory(_directory: &Dir) -> io::Result<ParentSyncState> {
-    Ok(ParentSyncState::PlatformUncertain)
-}
-
-#[cfg(unix)]
 fn publish_atomic(
     directory: &Dir,
     _stage_file: &File,
@@ -1747,19 +1717,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_directory_sync_uses_an_fsync_capable_descriptor() {
-        let temporary = tempdir().expect("temporary root");
-        let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())
-            .expect("open temporary root");
-
-        assert_eq!(
-            sync_directory(&directory).expect("sync retained Linux directory descriptor"),
-            ParentSyncState::Durable
-        );
-    }
 
     #[test]
     fn sensitive_byte_helper_overwrites_every_retained_byte() {

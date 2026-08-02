@@ -1250,6 +1250,43 @@ describe("QingYu workspace", () => {
     coordinatorSpy.mockRestore();
   });
 
+  it("rejects an unavailable desktop catalog entry inside the restore callback", async () => {
+    const entry: RemoteNotebookCatalogEntry = {
+      available: true,
+      disabledReason: null,
+      displayName: "Shared notes",
+      name: "Shared notes",
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051"
+    };
+    const runtime = createDefaultAppRuntime();
+    const bindRepository = vi.fn(runtime.syncConfig.bindRepository);
+    const controller = mockDesktopPrimaryWorkspace({ root: null, status: "needs-onboarding" });
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true },
+      syncConfig: {
+        ...runtime.syncConfig,
+        bindRepository,
+        listNotebooks: async () => [entry],
+        load: async () => readySyncConfigResult("desktop-unavailable-revision", "s3")
+      }
+    });
+
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Restore from cloud" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    controller.root = "/Workspace/Notes";
+    controller.status = "ready";
+    controller.workspaceRoot = "/Workspace";
+    entry.available = false;
+    entry.disabledReason = "notebook-name-unavailable";
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be restored/iu);
+    expect(bindRepository).not.toHaveBeenCalled();
+  });
+
   it("restores a disabled sync catalog through the established Workspace root", async () => {
     const restoreDesktopNotebook = vi.fn(async () => "/Restore Parent/Cloud Notes");
     const coordinatorSpy = vi.spyOn(

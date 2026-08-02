@@ -269,6 +269,12 @@ pub(super) fn normalize_markdown_tree_single_file_name(file_name: &str) -> Resul
     Ok(trimmed_name.to_string())
 }
 
+pub(super) fn require_portable_markdown_tree_name(name: String) -> Result<String, String> {
+    qingyu_kernel::contract::DocumentName::parse(name.clone())
+        .map(|_| name)
+        .map_err(|_| "File name is not portable across supported platforms".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +300,20 @@ mod tests {
             )
             .expect("project paths should be related"),
             "../assets/diagram.png"
+        );
+    }
+
+    #[test]
+    fn single_file_name_normalization_keeps_legacy_nonportable_names_addressable() {
+        assert_eq!(
+            normalize_markdown_tree_single_file_name(" CON.md ")
+                .expect("structural normalization should keep legacy names addressable"),
+            "CON.md"
+        );
+        assert_eq!(
+            normalize_markdown_tree_single_file_name("bad:name.md")
+                .expect("structural normalization should not enforce portability"),
+            "bad:name.md"
         );
     }
 

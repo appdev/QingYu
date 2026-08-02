@@ -1394,6 +1394,7 @@ function WorkspaceApp() {
     requireCurrentRemoteNotebookCatalogRevision
   ]);
   const selectDesktopRemoteNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
+    if (!entry.available) throw new Error("The cloud notebook is unavailable.");
     if (
       entry.provider === "s3"
       || remoteNotebookCatalogMode !== "select"
@@ -1522,6 +1523,7 @@ function WorkspaceApp() {
     closeMobileNotebookDialog();
   }, [closeMobileNotebookDialog, notebookSwitch.switchManagedNotebook]);
   const restoreMobileNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
+    if (!entry.available) throw new Error("The cloud notebook is unavailable.");
     const configuredRevision = syncConfig.status === "loaded" && syncConfig.loadResult?.status === "loaded"
       ? syncConfig.loadResult.revision
       : null;

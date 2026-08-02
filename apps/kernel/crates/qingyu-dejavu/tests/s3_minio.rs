@@ -188,6 +188,7 @@ impl LiveFailure {
             RepoError::OperationAndUnlockFailed { .. } => "operation_and_unlock_failed",
             RepoError::RepoFatal => "repo_fatal",
             RepoError::UnsafePath => "unsafe_path",
+            RepoError::PortableNameRequired { .. } => "portable_name_required",
         };
         Self::new(stage, code)
     }

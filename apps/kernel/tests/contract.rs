@@ -1,7 +1,7 @@
 use qingyu_kernel::config::KernelConfig;
 use qingyu_kernel::contract::{
     ApiErrorEnvelope, ApiVersion, AuthenticateFrame, CreateDocumentRequest, CredentialChange,
-    DeletionPolicy, DocumentContentDto, DocumentContents, DocumentId, DocumentKind,
+    DeletionPolicy, DocumentContentDto, DocumentContents, DocumentId, DocumentKind, DocumentName,
     DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails, EventSequence, FontFamilyValueDto,
     FrameErrorCode, HostProfile, InstanceId, ListWorkspaceInventoryQuery, LiveHealthResponse,
     LiveStatus, MoveDocumentRequest, Nullable, PageCursor, PageCursorContext, PageQuery,
@@ -643,6 +643,26 @@ fn document_names_enforce_portable_segment_and_kind_rules_at_deserialization() {
         ".",
         "..",
         "CON.md",
+        "PRN.md",
+        "AUX.md",
+        "NUL.md",
+        "COM1.md",
+        "COM2.md",
+        "COM3.md",
+        "COM4.md",
+        "COM5.md",
+        "COM6.md",
+        "COM7.md",
+        "COM8.md",
+        "COM9.md",
+        "LPT1.md",
+        "LPT2.md",
+        "LPT3.md",
+        "LPT4.md",
+        "LPT5.md",
+        "LPT6.md",
+        "LPT7.md",
+        "LPT8.md",
         "lpt9.markdown",
         ".QINGYU",
         ".qingyu-ui-update-secret.md",
@@ -650,7 +670,15 @@ fn document_names_enforce_portable_segment_and_kind_rules_at_deserialization() {
         ".markra-sync-stage-secret.md",
         "bad/name.md",
         r"bad\name.md",
+        "bad<name.md",
+        "bad>name.md",
         "bad:name.md",
+        "bad\"name.md",
+        "bad|name.md",
+        "bad?name.md",
+        "bad*name.md",
+        "bad\0name.md",
+        "bad\u{0001}name.md",
         "trailing.md.",
         "trailing.md ",
         "not-markdown.txt",
@@ -668,14 +696,23 @@ fn document_names_enforce_portable_segment_and_kind_rules_at_deserialization() {
         );
     }
 
-    let over_255_bytes = format!("{}.md", "界".repeat(85));
-    assert!(over_255_bytes.len() > 255);
+    let at_255_bytes = "x".repeat(255);
+    assert_eq!(at_255_bytes.len(), 255);
+    assert!(serde_json::from_value::<CreateDocumentRequest>(json!({
+        "workspaceGeneration": "generation-1",
+        "parent": "",
+        "name": at_255_bytes,
+        "kind": "directory"
+    }))
+    .is_ok());
+
+    let over_255_bytes = "x".repeat(256);
+    assert_eq!(over_255_bytes.len(), 256);
     assert!(serde_json::from_value::<CreateDocumentRequest>(json!({
         "workspaceGeneration": "generation-1",
         "parent": "",
         "name": over_255_bytes,
-        "kind": "file",
-        "contents": ""
+        "kind": "directory"
     }))
     .is_err());
 
@@ -714,6 +751,24 @@ fn document_names_enforce_portable_segment_and_kind_rules_at_deserialization() {
         "revision": "revision-1"
     });
     assert!(serde_json::from_value::<qingyu_kernel::contract::DocumentEntryDto>(entry).is_err());
+}
+
+#[test]
+fn document_names_use_the_dejavu_portability_contract_before_product_rules() {
+    for candidate in [
+        "note.md",
+        "个人.md",
+        "CON.md",
+        "bad:name.md",
+        "trailing.md ",
+    ] {
+        if !qingyu_dejavu::portable_path_component_is_valid(candidate) {
+            assert!(DocumentName::parse(candidate).is_err());
+            assert!(ResourceName::parse(candidate).is_err());
+        }
+    }
+    assert!(qingyu_dejavu::portable_path_component_is_valid(".qingyu"));
+    assert!(DocumentName::parse(".qingyu").is_err());
 }
 
 #[test]
@@ -1158,6 +1213,30 @@ fn public_error_debug_never_echoes_untrusted_strings() {
     for secret in ["transport", "request_failed", "SlowDown"] {
         assert!(!debug.contains(secret));
     }
+}
+
+#[test]
+fn portable_name_required_is_a_stable_safe_sync_error_code() {
+    let safe: SyncSafeErrorDto = serde_json::from_value(json!({
+        "category": "storage",
+        "code": "portable-name-required",
+        "operation": "sync_run",
+        "provider": "s3",
+        "relativePath": "CON.md",
+        "runId": "00000000-0000-4000-8000-000000000012"
+    }))
+    .expect("portable-name-required safe error");
+
+    assert_eq!(safe.code(), "portable-name-required");
+    assert_eq!(safe.category(), Some("storage"));
+    assert_eq!(safe.operation(), "sync_run");
+    assert_eq!(
+        safe.relative_path().map(WorkspaceRelativePath::as_str),
+        Some("CON.md")
+    );
+    let serialized = serde_json::to_string(&safe).expect("serialize safe error");
+    assert!(!serialized.contains("/Users/"));
+    assert!(!serialized.contains(r"C:\Users\"));
 }
 
 #[test]

@@ -60,6 +60,7 @@ pub(crate) fn ensure_managed_workspace_path(
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::notebook_scope::validate_portable_notebook_name(&name)?;
             std::fs::create_dir(&workspace_root).map_err(|error| error.to_string())?;
         }
         Err(error) => return Err(error.to_string()),
@@ -183,6 +184,43 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(marker).expect("workspace marker should persist"),
             "# Retained"
+        );
+    }
+
+    #[test]
+    fn existing_legacy_managed_workspace_remains_listed_and_resolvable() {
+        let temporary = tempdir().expect("temporary root should be created");
+        let app_data_root = temporary.path().join("app-data");
+        let legacy_root = app_data_root.join("workspaces/CON");
+        std::fs::create_dir_all(&legacy_root).expect("legacy workspace should exist");
+
+        assert_eq!(
+            list_managed_workspace_names_at(&app_data_root)
+                .expect("legacy workspace should remain discoverable"),
+            vec!["CON".to_string()]
+        );
+        assert_eq!(
+            ensure_managed_workspace_path(&app_data_root, "CON")
+                .expect("legacy workspace should remain resolvable"),
+            legacy_root
+                .canonicalize()
+                .expect("legacy workspace should canonicalize")
+        );
+    }
+
+    #[test]
+    fn missing_non_portable_managed_workspace_is_not_created() {
+        let temporary = tempdir().expect("temporary root should be created");
+        let app_data_root = temporary.path().join("app-data");
+        let candidate = app_data_root.join("workspaces/CON");
+
+        let error = ensure_managed_workspace_path(&app_data_root, "CON")
+            .expect_err("new managed workspaces require a portable name");
+
+        assert!(error.starts_with("portable-name-required:"));
+        assert!(
+            !candidate.exists(),
+            "the rejected workspace must not be created"
         );
     }
 

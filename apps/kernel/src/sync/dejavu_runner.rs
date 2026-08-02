@@ -719,10 +719,11 @@ pub struct DejavuRunResult {
     pub conflicts: Vec<DejavuConflict>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DejavuRunError {
     InvalidConfiguration,
     WorkspaceUnavailable,
+    PortableNameRequired { component: String },
     WorkingTreeChanged,
     Cancelled,
     RepositoryUnavailable,
@@ -738,10 +739,11 @@ pub enum DejavuRunError {
 }
 
 impl DejavuRunError {
-    pub const fn safe_code(self) -> &'static str {
+    pub const fn safe_code(&self) -> &'static str {
         match self {
             Self::InvalidConfiguration => "dejavu-config-unavailable",
             Self::WorkspaceUnavailable => "dejavu-workspace-unavailable",
+            Self::PortableNameRequired { .. } => "portable-name-required",
             Self::WorkingTreeChanged => "dejavu-working-tree-changed",
             Self::Cancelled => "dejavu-job-cancelled",
             Self::RepositoryUnavailable => "dejavu-repository-unavailable",
@@ -1152,6 +1154,9 @@ fn map_repo_error(error: RepoError) -> DejavuRunError {
         RepoError::OperationAndUnlockFailed { operation, .. } => map_repo_error(*operation),
         RepoError::FileIdentityCollision => DejavuRunError::IntegrityFailure,
         RepoError::UnsafePath => DejavuRunError::WorkspaceUnavailable,
+        RepoError::PortableNameRequired { component } => {
+            DejavuRunError::PortableNameRequired { component }
+        }
         _ => DejavuRunError::RepositoryUnavailable,
     }
 }
@@ -1236,6 +1241,20 @@ mod tests {
         assert_eq!(
             map_repo_error(RepoError::FileIdentityCollision),
             super::DejavuRunError::IntegrityFailure,
+        );
+    }
+
+    #[test]
+    fn portable_name_errors_retain_the_exact_component() {
+        use qingyu_dejavu::RepoError;
+
+        assert_eq!(
+            map_repo_error(RepoError::PortableNameRequired {
+                component: r"bad\name.md".to_owned(),
+            }),
+            super::DejavuRunError::PortableNameRequired {
+                component: r"bad\name.md".to_owned(),
+            }
         );
     }
 

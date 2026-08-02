@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsExt, OpenOptionsFollowExt};
 use cap_std::fs::Dir;
+use qingyu_kernel::contract::ResourceName;
 
 use super::path::{is_markdown_open_file, markdown_relative_path};
 
@@ -11,6 +12,10 @@ const ASSETS_FOLDER: &str = "assets";
 const STAGED_RESOURCE_NAME: &str = "content";
 const QUARANTINED_RESOURCE_NAME: &str = "published";
 const RESOURCE_STAGING_PREFIX: &str = ".qingyu-resource-";
+const RESOURCE_FILE_NAME_NOT_PORTABLE: &str =
+    "Resource file name is not portable across supported platforms";
+const RESOURCE_FOLDER_NAME_NOT_PORTABLE: &str =
+    "Resource folder name is not portable across supported platforms";
 
 pub(super) struct SavedProjectResource {
     pub(super) relative_path: String,
@@ -50,7 +55,28 @@ fn requested_resource_file_name(file_name: &str) -> Result<String, String> {
     if stem.trim().is_empty() || matches!(stem.trim(), "." | "..") {
         return Err("Project resource file name is invalid".to_string());
     }
-    Ok(trimmed.to_string())
+    validate_resource_file_name(file_name)?;
+    Ok(file_name.to_string())
+}
+
+pub(super) fn validate_resource_file_name(file_name: &str) -> Result<(), String> {
+    ResourceName::parse(file_name.to_string())
+        .map(|_| ())
+        .map_err(|_| RESOURCE_FILE_NAME_NOT_PORTABLE.to_string())
+}
+
+pub(super) fn validate_resource_folder(folder: &Path) -> Result<(), String> {
+    for component in folder.components() {
+        let Component::Normal(part) = component else {
+            return Err("Resource folder is invalid".to_string());
+        };
+        let part = part
+            .to_str()
+            .ok_or_else(|| RESOURCE_FOLDER_NAME_NOT_PORTABLE.to_string())?;
+        ResourceName::parse(part.to_string())
+            .map_err(|_| RESOURCE_FOLDER_NAME_NOT_PORTABLE.to_string())?;
+    }
+    Ok(())
 }
 
 fn unique_resource_file_name(file_name: &str, attempt: usize) -> Result<String, String> {
@@ -64,10 +90,13 @@ fn unique_resource_file_name(file_name: &str, attempt: usize) -> Result<String, 
         .and_then(|value| value.to_str())
         .ok_or_else(|| "Project resource file name is invalid".to_string())?;
     let suffix = format!("-{}", attempt + 1);
-    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
-        return Ok(format!("{stem}{suffix}.{extension}"));
-    }
-    Ok(format!("{stem}{suffix}"))
+    let candidate = if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        format!("{stem}{suffix}.{extension}")
+    } else {
+        format!("{stem}{suffix}")
+    };
+    validate_resource_file_name(&candidate)?;
+    Ok(candidate)
 }
 
 fn ensure_assets_folder(root: &Dir) -> Result<Dir, String> {
@@ -307,6 +336,24 @@ pub(super) fn write_unique_resource(
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<SavedProjectResource, String> {
     validate_addressability(None)?;
+    let select_candidate = |start_attempt| {
+        for attempt in start_attempt..1000 {
+            let target_name = unique_resource_file_name(file_name, attempt)?;
+            validate_addressability(None)?;
+            match target_folder.symlink_metadata(&target_name) {
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+            let candidate_path = root.join(relative_folder).join(&target_name);
+            let mutation = acquire_candidate(&candidate_path)?;
+            return Ok(Some((attempt, target_name, mutation)));
+        }
+        Ok(None)
+    };
+    let (mut attempt, mut target_name, mut mutation) = select_candidate(0)?
+        .ok_or_else(|| "Could not create a unique project resource".to_string())?;
+
     let staging = create_resource_staging(target_folder)?;
     let mut options = cap_std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -329,43 +376,34 @@ pub(super) fn write_unique_resource(
     }
     drop(target);
 
-    let published = match (0..1000).find_map(|attempt| {
-        let target_name = match unique_resource_file_name(file_name, attempt) {
-            Ok(name) => name,
-            Err(error) => return Some(Err(error)),
-        };
+    loop {
         if let Err(error) = validate_addressability(None) {
-            return Some(Err(error));
+            return Err(cleanup_staging_after_error(staging, error));
         }
-        match target_folder.symlink_metadata(&target_name) {
-            Ok(_) => return None,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Some(Err(error.to_string())),
-        }
-        let candidate_path = root.join(relative_folder).join(&target_name);
-        let mutation = match acquire_candidate(&candidate_path) {
-            Ok(mutation) => mutation,
-            Err(error) => return Some(Err(error)),
-        };
         match staging
             .directory
             .hard_link(STAGED_RESOURCE_NAME, target_folder, &target_name)
         {
-            Ok(()) => Some(Ok((target_name, mutation))),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
-            Err(error) => Some(Err(error.to_string())),
+            Ok(()) => break,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                drop(mutation);
+                (attempt, target_name, mutation) = match select_candidate(attempt + 1) {
+                    Ok(Some(candidate)) => candidate,
+                    Ok(None) => {
+                        return Err(cleanup_staging_after_error(
+                            staging,
+                            "Could not create a unique project resource".to_string(),
+                        ))
+                    }
+                    Err(error) => return Err(cleanup_staging_after_error(staging, error)),
+                };
+            }
+            Err(error) => {
+                return Err(cleanup_staging_after_error(staging, error.to_string()));
+            }
         }
-    }) {
-        Some(Ok(published)) => published,
-        Some(Err(error)) => return Err(cleanup_staging_after_error(staging, error)),
-        None => {
-            return Err(cleanup_staging_after_error(
-                staging,
-                "Could not create a unique project resource".to_string(),
-            ))
-        }
-    };
-    let (target_name, _mutation) = published;
+    }
+    let _mutation = mutation;
 
     if let Err(error) = validate_addressability(Some((&target_name, target_identity))) {
         return match rollback_published_resource(
@@ -495,7 +533,6 @@ fn validated_project_paths(
     Ok((document_path, project_root))
 }
 
-#[cfg(desktop)]
 pub(super) fn existing_project_asset_reference(
     document_path: &str,
     project_root_path: &str,
@@ -522,6 +559,7 @@ pub(super) fn save_project_resource_with_writer_in_registry(
     {
         return Ok(reference);
     }
+    requested_resource_file_name(&file_name)?;
 
     let root_dir = Dir::open_ambient_dir(&project_root, cap_std::ambient_authority())
         .map_err(|error| error.to_string())?;
@@ -614,6 +652,8 @@ pub(super) fn save_standalone_resource_with_writer(
     forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<SavedProjectResource, String> {
+    validate_resource_folder(&folder)?;
+    requested_resource_file_name(&file_name)?;
     let document_path = PathBuf::from(document_path)
         .canonicalize()
         .map_err(|error| error.to_string())?;

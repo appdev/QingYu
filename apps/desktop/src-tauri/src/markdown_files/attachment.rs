@@ -13,11 +13,14 @@ use super::path::is_markdown_open_file;
 use super::resource_writer::{
     existing_project_asset_reference as shared_existing_project_asset_reference, file_identity,
     save_project_resource_bytes_in_registry, save_project_resource_with_writer_in_registry,
-    write_unique_resource, FileIdentity,
+    validate_resource_file_name, validate_resource_folder, write_unique_resource, FileIdentity,
 };
 use super::types::ClipboardAttachmentFile;
 
 fn normalize_clipboard_attachment_folder(folder: &str) -> Result<PathBuf, String> {
+    if folder != folder.trim() {
+        return Err("Resource folder name is not portable across supported platforms".to_string());
+    }
     let normalized = folder.trim().replace('\\', "/");
     if normalized == "." {
         return Ok(PathBuf::new());
@@ -45,6 +48,7 @@ fn normalize_clipboard_attachment_folder(folder: &str) -> Result<PathBuf, String
         return Err("Clipboard attachment folder is invalid".to_string());
     }
 
+    validate_resource_folder(&target)?;
     Ok(target)
 }
 
@@ -269,6 +273,8 @@ fn write_standalone_attachment_file(
     before_destination_open: impl FnOnce() -> Result<(), String>,
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<ClipboardAttachmentFile, String> {
+    let folder = normalize_clipboard_attachment_folder(&folder)?;
+    validate_resource_file_name(&file_name)?;
     let document_path = PathBuf::from(document_path)
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -296,7 +302,6 @@ fn write_standalone_attachment_file(
             )),
         };
     }
-    let folder = normalize_clipboard_attachment_folder(&folder)?;
     // Keep this handle through creation; resolving the folder again would allow a symlink swap.
     let mut forbid_root_assets = Some(forbid_root_assets);
     if let Err(error) = verify_directory_path_identity(&root, root_identity, "Attachment root") {
@@ -1038,6 +1043,146 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn assert_no_attachment_staging(path: &Path) {
+        if !path.exists() {
+            return;
+        }
+        assert!(fs::read_dir(path)
+            .expect("attachment folder should be readable")
+            .all(|entry| !entry
+                .expect("attachment entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".qingyu-resource-")));
+    }
+
+    #[test]
+    fn project_attachment_creation_rejects_nonportable_names_before_assets_or_authority() {
+        let overlong_name = format!("{}.pdf", "x".repeat(252));
+        let cases = [
+            "CON.pdf".to_string(),
+            "bad:name.pdf".to_string(),
+            "bad?.pdf".to_string(),
+            "trailing.".to_string(),
+            "trailing ".to_string(),
+            "bad\u{001f}name.pdf".to_string(),
+            overlong_name,
+        ];
+
+        for requested_name in cases {
+            let fixture = AttachmentFixture::new();
+            let registry =
+                Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+            let final_name = requested_name.trim();
+            let _block = registry
+                .block_paths(&fixture.root, &[format!("assets/{final_name}")])
+                .expect("candidate should be blockable");
+
+            let result = save_project_clipboard_attachment_file_in_registry(
+                &registry,
+                fixture.note.to_string_lossy().to_string(),
+                fixture.root.to_string_lossy().to_string(),
+                vec![1, 2, 3],
+                requested_name.clone(),
+                None,
+                |_| Ok(()),
+                |_| Ok(()),
+            );
+
+            assert_eq!(
+                result,
+                Err("Resource file name is not portable across supported platforms".to_string()),
+                "unexpected result for {requested_name:?}"
+            );
+            assert!(!fixture.root.join("assets").exists());
+        }
+    }
+
+    #[test]
+    fn standalone_attachment_creation_rejects_nonportable_folders_before_mutation() {
+        let folders = [
+            ("CON".to_string(), "CON".to_string()),
+            ("bad:name".to_string(), "bad:name".to_string()),
+            ("bad?".to_string(), "bad?".to_string()),
+            ("trailing.".to_string(), "trailing.".to_string()),
+            ("trailing ".to_string(), "trailing".to_string()),
+            ("bad\u{001f}name".to_string(), "bad\u{001f}name".to_string()),
+            ("x".repeat(256), "x".repeat(256)),
+        ];
+
+        for (requested_folder, normalized_folder) in folders {
+            let fixture = AttachmentFixture::new();
+            let registry =
+                Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+            let _block = if normalized_folder.len() <= 255 {
+                Some(
+                    registry
+                        .block_paths(
+                            &fixture.root,
+                            &[format!("{normalized_folder}/attachment.pdf")],
+                        )
+                        .expect("candidate should be blockable"),
+                )
+            } else {
+                None
+            };
+
+            let result = save_clipboard_attachment_with_registry(
+                &registry,
+                fixture.note.to_string_lossy().to_string(),
+                requested_folder.clone(),
+                vec![1, 2, 3],
+                "attachment.pdf".to_string(),
+                None,
+                None,
+                |_| Ok(()),
+                |_| Ok(()),
+            );
+
+            assert_eq!(
+                result,
+                Err("Resource folder name is not portable across supported platforms".to_string()),
+                "unexpected result for folder {requested_folder:?}"
+            );
+            assert!(!fixture.root.join(&normalized_folder).exists());
+            assert_no_attachment_staging(&fixture.root);
+        }
+    }
+
+    #[test]
+    fn attachment_creation_accepts_255_byte_file_and_folder_components() {
+        let fixture = AttachmentFixture::new();
+        let file_name = format!("{}.pdf", "x".repeat(251));
+        let project = save_project_clipboard_attachment_file(
+            fixture.note.to_string_lossy().to_string(),
+            fixture.root.to_string_lossy().to_string(),
+            vec![1, 2, 3],
+            file_name.clone(),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("a 255-byte attachment file name should be accepted");
+        assert_eq!(project.relative_path, format!("assets/{file_name}"));
+        assert!(fixture.root.join("assets").join(file_name).is_file());
+
+        let folder = "f".repeat(255);
+        let standalone = save_clipboard_attachment_with_registry(
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+            fixture.note.to_string_lossy().to_string(),
+            folder.clone(),
+            vec![4, 5, 6],
+            "attachment.pdf".to_string(),
+            None,
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("a 255-byte attachment folder component should be accepted");
+        assert_eq!(standalone.relative_path, format!("{folder}/attachment.pdf"));
+        assert!(fixture.root.join(folder).join("attachment.pdf").is_file());
     }
 
     #[test]

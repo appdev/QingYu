@@ -217,6 +217,7 @@ jobs:
       - name: Test
         run: |
           cargo test --manifest-path apps/kernel/Cargo.toml --locked --all-targets --all-features
+          cargo test --manifest-path apps/kernel/Cargo.toml --locked -p qingyu-dejavu --all-targets --all-features
           cargo test --manifest-path apps/kernel/Cargo.toml --locked --doc
 
       - name: Reject Tauri dependencies
@@ -230,9 +231,15 @@ jobs:
           fi
 
   tauri-rust:
-    name: Tauri Rust
-    runs-on: macos-latest
-    timeout-minutes: 20
+    name: Tauri Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
 
     steps:
       - name: Checkout

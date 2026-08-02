@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use qingyu_kernel::contract::DocumentName;
+
 use crate::{
     protected_paths::is_qingyu_control_directory_name,
     remote_sync::{sync_state_key, ValidRemoteRoot},
@@ -56,7 +58,7 @@ pub(crate) fn resolve_notebook_sync_scope_from_canonical(
     canonical_root: PathBuf,
     sync_state_root: &Path,
 ) -> Result<NotebookSyncScope, String> {
-    let name = notebook_name_from_root(&canonical_root)?;
+    let name = portable_notebook_name_from_root(&canonical_root)?;
     let remote_prefix = notes_remote_prefix(remote_root, &name)?;
     let key = notebook_state_key(
         target_fingerprint_source,
@@ -86,6 +88,17 @@ pub(crate) fn validate_notebook_name(name: &str) -> Result<String, String> {
 }
 
 #[allow(dead_code)]
+pub(crate) fn validate_portable_notebook_name(name: &str) -> Result<String, String> {
+    let name = validate_notebook_name(name)?;
+    DocumentName::parse(name.clone())
+        .map(|_| name)
+        .map_err(|_| {
+            "portable-name-required: The notebook name must be portable across supported platforms."
+                .to_string()
+        })
+}
+
+#[allow(dead_code)]
 pub(crate) fn notebook_name_from_root(root: &Path) -> Result<String, String> {
     let name = root
         .file_name()
@@ -95,8 +108,14 @@ pub(crate) fn notebook_name_from_root(root: &Path) -> Result<String, String> {
 }
 
 #[allow(dead_code)]
+pub(crate) fn portable_notebook_name_from_root(root: &Path) -> Result<String, String> {
+    let name = notebook_name_from_root(root)?;
+    validate_portable_notebook_name(&name)
+}
+
+#[allow(dead_code)]
 pub(crate) fn notes_remote_prefix(root: &ValidRemoteRoot, name: &str) -> Result<String, String> {
-    let name = validate_notebook_name(name)?;
+    let name = validate_portable_notebook_name(name)?;
     Ok(format!("{}/{}", root.notes_prefix(), name))
 }
 
@@ -129,12 +148,50 @@ mod tests {
 
     #[test]
     fn notebook_name_validation_preserves_unicode_and_ordinary_spaces() {
-        let name = "  个人 笔记  ";
+        let local_name = "  个人 笔记  ";
+        let portable_name = "个人 笔记";
 
-        assert_eq!(validate_notebook_name(name).unwrap(), name);
+        assert_eq!(validate_notebook_name(local_name).unwrap(), local_name);
+        assert_eq!(
+            validate_portable_notebook_name(portable_name).unwrap(),
+            portable_name
+        );
         assert_eq!(
             notebook_name_from_root(Path::new("/notes/  个人 笔记  ")).unwrap(),
-            name
+            local_name
+        );
+        assert_eq!(
+            portable_notebook_name_from_root(Path::new("/notes/个人 笔记")).unwrap(),
+            portable_name
+        );
+    }
+
+    #[test]
+    fn local_recovery_accepts_a_legacy_name_that_portable_sync_rejects() {
+        assert_eq!(validate_notebook_name("CON").unwrap(), "CON");
+        assert_eq!(
+            notebook_name_from_root(Path::new("/notes/CON")).unwrap(),
+            "CON"
+        );
+
+        let validation_error = validate_portable_notebook_name("CON")
+            .expect_err("a Windows-reserved notebook name must not be published");
+        assert!(validation_error.starts_with("portable-name-required:"));
+        let root_error = portable_notebook_name_from_root(Path::new("/notes/CON"))
+            .expect_err("a Windows-reserved notebook root must not be published");
+        assert!(root_error.starts_with("portable-name-required:"));
+
+        let remote_root = ValidRemoteRoot::parse("root").unwrap();
+        let prefix_error = notes_remote_prefix(&remote_root, "CON")
+            .expect_err("a Windows-reserved notebook name must not enter a remote prefix");
+        assert!(prefix_error.starts_with("portable-name-required:"));
+    }
+
+    #[test]
+    fn strict_validation_preserves_local_structural_error_codes() {
+        assert_eq!(
+            validate_portable_notebook_name("team/notes").unwrap_err(),
+            "notebook-name-invalid: The notebook name is invalid."
         );
     }
 
@@ -158,8 +215,8 @@ mod tests {
             "qingyu/team/notes/A"
         );
         assert_eq!(
-            notes_remote_prefix(&root, "  个人 笔记  ").unwrap(),
-            "qingyu/team/notes/  个人 笔记  "
+            notes_remote_prefix(&root, "个人 笔记").unwrap(),
+            "qingyu/team/notes/个人 笔记"
         );
     }
 
@@ -196,14 +253,14 @@ mod tests {
     #[test]
     fn resolved_notebook_scope_uses_the_exact_name_and_hashed_notes_state_directory() {
         let directory = tempdir().unwrap();
-        let notebook = directory.path().join("  个人 笔记  ");
+        let notebook = directory.path().join("个人 笔记");
         fs::create_dir(&notebook).unwrap();
         let canonical = notebook.canonicalize().unwrap();
         let state = directory.path().join("sync-state");
         let remote_root = ValidRemoteRoot::parse("root").unwrap();
 
         let scope = resolve_notebook_sync_scope(
-            "webdav|https://dav.example.test/root/notes/%20%20%E4%B8%AA%E4%BA%BA%20%E7%AC%94%E8%AE%B0%20%20/",
+            "webdav|https://dav.example.test/root/notes/%E4%B8%AA%E4%BA%BA%20%E7%AC%94%E8%AE%B0/",
             &remote_root,
             &canonical,
             &state,
@@ -211,8 +268,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(scope.canonical_root, canonical);
-        assert_eq!(scope.name, "  个人 笔记  ");
-        assert_eq!(scope.remote_prefix, "root/notes/  个人 笔记  ");
+        assert_eq!(scope.name, "个人 笔记");
+        assert_eq!(scope.remote_prefix, "root/notes/个人 笔记");
         assert_eq!(
             scope.state_root.parent(),
             Some(state.join("notes").as_path())

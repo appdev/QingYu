@@ -19,7 +19,7 @@ use crate::path_security::{
     cap_metadata_is_reparse, std_metadata_is_reparse,
     validate_windows_directory_components_before_canonicalize,
 };
-use crate::{CheckIndex, Chunk, File, Index, RepoError};
+use crate::{CheckIndex, Chunk, File, Index, RepoError, RepositoryRelativePath};
 
 const OBJECT_MODE: u32 = 0o644;
 const ZSTD_WINDOW_LOG: u32 = 19;
@@ -328,6 +328,20 @@ impl Store {
             Err(RepoError::NotFound(_)) => {}
             Err(error) => return Err(error),
         }
+        self.write_immutable_object(&path, bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn import_raw_unvalidated_for_test(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        bytes: &[u8],
+    ) -> Result<(), RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
+        let _operation = self.lock_operation()?;
+        validate_id(id)?;
+        let path = self.raw_path(kind, id)?;
         self.write_immutable_object(&path, bytes)
     }
 
@@ -1088,17 +1102,8 @@ fn cap_files_equal(left: &cap_std::fs::File, right: &cap_std::fs::File) -> Resul
 }
 
 fn validate_repository_object_path(path: &str) -> Result<(), RepoError> {
-    if path == "/" || !path.starts_with('/') || path.contains('\\') {
-        return Err(RepoError::UnsafePath);
-    }
-    if path[1..]
-        .split('/')
-        .any(|component| component.is_empty() || component == "." || component == "..")
-    {
-        Err(RepoError::UnsafePath)
-    } else {
-        Ok(())
-    }
+    let relative = path.strip_prefix('/').ok_or(RepoError::UnsafePath)?;
+    RepositoryRelativePath::new(relative).map(|_| ())
 }
 
 pub(crate) fn validate_id(id: &str) -> Result<(), RepoError> {
