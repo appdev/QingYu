@@ -426,6 +426,32 @@ describe("useDocumentTitleController", () => {
     expect(operations.renameMarkdownTreeFile).toHaveBeenCalledTimes(1);
   });
 
+  it("does not apply an old title request after the same tab id is reused for another document", async () => {
+    const { result, operations } = renderController([markdownTab()]);
+
+    act(() => result.current.controller.modelForTab("notes-tab")?.onInput("Old draft"));
+    act(() => {
+      result.current.setTabs([markdownTab({
+        content: "---\ntitle: New document\n---\n\n# New body\n",
+        name: "New document.md",
+        path: "/vault/New document.md",
+        revision: 8
+      })]);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    await settle();
+
+    expect(operations.renameMarkdownTreeFile).not.toHaveBeenCalled();
+    expect(result.current.tabs[0]).toMatchObject({
+      content: "---\ntitle: New document\n---\n\n# New body\n",
+      name: "New document.md",
+      path: "/vault/New document.md",
+      revision: 8
+    });
+  });
+
   it("does not settle a tab until its active rename and immediate metadata save finish", async () => {
     const operations = createOperations();
     const rename = deferred<NativeMarkdownFolderFile | null>();
@@ -643,6 +669,36 @@ describe("useDocumentTitleController", () => {
       [{ reason: "invalid", tabId: "notes-tab" }],
       [{ reason: "rename-collision", tabId: "notes-tab" }]
     ]);
+  });
+
+  it("repairs an earlier valid title draft when the latest visual input is invalid", async () => {
+    const operations = createOperations();
+    operations.saveMarkdownTabContentById.mockResolvedValue({
+      name: "Notes.md",
+      path: "/vault/Notes.md"
+    });
+    const { result } = renderController([markdownTab()], operations);
+
+    act(() => result.current.controller.modelForTab("notes-tab")?.onInput("Temporary"));
+    expect(result.current.tabs[0]?.content).toBe("---\ntitle: Temporary\n---\n\n# Body\n");
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("   ");
+      model?.onCommit("blur");
+    });
+    await settle();
+
+    expect(result.current.tabs[0]).toMatchObject({
+      content: "---\ntitle: Notes\n---\n\n# Body\n",
+      dirty: false
+    });
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledWith(
+      "notes-tab",
+      "---\ntitle: Notes\n---\n\n# Body\n",
+      { skipHistorySnapshot: true }
+    );
+    expect(operations.renameMarkdownTreeFile).not.toHaveBeenCalled();
   });
 
   it("reports a metadata failure when immediate reconciliation cannot save", async () => {

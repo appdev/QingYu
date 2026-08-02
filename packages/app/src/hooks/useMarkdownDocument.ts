@@ -591,6 +591,13 @@ export function useMarkdownDocument({
     return isCurrentMarkdownEquivalent?.(markdown);
   }, [editorReady, isCurrentMarkdownEquivalent]);
 
+  const settleActiveDocumentTransactions = useCallback(() => {
+    const tabId = activeTabIdRef.current;
+    return tabId && settleDocumentTransactions
+      ? settleDocumentTransactions(tabId)
+      : undefined;
+  }, [settleDocumentTransactions]);
+
   const registerWindowRestoreState = useCallback((filePath: string | null, openFilePaths: string[]) => {
     if (managedWorkspace || workspacePersistencePolicy === "isolated") return;
     setNativeEditorWindowRestoreState({ filePath, openFilePaths }).catch(() => {});
@@ -1098,14 +1105,26 @@ export function useMarkdownDocument({
     if (typeof canDiscard === "boolean") {
       if (!canDiscard) return false;
 
+      const settlement = settleActiveDocumentTransactions();
+      if (settlement) await settlement;
+
       return create();
     }
 
     const confirmed = await canDiscard;
     if (!confirmed) return false;
 
+    const settlement = settleActiveDocumentTransactions();
+    if (settlement) await settlement;
+
     return create();
-  }, [confirmCanDiscardCurrentDocument, defaultSaveDirectory, documentTabsEnabled, resetToBlankDocument]);
+  }, [
+    confirmCanDiscardCurrentDocument,
+    defaultSaveDirectory,
+    documentTabsEnabled,
+    resetToBlankDocument,
+    settleActiveDocumentTransactions
+  ]);
 
   const clearOpenDocument = useCallback((options: ClearOpenDocumentOptions = {}) => {
     const openBlank = options.openBlank === true;
@@ -1326,10 +1345,12 @@ export function useMarkdownDocument({
 
   const loadNativeMarkdownPath = useCallback(
     async (path: string, updateTreeRoot = true, managed = false) => {
+      const settlement = settleActiveDocumentTransactions();
+      if (settlement) await settlement;
       const file = await readMarkdownFileWithPerformance(path, "load-path");
       applyNativeMarkdownFile(file, updateTreeRoot, managed);
     },
-    [applyNativeMarkdownFile, readMarkdownFileWithPerformance]
+    [applyNativeMarkdownFile, readMarkdownFileWithPerformance, settleActiveDocumentTransactions]
   );
 
   const openRecentMarkdownFile = useCallback(
@@ -1498,8 +1519,17 @@ export function useMarkdownDocument({
       if (!canDiscard) return;
     }
 
+    const settlement = settleActiveDocumentTransactions();
+    if (settlement) await settlement;
+
     applyNativeMarkdownFile(file, windowContext.kind === "primary");
-  }, [applyNativeMarkdownFile, confirmCanDiscardCurrentDocument, documentTabsEnabled, windowContext.kind]);
+  }, [
+    applyNativeMarkdownFile,
+    confirmCanDiscardCurrentDocument,
+    documentTabsEnabled,
+    settleActiveDocumentTransactions,
+    windowContext.kind
+  ]);
 
   const openTreeMarkdownFile = useCallback(
     async (file: NativeMarkdownFolderFile, options: OpenTreeMarkdownFileOptions = {}) => {

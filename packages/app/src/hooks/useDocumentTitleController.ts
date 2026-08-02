@@ -52,6 +52,7 @@ type SourceRequest = {
 };
 
 type TitleTransactionRequest = {
+  documentRevision: number;
   generation: number;
   kind: "title";
   sourceRequest?: SourceRequest;
@@ -59,6 +60,7 @@ type TitleTransactionRequest = {
 };
 
 type RepairTransactionRequest = {
+  documentRevision: number;
   generation: number;
   kind: "repair";
   sourceRequest?: SourceRequest;
@@ -234,6 +236,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     const currentOptions = optionsRef.current;
     const tab = latestTab(currentOptions.tabs, tabId);
     if (!tab || currentOptions.isReadOnlyPath(tab.path)) return;
+    if (tab.revision !== request.documentRevision) return;
     if (readMarkdownFrontmatter(sourceForRequest(tab, request)).status === "malformed") return;
 
     let authoritativeFile = currentFileForTab(tab);
@@ -253,6 +256,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
         optionsRef.current.onFailure?.({ reason: "metadata-blocked", tabId });
         return;
       }
+      if (!restored.changed) return;
 
       await routeAndSaveSource(latest, restored.source);
     };
@@ -427,8 +431,11 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     sourceRequest?: SourceRequest
   ) => {
     const state = transactionState(tabId);
+    const tab = latestTab(optionsRef.current.tabs, tabId);
+    if (!tab) return;
     state.generation += 1;
     state.pendingDraft = {
+      documentRevision: tab.revision,
       generation: state.generation,
       kind: "title",
       sourceRequest,
@@ -445,10 +452,13 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
 
   const queueRepair = useCallback((tabId: string, sourceRequest?: SourceRequest) => {
     const state = transactionState(tabId);
+    const tab = latestTab(optionsRef.current.tabs, tabId);
+    if (!tab) return Promise.resolve(undefined);
     state.generation += 1;
     clearTimer(state);
     state.pendingDraft = null;
     return queueTransaction(tabId, {
+      documentRevision: tab.revision,
       generation: state.generation,
       kind: "repair",
       sourceRequest
@@ -473,7 +483,10 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
         if (readMarkdownFrontmatter(currentTab.content).status === "malformed") return;
         const normalized = normalizeMarkdownDocumentTitle(title);
         if (!normalized.ok) {
-          scheduleTitleRequest(tabId, title);
+          scheduleTitleRequest(tabId, title, {
+            sourceAtRequest: currentTab.content,
+            source: currentTab.content
+          });
           return;
         }
 

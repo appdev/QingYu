@@ -475,6 +475,67 @@ describe("useMarkdownDocument", () => {
     })));
   });
 
+  it("settles the current title transaction before a single-tab tree open can reuse its tab id", async () => {
+    const firstPath = "/mock-files/first.md";
+    const secondPath = "/mock-files/second.md";
+    let blockTransactions = false;
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => blockTransactions
+      ? transactions
+      : Promise.resolve(undefined));
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => ({
+      content: path === firstPath ? "# First" : "# Second",
+      name: path === firstPath ? "first.md" : "second.md",
+      path
+    }));
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: false,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        hasPendingDocumentTransactions: () => blockTransactions,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "first.md",
+        path: firstPath,
+        relativePath: "first.md"
+      });
+    });
+    settleDocumentTransactions.mockClear();
+    mockedReadNativeMarkdownFile.mockClear();
+    blockTransactions = true;
+
+    let replacement!: Promise<boolean>;
+    act(() => {
+      replacement = result.current.openTreeMarkdownFile({
+        name: "second.md",
+        path: secondPath,
+        relativePath: "second.md"
+      });
+    });
+    await Promise.resolve();
+
+    expect(settleDocumentTransactions).toHaveBeenCalledTimes(1);
+    expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalled();
+    expect(result.current.document.path).toBe(firstPath);
+
+    resolveTransactions();
+    await act(async () => replacement);
+    expect(result.current.document.path).toBe(secondPath);
+  });
+
   it("reports a managed tree restore read failure to its caller", async () => {
     const filePath = "/mobile/workspace/notes/missing.md";
     mockedReadNativeMarkdownFile.mockRejectedValue(new Error("missing file"));
@@ -5415,6 +5476,7 @@ describe("useMarkdownDocument", () => {
 
   it("settles document transactions before a global dirty-file save snapshots tabs", async () => {
     const guidePath = "/mock-files/vault/guide.md";
+    let blockTransactions = false;
     let resolveTransactions!: () => undefined;
     const transactions = new Promise<undefined>((resolve) => {
       resolveTransactions = () => {
@@ -5422,7 +5484,9 @@ describe("useMarkdownDocument", () => {
         return undefined;
       };
     });
-    const settleDocumentTransactions = vi.fn(() => transactions);
+    const settleDocumentTransactions = vi.fn(() => blockTransactions
+      ? transactions
+      : Promise.resolve(undefined));
     mockedReadNativeMarkdownFile.mockResolvedValue({
       content: "# Guide\n\nOriginal",
       name: "guide.md",
@@ -5446,6 +5510,8 @@ describe("useMarkdownDocument", () => {
         relativePath: "guide.md"
       });
     });
+    settleDocumentTransactions.mockClear();
+    blockTransactions = true;
     act(() => result.current.handleMarkdownChange("# Guide\n\nDirty"));
     mockedSaveNativeMarkdownFile.mockClear();
 
