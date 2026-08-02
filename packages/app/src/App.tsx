@@ -901,6 +901,21 @@ function WorkspaceApp() {
     if (primaryWindowOwner) return switchDesktopNotebookRef.current(path);
     return requestPrimaryNotebookSwitch({ path, source: "native-open" });
   }, [canChooseLocalWorkspace, primaryWindowOwner]);
+  const documentTransactionBridgeRef = useRef<{
+    hasPending: (tabId?: string) => boolean;
+    settle: (tabId?: string) => Promise<unknown>;
+  }>({
+    hasPending: () => false,
+    settle: async () => undefined
+  });
+  const hasPendingDocumentTransactions = useCallback(
+    (tabId?: string) => documentTransactionBridgeRef.current.hasPending(tabId),
+    []
+  );
+  const settleDocumentTransactions = useCallback(
+    (tabId?: string) => documentTransactionBridgeRef.current.settle(tabId),
+    []
+  );
   const syncStatusLabel = useMemo(() => {
     if (!appSync.status) return null;
     const completionLabel = appSync.status.completionState === "attempting"
@@ -922,6 +937,7 @@ function WorkspaceApp() {
     initialBlankDocumentName: untitledMarkdownDocumentName(appLanguage.language),
     initialBlankDocumentReady: appLanguage.ready,
     isCurrentMarkdownEquivalent: isCurrentMarkdownEquivalentForDocument,
+    hasPendingDocumentTransactions,
     managedWorkspace: compactMode.trueMobile,
     nativeCloseBlocked: settingsModalRequest !== null,
     nativeOpenPolicy: compactMode.trueMobile
@@ -946,6 +962,7 @@ function WorkspaceApp() {
       editorPreferences.preferences.restoreWorkspaceOnStartup,
     restoreWorkspaceRoot: primaryIntegrationRoot,
     saveAsWorkspacePolicy,
+    settleDocumentTransactions,
     windowContext: editorWindowContext,
     workspaceReady: !primaryWindowOwner ||
       primaryWorkspace.status === "ready" ||
@@ -2065,6 +2082,10 @@ function WorkspaceApp() {
     saveMarkdownTabContentById,
     tabs: documentTabs
   });
+  documentTransactionBridgeRef.current.hasPending = titleController.hasUnsettledTransactions;
+  documentTransactionBridgeRef.current.settle = (tabId) => tabId
+    ? titleController.settleTab(tabId)
+    : titleController.settleAll();
   useEffect(() => {
     documentTabs.forEach((tab) => {
       if (!tab.open) return;

@@ -13186,6 +13186,8 @@ Date: 2026-08-02
 
     title.textContent = "Renamed title";
     fireEvent.input(title);
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
     fireEvent.blur(title);
 
     await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
@@ -13242,6 +13244,114 @@ Date: 2026-08-02
     );
   });
 
+  it("restores a rejected source title in CodeMirror while preserving and saving its other source edits", async () => {
+    const original = "---\ntitle: Native\ntag: one\n---\n\n# Body\n";
+    const rejected = "---\ntitle: Taken\ntag: changed\n---\n\n# Changed body\n";
+    const authoritative = "---\ntitle: Native\ntag: changed\n---\n\n# Changed body\n";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockRejectedValue(new Error("File already exists"));
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Native.md", path: mockNativePath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, rejected);
+
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      "/mock-files",
+      mockNativePath,
+      "Taken.md"
+    ));
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(authoritative));
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: authoritative,
+        path: mockNativePath,
+        skipHistorySnapshot: true,
+        suggestedName: "Native.md"
+      })
+    ));
+  });
+
+  it("restores a title-only source collision in CodeMirror even when authoritative content matches the starting prop", async () => {
+    const original = "---\ntitle: Native\n---\n\n# Body\n";
+    const rejected = "---\ntitle: Taken\n---\n\n# Body\n";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockRejectedValue(new Error("File already exists"));
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Native.md", path: mockNativePath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, rejected);
+
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(original));
+  });
+
+  it("immediately restores a removed source title in CodeMirror", async () => {
+    const original = "---\ntag: keep\ntitle: Native\n---\n\n# Body\n";
+    const removed = "---\ntag: keep\n---\n\n# Body\n";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Native.md", path: mockNativePath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, removed);
+
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(original));
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({ contents: original, path: mockNativePath })
+    ));
+  });
+
+  it("settles a pending title rename before an ordinary save can write the document", async () => {
+    const original = "---\ntitle: Native\n---\n\n# Body\n";
+    const renamedPath = "/mock-files/Save now.md";
+    let resolveRename!: (file: { name: string; path: string; relativePath: string }) => unknown;
+    const rename = new Promise<{ name: string; path: string; relativePath: string }>((resolve) => {
+      resolveRename = resolve;
+    });
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockImplementation(() => rename);
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Save now.md", path: renamedPath });
+    renderApp();
+    const title = await screen.findByRole("textbox", { name: "Document title" });
+
+    title.textContent = "Save now";
+    fireEvent.input(title);
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledTimes(1));
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+    resolveRename({
+      name: "Save now.md",
+      path: renamedPath,
+      relativePath: "Save now.md"
+    });
+
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2));
+    expect(mockedSaveNativeMarkdownFile.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({
+        contents: "---\ntitle: Save now\n---\n\n# Body\n",
+        path: renamedPath,
+        skipHistorySnapshot: true,
+        suggestedName: "Save now.md"
+      }),
+      expect.objectContaining({
+        contents: "---\ntitle: Save now\n---\n\n# Body\n",
+        path: renamedPath,
+        suggestedName: "Save now.md"
+      })
+    ]);
+  });
+
   it("rolls a colliding document title back without changing the tab and shows localized feedback", async () => {
     mockPrimaryMarkdownFile({
       content: "---\ntitle: Native\n---\n\n# Body\n",
@@ -13261,7 +13371,14 @@ Date: 2026-08-02
     expect(document.querySelector(".app-toast")).toHaveTextContent(
       "A document with this title already exists."
     );
-    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: "---\ntitle: Native\n---\n\n# Body\n",
+        path: mockNativePath,
+        skipHistorySnapshot: true,
+        suggestedName: "Native.md"
+      })
+    );
   });
 
   it("disables malformed and read-only document titles without repairing their source", async () => {

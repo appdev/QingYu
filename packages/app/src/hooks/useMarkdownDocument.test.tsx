@@ -2823,6 +2823,49 @@ describe("useMarkdownDocument", () => {
     await closeRequestPromise;
   });
 
+  it("waits for pending document transactions before persisting and destroying a native window", async () => {
+    let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => transactions);
+    mockedListenNativeWindowCloseRequested.mockImplementation(async (handler) => {
+      closeRequestHandler = handler;
+      return () => {};
+    });
+    renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+    await waitFor(() => expect(mockedListenNativeWindowCloseRequested).toHaveBeenCalled());
+
+    const registeredCloseRequestHandler = closeRequestHandler as ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null;
+    if (!registeredCloseRequestHandler) throw new Error("native close request handler was not registered");
+    let closeResolved = false;
+    const closePromise = Promise.resolve(registeredCloseRequestHandler({ preventDefault: vi.fn() })).then(() => {
+      closeResolved = true;
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(settleDocumentTransactions).toHaveBeenCalledWith();
+    expect(closeResolved).toBe(false);
+    expect(mockedDestroyNativeWindow).not.toHaveBeenCalled();
+
+    resolveTransactions();
+    await act(async () => closePromise);
+    await waitFor(() => expect(mockedDestroyNativeWindow).toHaveBeenCalledTimes(1));
+  });
+
   it("retries coordinated native close when the first request leaves the window open", async () => {
     let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
     mockedDestroyNativeWindow.mockResolvedValue(undefined);
@@ -2944,6 +2987,26 @@ describe("useMarkdownDocument", () => {
         }
       ]
     });
+  });
+
+  it("blocks web unload while a document transaction is pending even before dirty state is visible", () => {
+    renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        hasPendingDocumentTransactions: () => true,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    const event = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+
+    act(() => {
+      window.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it("keeps the app open when native app exit discard is cancelled", async () => {
@@ -5348,6 +5411,52 @@ describe("useMarkdownDocument", () => {
       name: "guide.md",
       path: guidePath
     });
+  });
+
+  it("settles document transactions before a global dirty-file save snapshots tabs", async () => {
+    const guidePath = "/mock-files/vault/guide.md";
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => transactions);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Guide\n\nOriginal",
+      name: "guide.md",
+      path: guidePath
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "guide.md", path: guidePath });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "guide.md",
+        path: guidePath,
+        relativePath: "guide.md"
+      });
+    });
+    act(() => result.current.handleMarkdownChange("# Guide\n\nDirty"));
+    mockedSaveNativeMarkdownFile.mockClear();
+
+    const save = result.current.saveDirtyMarkdownFiles();
+    await Promise.resolve();
+    expect(settleDocumentTransactions).toHaveBeenCalledWith();
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+
+    resolveTransactions();
+    await act(async () => save);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a dirty-file save when the native write fails", async () => {

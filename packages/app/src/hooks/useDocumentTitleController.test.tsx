@@ -372,6 +372,24 @@ describe("useDocumentTitleController", () => {
     expect(operations.renameMarkdownTreeFile).toHaveBeenCalledTimes(1);
   });
 
+  it("routes a visual title draft into dirty document state before the debounce", () => {
+    const { result, operations } = renderController([markdownTab()]);
+    const model = result.current.controller.modelForTab("notes-tab");
+
+    act(() => model?.onInput("Pending title"));
+
+    expect(operations.renameMarkdownTreeFile).not.toHaveBeenCalled();
+    expect(operations.handleMarkdownTabChange).toHaveBeenCalledWith(
+      "notes-tab",
+      "---\ntitle: Pending title\n---\n\n# Body\n",
+      { documentRevision: 7, surface: "source" }
+    );
+    expect(result.current.tabs[0]).toMatchObject({
+      content: "---\ntitle: Pending title\n---\n\n# Body\n",
+      dirty: true
+    });
+  });
+
   it.each(["blur", "enter"] as const)("flushes a pending visual title on %s", async (reason) => {
     const { result, operations } = renderController([markdownTab()]);
     const model = result.current.controller.modelForTab("notes-tab");
@@ -391,6 +409,54 @@ describe("useDocumentTitleController", () => {
       await vi.advanceTimersByTimeAsync(256);
     });
     expect(operations.renameMarkdownTreeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles a pending title immediately without waiting for its debounce", async () => {
+    const { result, operations } = renderController([markdownTab()]);
+
+    act(() => result.current.controller.modelForTab("notes-tab")?.onInput("Save now"));
+    await act(async () => {
+      await result.current.controller.settleTab("notes-tab");
+    });
+
+    expect(operations.renameMarkdownTreeFile).toHaveBeenCalledWith(
+      expect.any(Object),
+      "Save now.md"
+    );
+    expect(operations.renameMarkdownTreeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not settle a tab until its active rename and immediate metadata save finish", async () => {
+    const operations = createOperations();
+    const rename = deferred<NativeMarkdownFolderFile | null>();
+    const save = deferred<SavedNativeMarkdownFile | null>();
+    operations.renameMarkdownTreeFile.mockImplementation(() => rename.promise);
+    operations.saveMarkdownTabContentById.mockImplementation(() => save.promise);
+    const { result } = renderController([markdownTab()], operations);
+    let settled = false;
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("Wait for me");
+      model?.onCommit("blur");
+    });
+    const settlement = result.current.controller.settleTab("notes-tab").then(() => {
+      settled = true;
+    });
+    await settle();
+    expect(settled).toBe(false);
+
+    rename.resolve({
+      name: "Wait for me.md",
+      path: "/vault/Wait for me.md",
+      relativePath: "/vault/Wait for me.md"
+    });
+    await settle();
+    expect(settled).toBe(false);
+
+    save.resolve({ name: "Wait for me.md", path: "/vault/Wait for me.md" });
+    await act(async () => settlement);
+    expect(settled).toBe(true);
   });
 
   it("normalizes the visual title before requesting a rename", async () => {
@@ -538,14 +604,22 @@ describe("useDocumentTitleController", () => {
       (initialResetToken ?? 0) + 1
     );
     expect(operations.applyRenamedTreeFile).not.toHaveBeenCalled();
-    expect(operations.handleMarkdownTabChange).not.toHaveBeenCalled();
-    expect(operations.saveMarkdownTabContentById).not.toHaveBeenCalled();
+    expect(operations.handleMarkdownTabChange).toHaveBeenLastCalledWith(
+      "notes-tab",
+      "---\ntitle: Notes\n---\n\n# Body\n",
+      { documentRevision: 7, surface: "source" }
+    );
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledTimes(1);
   });
 
   it("reports typed invalid-title and rename-collision failures to the application boundary", async () => {
     const operations = createOperations();
     const onFailure = vi.fn();
     operations.renameMarkdownTreeFile.mockRejectedValueOnce(new Error("File already exists"));
+    operations.saveMarkdownTabContentById.mockResolvedValue({
+      name: "Notes.md",
+      path: "/vault/Notes.md"
+    });
     const { result } = renderController(
       [markdownTab()],
       operations,
@@ -922,7 +996,12 @@ describe("useDocumentTitleController", () => {
         nextSource
       );
     });
-    expect(consumed).toBe(true);
+    expect(consumed).toBe(false);
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: nextSource, dirty: true }
+        : tab));
+    });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(256);
     });
@@ -934,6 +1013,47 @@ describe("useDocumentTitleController", () => {
     );
     expect(result.current.tabs[0]?.content).toBe(
       "---\ntitle: Source title 2\ntag: keep\n---\n\nChanged body\n"
+    );
+  });
+
+  it("rolls a rejected source title back in document state while preserving and saving its other edits", async () => {
+    const operations = createOperations();
+    operations.renameMarkdownTreeFile.mockRejectedValue(new Error("File already exists"));
+    operations.saveMarkdownTabContentById.mockResolvedValue({
+      name: "Notes.md",
+      path: "/vault/Notes.md"
+    });
+    const previousSource = "---\ntitle: Notes\ntag: old\n---\n\nOld body\n";
+    const nextSource = "---\ntitle: Taken\ntag: changed\n---\n\nChanged body\n";
+    const { result } = renderController([markdownTab({ content: previousSource })], operations);
+
+    let consumed = true;
+    act(() => {
+      consumed = result.current.controller.handleSourceTitleChange(
+        "notes-tab",
+        previousSource,
+        nextSource
+      );
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: nextSource, dirty: true }
+        : tab));
+    });
+    expect(consumed).toBe(false);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    await settle();
+
+    const authoritativeSource = "---\ntitle: Notes\ntag: changed\n---\n\nChanged body\n";
+    expect(result.current.tabs[0]).toMatchObject({
+      content: authoritativeSource,
+      dirty: false
+    });
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledWith(
+      "notes-tab",
+      authoritativeSource,
+      { skipHistorySnapshot: true }
     );
   });
 
@@ -962,7 +1082,12 @@ describe("useDocumentTitleController", () => {
         sourceEdit
       );
     });
-    expect(consumed).toBe(true);
+    expect(consumed).toBe(false);
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: sourceEdit, dirty: true }
+        : tab));
+    });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(256);
     });
@@ -1001,7 +1126,12 @@ describe("useDocumentTitleController", () => {
       "notes-tab",
       initialSource,
       removedTitleSource
-    )).toBe(true);
+    )).toBe(false);
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: removedTitleSource, dirty: true }
+        : tab));
+    });
 
     firstRename.resolve({
       name: "First visual.md",
@@ -1037,7 +1167,12 @@ describe("useDocumentTitleController", () => {
       "notes-tab",
       initialSource,
       consumedSource
-    )).toBe(true);
+    )).toBe(false);
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: consumedSource, dirty: true }
+        : tab));
+    });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(256);
     });
@@ -1111,11 +1246,14 @@ describe("useDocumentTitleController", () => {
         previousSource,
         nextSource
       );
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: nextSource, dirty: true }
+        : tab));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(consumed).toBe(true);
+    expect(consumed).toBe(false);
     expect(operations.renameMarkdownTreeFile).not.toHaveBeenCalled();
     expect(result.current.tabs[0]?.content).toBe(
       "---\ntag: keep\ntitle: Notes\n---\n\nBody changed\n"

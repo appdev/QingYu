@@ -72,6 +72,7 @@ type QueuedTransaction = {
 };
 
 type TabTransactionState = {
+  active: TransactionRequest | null;
   chain: Promise<unknown>;
   drainQueued: boolean;
   generation: number;
@@ -160,6 +161,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     if (existing) return existing;
 
     const created: TabTransactionState = {
+      active: null,
       chain: Promise.resolve(),
       drainQueued: false,
       generation: 0,
@@ -199,16 +201,20 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     authoredSourcesRef.current.set(tabId, existing);
   }, []);
 
+  const routeDraftSource = useCallback((tab: MarkdownDocumentTab, source: string) => {
+    rememberAuthoredSource(tab.id, source);
+    optionsRef.current.handleMarkdownTabChange(tab.id, source, {
+      documentRevision: tab.revision,
+      surface: "source"
+    });
+  }, [rememberAuthoredSource]);
+
   const routeAndSaveSource = useCallback(async (
     tab: MarkdownDocumentTab,
     source: string
   ) => {
     const currentOptions = optionsRef.current;
-    rememberAuthoredSource(tab.id, source);
-    currentOptions.handleMarkdownTabChange(tab.id, source, {
-      documentRevision: tab.revision,
-      surface: "source"
-    });
+    routeDraftSource(tab, source);
     try {
       const saved = await currentOptions.saveMarkdownTabContentById(tab.id, source, {
         skipHistorySnapshot: true
@@ -219,7 +225,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     } catch {
       currentOptions.onFailure?.({ reason: "metadata-blocked", tabId: tab.id });
     }
-  }, [rememberAuthoredSource]);
+  }, [routeDraftSource]);
 
   const executeTransaction = useCallback(async (
     tabId: string,
@@ -233,10 +239,28 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     let authoritativeFile = currentFileForTab(tab);
     if (!authoritativeFile) return;
 
+    const restoreAuthoritativeSource = async () => {
+      if (!request.sourceRequest) return;
+
+      const latest = latestTab(optionsRef.current.tabs, tabId);
+      if (!latest) return;
+      const restored = upsertMarkdownFrontmatterTitle(
+        sourceForRequest(latest, request),
+        markdownDocumentTitleFromFileName(authoritativeFile.name)
+      );
+      if (!restored.ok) {
+        optionsRef.current.onFailure?.({ reason: "metadata-blocked", tabId });
+        return;
+      }
+
+      await routeAndSaveSource(latest, restored.source);
+    };
+
     if (request.kind === "title") {
       const normalized = normalizeMarkdownDocumentTitle(request.title);
       if (!normalized.ok) {
         currentOptions.onFailure?.({ reason: "invalid", tabId });
+        await restoreAuthoritativeSource();
         syncTitleModelIfCurrent(tabId, request.generation);
         return;
       }
@@ -254,10 +278,12 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
             reason: isRenameCollision(error) ? "rename-collision" : "rename-blocked",
             tabId
           });
+          await restoreAuthoritativeSource();
           syncTitleModelIfCurrent(tabId, request.generation);
           return;
         }
         if (!renamed) {
+          await restoreAuthoritativeSource();
           syncTitleModelIfCurrent(tabId, request.generation);
           return;
         }
@@ -312,6 +338,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
           state.queued = null;
           if (!queued) return;
 
+          state.active = queued.request;
           try {
             if (queued.request.generation === state.generation) {
               await executeTransaction(tabId, queued.request);
@@ -319,6 +346,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
           } catch {
             // A routed state or save failure must not reject the per-tab chain.
           } finally {
+            state.active = null;
             queued.waiters.forEach((waiter) => waiter(undefined));
           }
         });
@@ -342,6 +370,55 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
 
     return queueTransaction(tabId, request);
   }, [clearTimer, queueTransaction, transactionState]);
+
+  const settleTab = useCallback(async (tabId: string) => {
+    while (true) {
+      await flushDraft(tabId);
+      const state = transactionStatesRef.current.get(tabId);
+      if (!state) return;
+
+      const observedChain = state.chain;
+      await observedChain.catch(() => undefined);
+      if (state.pendingDraft) continue;
+      if (state.chain !== observedChain) continue;
+      if (state.active || state.queued || state.drainQueued) continue;
+      return;
+    }
+  }, [flushDraft]);
+
+  const hasUnsettledTransactions = useCallback((tabId?: string) => {
+    const unsettled = (state: TabTransactionState) => Boolean(
+      state.active
+      || state.drainQueued
+      || state.pendingDraft
+      || state.queued
+      || state.timer !== null
+    );
+
+    if (tabId) {
+      const state = transactionStatesRef.current.get(tabId);
+      return state ? unsettled(state) : false;
+    }
+
+    return Array.from(transactionStatesRef.current.values()).some(unsettled);
+  }, []);
+
+  const settleAll = useCallback(async () => {
+    while (true) {
+      const tabIds = Array.from(transactionStatesRef.current.entries())
+        .filter(([, state]) => (
+          state.active
+          || state.drainQueued
+          || state.pendingDraft
+          || state.queued
+          || state.timer !== null
+        ))
+        .map(([tabId]) => tabId);
+      if (tabIds.length === 0) return;
+
+      await Promise.all(tabIds.map((tabId) => settleTab(tabId)));
+    }
+  }, [settleTab]);
 
   const scheduleTitleRequest = useCallback((
     tabId: string,
@@ -393,12 +470,25 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
         if (!currentTab) return;
         if (optionsRef.current.isReadOnlyPath(currentTab.path)) return;
         if (readMarkdownFrontmatter(currentTab.content).status === "malformed") return;
-        scheduleTitleRequest(tabId, title);
+        const normalized = normalizeMarkdownDocumentTitle(title);
+        if (!normalized.ok) {
+          scheduleTitleRequest(tabId, title);
+          return;
+        }
+
+        const patched = upsertMarkdownFrontmatterTitle(currentTab.content, title);
+        if (!patched.ok) return;
+        const sourceRequest = {
+          sourceAtRequest: currentTab.content,
+          source: patched.source
+        };
+        if (patched.changed) routeDraftSource(currentTab, patched.source);
+        scheduleTitleRequest(tabId, title, sourceRequest);
       },
       resetToken: resetTokensRef.current.get(tabId) ?? 0,
       title: markdownDocumentTitleFromFileName(file?.name ?? tab.name)
     };
-  }, [currentFileForTab, flushDraft, scheduleTitleRequest]);
+  }, [currentFileForTab, flushDraft, routeDraftSource, scheduleTitleRequest]);
 
   const handleSourceTitleChange = useCallback((
     tabId: string,
@@ -430,17 +520,26 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
       if (previous.status === "valid" && previousTitle === nextTitle) return false;
 
       scheduleTitleRequest(tabId, nextTitle, sourceRequest);
-      return true;
+      return false;
     }
 
     const removedTitle = typeof previousTitle === "string" && previousTitle.length > 0;
     if (!removedTitle) return false;
 
     queueRepair(tabId, sourceRequest).catch(() => undefined);
-    return true;
+    return false;
   }, [queueRepair, scheduleTitleRequest]);
 
   const reconcileOpenDocument = useCallback(async (tabId: string) => {
+    const transaction = transactionStatesRef.current.get(tabId);
+    if (
+      transaction?.pendingDraft
+      || transaction?.queued
+      || transaction?.active
+    ) {
+      return undefined;
+    }
+
     const tab = latestTab(optionsRef.current.tabs, tabId);
     if (!tab || optionsRef.current.isReadOnlyPath(tab.path)) return undefined;
 
@@ -483,8 +582,11 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
   }, [clearTimer]);
 
   return {
+    hasUnsettledTransactions,
     handleSourceTitleChange,
     modelForTab,
-    reconcileOpenDocument
+    reconcileOpenDocument,
+    settleAll,
+    settleTab
   };
 }
