@@ -238,6 +238,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
 
     let authoritativeFile = currentFileForTab(tab);
     if (!authoritativeFile) return;
+    const titleBeforeRename = markdownDocumentTitleFromFileName(authoritativeFile.name);
 
     const restoreAuthoritativeSource = async () => {
       if (!request.sourceRequest) return;
@@ -246,7 +247,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
       if (!latest) return;
       const restored = upsertMarkdownFrontmatterTitle(
         sourceForRequest(latest, request),
-        markdownDocumentTitleFromFileName(authoritativeFile.name)
+        titleBeforeRename
       );
       if (!restored.ok) {
         optionsRef.current.onFailure?.({ reason: "metadata-blocked", tabId });
