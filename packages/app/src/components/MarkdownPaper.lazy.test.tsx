@@ -55,7 +55,7 @@ describe("MarkdownPaper lazy loading", () => {
     const onCommit = vi.fn();
     const { container } = render(
       <MarkdownPaper
-        documentTitle={{ title: "Project outline", onCommit, onInput: () => {} }}
+        documentTitle={{ resetToken: 0, title: "Project outline", onCommit, onInput: () => {} }}
         initialContent=""
         onEditorReady={() => {}}
         onMarkdownChange={() => {}}
@@ -82,7 +82,7 @@ describe("MarkdownPaper lazy loading", () => {
     const onCommit = vi.fn();
     render(
       <MarkdownPaper
-        documentTitle={{ title: "Project outline", onCommit, onInput: () => {} }}
+        documentTitle={{ resetToken: 0, title: "Project outline", onCommit, onInput: () => {} }}
         initialContent=""
         onEditorReady={() => {}}
         onMarkdownChange={() => {}}

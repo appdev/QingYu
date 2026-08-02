@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readMarkdownFrontmatter, upsertMarkdownFrontmatterTitle } from "@markra/markdown";
 import {
   markdownDocumentTitleFromFileName,
@@ -15,6 +15,7 @@ export type DocumentTitleModel = {
   disabled: boolean;
   onCommit: (reason: "blur" | "enter") => unknown;
   onInput: (title: string) => unknown;
+  resetToken: number;
   title: string;
 };
 
@@ -79,6 +80,7 @@ type RuntimeFileIdentity = {
 };
 
 const documentTitleDebounceMilliseconds = 256;
+const sourceComparisonTitle = "markra-title-comparison";
 
 function tabAsFolderFile(tab: MarkdownDocumentTab): NativeMarkdownFolderFile | null {
   if (!tab.path) return null;
@@ -95,20 +97,37 @@ function latestTab(tabs: readonly MarkdownDocumentTab[], tabId: string) {
   return tabs.find((tab) => tab.id === tabId && tab.open) ?? null;
 }
 
+function sourcesMatchExceptForTitle(left: string, right: string) {
+  const normalizedLeft = upsertMarkdownFrontmatterTitle(left, sourceComparisonTitle);
+  const normalizedRight = upsertMarkdownFrontmatterTitle(right, sourceComparisonTitle);
+
+  return normalizedLeft.ok
+    && normalizedRight.ok
+    && normalizedLeft.source === normalizedRight.source;
+}
+
 function sourceForRequest(tab: MarkdownDocumentTab, request: TransactionRequest) {
   if (!request.sourceRequest) return tab.content;
 
   return tab.content === request.sourceRequest.sourceAtRequest
+    || sourcesMatchExceptForTitle(tab.content, request.sourceRequest.sourceAtRequest)
     ? request.sourceRequest.source
     : tab.content;
 }
 
 export function useDocumentTitleController(options: UseDocumentTitleControllerOptions) {
+  const [, setControllerRevision] = useState(0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const transactionStatesRef = useRef(new Map<string, TabTransactionState>());
   const authoredSourcesRef = useRef(new Map<string, Set<string>>());
   const runtimeFilesRef = useRef(new Map<string, RuntimeFileIdentity>());
+  const resetTokensRef = useRef(new Map<string, number>());
+
+  const resetTitleModel = useCallback((tabId: string) => {
+    resetTokensRef.current.set(tabId, (resetTokensRef.current.get(tabId) ?? 0) + 1);
+    setControllerRevision((current) => current + 1);
+  }, []);
 
   const transactionState = useCallback((tabId: string) => {
     const existing = transactionStatesRef.current.get(tabId);
@@ -130,7 +149,12 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     const runtimeIdentity = runtimeFilesRef.current.get(tab.id);
     if (!runtimeIdentity) return tabAsFolderFile(tab);
 
-    if (tab.path === runtimeIdentity.file.path || tab.path === runtimeIdentity.previousPath) {
+    if (tab.path === runtimeIdentity.file.path && tab.name === runtimeIdentity.file.name) {
+      runtimeFilesRef.current.delete(tab.id);
+      return tabAsFolderFile(tab);
+    }
+
+    if (tab.path === runtimeIdentity.previousPath) {
       return runtimeIdentity.file;
     }
 
@@ -177,7 +201,10 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
 
     if (request.kind === "title") {
       const normalized = normalizeMarkdownDocumentTitle(request.title);
-      if (!normalized.ok) return;
+      if (!normalized.ok) {
+        resetTitleModel(tabId);
+        return;
+      }
 
       if (normalized.fileName !== authoritativeFile.name) {
         const previousPath = authoritativeFile.path;
@@ -188,9 +215,13 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
             normalized.fileName
           );
         } catch {
+          resetTitleModel(tabId);
           return;
         }
-        if (!renamed) return;
+        if (!renamed) {
+          resetTitleModel(tabId);
+          return;
+        }
 
         const tabAfterRename = latestTab(optionsRef.current.tabs, tabId);
         if (!tabAfterRename) return;
@@ -212,7 +243,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     if (request.kind === "repair" && !patched.changed) return;
 
     await routeAndSaveSource(latest, patched.source);
-  }, [currentFileForTab, routeAndSaveSource]);
+  }, [currentFileForTab, resetTitleModel, routeAndSaveSource]);
 
   const queueTransaction = useCallback((tabId: string, request: TransactionRequest) => {
     const state = transactionState(tabId);
@@ -314,6 +345,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
         if (readMarkdownFrontmatter(currentTab.content).status === "malformed") return;
         scheduleTitleRequest(tabId, title);
       },
+      resetToken: resetTokensRef.current.get(tabId) ?? 0,
       title: markdownDocumentTitleFromFileName(file?.name ?? tab.name)
     };
   }, [currentFileForTab, flushDraft, scheduleTitleRequest]);
@@ -373,6 +405,28 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     await queueRepair(tabId);
     return undefined;
   }, [currentFileForTab, queueRepair]);
+
+  useEffect(() => {
+    runtimeFilesRef.current.forEach((runtimeIdentity, tabId) => {
+      const tab = options.tabs.find((candidate) => candidate.id === tabId);
+      if (!tab?.open) {
+        runtimeFilesRef.current.delete(tabId);
+        return;
+      }
+
+      const caughtUp = tab.path === runtimeIdentity.file.path
+        && tab.name === runtimeIdentity.file.name;
+      const diverged = tab.path !== runtimeIdentity.previousPath;
+      if (caughtUp || diverged) runtimeFilesRef.current.delete(tabId);
+    });
+  }, [options.tabs]);
+
+  useEffect(() => {
+    authoredSourcesRef.current.forEach((sources, tabId) => {
+      const tab = options.tabs.find((candidate) => candidate.id === tabId);
+      if (!tab?.open || sources.has(tab.content)) authoredSourcesRef.current.delete(tabId);
+    });
+  }, [options.tabs]);
 
   useEffect(() => () => {
     transactionStatesRef.current.forEach((state) => clearTimer(state));

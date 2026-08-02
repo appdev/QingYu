@@ -9,6 +9,7 @@ function renderEditor(overrides: Partial<ComponentProps<typeof DocumentTitleEdit
   render(
     <DocumentTitleEditor
       language="en"
+      resetToken={0}
       title="A complete document title"
       onCommit={onCommit}
       onInput={onInput}
@@ -124,16 +125,44 @@ describe("DocumentTitleEditor", () => {
 
   it("does not replace text while the title is actively being edited", () => {
     const { rerender } = render(
-      <DocumentTitleEditor language="en" title="Original" onCommit={() => {}} onInput={() => {}} />
+      <DocumentTitleEditor language="en" resetToken={0} title="Original" onCommit={() => {}} onInput={() => {}} />
     );
     const titleEditor = screen.getByRole("textbox", { name: "Document title" });
 
     titleEditor.focus();
     titleEditor.textContent = "Still typing";
     rerender(
-      <DocumentTitleEditor language="en" title="Updated elsewhere" onCommit={() => {}} onInput={() => {}} />
+      <DocumentTitleEditor language="en" resetToken={0} title="Updated elsewhere" onCommit={() => {}} onInput={() => {}} />
     );
 
     expect(titleEditor).toHaveTextContent("Still typing");
+  });
+
+  it("force-syncs the committed title when the reset token changes while focused", () => {
+    const { rerender } = render(
+      <DocumentTitleEditor
+        language="en"
+        resetToken={0}
+        title="Committed"
+        onCommit={() => {}}
+        onInput={() => {}}
+      />
+    );
+    const titleEditor = screen.getByRole("textbox", { name: "Document title" });
+
+    titleEditor.focus();
+    titleEditor.textContent = "Rejected draft";
+    rerender(
+      <DocumentTitleEditor
+        language="en"
+        resetToken={1}
+        title="Committed"
+        onCommit={() => {}}
+        onInput={() => {}}
+      />
+    );
+
+    expect(titleEditor).toHaveTextContent("Committed");
+    expect(titleEditor).toHaveFocus();
   });
 });

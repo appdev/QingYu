@@ -1,5 +1,6 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { useCallback, useState } from "react";
+import { DocumentTitleEditor } from "../components/DocumentTitleEditor";
 import type { NativeMarkdownFolderFile, SavedNativeMarkdownFile } from "../lib/tauri";
 import type { MarkdownDocumentTab } from "./useMarkdownDocument";
 import {
@@ -60,7 +61,8 @@ function createOperations(): TestOperations {
 function renderController(
   initialTabs: MarkdownDocumentTab[],
   operations: TestOperations = createOperations(),
-  readOnlyPaths: ReadonlySet<string> = new Set()
+  readOnlyPaths: ReadonlySet<string> = new Set(),
+  onRouteBeforeState?: (tabId: string, source: string) => unknown
 ) {
   const rendered = renderHook(() => {
     const [tabs, setTabs] = useState(initialTabs);
@@ -76,6 +78,7 @@ function renderController(
       options: { documentRevision: number }
     ) => {
       operations.handleMarkdownTabChange(tabId, source, options);
+      onRouteBeforeState?.(tabId, source);
       setTabs((currentTabs) => currentTabs.map((tab) => tab.id === tabId
         ? { ...tab, content: source, dirty: true }
         : tab));
@@ -107,6 +110,38 @@ function renderController(
   });
 
   return { ...rendered, operations };
+}
+
+function ControllerTitleEditorHarness({ operations }: { operations: TestOperations }) {
+  const [tabs, setTabs] = useState([markdownTab()]);
+  const applyRenamedTreeFile = useCallback((previousPath: string, file: NativeMarkdownFolderFile) => {
+    operations.applyRenamedTreeFile(previousPath, file);
+    setTabs((currentTabs) => currentTabs.map((tab) => tab.path === previousPath
+      ? { ...tab, name: file.name, path: file.path }
+      : tab));
+  }, []);
+  const handleMarkdownTabChange = useCallback((
+    tabId: string,
+    source: string,
+    options: { documentRevision: number }
+  ) => {
+    operations.handleMarkdownTabChange(tabId, source, options);
+    setTabs((currentTabs) => currentTabs.map((tab) => tab.id === tabId
+      ? { ...tab, content: source }
+      : tab));
+  }, []);
+  const controller = useDocumentTitleController({
+    applyRenamedTreeFile,
+    handleMarkdownTabChange,
+    isReadOnlyPath: () => false,
+    language: "en",
+    renameMarkdownTreeFile: operations.renameMarkdownTreeFile,
+    saveMarkdownTabContentById: operations.saveMarkdownTabContentById,
+    tabs
+  });
+  const model = controller.modelForTab("notes-tab");
+
+  return model ? <DocumentTitleEditor language="en" {...model} /> : null;
 }
 
 function deferred<T>() {
@@ -266,6 +301,36 @@ describe("useDocumentTitleController", () => {
     expect(result.current.tabs[0]?.content).toBe("---\ntitle: Notes\n---\n\n# Changed\n");
   });
 
+  it("repairs repeated external metadata drift after an earlier repair", async () => {
+    const { result, operations } = renderController([
+      markdownTab({ content: "---\ntitle: First external\n---\n\n# First body\n" })
+    ]);
+
+    await act(async () => {
+      await result.current.controller.reconcileOpenDocument("notes-tab");
+    });
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntitle: Notes\n---\n\n# First body\n"
+    );
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? {
+            ...tab,
+            content: "---\ntitle: Second external\n---\n\n# Second body\n",
+            revision: 8
+          }
+        : tab));
+    });
+    await act(async () => {
+      await result.current.controller.reconcileOpenDocument("notes-tab");
+    });
+
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntitle: Notes\n---\n\n# Second body\n"
+    );
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledTimes(2);
+  });
+
   it("uses a 256 ms trailing debounce for visual title input", async () => {
     const { result, operations } = renderController([markdownTab()]);
     const model = result.current.controller.modelForTab("notes-tab");
@@ -354,6 +419,82 @@ describe("useDocumentTitleController", () => {
     );
   });
 
+  it("retires a caught-up runtime identity before a later external rename", async () => {
+    const { result, operations } = renderController([markdownTab()]);
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("Runtime name");
+      model?.onCommit("blur");
+    });
+    await settle();
+    expect(result.current.controller.modelForTab("notes-tab")?.title).toBe("Runtime name");
+
+    operations.handleMarkdownTabChange.mockClear();
+    operations.saveMarkdownTabContentById.mockClear();
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? {
+            ...tab,
+            content: "---\ntitle: Runtime name\n---\n\nExternal body\n",
+            name: "Notes.md",
+            path: "/vault/Notes.md",
+            revision: 8
+          }
+        : tab));
+    });
+
+    expect(result.current.controller.modelForTab("notes-tab")?.title).toBe("Notes");
+    await act(async () => {
+      await result.current.controller.reconcileOpenDocument("notes-tab");
+    });
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntitle: Notes\n---\n\nExternal body\n"
+    );
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards runtime identity when a tab id closes and reopens at the previous path", async () => {
+    const { result, operations } = renderController([markdownTab()]);
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("Runtime name");
+      model?.onCommit("blur");
+    });
+    await settle();
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, open: false }
+        : tab));
+    });
+    expect(result.current.controller.modelForTab("notes-tab")).toBeNull();
+
+    operations.handleMarkdownTabChange.mockClear();
+    operations.saveMarkdownTabContentById.mockClear();
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? {
+            ...tab,
+            content: "---\ntitle: Runtime name\n---\n\nReopened body\n",
+            name: "Notes.md",
+            open: true,
+            path: "/vault/Notes.md",
+            revision: 9
+          }
+        : tab));
+    });
+
+    expect(result.current.controller.modelForTab("notes-tab")?.title).toBe("Notes");
+    await act(async () => {
+      await result.current.controller.reconcileOpenDocument("notes-tab");
+    });
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntitle: Notes\n---\n\nReopened body\n"
+    );
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { label: "collision", failure: null },
     { label: "error", failure: new Error("rename failed") }
@@ -364,6 +505,7 @@ describe("useDocumentTitleController", () => {
       return null;
     });
     const { result } = renderController([markdownTab()], operations);
+    const initialResetToken = result.current.controller.modelForTab("notes-tab")?.resetToken;
 
     act(() => {
       const model = result.current.controller.modelForTab("notes-tab");
@@ -373,9 +515,45 @@ describe("useDocumentTitleController", () => {
     await settle();
 
     expect(result.current.controller.modelForTab("notes-tab")?.title).toBe("Notes");
+    expect(result.current.controller.modelForTab("notes-tab")?.resetToken).toBe(
+      (initialResetToken ?? 0) + 1
+    );
     expect(operations.applyRenamedTreeFile).not.toHaveBeenCalled();
     expect(operations.handleMarkdownTabChange).not.toHaveBeenCalled();
     expect(operations.saveMarkdownTabContentById).not.toHaveBeenCalled();
+  });
+
+  it("visibly resets a focused failed draft and accepts a subsequent edit", async () => {
+    const operations = createOperations();
+    operations.renameMarkdownTreeFile
+      .mockRejectedValueOnce(new Error("rename failed"))
+      .mockImplementationOnce(async (file, fileName) => renamedFile(file, fileName));
+    render(<ControllerTitleEditorHarness operations={operations} />);
+    const editor = screen.getByRole("textbox", { name: "Document title" });
+
+    editor.focus();
+    editor.textContent = "Rejected";
+    fireEvent.input(editor);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    await settle();
+
+    expect(editor).toHaveTextContent("Notes");
+    expect(editor).toHaveFocus();
+
+    editor.textContent = "Accepted";
+    fireEvent.input(editor);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    await settle();
+
+    expect(editor).toHaveTextContent("Accepted");
+    expect(operations.renameMarkdownTreeFile.mock.calls.map((call) => call[1])).toEqual([
+      "Rejected.md",
+      "Accepted.md"
+    ]);
   });
 
   it("renames only the latest of two rapid visual edits", async () => {
@@ -508,6 +686,128 @@ describe("useDocumentTitleController", () => {
     );
   });
 
+  it("preserves a queued consumed source edit after an in-flight transaction authors its title", async () => {
+    const operations = createOperations();
+    const firstRename = deferred<NativeMarkdownFolderFile | null>();
+    operations.renameMarkdownTreeFile
+      .mockImplementationOnce(() => firstRename.promise)
+      .mockImplementationOnce(async (file) => renamedFile(file, "Final source 2.md"));
+    const initialSource = "---\ntitle: Notes\ntag: original\n---\n\nOriginal body\n";
+    const sourceEdit = "---\ntitle: Final source\ntag: source edit\n---\n\nNewer source body\n";
+    const { result } = renderController([markdownTab({ content: initialSource })], operations);
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("First visual");
+      model?.onCommit("blur");
+    });
+    await settle();
+
+    let consumed = false;
+    act(() => {
+      consumed = result.current.controller.handleSourceTitleChange(
+        "notes-tab",
+        initialSource,
+        sourceEdit
+      );
+    });
+    expect(consumed).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+
+    firstRename.resolve({
+      name: "First visual.md",
+      path: "/vault/First visual.md",
+      relativePath: "/vault/First visual.md"
+    });
+    await settle();
+
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntitle: Final source 2\ntag: source edit\n---\n\nNewer source body\n"
+    );
+    expect(operations.renameMarkdownTreeFile.mock.calls.map((call) => call[1])).toEqual([
+      "First visual.md",
+      "Final source.md"
+    ]);
+  });
+
+  it("preserves a queued title removal after an in-flight transaction authors its title", async () => {
+    const operations = createOperations();
+    const firstRename = deferred<NativeMarkdownFolderFile | null>();
+    operations.renameMarkdownTreeFile.mockImplementationOnce(() => firstRename.promise);
+    const initialSource = "---\ntitle: Notes\ntag: original\n---\n\nOriginal body\n";
+    const removedTitleSource = "---\ntag: removal edit\n---\n\nNewer removal body\n";
+    const { result } = renderController([markdownTab({ content: initialSource })], operations);
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("First visual");
+      model?.onCommit("blur");
+    });
+    await settle();
+    expect(result.current.controller.handleSourceTitleChange(
+      "notes-tab",
+      initialSource,
+      removedTitleSource
+    )).toBe(true);
+
+    firstRename.resolve({
+      name: "First visual.md",
+      path: "/vault/First visual.md",
+      relativePath: "/vault/First visual.md"
+    });
+    await settle();
+
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntag: removal edit\ntitle: First visual\n---\n\nNewer removal body\n"
+    );
+    expect(operations.renameMarkdownTreeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a later ordinary source edit ahead of an older consumed source request", async () => {
+    const operations = createOperations();
+    const firstRename = deferred<NativeMarkdownFolderFile | null>();
+    operations.renameMarkdownTreeFile
+      .mockImplementationOnce(() => firstRename.promise)
+      .mockImplementationOnce(async (file) => renamedFile(file, "Final source.md"));
+    const initialSource = "---\ntitle: Notes\ntag: original\n---\n\nOriginal body\n";
+    const consumedSource = "---\ntitle: Final source\nrequest: keep\ntag: source edit\n---\n\nSource body\n";
+    const laterSource = "---\ntitle: Final source\nrequest: keep\ntag: later edit\n---\n\nLatest body\n";
+    const { result } = renderController([markdownTab({ content: initialSource })], operations);
+
+    act(() => {
+      const model = result.current.controller.modelForTab("notes-tab");
+      model?.onInput("First visual");
+      model?.onCommit("blur");
+    });
+    await settle();
+    expect(result.current.controller.handleSourceTitleChange(
+      "notes-tab",
+      initialSource,
+      consumedSource
+    )).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(256);
+    });
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: laterSource, dirty: true }
+        : tab));
+    });
+
+    firstRename.resolve({
+      name: "First visual.md",
+      path: "/vault/First visual.md",
+      relativePath: "/vault/First visual.md"
+    });
+    await settle();
+
+    expect(result.current.tabs[0]?.content).toBe(
+      "---\ntitle: Final source\nrequest: keep\ntag: later edit\n---\n\nLatest body\n"
+    );
+  });
+
   it("leaves source body and unrelated metadata edits on the normal routing path", () => {
     const operations = createOperations();
     const previousSource = "---\ntitle: Notes\ntag: one\n---\n\nOld body\n";
@@ -575,19 +875,53 @@ describe("useDocumentTitleController", () => {
   it("consumes an echoed controller-authored source patch without starting a loop", async () => {
     const operations = createOperations();
     const initialSource = "# Body\n";
+    let immediateConsumed = false;
+    let rendered: ReturnType<typeof renderController> | null = null;
+    rendered = renderController(
+      [markdownTab({ content: initialSource })],
+      operations,
+      new Set(),
+      (tabId, source) => {
+        immediateConsumed = rendered?.result.current.controller.handleSourceTitleChange(
+          tabId,
+          initialSource,
+          source
+        ) ?? false;
+      }
+    );
+
+    await act(async () => {
+      await rendered?.result.current.controller.reconcileOpenDocument("notes-tab");
+    });
+
+    expect(immediateConsumed).toBe(true);
+    expect(operations.saveMarkdownTabContentById).toHaveBeenCalledTimes(1);
+    expect(operations.renameMarkdownTreeFile).not.toHaveBeenCalled();
+  });
+
+  it("does not consume a later genuine undo to an already-observed authored source", async () => {
+    const operations = createOperations();
+    const initialSource = "# Body\n";
     const { result } = renderController([markdownTab({ content: initialSource })], operations);
 
     await act(async () => {
       await result.current.controller.reconcileOpenDocument("notes-tab");
     });
-    const patchedSource = result.current.tabs[0]?.content ?? "";
+    const authoredSource = result.current.tabs[0]?.content ?? "";
+    const laterBodyEdit = "---\ntitle: Notes\n---\n\nLater body edit\n";
+    act(() => {
+      result.current.setTabs((tabs) => tabs.map((tab) => tab.id === "notes-tab"
+        ? { ...tab, content: laterBodyEdit, revision: 8 }
+        : tab));
+    });
+
     const consumed = result.current.controller.handleSourceTitleChange(
       "notes-tab",
-      initialSource,
-      patchedSource
+      laterBodyEdit,
+      authoredSource
     );
 
-    expect(consumed).toBe(true);
+    expect(consumed).toBe(false);
     expect(operations.saveMarkdownTabContentById).toHaveBeenCalledTimes(1);
     expect(operations.renameMarkdownTreeFile).not.toHaveBeenCalled();
   });

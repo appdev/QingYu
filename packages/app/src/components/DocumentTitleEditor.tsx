@@ -6,6 +6,7 @@ export type DocumentTitleEditorProps = {
   language: AppLanguage;
   onCommit: (reason: "blur" | "enter") => unknown;
   onInput: (title: string) => unknown;
+  resetToken: number;
   title: string;
 };
 
@@ -44,20 +45,24 @@ export function DocumentTitleEditor({
   language,
   onCommit,
   onInput,
+  resetToken,
   title
 }: DocumentTitleEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const compositionEndTitleRef = useRef<string | null>(null);
+  const previousResetTokenRef = useRef(resetToken);
   const skipEnterBlurCommitRef = useRef(false);
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
+    const resetRequested = previousResetTokenRef.current !== resetToken;
+    previousResetTokenRef.current = resetToken;
 
-    if (!editor || document.activeElement === editor || editor.textContent === title) return;
+    if (!editor || (!resetRequested && document.activeElement === editor) || editor.textContent === title) return;
 
     editor.textContent = title;
-  }, [title]);
+  }, [resetToken, title]);
 
   const publishInput = (element: HTMLElement, fromCompositionEnd = false) => {
     const nextTitle = normalizeEditableTitle(element);
