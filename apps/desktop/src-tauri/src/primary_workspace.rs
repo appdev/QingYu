@@ -18,7 +18,8 @@ use tauri::Manager;
 use crate::storage_capability::{
     create_private_replaceable_file_options, nonfollowing_read_options,
     open_canonical_directory_nofollow, rename_retained_file_in_directory, sync_directory,
-    unique_regular_file_identity, UniqueRegularFileIdentity,
+    sync_directory_commit_state, unique_regular_file_identity, CommitState,
+    UniqueRegularFileIdentity,
 };
 
 #[cfg(not(mobile))]
@@ -31,9 +32,22 @@ const MAX_PRIMARY_WORKSPACE_STORE_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg(not(mobile))]
 enum PrimaryWorkspacePersistence {
-    Durable,
-    PublishedWithoutDirectoryDurability,
+    Published(CommitState),
     NotPublished,
+}
+
+#[cfg(not(mobile))]
+impl PrimaryWorkspacePersistence {
+    const fn is_known_success(self) -> bool {
+        matches!(
+            self,
+            Self::Published(CommitState::Durable | CommitState::AtomicVisibility)
+        )
+    }
+
+    const fn was_published(self) -> bool {
+        matches!(self, Self::Published(_))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -79,7 +93,7 @@ trait PrimaryWorkspaceBackend: Sync {
     fn save(&self) -> Result<(), String>;
     fn save_publication(&self) -> PrimaryWorkspacePersistence {
         match self.save() {
-            Ok(()) => PrimaryWorkspacePersistence::Durable,
+            Ok(()) => PrimaryWorkspacePersistence::Published(CommitState::Durable),
             Err(_) => PrimaryWorkspacePersistence::NotPublished,
         }
     }
@@ -253,7 +267,7 @@ impl DesktopDiskPrimaryWorkspaceBackend {
         sync_after_rename: SyncDirectory,
     ) -> PrimaryWorkspacePersistence
     where
-        SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<()>,
+        SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<CommitState>,
     {
         let values = match self.values.lock() {
             Ok(values) => values.clone(),
@@ -275,20 +289,29 @@ impl DesktopDiskPrimaryWorkspaceBackend {
             || Ok(()),
             sync_after_rename,
         );
-        if publication != PrimaryWorkspacePersistence::NotPublished {
-            let identity = match read_workspace_store_file(
+        if publication.was_published() {
+            let published = match read_workspace_store_file(
                 &self.app_data_root,
                 DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
             ) {
-                Ok(Some(state)) => Some(state.identity),
+                Ok(Some(state)) if state.values == values => state,
                 Ok(None) | Err(_) => {
-                    return PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability;
+                    return PrimaryWorkspacePersistence::Published(
+                        CommitState::PublishedDurabilityUncertain,
+                    );
+                }
+                Ok(Some(_)) => {
+                    return PrimaryWorkspacePersistence::Published(
+                        CommitState::PublishedDurabilityUncertain,
+                    );
                 }
             };
             if let Ok(mut expected_target) = self.expected_target.lock() {
-                *expected_target = identity;
+                *expected_target = Some(published.identity);
             } else {
-                return PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability;
+                return PrimaryWorkspacePersistence::Published(
+                    CommitState::PublishedDurabilityUncertain,
+                );
             }
         }
         publication
@@ -380,14 +403,15 @@ impl DesktopDiskPrimaryWorkspaceBackend {
                 if published_identity == *identity {
                     return Err(persistence_error());
                 }
-                if replace_primary_workspace_file_atomically_with_hooks(
+                if !replace_primary_workspace_file_atomically_with_hooks(
                     &self.app_data_root,
                     bytes,
                     Some(Some(published_identity)),
                     || Ok(()),
                     || Ok(()),
-                    sync_directory,
-                ) != PrimaryWorkspacePersistence::Durable
+                    sync_directory_commit_state,
+                )
+                .is_known_success()
                 {
                     return Err(persistence_error());
                 }
@@ -441,14 +465,16 @@ impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
 
     fn save(&self) -> Result<(), String> {
         match self.save_publication() {
-            PrimaryWorkspacePersistence::Durable => Ok(()),
-            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability
+            PrimaryWorkspacePersistence::Published(
+                CommitState::Durable | CommitState::AtomicVisibility,
+            ) => Ok(()),
+            PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain)
             | PrimaryWorkspacePersistence::NotPublished => Err(persistence_error()),
         }
     }
 
     fn save_publication(&self) -> PrimaryWorkspacePersistence {
-        self.save_publication_with_sync(sync_directory)
+        self.save_publication_with_sync(sync_directory_commit_state)
     }
 
     fn transaction_snapshot(&self) -> Result<PrimaryWorkspaceTransactionSnapshot, String> {
@@ -622,7 +648,7 @@ fn replace_primary_workspace_file_atomically_with_hooks<BeforeStage, AfterStage,
 where
     BeforeStage: FnOnce() -> io::Result<()>,
     AfterStage: FnOnce() -> io::Result<()>,
-    SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<()>,
+    SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<CommitState>,
 {
     static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
     let Ok(directory) = open_canonical_directory_nofollow(app_data_root) else {
@@ -705,10 +731,22 @@ where
         return PrimaryWorkspacePersistence::NotPublished;
     }
     drop(staged);
-    match sync_after_rename(&directory) {
-        Ok(()) => PrimaryWorkspacePersistence::Durable,
-        Err(_) => PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability,
+    let publication = match sync_after_rename(&directory) {
+        Ok(state @ (CommitState::Durable | CommitState::AtomicVisibility)) => {
+            PrimaryWorkspacePersistence::Published(state)
+        }
+        Ok(CommitState::PublishedDurabilityUncertain) | Err(_) => {
+            PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain)
+        }
+    };
+    let published_identity = directory
+        .symlink_metadata(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+        .ok()
+        .and_then(|metadata| unique_regular_file_identity(&metadata));
+    if published_identity != Some(staged_identity) {
+        return PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain);
     }
+    publication
 }
 
 #[cfg(not(mobile))]
@@ -949,8 +987,10 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
         self.backend
             .set(PRIMARY_WORKSPACE_KEY, proposed_state.clone());
         match self.backend.save_publication() {
-            PrimaryWorkspacePersistence::Durable => {}
-            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability => {
+            PrimaryWorkspacePersistence::Published(
+                CommitState::Durable | CommitState::AtomicVisibility,
+            ) => {}
+            PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain) => {
                 return Err(persistence_error());
             }
             PrimaryWorkspacePersistence::NotPublished => {
@@ -2147,6 +2187,7 @@ mod tests {
         time::Duration,
     };
 
+    use qingyu_kernel::storage::CommitState;
     use serde_json::json;
 
     use super::*;
@@ -2253,7 +2294,7 @@ mod tests {
             None,
             || Err(io::Error::other("injected prewrite failure")),
             || Ok(()),
-            sync_directory,
+            sync_directory_commit_state,
         );
 
         assert_eq!(publication, PrimaryWorkspacePersistence::NotPublished);
@@ -2261,6 +2302,7 @@ mod tests {
             std::fs::read(target).expect("old state remains"),
             br#"{"primaryWorkspace":"old"}"#,
         );
+        assert_no_primary_workspace_temporary_files(&root);
     }
 
     #[test]
@@ -2276,7 +2318,7 @@ mod tests {
             None,
             || Ok(()),
             || Err(io::Error::other("injected postwrite failure")),
-            sync_directory,
+            sync_directory_commit_state,
         );
 
         assert_eq!(publication, PrimaryWorkspacePersistence::NotPublished);
@@ -2302,7 +2344,7 @@ mod tests {
                 std::fs::rename(&target, root.join("captured-local-state"))?;
                 std::fs::write(&target, br#"{"primaryWorkspace":"replacement"}"#)
             },
-            sync_directory,
+            sync_directory_commit_state,
         );
 
         assert_eq!(publication, PrimaryWorkspacePersistence::NotPublished);
@@ -2320,37 +2362,77 @@ mod tests {
     }
 
     #[test]
-    fn desktop_primary_workspace_disk_reread_resolves_published_unknown_commit() {
+    fn desktop_primary_workspace_atomic_write_marks_post_rename_identity_swap_uncertain() {
         let app_data = tempfile::tempdir().expect("temporary app data");
         let root = app_data.path().canonicalize().expect("canonical app data");
-        let desired = br#"{"schemaVersion":3,"primaryWorkspace":{"desktopWorkspaceRoot":null,"desktopPath":null,"managedName":null,"onboardingCompleted":false,"version":3}}"#;
+        let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+        let captured = root.join("captured-published-authority");
+        let replacement = br#"{"replacement":"must-not-be-overwritten"}"#;
 
         let publication = replace_primary_workspace_file_atomically_with_hooks(
             &root,
-            desired,
+            br#"{"primaryWorkspace":"new"}"#,
             None,
             || Ok(()),
             || Ok(()),
-            |_| Err(io::Error::other("injected directory fsync failure")),
+            |_| {
+                std::fs::rename(&target, &captured)?;
+                std::fs::write(&target, replacement)?;
+                Ok(CommitState::AtomicVisibility)
+            },
         );
-        let reread = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
-            .expect("independent disk reread")
-            .expect("published state");
 
         assert_eq!(
             publication,
-            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability,
+            PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain,),
         );
         assert_eq!(
-            reread.values.get(PRIMARY_WORKSPACE_KEY),
-            Some(&serde_json::json!({
-                "desktopWorkspaceRoot": null,
-                "desktopPath": null,
-                "managedName": null,
-                "onboardingCompleted": false,
-                "version": 3
-            })),
+            std::fs::read(&target).expect("replacement remains"),
+            replacement,
         );
+        assert_no_primary_workspace_temporary_files(&root);
+    }
+
+    #[test]
+    fn desktop_primary_workspace_disk_reread_resolves_published_unknown_commit() {
+        for unexpected_success in [false, true] {
+            let app_data = tempfile::tempdir().expect("temporary app data");
+            let root = app_data.path().canonicalize().expect("canonical app data");
+            let desired = br#"{"schemaVersion":3,"primaryWorkspace":{"desktopWorkspaceRoot":null,"desktopPath":null,"managedName":null,"onboardingCompleted":false,"version":3}}"#;
+
+            let publication = replace_primary_workspace_file_atomically_with_hooks(
+                &root,
+                desired,
+                None,
+                || Ok(()),
+                || Ok(()),
+                |_| {
+                    if unexpected_success {
+                        Ok(CommitState::PublishedDurabilityUncertain)
+                    } else {
+                        Err(io::Error::other("injected directory fsync failure"))
+                    }
+                },
+            );
+            let reread = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+                .expect("independent disk reread")
+                .expect("published state");
+
+            assert_eq!(
+                publication,
+                PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain,),
+            );
+            assert_eq!(
+                reread.values.get(PRIMARY_WORKSPACE_KEY),
+                Some(&serde_json::json!({
+                    "desktopWorkspaceRoot": null,
+                    "desktopPath": null,
+                    "managedName": null,
+                    "onboardingCompleted": false,
+                    "version": 3
+                })),
+            );
+        }
     }
 
     #[test]
@@ -2642,10 +2724,13 @@ mod tests {
                 expected,
                 || Ok(()),
                 || Ok(()),
-                sync_directory,
+                sync_directory_commit_state,
             )
         };
-        assert_eq!(publish(&first, None), PrimaryWorkspacePersistence::Durable);
+        assert_eq!(
+            publish(&first, None),
+            PrimaryWorkspacePersistence::Published(CommitState::Durable),
+        );
 
         let transaction = Arc::new(Mutex::new(()));
         let held = transaction.lock().expect("hold transaction gate");
@@ -2668,7 +2753,7 @@ mod tests {
             .expect("A authority");
         assert_eq!(
             publish(&second, Some(Some(existing.identity))),
-            PrimaryWorkspacePersistence::Durable,
+            PrimaryWorkspacePersistence::Published(CommitState::Durable),
         );
         drop(held);
 
@@ -2782,6 +2867,84 @@ mod tests {
                 .lock()
                 .expect("memory values")
                 .insert(key.to_string(), value);
+        }
+    }
+
+    struct CommitStateBackend {
+        inner: MemoryBackend,
+        publication: PrimaryWorkspacePersistence,
+        restore_transaction_calls: AtomicUsize,
+    }
+
+    impl CommitStateBackend {
+        fn with_publication(publication: PrimaryWorkspacePersistence) -> Self {
+            Self {
+                inner: MemoryBackend::default(),
+                publication,
+                restore_transaction_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn with_previous(
+            publication: PrimaryWorkspacePersistence,
+            previous_primary_workspace: Value,
+        ) -> Self {
+            Self {
+                inner: MemoryBackend::with([
+                    (
+                        LOCAL_STATE_SCHEMA_VERSION_KEY,
+                        Value::from(LOCAL_STATE_SCHEMA_VERSION),
+                    ),
+                    (PRIMARY_WORKSPACE_KEY, previous_primary_workspace),
+                ]),
+                publication,
+                restore_transaction_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn restore_count(&self) -> usize {
+            self.restore_transaction_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl PrimaryWorkspaceBackend for CommitStateBackend {
+        fn delete(&self, key: &str) {
+            self.inner.delete(key);
+        }
+
+        fn get(&self, key: &str) -> Option<Value> {
+            self.inner.get(key)
+        }
+
+        fn save(&self) -> Result<(), String> {
+            Err(persistence_error())
+        }
+
+        fn save_publication(&self) -> PrimaryWorkspacePersistence {
+            self.publication
+        }
+
+        fn restore_transaction(
+            &self,
+            snapshot: PrimaryWorkspaceTransactionSnapshot,
+        ) -> Result<(), String> {
+            self.restore_transaction_calls
+                .fetch_add(1, Ordering::Relaxed);
+            if let Some(schema_version) = snapshot.schema_version {
+                self.set(LOCAL_STATE_SCHEMA_VERSION_KEY, schema_version);
+            } else {
+                self.delete(LOCAL_STATE_SCHEMA_VERSION_KEY);
+            }
+            if let Some(primary_workspace) = snapshot.primary_workspace {
+                self.set(PRIMARY_WORKSPACE_KEY, primary_workspace);
+            } else {
+                self.delete(PRIMARY_WORKSPACE_KEY);
+            }
+            Ok(())
+        }
+
+        fn set(&self, key: &str, value: Value) {
+            self.inner.set(key, value);
         }
     }
 
@@ -2996,6 +3159,142 @@ mod tests {
             "onboardingCompleted": true,
             "version": 3
         })
+    }
+
+    #[test]
+    fn desktop_primary_workspace_durable_publication_succeeds_without_restore() {
+        let backend = CommitStateBackend::with_publication(PrimaryWorkspacePersistence::Published(
+            CommitState::Durable,
+        ));
+        let transaction = Mutex::new(());
+        let input = write_input("/workspace/Notes");
+
+        let result = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write(input.clone())
+            .expect("durable publication succeeds");
+
+        assert!(result.applied);
+        assert_eq!(backend.get(PRIMARY_WORKSPACE_KEY), Some(input.state));
+        assert_eq!(backend.restore_count(), 0);
+    }
+
+    #[test]
+    fn desktop_primary_workspace_atomic_visibility() {
+        let backend = CommitStateBackend::with_publication(PrimaryWorkspacePersistence::Published(
+            CommitState::AtomicVisibility,
+        ));
+        let transaction = Mutex::new(());
+        let input = write_input("/workspace/Notes");
+
+        let result = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write(input.clone())
+            .expect("atomically visible publication succeeds");
+        let reopened = PrimaryWorkspaceService::new(&backend, &transaction)
+            .read()
+            .expect("reopen published state");
+
+        assert!(result.applied);
+        assert_eq!(reopened, Some(input.state));
+        assert_eq!(backend.restore_count(), 0);
+
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let disk = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("open empty disk authority");
+        disk.set(
+            LOCAL_STATE_SCHEMA_VERSION_KEY,
+            Value::from(LOCAL_STATE_SCHEMA_VERSION),
+        );
+        disk.set(PRIMARY_WORKSPACE_KEY, write_input("/workspace/Notes").state);
+
+        let publication = disk.save_publication_with_sync(|_| Ok(CommitState::AtomicVisibility));
+        let installed = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+            .expect("read installed authority")
+            .expect("installed authority");
+        let independently_reopened = DesktopDiskPrimaryWorkspaceBackend::open_at(root)
+            .expect("independently reopen installed authority");
+
+        assert_eq!(
+            publication,
+            PrimaryWorkspacePersistence::Published(CommitState::AtomicVisibility),
+        );
+        assert!(independently_reopened
+            .expected_target
+            .lock()
+            .expect("reopened identity")
+            .as_ref()
+            .is_some_and(|identity| identity == &installed.identity),);
+        assert_eq!(
+            independently_reopened.get(PRIMARY_WORKSPACE_KEY),
+            disk.get(PRIMARY_WORKSPACE_KEY),
+        );
+    }
+
+    #[test]
+    fn desktop_primary_workspace_published_uncertain() {
+        let previous = completed_state(Some("/workspace/A"));
+        let backend = CommitStateBackend::with_previous(
+            PrimaryWorkspacePersistence::Published(CommitState::PublishedDurabilityUncertain),
+            previous,
+        );
+        let transaction = Mutex::new(());
+        let input = write_input("/workspace/B");
+
+        let error = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write(input.clone())
+            .expect_err("uncertain publication returns a persistence error");
+        let independently_reread = PrimaryWorkspaceService::new(&backend, &transaction)
+            .read()
+            .expect("independent reread after publication");
+
+        assert_eq!(error, persistence_error());
+        assert_eq!(independently_reread, Some(input.state));
+        assert_eq!(backend.restore_count(), 0);
+    }
+
+    #[test]
+    fn desktop_primary_workspace_not_published_restores_previous_values() {
+        let previous = completed_state(Some("/workspace/A"));
+        let backend = CommitStateBackend::with_previous(
+            PrimaryWorkspacePersistence::NotPublished,
+            previous.clone(),
+        );
+        let transaction = Mutex::new(());
+
+        let error = PrimaryWorkspaceService::new(&backend, &transaction)
+            .write(write_input("/workspace/B"))
+            .expect_err("unpublished write returns a persistence error");
+
+        assert_eq!(error, persistence_error());
+        assert_eq!(backend.get(PRIMARY_WORKSPACE_KEY), Some(previous));
+        assert_eq!(backend.restore_count(), 0);
+    }
+
+    #[test]
+    fn desktop_primary_workspace_known_publication_restores_once_after_post_validation_failure() {
+        for state in [CommitState::Durable, CommitState::AtomicVisibility] {
+            let previous = completed_state(Some("/workspace/A"));
+            let backend = CommitStateBackend::with_previous(
+                PrimaryWorkspacePersistence::Published(state),
+                previous.clone(),
+            );
+            let transaction = Mutex::new(());
+            let validations = AtomicUsize::new(0);
+
+            let error = PrimaryWorkspaceService::new(&backend, &transaction)
+                .write_validated(write_input("/workspace/B"), || {
+                    if validations.fetch_add(1, Ordering::Relaxed) == 0 {
+                        Ok(())
+                    } else {
+                        Err("injected-post-validation-failure".to_owned())
+                    }
+                })
+                .expect_err("post-validation failure restores known publication");
+
+            assert_eq!(error, "injected-post-validation-failure");
+            assert_eq!(backend.get(PRIMARY_WORKSPACE_KEY), Some(previous));
+            assert_eq!(backend.restore_count(), 1);
+        }
     }
 
     #[test]
