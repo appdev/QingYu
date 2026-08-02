@@ -328,6 +328,72 @@ pub(super) fn read_trusted_markdown_file(path: &Path) -> Result<MarkdownFile, St
 mod tests {
     use super::*;
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn rename_markdown_tree_file_primitive_preserves_an_existing_destination() {
+        let root = tempfile::tempdir().expect("fixture should be created");
+        let source_path = root.path().join("A.md");
+        let destination_path = root.path().join("B.md");
+        let source_contents = [0_u8, 1, 2, 3, 255];
+        let destination_contents = [255_u8, 3, 2, 1, 0];
+        std::fs::write(&source_path, source_contents).expect("source should be created");
+        std::fs::write(&destination_path, destination_contents)
+            .expect("destination should be created");
+        let source_directory = Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())
+            .expect("source directory should open");
+        let destination_directory =
+            Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())
+                .expect("destination directory should open");
+
+        let result = rename_document_noreplace(
+            &source_directory,
+            "A.md",
+            &destination_directory,
+            "B.md",
+            &source_path,
+            &destination_path,
+        );
+
+        assert!(
+            result.is_err(),
+            "an existing destination must reject the rename"
+        );
+        assert_eq!(
+            std::fs::read(&source_path).expect("source should remain readable"),
+            source_contents
+        );
+        assert_eq!(
+            std::fs::read(&destination_path).expect("destination should remain readable"),
+            destination_contents
+        );
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    #[test]
+    fn rename_markdown_tree_file_primitive_reports_unsupported() {
+        let root = tempfile::tempdir().expect("fixture should be created");
+        let source_path = root.path().join("A.md");
+        let destination_path = root.path().join("B.md");
+        std::fs::write(&source_path, b"source").expect("source should be created");
+        let source_directory = Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())
+            .expect("source directory should open");
+        let destination_directory =
+            Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())
+                .expect("destination directory should open");
+
+        let error = rename_document_noreplace(
+            &source_directory,
+            "A.md",
+            &destination_directory,
+            "B.md",
+            &source_path,
+            &destination_path,
+        )
+        .expect_err("unsupported targets must fail closed");
+
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
+
     #[test]
     fn staging_retries_an_injected_collision_without_clobbering() {
         let root = tempfile::tempdir().expect("fixture should be created");
