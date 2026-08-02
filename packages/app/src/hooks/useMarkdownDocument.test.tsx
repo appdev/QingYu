@@ -536,6 +536,46 @@ describe("useMarkdownDocument", () => {
     expect(result.current.document.path).toBe(secondPath);
   });
 
+  it("settles the current title transaction before opening the native file picker", async () => {
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => transactions);
+    mockedOpenNativeMarkdownFile.mockResolvedValue({
+      content: "# Selected",
+      name: "selected.md",
+      path: "/mock-files/selected.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+
+    let opening!: Promise<unknown>;
+    act(() => {
+      opening = result.current.openMarkdownFile();
+    });
+    await Promise.resolve();
+
+    expect(settleDocumentTransactions).toHaveBeenCalledTimes(1);
+    expect(mockedOpenNativeMarkdownFile).not.toHaveBeenCalled();
+
+    resolveTransactions();
+    await act(async () => opening);
+    expect(mockedOpenNativeMarkdownFile).toHaveBeenCalledTimes(1);
+    expect(result.current.document.path).toBe("/mock-files/selected.md");
+  });
+
   it("reports a managed tree restore read failure to its caller", async () => {
     const filePath = "/mobile/workspace/notes/missing.md";
     mockedReadNativeMarkdownFile.mockRejectedValue(new Error("missing file"));

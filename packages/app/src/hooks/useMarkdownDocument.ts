@@ -1509,6 +1509,9 @@ export function useMarkdownDocument({
   }, [onTreeRootFromFilePath, registerWindowRestoreState, setActiveTabState]);
 
   const openMarkdownFile = useCallback(async (options: OpenMarkdownFileOptions = {}) => {
+    const settlement = settleActiveDocumentTransactions();
+    if (settlement) await settlement;
+
     const file = await openNativeMarkdownFile(
       options.pickerTitle ? { title: options.pickerTitle } : undefined
     );
@@ -1518,9 +1521,6 @@ export function useMarkdownDocument({
       const canDiscard = await confirmCanDiscardCurrentDocument();
       if (!canDiscard) return;
     }
-
-    const settlement = settleActiveDocumentTransactions();
-    if (settlement) await settlement;
 
     applyNativeMarkdownFile(file, windowContext.kind === "primary");
   }, [
