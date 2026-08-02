@@ -5457,6 +5457,9 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await expectVisibleMarkdownText("First");
+    await waitFor(() =>
+      expect(container.querySelector(".document-tabs-side-by-side-group")).toBeInTheDocument()
+    );
     const restoredGroup = container.querySelector(".document-tabs-side-by-side-group") as HTMLElement;
     expect(restoredGroup).toBeInTheDocument();
     expect(within(restoredGroup).getByRole("tab", { name: /1\.md/ })).toHaveAttribute("aria-selected", "true");
