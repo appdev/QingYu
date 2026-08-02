@@ -7,7 +7,8 @@ use super::asset::allow_asset_directory;
 #[cfg(desktop)]
 use super::path::{is_markdown_tree_asset_file, path_to_string};
 use super::resource_writer::{
-    save_project_resource_bytes_in_registry, save_standalone_resource_with_writer,
+    existing_project_asset_reference, save_project_resource_bytes_in_registry,
+    save_standalone_resource_with_writer, validate_resource_file_name, validate_resource_folder,
 };
 use super::types::ClipboardImageFile;
 #[cfg(desktop)]
@@ -176,6 +177,9 @@ fn read_local_image_file_for_import(path: String) -> Result<MarkdownImageFile, S
 }
 
 fn normalize_clipboard_image_folder(folder: &str) -> Result<PathBuf, String> {
+    if folder != folder.trim() {
+        return Err("Resource folder name is not portable across supported platforms".to_string());
+    }
     let normalized = folder.trim().replace('\\', "/");
     if normalized == "." {
         return Ok(PathBuf::new());
@@ -199,6 +203,7 @@ fn normalize_clipboard_image_folder(folder: &str) -> Result<PathBuf, String> {
         return Err("Clipboard image folder is invalid".to_string());
     }
 
+    validate_resource_folder(&target)?;
     Ok(target)
 }
 
@@ -211,6 +216,7 @@ fn requested_clipboard_image_stem(file_name: &str) -> Result<String, String> {
     {
         return Err("Clipboard image file name is invalid".to_string());
     }
+    validate_resource_file_name(file_name)?;
 
     let stem = trimmed
         .rsplit_once('.')
@@ -343,6 +349,15 @@ fn save_project_clipboard_image_file_in_registry(
 ) -> Result<ClipboardImageFile, String> {
     validate_clipboard_image_bytes(&mime_type, &bytes)?;
     let extension = clipboard_image_extension(&mime_type)?;
+    if let Some(saved) = existing_project_asset_reference(
+        &document_path,
+        &project_root_path,
+        source_path.as_deref(),
+    )? {
+        return Ok(ClipboardImageFile {
+            relative_path: saved.relative_path,
+        });
+    }
     let target_name = clipboard_image_file_name(extension, 0, file_name.as_deref())?;
     let saved = save_project_resource_bytes_in_registry(
         registry,
@@ -467,6 +482,184 @@ mod tests {
             .expect("note directory should be created");
         fs::write(&note, "# Day").expect("note should be created");
         (root, note)
+    }
+
+    fn assert_no_resource_staging(path: &Path) {
+        if !path.exists() {
+            return;
+        }
+        assert!(fs::read_dir(path)
+            .expect("resource folder should be readable")
+            .all(|entry| !entry
+                .expect("resource entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".qingyu-resource-")));
+    }
+
+    #[test]
+    fn project_image_creation_rejects_nonportable_names_before_assets_or_authority() {
+        let overlong_name = format!("{}.png", "x".repeat(252));
+        let cases = [
+            ("CON.png".to_string(), "CON.png".to_string()),
+            ("bad:name.png".to_string(), "bad:name.png".to_string()),
+            ("bad?.png".to_string(), "bad?.png".to_string()),
+            ("trailing.".to_string(), "trailing.png".to_string()),
+            ("trailing.png ".to_string(), "trailing.png".to_string()),
+            (
+                "bad\u{001f}name.png".to_string(),
+                "bad\u{001f}name.png".to_string(),
+            ),
+            (overlong_name.clone(), overlong_name),
+        ];
+
+        for (requested_name, final_name) in cases {
+            let (root, note) = project_fixture("nonportable-project-name");
+            let registry =
+                Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+            let _block = registry
+                .block_paths(&root, &[format!("assets/{final_name}")])
+                .expect("candidate should be blockable");
+
+            let result = save_project_clipboard_image_file_in_registry(
+                &registry,
+                note.to_string_lossy().to_string(),
+                root.to_string_lossy().to_string(),
+                "image/png".to_string(),
+                valid_png(),
+                Some(requested_name.clone()),
+                None,
+                |_| Ok(()),
+                |_| Ok(()),
+            );
+
+            assert_eq!(
+                result,
+                Err("Resource file name is not portable across supported platforms".to_string()),
+                "unexpected result for {requested_name:?}"
+            );
+            assert!(!root.join("assets").exists());
+            fs::remove_dir_all(root).expect("fixture should be removed");
+        }
+    }
+
+    #[test]
+    fn standalone_image_creation_rejects_nonportable_folder_components_before_mutation() {
+        let folders = [
+            ("CON".to_string(), "CON".to_string()),
+            ("bad:name".to_string(), "bad:name".to_string()),
+            ("bad?".to_string(), "bad?".to_string()),
+            ("trailing.".to_string(), "trailing.".to_string()),
+            ("trailing ".to_string(), "trailing".to_string()),
+            ("bad\u{001f}name".to_string(), "bad\u{001f}name".to_string()),
+            ("x".repeat(256), "x".repeat(256)),
+        ];
+
+        for (requested_folder, normalized_folder) in folders {
+            let (root, note) = project_fixture("nonportable-standalone-folder");
+            let registry =
+                Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+            let _block = if normalized_folder.len() <= 255 {
+                Some(
+                    registry
+                        .block_paths(&root, &[format!("notes/{normalized_folder}/diagram.png")])
+                        .expect("candidate should be blockable"),
+                )
+            } else {
+                None
+            };
+
+            let result = save_clipboard_image_file_with_writer(
+                &registry,
+                note.to_string_lossy().to_string(),
+                requested_folder.clone(),
+                "image/png".to_string(),
+                valid_png(),
+                Some("diagram.png".to_string()),
+                |_| Ok(()),
+                |_| Ok(()),
+                |target, contents| std::io::Write::write_all(target, contents),
+            );
+
+            assert_eq!(
+                result,
+                Err("Resource folder name is not portable across supported platforms".to_string()),
+                "unexpected result for folder {requested_folder:?}"
+            );
+            assert!(!root.join("notes").join(&normalized_folder).exists());
+            assert_no_resource_staging(&root.join("notes"));
+            fs::remove_dir_all(root).expect("fixture should be removed");
+        }
+    }
+
+    #[test]
+    fn image_creation_accepts_255_bytes_but_rejects_an_overlong_collision_candidate() {
+        let (root, note) = project_fixture("portable-name-boundary");
+        let maximum_name = format!("{}.png", "x".repeat(251));
+        let first = save_project_clipboard_image_file(
+            note.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+            "image/png".to_string(),
+            valid_png(),
+            Some(maximum_name.clone()),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("a 255-byte resource name should be accepted");
+        assert_eq!(first.relative_path, format!("../assets/{maximum_name}"));
+
+        let result = save_project_clipboard_image_file(
+            note.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+            "image/png".to_string(),
+            valid_png(),
+            Some(maximum_name.clone()),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+
+        assert_eq!(
+            result,
+            Err("Resource file name is not portable across supported platforms".to_string())
+        );
+        assert!(root.join("assets").join(&maximum_name).is_file());
+        assert_no_resource_staging(&root.join("assets"));
+        assert_eq!(
+            fs::read_dir(root.join("assets"))
+                .expect("assets should be readable")
+                .count(),
+            1
+        );
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn standalone_image_creation_accepts_a_255_byte_folder_component() {
+        let (root, note) = project_fixture("portable-folder-boundary");
+        let folder = "f".repeat(255);
+
+        let saved = save_clipboard_image_file_with_writer(
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+            note.to_string_lossy().to_string(),
+            folder.clone(),
+            "image/png".to_string(),
+            valid_png(),
+            Some("diagram.png".to_string()),
+            |_| Ok(()),
+            |_| Ok(()),
+            |target, contents| std::io::Write::write_all(target, contents),
+        )
+        .expect("a 255-byte folder component should be accepted");
+
+        assert_eq!(saved.relative_path, format!("{folder}/diagram.png"));
+        assert!(root
+            .join("notes")
+            .join(folder)
+            .join("diagram.png")
+            .is_file());
+        fs::remove_dir_all(root).expect("fixture should be removed");
     }
 
     #[test]
@@ -648,6 +841,39 @@ mod tests {
         .expect("existing asset should be referenced");
 
         assert_eq!(saved.relative_path, "../assets/existing.png");
+        assert_eq!(
+            fs::read_dir(&assets)
+                .expect("assets should be readable")
+                .count(),
+            1
+        );
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn references_existing_legacy_nonportable_project_asset_without_copying() {
+        let (root, note) = project_fixture("existing-legacy-nonportable-asset");
+        let assets = root.join("assets");
+        let source = assets.join(".qingyu-ui-update-secret.png");
+        fs::create_dir_all(&assets).expect("assets directory should be created");
+        fs::write(&source, valid_png()).expect("existing image should be created");
+
+        let saved = save_project_clipboard_image_file(
+            note.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+            "image/png".to_string(),
+            valid_png(),
+            Some(".qingyu-ui-update-secret.png".to_string()),
+            Some(source.to_string_lossy().to_string()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("existing legacy asset should remain referencable");
+
+        assert_eq!(
+            saved.relative_path,
+            "../assets/.qingyu-ui-update-secret.png"
+        );
         assert_eq!(
             fs::read_dir(&assets)
                 .expect("assets should be readable")
@@ -869,6 +1095,43 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".qingyu-resource-")));
+        fs::remove_dir_all(root).expect("fixture should be removed");
+    }
+
+    #[test]
+    fn retries_a_racing_image_name_collision_without_clobbering() {
+        use std::io::Write;
+
+        let (root, note) = project_fixture("racing-collision");
+        let bytes = valid_png();
+        let first_path = root.join("notes/assets/diagram.png");
+        let saved = save_clipboard_image_file_with_writer(
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+            note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            "image/png".to_string(),
+            bytes.clone(),
+            Some("diagram.png".to_string()),
+            |_| Ok(()),
+            |_| Ok(()),
+            |target, contents| {
+                target.write_all(contents)?;
+                fs::write(&first_path, b"racing writer")
+            },
+        )
+        .expect("a racing collision should advance to the next suffix");
+
+        assert_eq!(saved.relative_path, "assets/diagram-2.png");
+        assert_eq!(
+            fs::read(&first_path).expect("racing file should be readable"),
+            b"racing writer"
+        );
+        assert_eq!(
+            fs::read(root.join("notes/assets/diagram-2.png"))
+                .expect("saved image should be readable"),
+            bytes
+        );
+        assert_no_resource_staging(&root.join("notes/assets"));
         fs::remove_dir_all(root).expect("fixture should be removed");
     }
 

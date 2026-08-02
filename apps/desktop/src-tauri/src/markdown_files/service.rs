@@ -19,7 +19,7 @@ use qingyu_kernel::documents::service::CapabilityAtomicInstallPort;
 #[cfg(not(windows))]
 use qingyu_kernel::documents::{AtomicInstallMode, PinnedInstallSource};
 use qingyu_kernel::{
-    contract::{DeletionPolicy as KernelDeletionPolicy, DocumentKind},
+    contract::{DeletionPolicy as KernelDeletionPolicy, DocumentKind, DocumentName},
     documents::{
         AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest, DeletionPort,
         DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
@@ -1591,38 +1591,8 @@ fn mutation_workspace(
 }
 
 fn validate_document_name(name: &str) -> Result<&str, DocumentServiceError> {
-    if name.is_empty()
-        || name.len() > 255
-        || name.contains(['/', '\\', '\0'])
-        || name.contains(['<', '>', ':', '"', '|', '?', '*'])
-        || name.ends_with(['.', ' '])
-        || !Path::new(name)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-            })
-        || Path::new(name).components().count() != 1
-        || name.starts_with(UPDATE_TEMP_PREFIX)
-        || is_windows_reserved_name(name)
-    {
-        return Err(DocumentServiceError::invalid_name());
-    }
+    DocumentName::parse_file(name.to_string()).map_err(|_| DocumentServiceError::invalid_name())?;
     Ok(name)
-}
-
-fn is_windows_reserved_name(name: &str) -> bool {
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end_matches(['.', ' '])
-        .to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || stem
-            .strip_prefix("COM")
-            .or_else(|| stem.strip_prefix("LPT"))
-            .is_some_and(|suffix| suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'))
 }
 
 fn validate_mutation_size(bytes: &[u8], max_bytes: u64) -> Result<(), DocumentServiceError> {

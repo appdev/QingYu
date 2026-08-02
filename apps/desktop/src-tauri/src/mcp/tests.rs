@@ -101,8 +101,8 @@ use crate::sync_config::{
 use qingyu_kernel::contract::{
     CreateDocumentRequest as KernelCreateDocumentRequest, CreatedDocumentDto,
     DeleteDocumentRequest as KernelDeleteDocumentRequest, DocumentContentDto, DocumentEntryDto,
-    DocumentId as KernelDocumentId, DocumentKind as KernelDocumentKind, DocumentPageDto,
-    ErrorCode as KernelErrorCode, ListDocumentsQuery,
+    DocumentId as KernelDocumentId, DocumentKind as KernelDocumentKind, DocumentName,
+    DocumentPageDto, ErrorCode as KernelErrorCode, ListDocumentsQuery,
     MoveDocumentRequest as KernelMoveDocumentRequest, PatchSettingsRequest, PatchSyncConfigRequest,
     RunId, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SyncConfigViewDto,
     SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto,
@@ -1673,6 +1673,105 @@ fn sync_options(
     MutationOptions {
         sync_after_write,
         workspace_sync_enabled,
+    }
+}
+
+#[test]
+fn document_mutation_create_rejects_kernel_file_name_failures_before_staging() {
+    for name in [
+        "bad\u{001f}name.md",
+        ".qingyu-ui-update-secret.md",
+        ".QINGYU-MCP-UPDATE-secret.md",
+        ".markra-sync-stage-secret.md",
+        "CON.md",
+    ] {
+        assert!(
+            DocumentName::parse_file(name).is_err(),
+            "test case must be rejected by the Kernel contract: {name:?}"
+        );
+        let fixture = document_mutation_fixture();
+        let error = fixture
+            .service
+            .create(
+                &mutation_scope(&fixture),
+                CreateDocument {
+                    parent: &mutation_root(&fixture),
+                    name,
+                    contents: "must not be staged",
+                },
+                sync_options(SyncAfterWritePolicy::FollowWorkspace, true),
+            )
+            .expect_err("nonportable create target must fail");
+
+        assert_eq!(
+            error.code, "invalid_document_name",
+            "unexpected error for {name:?}"
+        );
+        assert!(!fixture.workspace_root.join(name).exists());
+        assert!(std::fs::read_dir(&fixture.workspace_root)
+            .expect("workspace entries")
+            .all(|entry| !entry
+                .expect("workspace entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".qingyu-mcp-update-")));
+    }
+}
+
+#[test]
+fn document_mutation_move_rejects_kernel_file_name_failures_before_rename() {
+    for name in [
+        "bad\u{001f}name.md",
+        ".qingyu-ui-update-secret.md",
+        ".QINGYU-MCP-UPDATE-secret.md",
+        ".markra-sync-stage-secret.md",
+        "CON.md",
+    ] {
+        assert!(
+            DocumentName::parse_file(name).is_err(),
+            "test case must be rejected by the Kernel contract: {name:?}"
+        );
+        let fixture = document_mutation_fixture();
+        let scope = mutation_scope(&fixture);
+        let root = mutation_root(&fixture);
+        let created = fixture
+            .service
+            .create(
+                &scope,
+                CreateDocument {
+                    parent: &root,
+                    name: "source.md",
+                    contents: "source remains",
+                },
+                sync_options(SyncAfterWritePolicy::FollowWorkspace, true),
+            )
+            .expect("create source document");
+        let source = mutation_document(&fixture, &created.document_id);
+
+        let error = fixture
+            .service
+            .move_document(
+                &scope,
+                MoveDocument {
+                    document: &source,
+                    target_parent: &root,
+                    new_name: name,
+                    expected_revision: &created.revision.0,
+                },
+                sync_options(SyncAfterWritePolicy::FollowWorkspace, true),
+            )
+            .expect_err("nonportable move target must fail");
+
+        assert_eq!(
+            error.code, "invalid_document_name",
+            "unexpected error for {name:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.workspace_root.join("source.md"))
+                .expect("source document remains"),
+            "source remains"
+        );
+        assert!(!fixture.workspace_root.join(name).exists());
     }
 }
 
