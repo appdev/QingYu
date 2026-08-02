@@ -504,11 +504,24 @@ mod tests {
         fs::write(repo_paths.data.join("CON/inside.md"), b"ignored directory").unwrap();
         fs::write(repo_paths.data.join("CON.tmp"), b"built-in ignored").unwrap();
         fs::write(repo_paths.data.join("ignored\\name.md"), b"user ignored").unwrap();
+        fs::create_dir_all(repo_paths.data.join("ignored\\directory")).unwrap();
+        fs::write(
+            repo_paths.data.join("ignored\\directory/inside.txt"),
+            b"ignored backslash directory",
+        )
+        .unwrap();
+        fs::write(repo_paths.data.join(".hidden\\file.md"), b"hidden backslash file").unwrap();
+        fs::create_dir_all(repo_paths.data.join(".hidden\\directory")).unwrap();
+        fs::write(
+            repo_paths.data.join(".hidden\\directory/inside.txt"),
+            b"hidden backslash directory",
+        )
+        .unwrap();
         fs::write(repo_paths.data.join("visible.txt"), b"included").unwrap();
         let repo = open_repo(
             temp.path(),
             RepoOptions {
-                ignore_lines: vec!["CON/".to_owned(), "*.md".to_owned()],
+                ignore_lines: vec!["CON/".to_owned(), "ignored*/".to_owned(), "*.md".to_owned()],
                 protected_include_paths: Vec::new(),
             },
         );

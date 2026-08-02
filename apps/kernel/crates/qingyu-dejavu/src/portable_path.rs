@@ -42,10 +42,7 @@ mod tests {
             " leading-space.md",
             boundary.as_str(),
         ] {
-            assert!(
-                portable_path_component_is_valid(valid),
-                "rejected {valid:?}"
-            );
+            assert!(portable_path_component_is_valid(valid), "rejected {valid:?}");
         }
     }
 
@@ -88,17 +85,8 @@ mod tests {
 
     #[test]
     fn accepts_non_reserved_device_like_and_internal_space_components() {
-        for valid in [
-            "COM0",
-            "COM10",
-            "LPT0",
-            ".qingyu",
-            "internal ordinary space.md",
-        ] {
-            assert!(
-                portable_path_component_is_valid(valid),
-                "rejected {valid:?}"
-            );
+        for valid in ["COM0", "COM10", "LPT0", ".qingyu", "internal ordinary space.md"] {
+            assert!(portable_path_component_is_valid(valid), "rejected {valid:?}");
         }
     }
 }

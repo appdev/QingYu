@@ -1141,7 +1141,9 @@ fn map_repo_error(error: RepoError) -> DejavuRunError {
         RepoError::Cloud(error) => map_cloud_error(&error),
         RepoError::RemoteLockUnhealthy(error) => map_cloud_code(error.code()),
         RepoError::OperationAndUnlockFailed { operation, .. } => map_repo_error(*operation),
-        RepoError::UnsafePath => DejavuRunError::WorkspaceUnavailable,
+        RepoError::UnsafePath | RepoError::PortableNameRequired { .. } => {
+            DejavuRunError::WorkspaceUnavailable
+        }
         _ => DejavuRunError::RepositoryUnavailable,
     }
 }
@@ -1223,6 +1225,18 @@ mod tests {
         for (cloud, expected) in cases {
             assert_eq!(map_repo_error(RepoError::Cloud(cloud)), expected);
         }
+    }
+
+    #[test]
+    fn portable_name_errors_remain_workspace_path_failures() {
+        use qingyu_dejavu::RepoError;
+
+        assert_eq!(
+            map_repo_error(RepoError::PortableNameRequired {
+                component: r"bad\name.md".to_owned(),
+            }),
+            super::DejavuRunError::WorkspaceUnavailable
+        );
     }
 
     #[tokio::test]

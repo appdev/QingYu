@@ -261,7 +261,7 @@ fn repo_error_code(error: RepoError) -> &'static str {
     match error {
         RepoError::Cloud(CloudError::Injected(CloudOperation::Put)) => "ref_publication_injected",
         RepoError::EmptyIndex => "empty_index",
-        RepoError::UnsafePath => "path_invalid",
+        RepoError::UnsafePath | RepoError::PortableNameRequired { .. } => "path_invalid",
         RepoError::RepositoryBusy => "repository_busy",
         _ => "operation_failed",
     }
@@ -275,4 +275,20 @@ fn emit_response(response: &Response) {
     let mut stdout = io::stdout().lock();
     let _ = stdout.write_all(&bytes);
     let _ = stdout.write_all(b"\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repo_error_code;
+    use qingyu_dejavu::RepoError;
+
+    #[test]
+    fn portable_name_errors_remain_path_invalid() {
+        assert_eq!(
+            repo_error_code(RepoError::PortableNameRequired {
+                component: r"bad\name.md".to_owned(),
+            }),
+            "path_invalid"
+        );
+    }
 }
