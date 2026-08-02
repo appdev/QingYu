@@ -1770,7 +1770,7 @@ export function useMarkdownDocument({
       tabId: string,
       contents: string,
       options: SaveCurrentDocumentContentOptions = {}
-    ) => {
+    ): Promise<SavedNativeMarkdownFile | null> => {
       const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
       if (!tab?.open) return null;
 
