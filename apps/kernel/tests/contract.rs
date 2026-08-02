@@ -712,8 +712,7 @@ fn document_names_enforce_portable_segment_and_kind_rules_at_deserialization() {
         "workspaceGeneration": "generation-1",
         "parent": "",
         "name": over_255_bytes,
-        "kind": "file",
-        "contents": ""
+        "kind": "directory"
     }))
     .is_err());
 
