@@ -25,7 +25,7 @@ export type CompactDocumentController = Pick<
   MarkdownDocumentController,
   "document" | "saveCurrentDocument" | "workspaceSurface"
 > & {
-  createBlankDocument: (fileName: string) => Promise<boolean>;
+  createBlankDocument: () => Promise<boolean>;
 };
 
 export type CompactEditorController = {
@@ -43,11 +43,11 @@ export type CompactEditorController = {
 
 export type CompactFilesController = Pick<
   MarkdownFileTreeController,
-  | "createFile"
   | "createFolder"
   | "files"
   | "sourcePath"
 > & {
+  createUntitledFile: (parentPath: string | null) => Promise<NativeMarkdownFolderFile | null>;
   deleteFile: (file: NativeMarkdownFolderFile) => Promise<unknown> | unknown;
   moveFile: (file: NativeMarkdownFolderFile, targetParentPath: string | null) => Promise<boolean> | boolean;
   openFile: (file: NativeMarkdownFolderFile) => Promise<unknown> | unknown;

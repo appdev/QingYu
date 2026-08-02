@@ -151,7 +151,7 @@ export function CompactFileBrowserScreen({
 
   const createUntitledFile = async (parentPath: string | null) => {
     setError(null);
-    const file = await controller.files.createFile("Untitled.md", parentPath);
+    const file = await controller.files.createUntitledFile(parentPath);
     if (!file) throw new Error("File creation failed");
 
     await attemptNavigationFlush();

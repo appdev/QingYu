@@ -653,7 +653,7 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
-      contents: "",
+      contents: "---\ntitle: Untitled\n---\n\n",
       defaultDirectory: workspaceRoot,
       path: null,
       suggestedName: "Untitled.md"
@@ -666,7 +666,7 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(result.current.document).toMatchObject({
-      content: "",
+      content: "---\ntitle: Untitled 3\n---\n\n",
       dirty: false,
       name: "Untitled 3.md",
       path: documentPath
@@ -680,6 +680,99 @@ describe("useMarkdownDocument", () => {
       filePath: documentPath,
       openFilePaths: [documentPath]
     }));
+  });
+
+  it("immediately persists the authoritative collision name as the Front Matter title", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const documentPath = `${workspaceRoot}/%E6%9C%AA%E5%91%BD%E5%90%8D%201.md`;
+    mockedSaveNativeMarkdownFile
+      .mockResolvedValueOnce({ name: "未命名 1.md", path: documentPath })
+      .mockResolvedValueOnce({ name: "未命名 1.md", path: documentPath });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument({
+        content: "---\n# identity\nauthor: Ying\n---\n\n# 议程\n",
+        name: "未命名.md"
+      })).toBe(true);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(1, {
+      contents: "---\n# identity\nauthor: Ying\ntitle: 未命名\n---\n\n# 议程\n",
+      defaultDirectory: workspaceRoot,
+      path: null,
+      suggestedName: "未命名.md"
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(2, {
+      contents: "---\n# identity\nauthor: Ying\ntitle: 未命名 1\n---\n\n# 议程\n",
+      path: documentPath,
+      skipHistorySnapshot: true,
+      suggestedName: "未命名 1.md"
+    });
+    expect(result.current.document).toMatchObject({
+      content: "---\n# identity\nauthor: Ying\ntitle: 未命名 1\n---\n\n# 议程\n",
+      dirty: false,
+      name: "未命名 1.md",
+      path: documentPath
+    });
+  });
+
+  it("allocates a no-file-tree draft before inserting its localized Front Matter title", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument({ name: "未命名.md" })).toBe(true);
+      expect(await result.current.createBlankDocument({ name: "未命名.md" })).toBe(true);
+    });
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名 1\n---\n\n",
+      dirty: true,
+      name: "未命名 1.md",
+      path: null
+    });
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+  });
+
+  it("fails malformed template creation safely without creating or replacing a draft", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    const initialTabs = result.current.tabs;
+
+    await expect(act(async () => result.current.createBlankDocument({
+      content: "---\ntitle: [unterminated\n---\n\n# Body\n",
+      name: "Untitled.md"
+    }))).rejects.toThrow("malformed");
+
+    expect(result.current.tabs).toEqual(initialTabs);
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
   });
 
   it("does not append a duplicate tab when a Kernel allocation path is already open", async () => {
@@ -716,7 +809,7 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
-      contents: "",
+      contents: "---\ntitle: Untitled 1\n---\n\n",
       defaultDirectory: workspaceRoot,
       path: null,
       suggestedName: "Untitled 1.md"

@@ -283,7 +283,7 @@ describe("CompactEditorScreen", () => {
     expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Visual Milkdown editor")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "New Document" }));
-    await waitFor(() => expect(setup.createBlankDocument).toHaveBeenCalledWith("Untitled.md"));
+    await waitFor(() => expect(setup.createBlankDocument).toHaveBeenCalledWith());
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Configure Sync" }));
     await waitFor(() => expect(compactNavigation.push).toHaveBeenCalledWith({ kind: "sync-status" }));

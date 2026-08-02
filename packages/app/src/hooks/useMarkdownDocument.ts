@@ -88,12 +88,15 @@ import {
   type EditorWindowContext
 } from "../lib/editor-window-context";
 import { workspaceSurfaceForRestore } from "./markdown-document/restore-outcome";
+import { markdownDocumentSourceForCreatedFile } from "../lib/document-creation";
 
 export type { MarkdownDocumentTab } from "./markdown-document/document-model";
 export type WorkspaceSurface = "restoring" | "editor" | "home" | "recovery";
 
 function isEmptyUntitledDocument(document: DocumentState) {
-  return document.open && document.path === null && document.content.trim() === "";
+  return document.open
+    && document.path === null
+    && markdownDocumentBodyContent(document.content).trim() === "";
 }
 
 function isKernelWorkspaceDirectory(path: string | null | undefined) {
@@ -703,7 +706,7 @@ export function useMarkdownDocument({
   const hasDiscardableUnsavedChanges = useCallback(() => {
     const current = documentRef.current;
     if (!current.open) return false;
-    if (current.path === null && current.content.trim().length === 0) return false;
+    if (current.path === null && markdownDocumentBodyContent(current.content).trim().length === 0) return false;
 
     if (!current.dirty) {
       const editorContentEquivalent = isActiveEditorMarkdownEquivalent(current.content);
@@ -726,8 +729,8 @@ export function useMarkdownDocument({
   const hasDiscardableTabChanges = useCallback((tab: MarkdownDocumentTab) => {
     if (tab.id === activeTabIdRef.current) return hasDiscardableUnsavedChanges();
     if (!tab.open) return false;
-    if (tab.path === null && tab.content.trim().length === 0) return false;
-    if (tab.dirty) return tab.path !== null || tab.content.trim().length > 0;
+    if (tab.path === null && markdownDocumentBodyContent(tab.content).trim().length === 0) return false;
+    if (tab.dirty) return tab.path !== null || markdownDocumentBodyContent(tab.content).trim().length > 0;
 
     return false;
   }, [hasDiscardableUnsavedChanges]);
@@ -979,24 +982,63 @@ export function useMarkdownDocument({
 
   const createBlankDocument = useCallback(async (options: CreateBlankDocumentOptions = {}) => {
     const create = async () => {
-      if (!isKernelWorkspaceDirectory(defaultSaveDirectory)) {
-        return resetToBlankDocument(options);
+      const kernelWorkspace = isKernelWorkspaceDirectory(defaultSaveDirectory);
+      const requestedName = documentTabsEnabled
+        ? availableBlankDocumentName(
+          options.name,
+          kernelWorkspace
+            ? tabsRef.current.filter((tab) => tab.path !== null)
+            : tabsRef.current
+        )
+        : blankDocumentName(options.name);
+      const requestedContent = markdownDocumentSourceForCreatedFile(
+        requestedName,
+        options.content ?? ""
+      );
+      const requestedDocument = {
+        ...options,
+        content: requestedContent,
+        name: requestedName
+      };
+
+      if (!kernelWorkspace) {
+        return resetToBlankDocument(requestedDocument);
       }
 
       const savedFile = await saveNativeMarkdownFile({
         ...defaultSaveDirectoryInput(defaultSaveDirectory, null),
-        contents: options.content ?? "",
+        contents: requestedContent,
         path: null,
-        suggestedName: documentTabsEnabled
-          ? availableBlankDocumentName(
-            options.name,
-            tabsRef.current.filter((tab) => tab.path !== null)
-          )
-          : blankDocumentName(options.name)
+        suggestedName: requestedName
       });
       if (!savedFile) return false;
 
-      return resetToBlankDocument(options, savedFile);
+      const authoritativeContent = markdownDocumentSourceForCreatedFile(
+        savedFile.name,
+        requestedContent
+      );
+      const existingSavedTab = tabsRef.current.find((tab) =>
+        tab.path !== null && sameNativePath(tab.path, savedFile.path)
+      );
+      if (existingSavedTab) {
+        return resetToBlankDocument(requestedDocument, savedFile);
+      }
+      if (authoritativeContent !== requestedContent) {
+        const persistedFile = await saveNativeMarkdownFile({
+          ...defaultSaveDirectoryInput(defaultSaveDirectory, savedFile.path),
+          contents: authoritativeContent,
+          path: savedFile.path,
+          skipHistorySnapshot: true,
+          suggestedName: savedFile.name
+        });
+        if (!persistedFile) return false;
+      }
+
+      return resetToBlankDocument({
+        ...requestedDocument,
+        content: authoritativeContent,
+        name: savedFile.name
+      }, savedFile);
     };
 
     if (documentTabsEnabled) return create();
@@ -2062,7 +2104,10 @@ export function useMarkdownDocument({
 
   const isCurrentDocumentEmptyUntitled = useCallback(() => {
     const current = documentRef.current;
-    return !current.open || (current.path === null && currentMarkdown().trim() === "");
+    return !current.open || (
+      current.path === null
+      && markdownDocumentBodyContent(currentMarkdown()).trim() === ""
+    );
   }, [currentMarkdown]);
 
   const isFileInCurrentWorkspace = useCallback((path: string) => {

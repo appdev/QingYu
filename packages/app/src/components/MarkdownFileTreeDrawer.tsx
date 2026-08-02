@@ -57,6 +57,7 @@ import {
   clampNumber,
   markdownImageDragPayloadForFile,
   t,
+  untitledMarkdownDocumentName,
   writeMarkdownImageDragPayload,
   type AppLanguage
 } from "@markra/shared";
@@ -1194,7 +1195,7 @@ export function MarkdownFileTreeDrawer({
     const normalizedParentPath = normalizeTreeCreateParentPath(parentPath);
     const suggestedName = template
       ? markdownTemplateInitialDocumentName(template.id, language, startedAt)
-      : "Untitled.md";
+      : untitledMarkdownDocumentName(language);
     const contents = template
       ? renderMarkdownTemplate(template, { now: startedAt })
       : undefined;

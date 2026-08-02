@@ -2793,6 +2793,30 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(createFolder).not.toHaveBeenCalled();
   });
 
+  it("requests the localized untitled name for blank creation", () => {
+    const createFile = vi.fn();
+
+    render(
+      <MarkdownFileTreeDrawer
+        currentPath={null}
+        files={[]}
+        folderOpen={false}
+        language="zh-CN"
+        open
+        outlineItems={[]}
+        rootName="No folder"
+        onCreateFile={createFile}
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新建" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "新建文件" }));
+
+    expect(createFile).toHaveBeenCalledWith("未命名.md");
+  });
+
   it("creates the locally dated daily note without a generated title heading", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-21T09:30:00"));
@@ -2832,6 +2856,71 @@ describe("MarkdownFileTreeDrawer", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps one captured local date for daily note naming and rendering across midnight", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 2, 23, 59, 59));
+    const createFile = vi.fn(() => {
+      vi.setSystemTime(new Date(2026, 7, 3, 0, 0, 1));
+    });
+
+    try {
+      render(
+        <MarkdownFileTreeDrawer
+          currentPath="/vault/Untitled.md"
+          files={markdownFiles}
+          open
+          outlineItems={[]}
+          rootName="Obsidian Vault"
+          onCreateFile={createFile}
+          onOpenFile={() => {}}
+          onSelectOutlineItem={() => {}}
+        />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
+
+      expect(createFile).toHaveBeenCalledWith(
+        "2026-08-02.md",
+        undefined,
+        expect.stringContaining("Date: 2026-08-02")
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["Meeting note", "# Attendees"],
+    ["Reading note", "# Source"],
+    ["Project note", "# Goal"]
+  ])("uses localized untitled naming for %s template creation and preserves headings", (templateName, heading) => {
+    const createFile = vi.fn();
+
+    render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        language="zh-CN"
+        open
+        outlineItems={[]}
+        rootName="Obsidian Vault"
+        onCreateFile={createFile}
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新建" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: templateName }));
+
+    expect(createFile).toHaveBeenCalledWith(
+      "未命名.md",
+      undefined,
+      expect.stringContaining(heading)
+    );
   });
 
   it("starts root create actions inside the current file parent folder", () => {

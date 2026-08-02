@@ -2490,7 +2490,11 @@ describe("QingYu workspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
     await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
       kernelWorkspaceRoot,
-      "Untitled.md"
+      "Untitled.md",
+      {
+        contents: "---\ntitle: Untitled\n---\n\n",
+        parentPath: null
+      }
     ));
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(prompt).not.toHaveBeenCalled();
@@ -2512,6 +2516,59 @@ describe("QingYu workspace", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "General" }));
     expect(await screen.findByRole("combobox", { name: "Language" })).toBeInTheDocument();
+  });
+
+  it("uses localized untitled naming for Compact document creation", async () => {
+    const runtime = createDefaultAppRuntime();
+    mockedGetStoredLanguage.mockResolvedValue("zh-CN");
+    mockCompactViewport(false);
+    configureAppRuntime({
+      ...runtime,
+      platform: {
+        ...runtime.platform,
+        resolveFormFactor: () => "mobile"
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => kernelWorkspaceRoot
+        }
+      }
+    });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+
+    renderFreshApp();
+    fireEvent.click(await screen.findByRole("button", { name: "新建文档" }));
+
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      kernelWorkspaceRoot,
+      "未命名.md",
+      {
+        contents: "---\ntitle: 未命名\n---\n\n",
+        parentPath: null
+      }
+    ));
+
+    mockedCreateNativeMarkdownTreeFile.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "新建文件" }));
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      kernelWorkspaceRoot,
+      "未命名.md",
+      {
+        contents: "---\ntitle: 未命名\n---\n\n",
+        parentPath: null
+      }
+    ));
   });
 
   it("subscribes Compact navigation to native Back only on true mobile", async () => {
@@ -9103,6 +9160,77 @@ describe("QingYu workspace", () => {
         })
       )
     );
+  });
+
+  it("uses the localized untitled policy for quick creation", async () => {
+    mockedGetStoredLanguage.mockResolvedValue("zh-CN");
+
+    renderApp();
+    await screen.findByText("Editor fixture");
+    fireEvent.click(screen.getByRole("button", { name: "新建标签页" }));
+
+    expect(await screen.findByRole("tab", { name: /未命名\.md/u })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
+  });
+
+  it("immediately saves a daily note collision with the authoritative Front Matter title", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 7, 2, 23, 59, 59));
+    const createdFile = {
+      name: "2026-08-02 1.md",
+      path: `${mockFolderPath}/2026-08-02 1.md`,
+      relativePath: "2026-08-02 1.md"
+    };
+    const initialSource = `---
+title: 2026-08-02
+---
+
+Date: 2026-08-02
+
+# Notes
+
+# Tasks
+
+- [ ]
+`;
+    const finalSource = initialSource.replace("title: 2026-08-02", "title: 2026-08-02 1");
+    mockOpenMarkdownFolder({ path: mockFolderPath, name: "vault" });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([createdFile]);
+    mockedCreateNativeMarkdownTreeFile.mockImplementation(async () => {
+      vi.setSystemTime(new Date(2026, 7, 3, 0, 0, 1));
+      return createdFile;
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue(createdFile);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: finalSource,
+      name: createdFile.name,
+      path: createdFile.path
+    });
+
+    try {
+      renderApp();
+      fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+      expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
+
+      await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+        mockFolderPath,
+        "2026-08-02.md",
+        { contents: initialSource, parentPath: null }
+      ));
+      await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contents: finalSource,
+          path: createdFile.path,
+          suggestedName: createdFile.name
+        })
+      ));
+      expect(await screen.findByRole("tab", { name: /2026-08-02 1\.md/u })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens another file from an untouched blank document without asking to discard changes", async () => {

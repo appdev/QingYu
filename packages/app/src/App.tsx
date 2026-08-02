@@ -102,6 +102,7 @@ import {
   markdownImageDragSrcForDocument,
   pathNameFromPath,
   t,
+  untitledMarkdownDocumentName,
   type AppLanguage,
   type I18nKey,
   type MarkdownFormattingShortcutAction
@@ -115,6 +116,7 @@ import {
   parseMarkdownLocalResourceReferences
 } from "@markra/markdown";
 import { buildMarkdownHtmlDocument, exportDocumentFileName, localFileUrlFromPath } from "./lib/document-export";
+import { markdownDocumentSourceForCreatedFile } from "./lib/document-creation";
 import {
   generateCrashDiagnosticsReport,
   generateDiagnosticsIssueUrl
@@ -1027,6 +1029,30 @@ function WorkspaceApp() {
     return createMarkdownTreeFileUnchecked(fileName, parentPath, contents)
       .finally(() => lease?.release());
   }, [createMarkdownTreeFileUnchecked, fileTreeSourcePath, guardFileMutation, syncPathMutationRegistry]);
+  const createMarkdownDocumentFile = useCallback(async (
+    fileName: string,
+    parentPath: string | null = null,
+    body = ""
+  ) => {
+    const requestedSource = markdownDocumentSourceForCreatedFile(fileName, body);
+    const file = await createMarkdownTreeFile(fileName, parentPath, requestedSource);
+    if (!file) return null;
+
+    const authoritativeSource = markdownDocumentSourceForCreatedFile(file.name, requestedSource);
+    if (authoritativeSource !== requestedSource) {
+      const persistedFile = await saveNativeMarkdownFile({
+        contents: authoritativeSource,
+        path: file.path,
+        skipHistorySnapshot: true,
+        suggestedName: file.name
+      });
+      if (!persistedFile) {
+        throw new Error("Created document metadata could not be persisted.");
+      }
+    }
+
+    return file;
+  }, [createMarkdownTreeFile]);
   const createMarkdownTreeFolder = useCallback((
     folderName: string,
     parentPath: string | null = null
@@ -2898,7 +2924,7 @@ function WorkspaceApp() {
         return;
       }
 
-      const file = await createMarkdownTreeFile(fileName, parentPath, contents);
+      const file = await createMarkdownDocumentFile(fileName, parentPath, contents ?? "");
       if (file) {
         captureActiveDocumentViewState();
         setActiveImageFile(null);
@@ -2910,11 +2936,13 @@ function WorkspaceApp() {
         status: "error"
       });
     }
-  }, [captureActiveDocumentViewState, createBlankDocument, createMarkdownTreeFile, fileTree.sourcePath, openTreeMarkdownFile, translate]);
+  }, [captureActiveDocumentViewState, createBlankDocument, createMarkdownDocumentFile, fileTree.sourcePath, openTreeMarkdownFile, translate]);
   const handleQuickCreateMarkdownTreeFile = useCallback(() => {
     captureActiveDocumentViewState();
     setActiveImageFile(null);
-    createBlankDocument()
+    createBlankDocument({
+      name: untitledMarkdownDocumentName(appLanguage.language)
+    })
       .then((created) => {
         if (created) return;
         showAppToast({
@@ -2928,7 +2956,7 @@ function WorkspaceApp() {
           status: "error"
         });
       });
-  }, [captureActiveDocumentViewState, createBlankDocument, translate]);
+  }, [appLanguage.language, captureActiveDocumentViewState, createBlankDocument, translate]);
   const openImageTab = useCallback((file: NativeMarkdownFolderFile) => {
     const tab = createImageDocumentTab(file);
     setImageTabs((currentTabs) =>
@@ -3084,19 +3112,27 @@ function WorkspaceApp() {
     await openTreeMarkdownFile(file);
     return true;
   }, [appFeatures.openLocalAttachments, captureActiveDocumentViewState, handleOpenLocalAttachment, openImageTab, openManagedTreeMarkdownFile, openTreeMarkdownFile]);
-  const handleCreateCompactDocument = useCallback(async (fileName: string) => {
+  const handleCreateCompactDocument = useCallback(async () => {
+    const fileName = untitledMarkdownDocumentName(appLanguage.language);
     if (!fileTree.sourcePath) {
       return createBlankDocument({
         name: unsavedMarkdownFileNameFromTreeInput(fileName)
       });
     }
 
-    const file = await createMarkdownTreeFile(fileName, null);
+    const file = await createMarkdownDocumentFile(fileName);
     if (!file) return false;
 
     await handleOpenTreeFile(file, { managed: compactMode.trueMobile });
     return true;
-  }, [compactMode.trueMobile, createBlankDocument, createMarkdownTreeFile, fileTree.sourcePath, handleOpenTreeFile]);
+  }, [appLanguage.language, compactMode.trueMobile, createBlankDocument, createMarkdownDocumentFile, fileTree.sourcePath, handleOpenTreeFile]);
+  const handleCreateCompactTreeFile = useCallback(
+    (parentPath: string | null) => createMarkdownDocumentFile(
+      untitledMarkdownDocumentName(appLanguage.language),
+      parentPath
+    ),
+    [appLanguage.language, createMarkdownDocumentFile]
+  );
   const handleQuickOpenOpen = useCallback(() => {
     hideGlobalSearch();
     hideDocumentSearch();
@@ -4842,7 +4878,7 @@ function WorkspaceApp() {
       toggleTaskList: handleToggleEditorTaskList
     },
     files: {
-      createFile: createMarkdownTreeFile,
+      createUntitledFile: handleCreateCompactTreeFile,
       createFolder: createMarkdownTreeFolder,
       deleteFile: handleDeleteMarkdownTreeFile,
       files: fileTree.files,
@@ -4900,7 +4936,7 @@ function WorkspaceApp() {
     editorPreferences.preferences,
     handleCompactPreferencesChange,
     handleCreateCompactDocument,
-    createMarkdownTreeFile,
+    handleCreateCompactTreeFile,
     createMarkdownTreeFolder,
     fileTree.files,
     handleOpenMarkdownFolder,

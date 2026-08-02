@@ -24,7 +24,7 @@ function deferred() {
 }
 
 function setup(flush = vi.fn().mockResolvedValue([]), language: CompactAppController["language"] = "en") {
-  const createFile = vi.fn();
+  const createUntitledFile = vi.fn();
   const createFolder = vi.fn().mockResolvedValue({
     kind: "folder",
     name: "notes",
@@ -43,7 +43,7 @@ function setup(flush = vi.fn().mockResolvedValue([]), language: CompactAppContro
   const controller = {
     document: {},
     files: {
-      createFile,
+      createUntitledFile,
       createFolder,
       deleteFile,
       files: markdownFiles,
@@ -61,7 +61,7 @@ function setup(flush = vi.fn().mockResolvedValue([]), language: CompactAppContro
   render(<CompactFileBrowserScreen controller={controller} navigation={navigation} />);
   return {
     controller,
-    createFile,
+    createUntitledFile,
     createFolder,
     deleteFile,
     flush,
@@ -143,12 +143,12 @@ describe("CompactFileBrowserScreen", () => {
       name: "Untitled 2.md",
       relativePath: "Untitled 2.md"
     };
-    const { createFile, navigation, openTreeMarkdownFile } = setup();
-    createFile.mockResolvedValueOnce(createdFile);
+    const { createUntitledFile, navigation, openTreeMarkdownFile } = setup();
+    createUntitledFile.mockResolvedValueOnce(createdFile);
 
     fireEvent.click(screen.getByRole("button", { name: "New file" }));
 
-    await waitFor(() => expect(createFile).toHaveBeenCalledWith("Untitled.md", null));
+    await waitFor(() => expect(createUntitledFile).toHaveBeenCalledWith(null));
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(openTreeMarkdownFile).toHaveBeenCalledWith(createdFile);
     expect(navigation.popToEditor).toHaveBeenCalledTimes(1);
@@ -156,8 +156,8 @@ describe("CompactFileBrowserScreen", () => {
   });
 
   it("shows a safe error when immediate file creation fails", async () => {
-    const { createFile, openTreeMarkdownFile } = setup();
-    createFile.mockRejectedValueOnce(new Error(
+    const { createUntitledFile, openTreeMarkdownFile } = setup();
+    createUntitledFile.mockRejectedValueOnce(new Error(
       "token=super-secret failed at /Users/example/vault/Untitled.md"
     ));
 
@@ -221,13 +221,13 @@ describe("CompactFileBrowserScreen", () => {
       name: "Untitled 1.md",
       relativePath: "docs/Untitled 1.md"
     };
-    const { createFile } = setup();
-    createFile.mockResolvedValueOnce(createdFile);
+    const { createUntitledFile } = setup();
+    createUntitledFile.mockResolvedValueOnce(createdFile);
 
     fireEvent.click(screen.getByRole("button", { name: "More actions: docs" }));
     fireEvent.click(screen.getByRole("button", { name: "New file here" }));
 
-    await waitFor(() => expect(createFile).toHaveBeenCalledWith("Untitled.md", "/vault/docs"));
+    await waitFor(() => expect(createUntitledFile).toHaveBeenCalledWith("/vault/docs"));
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
   });
 
@@ -325,11 +325,11 @@ describe("CompactFileBrowserScreen", () => {
   });
 
   it("localizes the full file surface and manual folder/rename dialogs in Simplified Chinese", async () => {
-    const { createFile, createFolder } = setup(undefined, "zh-CN");
-    createFile.mockResolvedValueOnce({
-      path: "/vault/Untitled.md",
-      name: "Untitled.md",
-      relativePath: "Untitled.md"
+    const { createUntitledFile, createFolder } = setup(undefined, "zh-CN");
+    createUntitledFile.mockResolvedValueOnce({
+      path: "/vault/未命名.md",
+      name: "未命名.md",
+      relativePath: "未命名.md"
     });
 
     expect(screen.getByRole("region", { name: "文件" })).toBeInTheDocument();
@@ -339,7 +339,7 @@ describe("CompactFileBrowserScreen", () => {
     expect(screen.getByRole("button", { name: "新建文件夹" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "新建文件" }));
-    await waitFor(() => expect(createFile).toHaveBeenCalledWith("Untitled.md", null));
+    await waitFor(() => expect(createUntitledFile).toHaveBeenCalledWith(null));
     expect(screen.queryByRole("dialog", { name: "新文件名" })).not.toBeInTheDocument();
 
     createFolder.mockRejectedValueOnce("failed");
