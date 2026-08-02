@@ -1275,7 +1275,10 @@ mod tests {
                 if path.is_dir() {
                     collect(root, &path, snapshot);
                 } else if path.is_file() {
-                    snapshot.insert(path.strip_prefix(root).unwrap().to_owned(), fs::read(path).unwrap());
+                    snapshot.insert(
+                        path.strip_prefix(root).unwrap().to_owned(),
+                        fs::read(path).unwrap(),
+                    );
                 }
             }
         }
@@ -3477,7 +3480,10 @@ mod tests {
                 local.repo.latest_sync().unwrap().map(|index| index.id),
                 previous_latest_sync
             );
-            assert_eq!(target_sync_ref_id(&local.repo, &latest_sync_ref), previous_target_sync);
+            assert_eq!(
+                target_sync_ref_id(&local.repo, &latest_sync_ref),
+                previous_target_sync
+            );
             assert_eq!(coordinator.prepares.load(Ordering::SeqCst), 0);
         }
     }
@@ -3558,7 +3564,10 @@ mod tests {
                 local.repo.latest_sync().unwrap().map(|index| index.id),
                 previous_latest_sync
             );
-            assert_eq!(target_sync_ref_id(&local.repo, &latest_sync_ref), previous_target_sync);
+            assert_eq!(
+                target_sync_ref_id(&local.repo, &latest_sync_ref),
+                previous_target_sync
+            );
             assert_eq!(coordinator.prepares.load(Ordering::SeqCst), 0);
         }
     }

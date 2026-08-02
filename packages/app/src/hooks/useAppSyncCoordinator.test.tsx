@@ -23,7 +23,10 @@ import {
   resetAppRuntimeForTests
 } from "../runtime";
 import { KernelSyncRunError } from "../runtime/kernel-app/sync-config";
-import { useAppSyncCoordinator } from "./useAppSyncCoordinator";
+import {
+  parseKernelSyncSafeError,
+  useAppSyncCoordinator
+} from "./useAppSyncCoordinator";
 
 vi.mock("../lib/app-toast", () => ({ dismissAppToast: vi.fn(), showAppToast: vi.fn() }));
 vi.mock("../lib/sync", async (importOriginal) => ({
@@ -1923,6 +1926,27 @@ describe("application sync coordinator", () => {
     expect(JSON.stringify(logSpy.mock.calls.at(-1)?.[2])).not.toContain("/Users/");
     expect(JSON.stringify(logSpy.mock.calls.at(-1)?.[2])).not.toContain("C:\\Users\\");
     logSpy.mockRestore();
+  });
+
+  it("parses a persisted portable-name-required component without losing its relative path", () => {
+    const persisted = {
+      category: "storage",
+      code: "portable-name-required",
+      httpStatus: null,
+      method: null,
+      objectId: null,
+      operation: "sync_run",
+      provider: "s3",
+      providerErrorCode: null,
+      relativePath: "CON.md",
+      requestId: null,
+      runId: "00000000-0000-4000-8000-000000000012"
+    };
+
+    const parsed = parseKernelSyncSafeError(persisted, "s3");
+
+    expect(parsed).toEqual(persisted);
+    expect(parsed?.relativePath).toBe("CON.md");
   });
 
   it("preserves an uncategorized Kernel safe error instead of degrading it to sync-failed", async () => {

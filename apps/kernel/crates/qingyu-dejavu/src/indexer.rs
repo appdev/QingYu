@@ -510,7 +510,11 @@ mod tests {
             b"ignored backslash directory",
         )
         .unwrap();
-        fs::write(repo_paths.data.join(".hidden\\file.md"), b"hidden backslash file").unwrap();
+        fs::write(
+            repo_paths.data.join(".hidden\\file.md"),
+            b"hidden backslash file",
+        )
+        .unwrap();
         fs::create_dir_all(repo_paths.data.join(".hidden\\directory")).unwrap();
         fs::write(
             repo_paths.data.join(".hidden\\directory/inside.txt"),

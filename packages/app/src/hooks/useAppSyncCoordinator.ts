@@ -349,7 +349,7 @@ type KernelSyncErrorCategory =
   | "storage"
   | "transport";
 
-function parseKernelSyncSafeError(value: unknown, provider: SyncProvider): SyncSafeError | null {
+export function parseKernelSyncSafeError(value: unknown, provider: SyncProvider): SyncSafeError | null {
   if (!isRecord(value)) return null;
   const keys = [
     "category",
