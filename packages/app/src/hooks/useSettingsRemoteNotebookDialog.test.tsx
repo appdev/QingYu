@@ -300,6 +300,28 @@ describe("useSettingsRemoteNotebookDialog", () => {
     }));
   });
 
+  it.each([
+    ["WebDAV", false],
+    ["S3", true]
+  ] as const)("rejects an unavailable %s catalog entry before sending a restore request", async (
+    _provider,
+    dejavuSync
+  ) => {
+    const unavailable = dejavuSync ? s3Entry("CON") : entry("CON");
+    unavailable.available = false;
+    unavailable.disabledReason = "notebook-name-unavailable";
+    installRuntime({ dejavuSync, listNotebooks: async () => [unavailable] });
+    const { result } = setup();
+    await act(async () => result.current.openDialog());
+
+    await expect(result.current.restore(result.current.entries[0]!)).rejects.toThrow(
+      "Cloud notebook restore failed"
+    );
+
+    expect(result.current.open).toBe(true);
+    expect(mockedRequestPrimaryCloudNotebookRestore).not.toHaveBeenCalled();
+  });
+
   it("closes only the dialog and resumes Sync after a successful same-name restore", async () => {
     installRuntime();
     const { result, syncSession } = setup("/Workspace/Archive");

@@ -393,6 +393,8 @@ impl DejavuSyncServiceOwner {
             .read_repository(&request.repository_id)
             .await?;
         validate_selected_metadata(&request, &metadata)?;
+        crate::notebook_scope::validate_portable_notebook_name(&metadata.display_name)
+            .map_err(|_| RepositoryJobError::PortableNameRequired)?;
         let notes_root = prepare_binding_root(&request.notes_root)?;
         let binding = RepositoryBinding {
             repository_id: metadata.repository_id.clone(),
@@ -693,7 +695,17 @@ pub(crate) async fn bind_dejavu_repository(
 ) -> Result<AcceptedSyncJob, String> {
     bind_repository_and_refresh_scheduler(&owner, &scheduler_owner, request)
         .await
-        .map_err(|error| error.safe_code().to_owned())
+        .map_err(bind_repository_error_message)
+}
+
+fn bind_repository_error_message(error: RepositoryJobError) -> String {
+    if error == RepositoryJobError::PortableNameRequired {
+        return format!(
+            "{}: The notebook name must be portable across supported platforms.",
+            error.safe_code()
+        );
+    }
+    error.safe_code().to_owned()
 }
 
 #[tauri::command]
@@ -836,8 +848,8 @@ mod tests {
     use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
     use super::{
-        bind_repository_and_refresh_scheduler, BindJobEnqueuer, BindRepositoryRequest,
-        DejavuSchedulerOwner, DejavuSyncServiceOwner, NativeExitAction,
+        bind_repository_and_refresh_scheduler, bind_repository_error_message, BindJobEnqueuer,
+        BindRepositoryRequest, DejavuSchedulerOwner, DejavuSyncServiceOwner, NativeExitAction,
     };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::maintenance::{
@@ -1987,7 +1999,7 @@ mod tests {
         let repository_id = "00000000-0000-4000-8000-000000000052";
         let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
             repository_id,
-            "Renamed remotely",
+            "CON",
         )]));
         let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
         let owner = DejavuSyncServiceOwner::default();
@@ -2015,6 +2027,60 @@ mod tests {
         assert!(!app_data.join("local-sync.json").exists());
         assert!(!notes_root.join(".qingyu").exists());
         assert!(enqueuer.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_matching_non_portable_remote_names_before_local_side_effects() {
+        for (repository_id, display_name) in [
+            ("00000000-0000-4000-8000-000000000053", "CON"),
+            ("00000000-0000-4000-8000-000000000054", "Trailing "),
+        ] {
+            let temporary = tempdir().unwrap();
+            let app_data = temporary.path().join("app-data");
+            let notes_root = temporary.path().join("Portable Notes");
+            std::fs::create_dir(&notes_root).unwrap();
+            let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+                repository_id,
+                display_name,
+            )]));
+            let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+            let service = test_binding_service(&app_data);
+            let owner = DejavuSyncServiceOwner::default();
+            owner
+                .install_binding(
+                    &app_data,
+                    Arc::clone(&catalog),
+                    Arc::clone(&enqueuer),
+                    service.clone(),
+                )
+                .unwrap();
+
+            let result = owner
+                .bind_repository(bind_request(
+                    notes_root.clone(),
+                    repository_id,
+                    display_name,
+                ))
+                .await;
+
+            assert_eq!(catalog.calls.lock().unwrap().as_slice(), [repository_id]);
+            assert!(!notes_root.join(".qingyu").exists());
+            assert!(!app_data.join("local-sync.json").exists());
+            assert!(enqueuer.requests.lock().unwrap().is_empty());
+            let Err(error) = result else {
+                panic!("matching non-portable remote metadata must be rejected");
+            };
+            assert_eq!(error, RepositoryJobError::PortableNameRequired);
+            assert_eq!(
+                bind_repository_error_message(error),
+                "portable-name-required: The notebook name must be portable across supported platforms."
+            );
+            drop(
+                service
+                    .begin_repository_bind(repository_id)
+                    .expect("a rejected bind must release its admission reservation"),
+            );
+        }
     }
 
     #[tokio::test]

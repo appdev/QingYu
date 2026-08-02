@@ -136,6 +136,7 @@ pub(crate) struct SyncAttemptContext {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum RepositoryJobError {
     InvalidBinding,
+    PortableNameRequired,
     ConfirmationRequired,
     ConflictUnavailable,
     WorkingTreeChanged,
@@ -151,6 +152,7 @@ impl RepositoryJobError {
     pub(crate) fn safe_code(self) -> &'static str {
         match self {
             Self::InvalidBinding => "dejavu-invalid-binding",
+            Self::PortableNameRequired => "portable-name-required",
             Self::ConfirmationRequired => "dejavu-confirmation-required",
             Self::ConflictUnavailable => "dejavu-conflict-unavailable",
             Self::WorkingTreeChanged => "dejavu-working-tree-changed",
