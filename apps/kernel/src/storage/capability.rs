@@ -7,6 +7,8 @@ use cap_fs_ext::OpenOptionsExt;
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File, Metadata, OpenOptions};
 
+use super::atomic_file::CommitState;
+
 pub fn nonfollowing_read_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
@@ -40,7 +42,7 @@ pub fn create_private_replaceable_file_options() -> OpenOptions {
     options
 }
 
-pub fn sync_directory(directory: &Dir) -> io::Result<()> {
+pub fn sync_directory_commit_state(directory: &Dir) -> io::Result<CommitState> {
     #[cfg(unix)]
     {
         let fsyncable = rustix::fs::openat(
@@ -53,25 +55,71 @@ pub fn sync_directory(directory: &Dir) -> io::Result<()> {
             rustix::fs::Mode::empty(),
         )?;
         rustix::fs::fsync(&fsyncable)?;
+        Ok(CommitState::Durable)
     }
-    #[cfg(not(unix))]
-    let _ = directory;
-    Ok(())
+    #[cfg(windows)]
+    {
+        let _ = directory;
+        Ok(CommitState::AtomicVisibility)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = directory;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "directory synchronization is unsupported on this platform",
+        ))
+    }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod linux_tests {
-    use super::*;
+pub fn sync_directory(directory: &Dir) -> io::Result<()> {
+    sync_directory_commit_state(directory).map(drop)
+}
 
+#[cfg(test)]
+mod directory_sync_tests {
+    use super::*;
+    use crate::storage::CommitState;
+
+    #[cfg(unix)]
     #[test]
-    fn syncs_a_retained_linux_directory_capability() {
+    fn unix_directory_sync_reports_durable() {
         let temporary = tempfile::tempdir().unwrap();
         let directory =
             Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority()).unwrap();
+
+        assert_eq!(
+            sync_directory_commit_state(&directory).unwrap(),
+            CommitState::Durable,
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_sync_reports_atomic_visibility() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory =
+            Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority()).unwrap();
+
+        assert_eq!(
+            sync_directory_commit_state(&directory).unwrap(),
+            CommitState::AtomicVisibility,
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_directory_sync_wrapper_succeeds_on_supported_targets() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory =
+            Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority()).unwrap();
+
+        #[cfg(target_os = "linux")]
         let flags = rustix::fs::fcntl_getfl(&directory).unwrap();
 
+        #[cfg(target_os = "linux")]
         assert!(flags.contains(rustix::fs::OFlags::PATH));
-        sync_directory(&directory).unwrap();
+        assert!(sync_directory(&directory).is_ok());
     }
 }
 
