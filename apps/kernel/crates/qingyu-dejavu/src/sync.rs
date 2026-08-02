@@ -109,11 +109,13 @@ impl Repo {
         let latest_sync = resolve_local_ref_unlocked(&self.store, &latest_sync_ref)?;
 
         let current_files = files_for_index(&self.store, &current)?;
+        preflight_repository_files(&current_files)?;
         let latest_sync_files = latest_sync
             .as_ref()
             .map(|index| files_for_index(&self.store, index))
             .transpose()?
             .unwrap_or_default();
+        preflight_repository_files(&latest_sync_files)?;
 
         let Some(CloudLatestDownload {
             selected: cloud_latest,
@@ -140,6 +142,7 @@ impl Repo {
         let fetched_remote_files =
             ensure_cloud_index_contents(self, cloud, &cloud_latest, &mut traffic).await?;
         let cloud_files = files_for_index(&self.store, &cloud_latest)?;
+        preflight_repository_files(&cloud_files)?;
         let current_matches_cloud = same_file_ids(&current_files, &cloud_files);
         let plan = plan_merge(
             &self.store,
@@ -409,6 +412,13 @@ fn working_tree_changes(
 fn working_tree_path(path: &str) -> Result<RepositoryRelativePath, RepoError> {
     let stripped = path.strip_prefix('/').ok_or(RepoError::UnsafePath)?;
     RepositoryRelativePath::new(stripped)
+}
+
+fn preflight_repository_files(files: &[File]) -> Result<(), RepoError> {
+    for file in files {
+        let _validated = working_tree_path(&file.path)?;
+    }
+    Ok(())
 }
 
 fn expected_revision(file: Option<&File>) -> ExpectedRevision {
@@ -1257,6 +1267,66 @@ mod tests {
         .unwrap();
     }
 
+    fn tampered_revision(
+        source: &RepoFixture,
+        path: &str,
+        created: i64,
+    ) -> (TempDir, Store, File, crate::Index) {
+        let valid_index = source.repo.index("tampered revision source").unwrap();
+        let mut file = source.repo.store.get_file(&valid_index.files[0]).unwrap();
+        file.path = path.to_owned();
+        file.id = File::new(&file.path, file.size, file.updated).id;
+        let mut index = valid_index;
+        index.id = crate::random_hash().unwrap();
+        index.created = created;
+        index.files = vec![file.id.clone()];
+        index.check_index_id.clear();
+
+        let root = TempDir::new().unwrap();
+        let store = Store::new(root.path().join("repo"), [7; 32]).unwrap();
+        store.put_file(&file).unwrap();
+        store.put_index(&index).unwrap();
+        (root, store, file, index)
+    }
+
+    async fn publish_tampered_revision(
+        cloud: &Arc<LocalCloud>,
+        source: &RepoFixture,
+        store: &Store,
+        file: &File,
+        index: &crate::Index,
+    ) {
+        for chunk_id in &file.chunks {
+            let raw = source
+                .repo
+                .store
+                .export_raw(super::RawObjectKind::Chunk, chunk_id)
+                .unwrap();
+            cloud
+                .put(&super::object_key(chunk_id).unwrap(), &raw, true)
+                .await
+                .unwrap();
+        }
+        let raw_file = store
+            .export_raw(super::RawObjectKind::File, &file.id)
+            .unwrap();
+        cloud
+            .put(&super::object_key(&file.id).unwrap(), &raw_file, true)
+            .await
+            .unwrap();
+        let raw_index = store
+            .export_raw(super::RawObjectKind::Index, &index.id)
+            .unwrap();
+        cloud
+            .put(&format!("indexes/{}", index.id), &raw_index, true)
+            .await
+            .unwrap();
+        cloud
+            .put("refs/latest", index.id.as_bytes(), true)
+            .await
+            .unwrap();
+    }
+
     async fn sync(repo: &Repo, cloud: Arc<dyn Cloud>) -> crate::MergeResult {
         repo.sync(cloud, coordinator()).await.unwrap().0
     }
@@ -1521,6 +1591,24 @@ mod tests {
         entered: Notify,
         proceed: Notify,
         releases: AtomicUsize,
+    }
+
+    #[derive(Default)]
+    struct CountingCoordinator {
+        prepares: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkingTreeCoordinator for CountingCoordinator {
+        async fn prepare(
+            &self,
+            _changes: &[WorkingTreeChange],
+        ) -> Result<WorkingTreePermit, RepoError> {
+            self.prepares.fetch_add(1, Ordering::SeqCst);
+            Ok(WorkingTreePermit::new(()))
+        }
+
+        async fn release(&self, _permit: WorkingTreePermit) {}
     }
 
     #[async_trait::async_trait]
@@ -3312,6 +3400,122 @@ mod tests {
         assert!(local.repo.latest().unwrap().is_none());
         assert!(local.repo.latest_sync().unwrap().is_none());
         assert!(!local.data.join("doc.md").exists());
+    }
+
+    #[tokio::test]
+    async fn non_portable_remote_revision_is_rejected_before_prepare_or_ref_update() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let local = repo_fixture("portable-remote-local", RepoOptions::default());
+        write_file(
+            &local.data,
+            "local.md",
+            b"local baseline",
+            1_700_000_000_000,
+        );
+        sync(&local.repo, cloud.clone()).await;
+        let previous_latest = local.repo.latest().unwrap().map(|index| index.id);
+        let previous_latest_sync = local.repo.latest_sync().unwrap().map(|index| index.id);
+
+        let source = repo_fixture("portable-remote-source", RepoOptions::default());
+        write_file(&source.data, "valid.md", b"remote bytes", 1_700_000_100_000);
+        let created = local.repo.latest().unwrap().unwrap().created + 1_000;
+        let (_rogue_root, rogue_store, rogue_file, rogue_index) =
+            tampered_revision(&source, "/CON.md", created);
+        publish_tampered_revision(&cloud, &source, &rogue_store, &rogue_file, &rogue_index).await;
+        let coordinator = Arc::new(CountingCoordinator::default());
+
+        let error = local
+            .repo
+            .sync_download(cloud, coordinator.clone())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepoError::PortableNameRequired { component } if component == "CON.md"
+        ));
+        assert!(!local.data.join("CON.md").exists());
+        assert_eq!(
+            local.repo.latest().unwrap().map(|index| index.id),
+            previous_latest
+        );
+        assert_eq!(
+            local.repo.latest_sync().unwrap().map(|index| index.id),
+            previous_latest_sync
+        );
+        assert_eq!(coordinator.prepares.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_non_portable_latest_sync_is_rejected_before_prepare_or_ref_update() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let local = repo_fixture("portable-baseline-local", RepoOptions::default());
+        write_file(
+            &local.data,
+            "local.md",
+            b"local baseline",
+            1_700_000_000_000,
+        );
+        sync(&local.repo, cloud.clone()).await;
+
+        let source = repo_fixture("portable-baseline-source", RepoOptions::default());
+        write_file(
+            &source.data,
+            "valid.md",
+            b"legacy baseline",
+            1_700_000_100_000,
+        );
+        let created = local.repo.latest_sync().unwrap().unwrap().created + 1_000;
+        let (_rogue_root, rogue_store, rogue_file, rogue_index) =
+            tampered_revision(&source, "/CON.md", created);
+        let raw_file = rogue_store
+            .export_raw(super::RawObjectKind::File, &rogue_file.id)
+            .unwrap();
+        local
+            .repo
+            .store
+            .import_raw(super::RawObjectKind::File, &rogue_file.id, &raw_file)
+            .unwrap();
+        let raw_index = rogue_store
+            .export_raw(super::RawObjectKind::Index, &rogue_index.id)
+            .unwrap();
+        local
+            .repo
+            .store
+            .import_raw(super::RawObjectKind::Index, &rogue_index.id, &raw_index)
+            .unwrap();
+        let cloud_target: Arc<dyn Cloud> = cloud.clone();
+        let latest_sync_ref = super::cloud_sync_ref_name(&cloud_target);
+        {
+            let _operation = local.repo.store.lock_operation().unwrap();
+            let refs = crate::RefStore::new(&local.repo.store);
+            refs.update_unlocked(&latest_sync_ref, &rogue_index)
+                .unwrap();
+            refs.update_unlocked("latest-sync", &rogue_index).unwrap();
+        }
+        let previous_latest = local.repo.latest().unwrap().map(|index| index.id);
+        let previous_latest_sync = local.repo.latest_sync().unwrap().map(|index| index.id);
+        let coordinator = Arc::new(CountingCoordinator::default());
+
+        let error = local
+            .repo
+            .sync_download(cloud, coordinator.clone())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepoError::PortableNameRequired { component } if component == "CON.md"
+        ));
+        assert_eq!(
+            local.repo.latest().unwrap().map(|index| index.id),
+            previous_latest
+        );
+        assert_eq!(
+            local.repo.latest_sync().unwrap().map(|index| index.id),
+            previous_latest_sync
+        );
+        assert_eq!(coordinator.prepares.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

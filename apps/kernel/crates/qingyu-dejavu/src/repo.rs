@@ -20,7 +20,7 @@ use crate::store::{
     open_or_create_absolute_dir_nofollow,
 };
 use crate::sync_lock::{acquire_remote_lock, RemoteLockGuard};
-use crate::{File, History, Index, RefStore, RepoError, Store};
+use crate::{File, History, Index, RefStore, RepoError, RepositoryRelativePath, Store};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoPaths {
@@ -456,6 +456,9 @@ impl Repo {
         let _lifecycle = self.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         for file in files {
+            let _validated = validate_repository_file_path(&file.path)?;
+        }
+        for file in files {
             self.checkout_file_with_hooks(
                 file,
                 || Ok(()),
@@ -475,9 +478,12 @@ impl Repo {
 
     pub(crate) fn remove_files_unlocked(&self, files: &[File]) -> Result<(), RepoError> {
         let _operation = self.store.lock_operation()?;
-        for file in files {
-            let components = validate_repository_file_path(&file.path)?;
-            self.remove_file(&components)?;
+        let validated = files
+            .iter()
+            .map(|file| validate_repository_file_path(&file.path))
+            .collect::<Result<Vec<_>, _>>()?;
+        for components in &validated {
+            self.remove_file(components)?;
         }
         Ok(())
     }
@@ -621,21 +627,13 @@ fn cleanup_abandoned_downloads(temp_dir: &Dir) -> Result<(), RepoError> {
 }
 
 fn validate_repository_file_path(path: &str) -> Result<Vec<std::ffi::OsString>, RepoError> {
-    if path == "/" || !path.starts_with('/') || path.contains('\\') {
-        return Err(RepoError::UnsafePath);
-    }
-    let mut components = Vec::new();
-    for component in path[1..].split('/') {
-        if component.is_empty() || component == "." || component == ".." {
-            return Err(RepoError::UnsafePath);
-        }
-        components.push(std::ffi::OsString::from(component));
-    }
-    if components.is_empty() {
-        Err(RepoError::UnsafePath)
-    } else {
-        Ok(components)
-    }
+    let relative = path.strip_prefix('/').ok_or(RepoError::UnsafePath)?;
+    let validated = RepositoryRelativePath::new(relative)?;
+    Ok(validated
+        .as_str()
+        .split('/')
+        .map(std::ffi::OsString::from)
+        .collect())
 }
 
 fn validate_replace_destination(parent: &Dir, name: &std::ffi::OsStr) -> Result<(), RepoError> {
@@ -1351,9 +1349,11 @@ mod tests {
     }
 
     #[test]
-    fn checkout_files_keeps_earlier_success_when_a_later_path_is_invalid() {
+    fn checkout_files_preserve_an_earlier_target_when_a_later_path_is_invalid() {
         let (temp, repo) = repo_fixture();
         let chunk_id = put_chunk(&repo, b"first");
+        let first_target = temp.path().join("data/first.md");
+        fs::write(&first_target, b"original").unwrap();
         let first = File {
             id: "2222222222222222222222222222222222222222".to_owned(),
             path: "/first.md".to_owned(),
@@ -1367,14 +1367,11 @@ mod tests {
             repo.checkout_files(&[first, later_invalid]),
             Err(RepoError::UnsafePath)
         ));
-        assert_eq!(
-            fs::read(temp.path().join("data/first.md")).unwrap(),
-            b"first"
-        );
+        assert_eq!(fs::read(first_target).unwrap(), b"original");
     }
 
     #[test]
-    fn remove_files_keeps_earlier_success_when_a_later_path_is_invalid() {
+    fn remove_files_preserve_an_earlier_target_when_a_later_path_is_invalid() {
         let (temp, repo) = repo_fixture();
         let first_target = temp.path().join("data/first.md");
         fs::write(&first_target, b"first").unwrap();
@@ -1386,7 +1383,7 @@ mod tests {
             Err(RepoError::UnsafePath)
         ));
 
-        assert!(!first_target.exists());
+        assert_eq!(fs::read(first_target).unwrap(), b"first");
     }
 
     #[cfg(unix)]

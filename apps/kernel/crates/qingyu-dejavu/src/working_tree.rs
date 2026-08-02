@@ -199,21 +199,17 @@ impl Drop for WorkingTreePermitScope {
 }
 
 fn validate_repository_relative_path(path: &str) -> Result<(), crate::RepoError> {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path.chars().any(char::is_control)
-    {
+    if path.is_empty() || path.starts_with('/') {
         return Err(crate::RepoError::UnsafePath);
     }
     for component in path.split('/') {
-        if component.is_empty()
-            || component == "."
-            || component == ".."
-            || component.contains(':')
-            || component.ends_with(['.', ' '])
-        {
+        if component.is_empty() || component == "." || component == ".." {
             return Err(crate::RepoError::UnsafePath);
+        }
+        if !crate::portable_path_component_is_valid(component) {
+            return Err(crate::RepoError::PortableNameRequired {
+                component: component.to_owned(),
+            });
         }
     }
     Ok(())
@@ -520,23 +516,32 @@ mod tests {
     }
 
     #[test]
-    fn repository_relative_paths_reject_platform_and_traversal_escapes() {
+    fn repository_relative_paths_reject_unsafe_components() {
         for path in [
             "",
-            "/absolute",
+            "/absolute.md",
             "../escape",
             "notes/../escape",
             "notes//file",
-            "notes\\file",
-            "C:/drive",
-            "notes/name:stream",
-            "notes/trailing.",
-            "notes/trailing ",
-            "notes/\0file",
         ] {
             assert!(matches!(
                 RepositoryRelativePath::new(path),
                 Err(RepoError::UnsafePath)
+            ));
+        }
+        for (path, expected_component) in [
+            ("notes/CON.md", "CON.md"),
+            ("notes/bad:name.md", "bad:name.md"),
+            ("notes\\file", "notes\\file"),
+            ("C:/drive", "C:"),
+            ("notes/trailing.", "trailing."),
+            ("notes/trailing ", "trailing "),
+            ("notes/\0file", "\0file"),
+        ] {
+            assert!(matches!(
+                RepositoryRelativePath::new(path),
+                Err(RepoError::PortableNameRequired { component })
+                    if component == expected_component
             ));
         }
         assert_eq!(
@@ -545,5 +550,18 @@ mod tests {
                 .as_str(),
             "notes/document.md"
         );
+    }
+
+    #[test]
+    fn portable_name_error_display_does_not_disclose_the_component() {
+        let error = RepoError::PortableNameRequired {
+            component: "private-name".to_owned(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "repository path contains a non-portable component"
+        );
+        assert!(!error.to_string().contains("private-name"));
     }
 }
