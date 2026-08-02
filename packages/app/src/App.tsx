@@ -48,6 +48,10 @@ import type { CompactAppController } from "./components/compact/types";
 import { useAppLanguage } from "./hooks/useAppLanguage";
 import { useAppTheme } from "./hooks/useAppTheme";
 import { useDocumentSearchState } from "./hooks/useDocumentSearchState";
+import {
+  useDocumentTitleController,
+  type DocumentTitleFailure
+} from "./hooks/useDocumentTitleController";
 import { useEditorContentWidthState } from "./hooks/useEditorContentWidthState";
 import { useEditorPreferences } from "./hooks/useEditorPreferences";
 import { useExportSettings } from "./hooks/useExportSettings";
@@ -57,7 +61,10 @@ import { useCompactAutoSave } from "./hooks/useCompactAutoSave";
 import { usePrimaryWorkspace } from "./hooks/usePrimaryWorkspace";
 import { useCodeMirrorEditorController } from "./hooks/useCodeMirrorEditorController";
 import { shouldFocusEditorOnReady } from "./lib/editor-focus";
-import { useMarkdownDocument, type ActiveDiskFileContentChange } from "./hooks/useMarkdownDocument";
+import {
+  useMarkdownDocument,
+  type ActiveDiskFileContentChange
+} from "./hooks/useMarkdownDocument";
 import { useMarkdownFileTree } from "./hooks/useMarkdownFileTree";
 import { useCompactSyncSettings } from "./hooks/useCompactSyncSettings";
 import { useAppSyncCoordinator } from "./hooks/useAppSyncCoordinator";
@@ -94,6 +101,7 @@ import {
   markdownImageDragSrcForDocument,
   pathNameFromPath,
   t,
+  untitledMarkdownDocumentName,
   type AppLanguage,
   type I18nKey,
   type MarkdownFormattingShortcutAction
@@ -107,6 +115,10 @@ import {
   parseMarkdownLocalResourceReferences
 } from "@markra/markdown";
 import { buildMarkdownHtmlDocument, exportDocumentFileName, localFileUrlFromPath } from "./lib/document-export";
+import {
+  markdownDocumentBodyContent,
+  markdownDocumentSourceForCreatedFile
+} from "./lib/document-creation";
 import {
   generateCrashDiagnosticsReport,
   generateDiagnosticsIssueUrl
@@ -889,6 +901,21 @@ function WorkspaceApp() {
     if (primaryWindowOwner) return switchDesktopNotebookRef.current(path);
     return requestPrimaryNotebookSwitch({ path, source: "native-open" });
   }, [canChooseLocalWorkspace, primaryWindowOwner]);
+  const documentTransactionBridgeRef = useRef<{
+    hasPending: (tabId?: string) => boolean;
+    settle: (tabId?: string) => Promise<unknown>;
+  }>({
+    hasPending: () => false,
+    settle: async () => undefined
+  });
+  const hasPendingDocumentTransactions = useCallback(
+    (tabId?: string) => documentTransactionBridgeRef.current.hasPending(tabId),
+    []
+  );
+  const settleDocumentTransactions = useCallback(
+    (tabId?: string) => documentTransactionBridgeRef.current.settle(tabId),
+    []
+  );
   const syncStatusLabel = useMemo(() => {
     if (!appSync.status) return null;
     const completionLabel = appSync.status.completionState === "attempting"
@@ -907,7 +934,10 @@ function WorkspaceApp() {
     editorReady: isDocumentEditorReady,
     getCurrentMarkdown: readCurrentMarkdownForDocument,
     globalIgnoreRules: fileIgnoreSettings.settings.rules,
+    initialBlankDocumentName: untitledMarkdownDocumentName(appLanguage.language),
+    initialBlankDocumentReady: appLanguage.ready,
     isCurrentMarkdownEquivalent: isCurrentMarkdownEquivalentForDocument,
+    hasPendingDocumentTransactions,
     managedWorkspace: compactMode.trueMobile,
     nativeCloseBlocked: settingsModalRequest !== null,
     nativeOpenPolicy: compactMode.trueMobile
@@ -921,7 +951,7 @@ function WorkspaceApp() {
     onTreeRootFromFilePath: setRootFromMarkdownFilePath,
     onSwitchNotebookDirectory: handleNativeNotebookDirectory,
     openDroppedFilesInTabs: editorPreferences.preferences.openDroppedFilesInTabs,
-    preferencesReady: !editorPreferences.loading && (
+    preferencesReady: appLanguage.ready && !editorPreferences.loading && (
       !primaryWindowOwner ||
       primaryWorkspace.status === "ready" ||
       primaryWorkspace.status === "deferred"
@@ -932,6 +962,7 @@ function WorkspaceApp() {
       editorPreferences.preferences.restoreWorkspaceOnStartup,
     restoreWorkspaceRoot: primaryIntegrationRoot,
     saveAsWorkspacePolicy,
+    settleDocumentTransactions,
     windowContext: editorWindowContext,
     workspaceReady: !primaryWindowOwner ||
       primaryWorkspace.status === "ready" ||
@@ -969,6 +1000,7 @@ function WorkspaceApp() {
     saveCurrentDocument,
     saveDirtyMarkdownFiles,
     saveDirtyMarkdownPaths,
+    saveMarkdownTabContentById,
     saveMarkdownTab,
     selectMarkdownTab,
     wordCount
@@ -1018,6 +1050,31 @@ function WorkspaceApp() {
     return createMarkdownTreeFileUnchecked(fileName, parentPath, contents)
       .finally(() => lease?.release());
   }, [createMarkdownTreeFileUnchecked, fileTreeSourcePath, guardFileMutation, syncPathMutationRegistry]);
+  const createMarkdownDocumentFile = useCallback(async (
+    fileName: string,
+    parentPath: string | null = null,
+    body = ""
+  ) => {
+    const requestedSource = markdownDocumentSourceForCreatedFile(fileName, body);
+    const file = await createMarkdownTreeFile(fileName, parentPath, requestedSource);
+    if (!file) return null;
+
+    const authoritativeSource = markdownDocumentSourceForCreatedFile(file.name, requestedSource);
+    if (authoritativeSource !== requestedSource) {
+      try {
+        await saveNativeMarkdownFile({
+          contents: authoritativeSource,
+          path: file.path,
+          skipHistorySnapshot: true,
+          suggestedName: file.name
+        });
+      } catch {
+        // Opening the created file lets title reconciliation retry while preserving recoverability.
+      }
+    }
+
+    return file;
+  }, [createMarkdownTreeFile]);
   const createMarkdownTreeFolder = useCallback((
     folderName: string,
     parentPath: string | null = null
@@ -1589,6 +1646,7 @@ function WorkspaceApp() {
   const openPrimaryFolderPathEffectDependency = fixedWorkspaceRoot ? null : openFolderPath;
   useEffect(() => {
     if (!primaryWindowOwner) return;
+    if (!appLanguage.ready) return;
 
     const generation = primaryTreeGenerationRef.current + 1;
     primaryTreeGenerationRef.current = generation;
@@ -1631,6 +1689,7 @@ function WorkspaceApp() {
       }
     };
   }, [
+    appLanguage.ready,
     clearOpenDocument,
     clearProjectRoot,
     openPrimaryFolderPathEffectDependency,
@@ -2002,6 +2061,47 @@ function WorkspaceApp() {
     ));
     setActiveImageFile((currentFile) => currentFile?.path === previousPath ? renamedFile : currentFile);
   }, [persistSideDocumentGroupPathUpdate, replaceOpenDocumentFile]);
+  const isDocumentTitlePathReadOnly = useCallback((path: string | null) => (
+    editorReadOnlyForPath(readOnlyMode, path, guardedPaths)
+  ), [guardedPaths, readOnlyMode]);
+  const handleDocumentTitleFailure = useCallback((failure: DocumentTitleFailure) => {
+    const key = failure.reason === "invalid"
+      ? "app.documentTitleInvalid"
+      : failure.reason === "rename-collision"
+        ? "app.documentTitleRenameCollision"
+        : failure.reason === "rename-blocked"
+          ? "app.markdownFileRenameFailed"
+          : "app.documentTitleMetadataBlocked";
+    showAppToast({
+      message: translate(key),
+      status: "error"
+    });
+  }, [translate]);
+  const titleController = useDocumentTitleController({
+    applyRenamedTreeFile,
+    handleMarkdownTabChange,
+    isReadOnlyPath: isDocumentTitlePathReadOnly,
+    language: appLanguage.language,
+    onFailure: handleDocumentTitleFailure,
+    renameMarkdownTreeFile,
+    saveMarkdownTabContentById,
+    tabs: documentTabs
+  });
+  documentTransactionBridgeRef.current.hasPending = titleController.hasUnsettledTransactions;
+  documentTransactionBridgeRef.current.settle = (tabId) => tabId
+    ? titleController.settleTab(tabId)
+    : titleController.settleAll();
+  useEffect(() => {
+    documentTabs.forEach((tab) => {
+      if (!tab.open) return;
+      titleController.reconcileOpenDocument(tab.id).catch(() => {});
+    });
+  }, [
+    documentTabs,
+    guardedPaths,
+    readOnlyMode,
+    titleController.reconcileOpenDocument
+  ]);
   const applyMovedTreeFile = useCallback((
     previousFile: NativeMarkdownFolderFile,
     movedFile: NativeMarkdownFolderFile,
@@ -2857,7 +2957,7 @@ function WorkspaceApp() {
         return;
       }
 
-      const file = await createMarkdownTreeFile(fileName, parentPath, contents);
+      const file = await createMarkdownDocumentFile(fileName, parentPath, contents ?? "");
       if (file) {
         captureActiveDocumentViewState();
         setActiveImageFile(null);
@@ -2869,7 +2969,7 @@ function WorkspaceApp() {
         status: "error"
       });
     }
-  }, [captureActiveDocumentViewState, createBlankDocument, createMarkdownTreeFile, fileTree.sourcePath, openTreeMarkdownFile, translate]);
+  }, [captureActiveDocumentViewState, createBlankDocument, createMarkdownDocumentFile, fileTree.sourcePath, openTreeMarkdownFile, translate]);
   const handleQuickCreateMarkdownTreeFile = useCallback(() => {
     const creationDirectory = resolveNewDocumentCreationDirectory({
       activeDocument: hasOpenDocument ? document : null,
@@ -2878,7 +2978,10 @@ function WorkspaceApp() {
     });
     captureActiveDocumentViewState();
     setActiveImageFile(null);
-    createBlankDocument({ creationDirectory })
+    createBlankDocument({
+      creationDirectory,
+      name: untitledMarkdownDocumentName(appLanguage.language)
+    })
       .then((created) => {
         if (created) return;
         showAppToast({
@@ -2893,6 +2996,7 @@ function WorkspaceApp() {
         });
       });
   }, [
+    appLanguage.language,
     captureActiveDocumentViewState,
     createBlankDocument,
     document,
@@ -3057,19 +3161,27 @@ function WorkspaceApp() {
     await openTreeMarkdownFile(file);
     return true;
   }, [appFeatures.openLocalAttachments, captureActiveDocumentViewState, handleOpenLocalAttachment, openImageTab, openManagedTreeMarkdownFile, openTreeMarkdownFile]);
-  const handleCreateCompactDocument = useCallback(async (fileName: string) => {
+  const handleCreateCompactDocument = useCallback(async () => {
+    const fileName = untitledMarkdownDocumentName(appLanguage.language);
     if (!fileTree.sourcePath) {
       return createBlankDocument({
         name: unsavedMarkdownFileNameFromTreeInput(fileName)
       });
     }
 
-    const file = await createMarkdownTreeFile(fileName, null);
+    const file = await createMarkdownDocumentFile(fileName);
     if (!file) return false;
 
     await handleOpenTreeFile(file, { managed: compactMode.trueMobile });
     return true;
-  }, [compactMode.trueMobile, createBlankDocument, createMarkdownTreeFile, fileTree.sourcePath, handleOpenTreeFile]);
+  }, [appLanguage.language, compactMode.trueMobile, createBlankDocument, createMarkdownDocumentFile, fileTree.sourcePath, handleOpenTreeFile]);
+  const handleCreateCompactTreeFile = useCallback(
+    (parentPath: string | null) => createMarkdownDocumentFile(
+      untitledMarkdownDocumentName(appLanguage.language),
+      parentPath
+    ),
+    [appLanguage.language, createMarkdownDocumentFile]
+  );
   const handleQuickOpenOpen = useCallback(() => {
     hideGlobalSearch();
     hideDocumentSearch();
@@ -3483,7 +3595,7 @@ function WorkspaceApp() {
     [editorImageSrcResolverForPath, sideDocumentTab?.path]
   );
   const sideDocumentWordCount = useMemo(
-    () => sideDocumentTab ? getWordCount(sideDocumentTab.content) : 0,
+    () => sideDocumentTab ? getWordCount(markdownDocumentBodyContent(sideDocumentTab.content)) : 0,
     [sideDocumentTab?.content]
   );
   const documentTabsVisible =
@@ -3560,10 +3672,12 @@ function WorkspaceApp() {
     content: string,
     options?: { documentRevision?: number }
   ) => {
-    if (mainEditorReadOnly) return;
+    const previousTab = documentTabs.find((tab) => tab.id === tabId && tab.open);
+    if (!previousTab || isDocumentTitlePathReadOnly(previousTab.path)) return;
+    if (titleController.handleSourceTitleChange(tabId, previousTab.content, content)) return;
     if (
-      content !== document.content &&
-      (options?.documentRevision === undefined || options.documentRevision === document.revision)
+      content !== previousTab.content &&
+      (options?.documentRevision === undefined || options.documentRevision === previousTab.revision)
     ) {
       sourceEditSequenceRef.current += 1;
     }
@@ -3578,12 +3692,12 @@ function WorkspaceApp() {
       tabId
     });
   }, [
-    document.content,
-    document.revision,
+    documentTabs,
     handleMarkdownTabChange,
+    isDocumentTitlePathReadOnly,
     markSourceEditForHistory,
-    mainEditorReadOnly,
-    splitMode
+    splitMode,
+    titleController.handleSourceTitleChange
   ]);
   const handleSourceMarkdownChange = useCallback((
     content: string,
@@ -4360,12 +4474,19 @@ function WorkspaceApp() {
     saveDocumentTabViewState,
     visualEditorReadySequence
   ]);
-  const appUpdater = useAutoUpdater(appLanguage.language, updaterFeatureEnabled && appLanguage.ready && !editorPreferences.loading, {
-    autoCheck: updaterFeatureEnabled && editorPreferences.preferences.autoUpdateEnabled,
-    beforeRestart: saveDirtyMarkdownFiles,
-    confirmRestart: confirmCanDiscardCurrentDocument,
-    currentVersion: appVersion
-  });
+  const appUpdater = useAutoUpdater(
+    appLanguage.language,
+    updaterFeatureEnabled &&
+      appLanguage.ready &&
+      !editorPreferences.loading &&
+      workspaceSurface !== "restoring",
+    {
+      autoCheck: updaterFeatureEnabled && editorPreferences.preferences.autoUpdateEnabled,
+      beforeRestart: saveDirtyMarkdownFiles,
+      confirmRestart: confirmCanDiscardCurrentDocument,
+      currentVersion: appVersion
+    }
+  );
   const nativeMenuHandlers = useNativeMenuHandlers({
     checkForUpdates: updaterFeatureEnabled ? appUpdater.checkForUpdates : undefined,
     closeDocument: handleCloseCurrentFile,
@@ -4527,9 +4648,18 @@ function WorkspaceApp() {
   ]);
   const handleSideDocumentChange = useCallback((content: string) => {
     if (!sideDocumentGroup || sideEditorReadOnly) return;
+    const sideTab = documentTabs.find((tab) => tab.id === sideDocumentGroup.sideTabId && tab.open);
+    if (!sideTab) return;
+    if (titleController.handleSourceTitleChange(sideTab.id, sideTab.content, content)) return;
 
     handleMarkdownTabChange(sideDocumentGroup.sideTabId, content);
-  }, [handleMarkdownTabChange, sideDocumentGroup, sideEditorReadOnly]);
+  }, [
+    documentTabs,
+    handleMarkdownTabChange,
+    sideDocumentGroup,
+    sideEditorReadOnly,
+    titleController.handleSourceTitleChange
+  ]);
 
   const handleCloseTitlebarTab = useCallback(async (tabId: string) => {
     captureActiveDocumentViewState();
@@ -4716,6 +4846,7 @@ function WorkspaceApp() {
               contentWidthPx={activeEditorContentWidthPx}
               documentKey={tab.id}
               documentPath={tab.path}
+              documentTitle={titleController.modelForTab(tab.id) ?? undefined}
               editorFontFamily={editorPreferences.preferences.editorFontFamily}
               editorTheme={appTheme.editorTheme}
               extendedSyntax={editorPreferences.preferences.extendedSyntax}
@@ -4801,7 +4932,7 @@ function WorkspaceApp() {
       toggleTaskList: handleToggleEditorTaskList
     },
     files: {
-      createFile: createMarkdownTreeFile,
+      createUntitledFile: handleCreateCompactTreeFile,
       createFolder: createMarkdownTreeFolder,
       deleteFile: handleDeleteMarkdownTreeFile,
       files: fileTree.files,
@@ -4859,7 +4990,7 @@ function WorkspaceApp() {
     editorPreferences.preferences,
     handleCompactPreferencesChange,
     handleCreateCompactDocument,
-    createMarkdownTreeFile,
+    handleCreateCompactTreeFile,
     createMarkdownTreeFolder,
     fileTree.files,
     handleOpenMarkdownFolder,
@@ -5396,6 +5527,7 @@ function WorkspaceApp() {
                         contentWidthPx={activeEditorContentWidthPx}
                         documentKey={sideDocumentTab.id}
                         documentPath={sideDocumentTab.path}
+                        documentTitle={titleController.modelForTab(sideDocumentTab.id)}
                         editorFontFamily={editorPreferences.preferences.editorFontFamily}
                         editorTheme={appTheme.editorTheme}
                         extendedSyntax={editorPreferences.preferences.extendedSyntax}

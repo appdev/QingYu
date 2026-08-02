@@ -1,6 +1,7 @@
 import { render } from "@testing-library/react";
+import { upsertMarkdownFrontmatterTitle } from "@markra/markdown";
 import { defaultMarkdownShortcuts } from "@markra/editor";
-import { parentPathFromPath } from "@markra/shared";
+import { markdownDocumentTitleFromFileName, parentPathFromPath } from "@markra/shared";
 import App from "../App";
 import {
   confirmNativeMarkdownFileDelete,
@@ -820,6 +821,14 @@ Use **bold**, *italic*, lists, links, tables, code blocks, and images whenever t
 `;
 export const mockUntitledPath = "/mock-files/Untitled.md";
 
+export function withMatchingDocumentTitle(content: string, fileName: string) {
+  const result = upsertMarkdownFrontmatterTitle(
+    content,
+    markdownDocumentTitleFromFileName(fileName)
+  );
+  return result.ok ? result.source : content;
+}
+
 export const appHarnessResourceThemeDescriptor = {
   appearance: "dark" as const,
   author: "Jens & Pyrmont",
@@ -912,10 +921,17 @@ export function mockSystemColorScheme(initiallyDark: boolean) {
 
 export function mockOpenMarkdownFile(file: { content: string; name: string; path: string }) {
   externalBlankPickerRequested = true;
-  mockedOpenNativeMarkdownFile.mockResolvedValue(file);
+  mockedOpenNativeMarkdownFile.mockResolvedValue({
+    ...file,
+    content: withMatchingDocumentTitle(file.content, file.name)
+  });
 }
 
 export function mockPrimaryMarkdownFile(file: { content: string; name: string; path: string }) {
+  const titledFile = {
+    ...file,
+    content: withMatchingDocumentTitle(file.content, file.name)
+  };
   const normalizedPath = file.path.replaceAll("\\", "/");
   const rootPath = normalizedPath.slice(0, normalizedPath.lastIndexOf("/")) || "/";
   const existingRead = mockedReadNativeMarkdownFile.getMockImplementation();
@@ -928,9 +944,15 @@ export function mockPrimaryMarkdownFile(file: { content: string; name: string; p
     openFilePaths: [file.path]
   });
   mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
-    if (path === file.path) return file;
+    if (path === file.path) return titledFile;
     if (existingRead) return await existingRead(path);
-    return { ...file, name: path.split(/[\\/]/).at(-1) ?? file.name, path };
+    const name = path.split(/[\\/]/).at(-1) ?? file.name;
+    return {
+      ...file,
+      content: withMatchingDocumentTitle(file.content, name),
+      name,
+      path
+    };
   });
 }
 
@@ -1348,6 +1370,10 @@ export function installAppTestHarness() {
       path: "/mock-files/vault/Renamed.md",
       relativePath: "Renamed.md"
     });
+    mockedSaveNativeMarkdownFile.mockImplementation(async ({ path, suggestedName }) => ({
+      name: suggestedName,
+      path: path ?? `/mock-files/${suggestedName}`
+    }));
     mockedGetStoredEditorPreferences.mockResolvedValue({
       autoRevealActiveFile: true,
       autoSaveEnabled: true,

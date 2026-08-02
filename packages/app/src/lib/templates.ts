@@ -1,6 +1,7 @@
+import { untitledMarkdownDocumentName, type AppLanguage } from "@markra/shared";
+
 export type MarkdownTemplateContext = {
   now?: Date;
-  title: string;
 };
 
 export type MarkdownTemplate = {
@@ -8,35 +9,29 @@ export type MarkdownTemplate = {
   fileName?: string;
   id: string;
   name: string;
-  suggestedName: string;
 };
 
 export type MarkdownTemplateEntry = {
   fileName: string;
   id: string;
   name: string;
-  suggestedName: string;
 };
 
 export const customMarkdownTemplatesMaxLength = 20;
 
-const templateVariablePattern = /\{\{\s*(date|datetime|title|weekday)\s*\}\}/g;
+const templateVariablePattern = /\{\{\s*(date|datetime|weekday)\s*\}\}/g;
 const markdownTemplateFrontmatterPattern = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n){0,2}/;
-const markdownTemplateHeadingPattern = /^\s*#\s+(.+)$/m;
 const markdownTemplateUnsafeFileNamePattern = /[\\/]/u;
 
 export const defaultMarkdownTemplates: MarkdownTemplate[] = [
   {
     id: "daily-note",
     name: "Daily note",
-    suggestedName: "{{date}}",
-    content: `# {{title}}
+    content: `Date: {{date}}
 
-Date: {{date}}
+# Notes
 
-## Notes
-
-## Tasks
+# Tasks
 
 - [ ]
 `
@@ -44,18 +39,15 @@ Date: {{date}}
   {
     id: "meeting-note",
     name: "Meeting note",
-    suggestedName: "Meeting notes",
-    content: `# {{title}}
+    content: `Date: {{date}}
 
-Date: {{date}}
+# Attendees
 
-## Attendees
+# Notes
 
-## Notes
+# Decisions
 
-## Decisions
-
-## Follow up
+# Follow up
 
 - [ ]
 `
@@ -63,37 +55,31 @@ Date: {{date}}
   {
     id: "reading-note",
     name: "Reading note",
-    suggestedName: "Reading notes",
-    content: `# {{title}}
+    content: `Date: {{date}}
 
-Date: {{date}}
+# Source
 
-## Source
+# Summary
 
-## Summary
+# Highlights
 
-## Highlights
-
-## Questions
+# Questions
 `
   },
   {
     id: "project-note",
     name: "Project note",
-    suggestedName: "Project notes",
-    content: `# {{title}}
+    content: `Date: {{date}}
 
-Date: {{date}}
+# Goal
 
-## Goal
+# Context
 
-## Context
-
-## Plan
+# Plan
 
 - [ ]
 
-## Notes
+# Notes
 `
   }
 ];
@@ -120,12 +106,10 @@ function formatTemplateWeekday(date: Date) {
 
 function templateValues(context: MarkdownTemplateContext) {
   const now = context.now ?? new Date();
-  const title = context.title.trim() || "Untitled";
 
   return {
     date: formatTemplateDate(now),
     datetime: formatTemplateDateTime(now),
-    title,
     weekday: formatTemplateWeekday(now)
   };
 }
@@ -136,7 +120,7 @@ function markdownTemplateMetadataValue(value: string) {
 
 function parseMarkdownTemplateMetadata(source: string) {
   const frontmatter = markdownTemplateFrontmatterPattern.exec(source);
-  const metadata: Partial<Pick<MarkdownTemplate, "name" | "suggestedName">> = {};
+  const metadata: Partial<Pick<MarkdownTemplate, "name">> = {};
 
   if (!frontmatter) {
     return {
@@ -153,7 +137,6 @@ function parseMarkdownTemplateMetadata(source: string) {
     const value = line.slice(separatorIndex + 1).trim();
 
     if (key === "name") metadata.name = value;
-    if (key === "suggestedName") metadata.suggestedName = value;
   });
 
   return {
@@ -162,30 +145,22 @@ function parseMarkdownTemplateMetadata(source: string) {
   };
 }
 
-function markdownTemplateNameFromContent(content: string) {
-  const heading = markdownTemplateHeadingPattern.exec(content);
-  const headingText = heading?.[1]?.replace(/\s+#+\s*$/u, "").trim();
-
-  return headingText || null;
-}
-
 export function renderMarkdownTemplate(template: MarkdownTemplate, context: MarkdownTemplateContext) {
   const values = templateValues(context);
 
   return template.content.replace(templateVariablePattern, (_match, key: keyof typeof values) => values[key]);
 }
 
-export function suggestedMarkdownTemplateFileName(template: MarkdownTemplate, context: MarkdownTemplateContext) {
-  const values = templateValues(context);
-
-  return template.suggestedName.replace(templateVariablePattern, (_match, key: keyof typeof values) => values[key]);
+export function markdownTemplateInitialDocumentName(templateId: string, language: AppLanguage, now: Date) {
+  return templateId === "daily-note"
+    ? `${formatTemplateDate(now)}.md`
+    : untitledMarkdownDocumentName(language);
 }
 
 export function markdownTemplateToSource(template: MarkdownTemplate) {
   return [
     "---",
     `name: ${markdownTemplateMetadataValue(template.name)}`,
-    `suggestedName: ${markdownTemplateMetadataValue(template.suggestedName)}`,
     "---",
     "",
     template.content
@@ -194,20 +169,16 @@ export function markdownTemplateToSource(template: MarkdownTemplate) {
 
 export function updateMarkdownTemplateFromSource(template: MarkdownTemplate, source: string): MarkdownTemplate {
   const { content, metadata } = parseMarkdownTemplateMetadata(source);
-  const name = metadata.name?.trim() || markdownTemplateNameFromContent(content) || template.name;
-  const suggestedName = Object.hasOwn(metadata, "suggestedName")
-    ? metadata.suggestedName?.trim() ?? ""
-    : template.suggestedName;
+  const name = metadata.name?.trim() || template.name;
 
   return {
     ...template,
     content,
-    name,
-    suggestedName
+    name
   };
 }
 
-export function markdownTemplateTitleFromFileName(fileName: string) {
+function markdownTemplateNameFromFileName(fileName: string) {
   return fileName.trim().replace(/\.(?:markdown|md)$/iu, "") || "Untitled";
 }
 
@@ -282,8 +253,7 @@ export function createDefaultCustomMarkdownTemplate(
     fileName: createMarkdownTemplateFileName(id, existingTemplates),
     id,
     name: "New template",
-    suggestedName: "{{title}}",
-    content: "# {{title}}\n"
+    content: ""
   };
 }
 
@@ -292,14 +262,13 @@ export function createCustomMarkdownTemplateFromFile(
   existingTemplates: readonly Partial<MarkdownTemplate>[]
     | readonly Partial<MarkdownTemplateEntry>[] = []
 ): MarkdownTemplate {
-  const title = markdownTemplateTitleFromFileName(file.name);
+  const name = markdownTemplateNameFromFileName(file.name);
   const id = createMarkdownTemplateId(existingTemplates);
 
   return {
     fileName: createMarkdownTemplateFileName(id, existingTemplates),
     id,
-    name: title,
-    suggestedName: title,
+    name,
     content: file.content
   };
 }
@@ -308,8 +277,7 @@ export function markdownTemplateEntryFromTemplate(template: MarkdownTemplate): M
   return {
     fileName: normalizeMarkdownTemplateFileName(template.fileName) ?? createMarkdownTemplateFileName(template.id),
     id: template.id,
-    name: template.name,
-    suggestedName: template.suggestedName
+    name: template.name
   };
 }
 
@@ -318,8 +286,7 @@ export function createMarkdownTemplateFromEntry(entry: MarkdownTemplateEntry, co
     content,
     fileName: entry.fileName,
     id: entry.id,
-    name: entry.name,
-    suggestedName: entry.suggestedName
+    name: entry.name
   };
 }
 
@@ -332,8 +299,6 @@ export async function loadMarkdownTemplatesFromEntries(
   for (const entry of entries) {
     try {
       const content = await readTemplateFile(entry.fileName);
-      if (!content.trim()) continue;
-
       templates.push(createMarkdownTemplateFromEntry(entry, content));
     } catch {
       // Skip missing or unreadable template files; the settings list stays authoritative.
@@ -372,7 +337,6 @@ export function normalizeMarkdownTemplateEntries(value: unknown): MarkdownTempla
     const candidate = item as Partial<MarkdownTemplate>;
     const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
     const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
-    const suggestedName = typeof candidate.suggestedName === "string" ? candidate.suggestedName.trim() : "";
     const fileName = normalizeMarkdownTemplateFileName(candidate.fileName) ?? createMarkdownTemplateFileName(id, templates);
 
     if (!id || usedIds.has(id) || !name || usedFileNames.has(fileName.toLowerCase())) return;
@@ -382,8 +346,7 @@ export function normalizeMarkdownTemplateEntries(value: unknown): MarkdownTempla
     templates.push({
       fileName,
       id,
-      name,
-      suggestedName
+      name
     });
   });
 

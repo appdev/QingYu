@@ -64,7 +64,7 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
   const createDocument = async () => {
     setCreateError(null);
     try {
-      const created = await controller.document.createBlankDocument("Untitled.md");
+      const created = await controller.document.createBlankDocument();
       if (!created) throw new Error("Document creation failed");
     } catch (operationError) {
       setCreateError(compactNameOperationErrorMessage(operationError, {

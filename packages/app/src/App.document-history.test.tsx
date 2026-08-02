@@ -8,7 +8,8 @@ import {
   mockedReadNativeMarkdownFileHistory,
   mockedResolveDesktopPlatform,
   mockedSaveNativeMarkdownFile,
-  renderEditorApp as renderApp
+  renderEditorApp as renderApp,
+  withMatchingDocumentTitle
 } from "./test/app-harness";
 
 const editorControllerSpies = vi.hoisted(() => ({
@@ -260,8 +261,12 @@ describe("QingYu document history restore", () => {
   });
 
   it("preserves unsaved contents in history before restoring an earlier version", async () => {
+    const currentContent = withMatchingDocumentTitle("# Current\n\nSynthetic body.", "native.md");
+    const earlierContent = withMatchingDocumentTitle("# Earlier\n\nSynthetic body.", "native.md");
+    const unsavedContent = withMatchingDocumentTitle("# Unsaved\n\nSynthetic draft.", "native.md");
+
     mockOpenMarkdownFile({
-      content: "# Current\n\nSynthetic body.",
+      content: currentContent,
       name: "native.md",
       path: mockNativePath
     });
@@ -274,7 +279,7 @@ describe("QingYu document history restore", () => {
     ]);
     mockedReadNativeMarkdownFileHistory.mockResolvedValue({
       id: "history-current",
-      contents: "# Earlier\n\nSynthetic body."
+      contents: earlierContent
     });
     mockedSaveNativeMarkdownFile.mockResolvedValue({
       name: "native.md",
@@ -288,7 +293,7 @@ describe("QingYu document history restore", () => {
     await selectEditorViewMode("Source code");
     replaceMarkdownSource(
       await screen.findByRole("textbox", { name: "Markdown source" }),
-      "# Unsaved\n\nSynthetic draft."
+      unsavedContent
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
@@ -299,12 +304,12 @@ describe("QingYu document history restore", () => {
       expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2);
     });
     expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(1, {
-      contents: "# Unsaved\n\nSynthetic draft.",
+      contents: unsavedContent,
       path: mockNativePath,
       suggestedName: "native.md"
     });
     expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(2, {
-      contents: "# Earlier\n\nSynthetic body.",
+      contents: earlierContent,
       path: mockNativePath,
       suggestedName: "native.md"
     });
@@ -391,8 +396,11 @@ describe("QingYu document history restore", () => {
   });
 
   it("refreshes the open history panel after saving document updates", async () => {
+    const currentContent = withMatchingDocumentTitle("# Current\n\nSynthetic body.", "native.md");
+    const updatedContent = withMatchingDocumentTitle("# Updated\n\nSynthetic body.", "native.md");
+
     mockOpenMarkdownFile({
-      content: "# Current\n\nSynthetic body.",
+      content: currentContent,
       name: "native.md",
       path: mockNativePath
     });
@@ -433,12 +441,15 @@ describe("QingYu document history restore", () => {
     });
 
     await selectEditorViewMode("Source code");
-    replaceMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }), "# Updated\n\nSynthetic body.");
+    replaceMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown source" }),
+      updatedContent
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save Markdown" }));
 
     await waitFor(() => {
       expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
-        contents: "# Updated\n\nSynthetic body.",
+        contents: updatedContent,
         path: mockNativePath,
         suggestedName: "native.md"
       }));

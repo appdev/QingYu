@@ -32,7 +32,10 @@ const markdownHelperMocks = vi.hoisted(() => ({
   getWordCount: vi.fn((): number => 0)
 }));
 
-vi.mock("@markra/markdown", () => markdownHelperMocks);
+vi.mock("@markra/markdown", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@markra/markdown")>(),
+  ...markdownHelperMocks
+}));
 
 vi.mock("../lib/settings/app-settings", () => ({
   clearStoredRecentMarkdownFiles: vi.fn(async () => {}),
@@ -171,6 +174,138 @@ describe("useMarkdownDocument", () => {
     mockedListenNativeWindowCloseRequested.mockResolvedValue(() => {});
     mockedSetNativeEditorWindowRestoreState.mockResolvedValue(undefined);
     mockedTakeNativeOpenedMarkdownPaths.mockResolvedValue([]);
+  });
+
+  it("localizes a pristine initial blank once after readiness and uses the latest name for explicit resets", async () => {
+    const { result, rerender } = renderHook(
+      ({ initialBlankDocumentName, initialBlankDocumentReady }) => {
+        const options = {
+          getCurrentMarkdown: (fallbackContent: string) => fallbackContent,
+          initialBlankDocumentName,
+          initialBlankDocumentReady,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false
+        };
+        return useMarkdownDocument(options);
+      },
+      {
+        initialProps: {
+          initialBlankDocumentName: "Untitled.md",
+          initialBlankDocumentReady: false
+        }
+      }
+    );
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: Untitled\n---\n\n",
+      dirty: false,
+      name: "Untitled.md",
+      path: null
+    });
+
+    await act(async () => rerender({
+      initialBlankDocumentName: "未命名.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      name: "未命名.md"
+    });
+
+    await act(async () => rerender({
+      initialBlankDocumentName: "Untitled.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      name: "未命名.md"
+    });
+
+    await act(async () => result.current.clearOpenDocument({ openBlank: true, persistWorkspace: false }));
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: Untitled\n---\n\n",
+      dirty: false,
+      name: "Untitled.md",
+      path: null
+    });
+  });
+
+  it("does not localize initial state that became non-pristine before readiness", async () => {
+    const { result, rerender } = renderHook(
+      ({ initialBlankDocumentName, initialBlankDocumentReady }) =>
+        useMarkdownDocument({
+          getCurrentMarkdown: (fallbackContent) => fallbackContent,
+          initialBlankDocumentName,
+          initialBlankDocumentReady,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false
+        }),
+      {
+        initialProps: {
+          initialBlankDocumentName: "Untitled.md",
+          initialBlankDocumentReady: false
+        }
+      }
+    );
+    const authoredSource = "---\ntitle: Untitled\n---\n\nAuthored before language readiness";
+
+    act(() => result.current.handleMarkdownChange(authoredSource));
+    await act(async () => rerender({
+      initialBlankDocumentName: "未命名.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.document).toMatchObject({
+      content: authoredSource,
+      dirty: true,
+      name: "Untitled.md"
+    });
+  });
+
+  it("keeps an external blank restoring until initial blank localization is ready", async () => {
+    window.history.pushState({}, "", "/?blank=1");
+    const { result, rerender } = renderHook(
+      ({ initialBlankDocumentName, initialBlankDocumentReady }) =>
+        useMarkdownDocument({
+          getCurrentMarkdown: (fallbackContent) => fallbackContent,
+          initialBlankDocumentName,
+          initialBlankDocumentReady,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false,
+          windowContext: parseEditorWindowContext(window.location.search),
+          workspaceReady: true
+        }),
+      {
+        initialProps: {
+          initialBlankDocumentName: "Untitled.md",
+          initialBlankDocumentReady: false
+        }
+      }
+    );
+
+    expect(result.current.workspaceSurface).toBe("restoring");
+
+    await act(async () => rerender({
+      initialBlankDocumentName: "未命名.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.workspaceSurface).toBe("editor");
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      dirty: false,
+      name: "未命名.md",
+      revision: 0
+    });
   });
 
   it("reports restoring until the retained layout settles", async () => {
@@ -338,6 +473,107 @@ describe("useMarkdownDocument", () => {
       openWindows: [],
       sideBySideGroup: null
     })));
+  });
+
+  it("settles the current title transaction before a single-tab tree open can reuse its tab id", async () => {
+    const firstPath = "/mock-files/first.md";
+    const secondPath = "/mock-files/second.md";
+    let blockTransactions = false;
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => blockTransactions
+      ? transactions
+      : Promise.resolve(undefined));
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => ({
+      content: path === firstPath ? "# First" : "# Second",
+      name: path === firstPath ? "first.md" : "second.md",
+      path
+    }));
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: false,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        hasPendingDocumentTransactions: () => blockTransactions,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "first.md",
+        path: firstPath,
+        relativePath: "first.md"
+      });
+    });
+    settleDocumentTransactions.mockClear();
+    mockedReadNativeMarkdownFile.mockClear();
+    blockTransactions = true;
+
+    let replacement!: Promise<boolean>;
+    act(() => {
+      replacement = result.current.openTreeMarkdownFile({
+        name: "second.md",
+        path: secondPath,
+        relativePath: "second.md"
+      });
+    });
+    await Promise.resolve();
+
+    expect(settleDocumentTransactions).toHaveBeenCalledTimes(1);
+    expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalled();
+    expect(result.current.document.path).toBe(firstPath);
+
+    resolveTransactions();
+    await act(async () => replacement);
+    expect(result.current.document.path).toBe(secondPath);
+  });
+
+  it("settles the current title transaction before opening the native file picker", async () => {
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => transactions);
+    mockedOpenNativeMarkdownFile.mockResolvedValue({
+      content: "# Selected",
+      name: "selected.md",
+      path: "/mock-files/selected.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+
+    let opening!: Promise<unknown>;
+    act(() => {
+      opening = result.current.openMarkdownFile();
+    });
+    await Promise.resolve();
+
+    expect(settleDocumentTransactions).toHaveBeenCalledTimes(1);
+    expect(mockedOpenNativeMarkdownFile).not.toHaveBeenCalled();
+
+    resolveTransactions();
+    await act(async () => opening);
+    expect(mockedOpenNativeMarkdownFile).toHaveBeenCalledTimes(1);
+    expect(result.current.document.path).toBe("/mock-files/selected.md");
   });
 
   it("reports a managed tree restore read failure to its caller", async () => {
@@ -650,7 +886,7 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
-      contents: "",
+      contents: "---\ntitle: Untitled\n---\n\n",
       defaultDirectory: workspaceRoot,
       path: null,
       suggestedName: "Untitled.md"
@@ -663,7 +899,7 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(result.current.document).toMatchObject({
-      content: "",
+      content: "---\ntitle: Untitled 3\n---\n\n",
       dirty: false,
       name: "Untitled 3.md",
       path: documentPath
@@ -704,7 +940,7 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
-      contents: "",
+      contents: "---\ntitle: Untitled\n---\n\n",
       defaultDirectory: creationDirectory,
       path: null,
       suggestedName: "Untitled.md"
@@ -745,15 +981,220 @@ describe("useMarkdownDocument", () => {
         path: documentPath,
         relativePath: "Untitled.md"
       });
-      expect(await result.current.createBlankDocument()).toBe(true);
+      expect(await result.current.createBlankDocument()).toBe(false);
     });
 
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
-      contents: "",
+      contents: "---\ntitle: Untitled 1\n---\n\n",
       defaultDirectory: workspaceRoot,
       path: null,
       suggestedName: "Untitled 1.md"
     });
+    expect(result.current.tabs.filter((tab) => tab.path === documentPath)).toHaveLength(1);
+    expect(new Set(result.current.tabs.map((tab) => tab.id)).size).toBe(result.current.tabs.length);
+  });
+
+  it("immediately persists the authoritative collision name as the Front Matter title", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const documentPath = `${workspaceRoot}/%E6%9C%AA%E5%91%BD%E5%90%8D%201.md`;
+    mockedSaveNativeMarkdownFile
+      .mockResolvedValueOnce({ name: "未命名 1.md", path: documentPath })
+      .mockResolvedValueOnce({ name: "未命名 1.md", path: documentPath });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument({
+        content: "---\n# identity\nauthor: Ying\n---\n\n# 议程\n",
+        name: "未命名.md"
+      })).toBe(true);
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(1, {
+      contents: "---\n# identity\nauthor: Ying\ntitle: 未命名\n---\n\n# 议程\n",
+      defaultDirectory: workspaceRoot,
+      path: null,
+      suggestedName: "未命名.md"
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(2, {
+      contents: "---\n# identity\nauthor: Ying\ntitle: 未命名 1\n---\n\n# 议程\n",
+      path: documentPath,
+      skipHistorySnapshot: true,
+      suggestedName: "未命名 1.md"
+    });
+    expect(result.current.document).toMatchObject({
+      content: "---\n# identity\nauthor: Ying\ntitle: 未命名 1\n---\n\n# 议程\n",
+      dirty: false,
+      name: "未命名 1.md",
+      path: documentPath
+    });
+  });
+
+  it.each(["null", "throw"] as const)(
+    "retains an allocated file as an authoritative dirty document when title persistence returns %s",
+    async (failureKind) => {
+      const workspaceRoot = "kernel-workspace://primary";
+      const documentPath = `${workspaceRoot}/%E6%9C%AA%E5%91%BD%E5%90%8D%201.md`;
+      mockedSaveNativeMarkdownFile.mockResolvedValueOnce({
+        name: "未命名 1.md",
+        path: documentPath
+      });
+      if (failureKind === "null") {
+        mockedSaveNativeMarkdownFile.mockResolvedValueOnce(null);
+      } else {
+        mockedSaveNativeMarkdownFile.mockRejectedValueOnce(new Error("Synthetic metadata write failure"));
+      }
+      const { result } = renderHook(() =>
+        useMarkdownDocument({
+          defaultSaveDirectory: workspaceRoot,
+          documentTabsEnabled: true,
+          getCurrentMarkdown: (fallbackContent) => fallbackContent,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false
+        })
+      );
+
+      let created = false;
+      await act(async () => {
+        created = await result.current.createBlankDocument({ name: "未命名.md" });
+      });
+
+      expect(created).toBe(true);
+      expect(result.current.document).toMatchObject({
+        content: "---\ntitle: 未命名 1\n---\n\n",
+        dirty: true,
+        name: "未命名 1.md",
+        path: documentPath
+      });
+      expect(result.current.tabs.at(-1)).toMatchObject({
+        content: "---\ntitle: 未命名 1\n---\n\n",
+        dirty: true,
+        name: "未命名 1.md",
+        path: documentPath
+      });
+    }
+  );
+
+  it("allocates a no-file-tree draft before inserting its localized Front Matter title", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument({ name: "未命名.md" })).toBe(true);
+      expect(await result.current.createBlankDocument({ name: "未命名.md" })).toBe(true);
+    });
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名 1\n---\n\n",
+      dirty: true,
+      name: "未命名 1.md",
+      path: null
+    });
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+  });
+
+  it("fails malformed template creation safely without creating or replacing a draft", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    const initialTabs = result.current.tabs;
+
+    await expect(act(async () => result.current.createBlankDocument({
+      content: "---\ntitle: [unterminated\n---\n\n# Body\n",
+      name: "Untitled.md"
+    }))).rejects.toThrow("malformed");
+
+    expect(result.current.tabs).toEqual(initialTabs);
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+  });
+
+  it("fails a Kernel allocation that returns an already-open path without changing the active document", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const documentPath = `${workspaceRoot}/Untitled.md`;
+    const currentPath = `${workspaceRoot}/Current.md`;
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === documentPath
+      ? {
+        content: "# Existing",
+        name: "Untitled.md",
+        path: documentPath
+      }
+      : {
+        content: "# Current",
+        name: "Current.md",
+        path: currentPath
+      });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Untitled.md",
+      path: documentPath
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "Untitled.md",
+        path: documentPath,
+        relativePath: "Untitled.md"
+      });
+      await result.current.openTreeMarkdownFile({
+        name: "Current.md",
+        path: currentPath,
+        relativePath: "Current.md"
+      });
+    });
+
+    const previousDocument = result.current.document;
+    const previousTabs = result.current.tabs;
+    let created = true;
+
+    await act(async () => {
+      created = await result.current.createBlankDocument();
+    });
+
+    expect(created).toBe(false);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
+      contents: "---\ntitle: Untitled 1\n---\n\n",
+      defaultDirectory: workspaceRoot,
+      path: null,
+      suggestedName: "Untitled 1.md"
+    });
+    expect(result.current.document).toEqual(previousDocument);
+    expect(result.current.tabs).toEqual(previousTabs);
     expect(result.current.tabs.filter((tab) => tab.path === documentPath)).toHaveLength(1);
     expect(new Set(result.current.tabs.map((tab) => tab.id)).size).toBe(result.current.tabs.length);
   });
@@ -1431,7 +1872,8 @@ describe("useMarkdownDocument", () => {
   });
 
   it("defers medium document summaries until idle time", async () => {
-    const mediumContent = "# Medium file\n\nSynthetic content.";
+    const mediumBody = "# Medium file\n\nSynthetic content.";
+    const mediumContent = `---\ntitle: Medium\n---\n\n${mediumBody}`;
     const outlineItems = [{ level: 1, title: "Medium file" }];
     mockedReadNativeMarkdownFile.mockResolvedValueOnce({
       content: mediumContent,
@@ -1466,11 +1908,43 @@ describe("useMarkdownDocument", () => {
     expect(markdownHelperMocks.getMarkdownOutline).not.toHaveBeenCalled();
     expect(markdownHelperMocks.getWordCount).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(mediumContent));
+    await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(mediumBody));
 
-    expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(mediumContent);
+    expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(mediumBody);
     expect(result.current.outlineItems).toEqual(outlineItems);
     expect(result.current.wordCount).toBe(4);
+  });
+
+  it("keeps malformed Front Matter-like source in document summaries", async () => {
+    const malformedContent = "---\ntitle: [broken\n---\n\n# Body";
+    mockedReadNativeMarkdownFile.mockResolvedValueOnce({
+      content: malformedContent,
+      name: "malformed.md",
+      path: "/mock-files/malformed.md",
+      sizeBytes: 300_000
+    } as Awaited<ReturnType<typeof readNativeMarkdownFile>>);
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    markdownHelperMocks.getMarkdownOutline.mockClear();
+    markdownHelperMocks.getWordCount.mockClear();
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "malformed.md",
+        path: "/mock-files/malformed.md",
+        relativePath: "malformed.md"
+      });
+    });
+
+    await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(malformedContent));
+    expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(malformedContent);
   });
 
   it("restores historical content into the active document as an unsaved edit", async () => {
@@ -2086,6 +2560,118 @@ describe("useMarkdownDocument", () => {
     });
   });
 
+  it("saveMarkdownTabContentById saves only a background tab and preserves the active tab", async () => {
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
+      if (path === "/mock-files/guide.md") {
+        return {
+          content: "# Guide\n\nClean",
+          name: "guide.md",
+          path
+        };
+      }
+
+      return {
+        content: "# Notes\n\nClean",
+        name: "notes.md",
+        path
+      };
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "notes-renamed.md",
+      path: "/mock-files/notes-renamed.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "guide.md",
+        path: "/mock-files/guide.md",
+        relativePath: "guide.md"
+      });
+    });
+    const backgroundTabId = await act(async () =>
+      result.current.openTreeMarkdownFileInBackground({
+        name: "notes.md",
+        path: "/mock-files/notes.md",
+        relativePath: "notes.md"
+      })
+    );
+    const activeTabId = result.current.activeTabId;
+    let savedFile: Awaited<ReturnType<typeof result.current.saveMarkdownTabContentById>> = null;
+
+    await act(async () => {
+      savedFile = await result.current.saveMarkdownTabContentById(backgroundTabId!, "# Notes\n\nSaved", {
+        skipHistorySnapshot: true
+      });
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      contents: "# Notes\n\nSaved",
+      path: "/mock-files/notes.md",
+      skipHistorySnapshot: true,
+      suggestedName: "notes.md"
+    }));
+    expect(savedFile).toEqual({
+      name: "notes-renamed.md",
+      path: "/mock-files/notes-renamed.md"
+    });
+    expect(result.current.activeTabId).toBe(activeTabId);
+    expect(result.current.document).toMatchObject({
+      content: "# Guide\n\nClean",
+      name: "guide.md",
+      path: "/mock-files/guide.md"
+    });
+    expect(result.current.tabs.find((tab) => tab.id === backgroundTabId)).toMatchObject({
+      content: "# Notes\n\nSaved",
+      dirty: false,
+      name: "notes-renamed.md",
+      path: "/mock-files/notes-renamed.md"
+    });
+  });
+
+  it("saveMarkdownTabContentById returns null for a missing or closed tab", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    let missingResult: Awaited<ReturnType<typeof result.current.saveMarkdownTabContentById>> = null;
+    await act(async () => {
+      missingResult = await result.current.saveMarkdownTabContentById("missing-tab", "# Missing");
+    });
+
+    await act(async () => {
+      await result.current.createBlankDocument();
+    });
+    const closedTabId = result.current.activeTabId!;
+    await act(async () => {
+      await result.current.closeMarkdownTab(closedTabId);
+    });
+    let closedResult: Awaited<ReturnType<typeof result.current.saveMarkdownTabContentById>> = null;
+    await act(async () => {
+      closedResult = await result.current.saveMarkdownTabContentById(closedTabId, "# Closed");
+    });
+
+    expect(missingResult).toBeNull();
+    expect(closedResult).toBeNull();
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+  });
+
   it("keeps dirty inactive tabs protected when the document tabs setting is disabled", async () => {
     const confirmDiscardUnsavedChanges = vi.fn(() => false);
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
@@ -2499,6 +3085,49 @@ describe("useMarkdownDocument", () => {
     await closeRequestPromise;
   });
 
+  it("waits for pending document transactions before persisting and destroying a native window", async () => {
+    let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => transactions);
+    mockedListenNativeWindowCloseRequested.mockImplementation(async (handler) => {
+      closeRequestHandler = handler;
+      return () => {};
+    });
+    renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+    await waitFor(() => expect(mockedListenNativeWindowCloseRequested).toHaveBeenCalled());
+
+    const registeredCloseRequestHandler = closeRequestHandler as ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null;
+    if (!registeredCloseRequestHandler) throw new Error("native close request handler was not registered");
+    let closeResolved = false;
+    const closePromise = Promise.resolve(registeredCloseRequestHandler({ preventDefault: vi.fn() })).then(() => {
+      closeResolved = true;
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(settleDocumentTransactions).toHaveBeenCalledWith();
+    expect(closeResolved).toBe(false);
+    expect(mockedDestroyNativeWindow).not.toHaveBeenCalled();
+
+    resolveTransactions();
+    await act(async () => closePromise);
+    await waitFor(() => expect(mockedDestroyNativeWindow).toHaveBeenCalledTimes(1));
+  });
+
   it("retries coordinated native close when the first request leaves the window open", async () => {
     let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
     mockedDestroyNativeWindow.mockResolvedValue(undefined);
@@ -2620,6 +3249,26 @@ describe("useMarkdownDocument", () => {
         }
       ]
     });
+  });
+
+  it("blocks web unload while a document transaction is pending even before dirty state is visible", () => {
+    renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        hasPendingDocumentTransactions: () => true,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    const event = new Event("beforeunload", { cancelable: true }) as BeforeUnloadEvent;
+
+    act(() => {
+      window.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it("keeps the app open when native app exit discard is cancelled", async () => {
@@ -5126,6 +5775,57 @@ describe("useMarkdownDocument", () => {
       name: "guide.md",
       path: guidePath
     });
+  });
+
+  it("settles document transactions before a global dirty-file save snapshots tabs", async () => {
+    const guidePath = "/mock-files/vault/guide.md";
+    let blockTransactions = false;
+    let resolveTransactions!: () => undefined;
+    const transactions = new Promise<undefined>((resolve) => {
+      resolveTransactions = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const settleDocumentTransactions = vi.fn(() => blockTransactions
+      ? transactions
+      : Promise.resolve(undefined));
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Guide\n\nOriginal",
+      name: "guide.md",
+      path: guidePath
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "guide.md", path: guidePath });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false,
+        settleDocumentTransactions
+      })
+    );
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "guide.md",
+        path: guidePath,
+        relativePath: "guide.md"
+      });
+    });
+    settleDocumentTransactions.mockClear();
+    blockTransactions = true;
+    act(() => result.current.handleMarkdownChange("# Guide\n\nDirty"));
+    mockedSaveNativeMarkdownFile.mockClear();
+
+    const save = result.current.saveDirtyMarkdownFiles();
+    await Promise.resolve();
+    expect(settleDocumentTransactions).toHaveBeenCalledWith();
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+
+    resolveTransactions();
+    await act(async () => save);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a dirty-file save when the native write fails", async () => {

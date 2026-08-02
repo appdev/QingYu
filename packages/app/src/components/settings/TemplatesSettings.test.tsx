@@ -37,18 +37,16 @@ describe("TemplatesSettings", () => {
     const onUpdateTemplate = vi.fn();
     const templates: MarkdownTemplate[] = [
       {
-        content: "# {{title}}\n\n## Yesterday",
+        content: "# User heading\n\n## Yesterday",
         fileName: "standup.md",
         id: "standup",
-        name: "Standup",
-        suggestedName: "{{date}} standup"
+        name: "Standup"
       },
       {
-        content: "# {{title}}\n\n## Wins",
+        content: "# Weekly heading\n\n## Wins",
         fileName: "weekly-review.md",
         id: "weekly-review",
-        name: "Weekly review",
-        suggestedName: "{{date}} weekly"
+        name: "Weekly review"
       }
     ];
     const preferences: EditorPreferences = {
@@ -74,42 +72,39 @@ describe("TemplatesSettings", () => {
     expect(templateList.closest(".settings-templates-layout")).toHaveClass("grid-cols-[200px_minmax(0,1fr)]");
     expect(within(templateList).getByRole("button", { name: "Standup" })).toHaveAttribute("aria-current", "true");
     expect(within(templateList).getByRole("button", { name: "Weekly review" })).toHaveAttribute("aria-current", "false");
-    expect(within(templateEditor).getByText("Variables: {{title}}, {{date}}, {{datetime}}, {{weekday}}")).toBeInTheDocument();
+    expect(within(templateEditor).getByText("Variables: {{date}}, {{datetime}}, {{weekday}}")).toBeInTheDocument();
 
     expect(within(templateEditor).queryByRole("textbox", { name: "Template name: Standup" })).not.toBeInTheDocument();
     expect(within(templateEditor).queryByRole("textbox", { name: "Template file name: Standup" })).not.toBeInTheDocument();
     expect(within(templateEditor).queryByRole("textbox", { name: "Template Markdown: Standup" })).not.toBeInTheDocument();
 
     const standupPreview = within(templateEditor).getByRole("region", { name: "Template preview: Standup" });
-    expect(within(standupPreview).getByRole("heading", { name: "{{title}}", level: 1 })).toBeInTheDocument();
+    expect(within(standupPreview).getByRole("heading", { name: "User heading", level: 1 })).toBeInTheDocument();
     expect(within(standupPreview).getByRole("heading", { name: "Yesterday", level: 2 })).toBeInTheDocument();
 
     fireEvent.click(within(templateEditor).getByRole("button", { name: "Edit template: Standup" }));
     expect(within(templateEditor).queryByRole("region", { name: "Template preview: Standup" })).not.toBeInTheDocument();
     expect(within(templateEditor).getByRole("textbox", { name: "Template Markdown: Standup" })).toHaveValue(`---
 name: Standup
-suggestedName: {{date}} standup
 ---
 
-# {{title}}
+# User heading
 
 ## Yesterday`);
 
     fireEvent.change(within(templateEditor).getByRole("textbox", { name: "Template Markdown: Standup" }), {
       target: { value: `---
 name: Daily review
-suggestedName: {{date}} daily
 ---
 
-# {{title}}
+# Edited user heading
 
 - [ ] Ship it` }
     });
     expect(onUpdateTemplate).toHaveBeenCalledWith({
       ...templates[0],
       name: "Daily review",
-      suggestedName: "{{date}} daily",
-      content: "# {{title}}\n\n- [ ] Ship it"
+      content: "# Edited user heading\n\n- [ ] Ship it"
     });
 
     fireEvent.click(within(templateList).getByRole("button", { name: "Weekly review" }));
@@ -118,34 +113,31 @@ suggestedName: {{date}} daily
     expect(within(templateEditor).queryByRole("textbox", { name: "Template Markdown: Weekly review" })).not.toBeInTheDocument();
 
     const weeklyPreview = within(templateEditor).getByRole("region", { name: "Template preview: Weekly review" });
-    expect(within(weeklyPreview).getByRole("heading", { name: "{{title}}", level: 1 })).toBeInTheDocument();
+    expect(within(weeklyPreview).getByRole("heading", { name: "Weekly heading", level: 1 })).toBeInTheDocument();
     expect(within(weeklyPreview).getByRole("heading", { name: "Wins", level: 2 })).toBeInTheDocument();
 
     fireEvent.click(within(templateEditor).getByRole("button", { name: "Edit template: Weekly review" }));
     expect(within(templateEditor).getByRole("textbox", { name: "Template Markdown: Weekly review" })).toHaveValue(`---
 name: Weekly review
-suggestedName: {{date}} weekly
 ---
 
-# {{title}}
+# Weekly heading
 
 ## Wins`);
 
     fireEvent.change(within(templateEditor).getByRole("textbox", { name: "Template Markdown: Weekly review" }), {
       target: { value: `---
 name: Weekly digest
-suggestedName: {{date}} digest
 ---
 
-# {{title}}
+# Digest heading
 
 ## Shipped` }
     });
     expect(onUpdateTemplate).toHaveBeenCalledWith({
       ...templates[1],
       name: "Weekly digest",
-      suggestedName: "{{date}} digest",
-      content: "# {{title}}\n\n## Shipped"
+      content: "# Digest heading\n\n## Shipped"
     });
 
     fireEvent.click(within(templateEditor).getByRole("button", { name: "Preview template: Weekly review" }));
@@ -176,11 +168,10 @@ suggestedName: {{date}} digest
     fireEvent.click(screen.getByRole("button", { name: "Add template" }));
 
     expect(onCreateTemplate).toHaveBeenCalledWith(expect.objectContaining({
-      content: "# {{title}}\n",
+      content: "",
       fileName: expect.stringMatching(/\.md$/u),
       id: expect.any(String),
-      name: "New template",
-      suggestedName: "{{title}}"
+      name: "New template"
     }));
   });
 
@@ -209,7 +200,6 @@ suggestedName: {{date}} digest
     fireEvent.change(within(templateEditor).getByRole("textbox", { name: "Template Markdown: Daily note" }), {
       target: { value: `---
 name: Daily note edited
-suggestedName: {{date}} edited
 ---
 
 # Edited daily` }
@@ -218,19 +208,17 @@ suggestedName: {{date}} edited
     expect(onUpdateTemplate).toHaveBeenCalledWith({
       content: "# Edited daily",
       id: "daily-note",
-      name: "Daily note edited",
-      suggestedName: "{{date}} edited"
+      name: "Daily note edited"
     });
   });
 
   it("opens a newly added template in edit mode and switches existing templates to preview mode", () => {
     const templates: MarkdownTemplate[] = [
       {
-        content: "# {{title}}\n\n## Yesterday",
+        content: "# User heading\n\n## Yesterday",
         fileName: "standup.md",
         id: "standup",
-        name: "Standup",
-        suggestedName: "{{date}} standup"
+        name: "Standup"
       }
     ];
     const preferences: EditorPreferences = {
@@ -281,10 +269,8 @@ suggestedName: {{date}} edited
     expect(within(templateList).getByRole("button", { name: "New template" })).toHaveAttribute("aria-current", "true");
     expect(within(templateEditor).getByRole("textbox", { name: "Template Markdown: New template" })).toHaveValue(`---
 name: New template
-suggestedName: {{title}}
 ---
 
-# {{title}}
 `);
     expect(within(templateEditor).queryByRole("region", { name: "Template preview: New template" })).not.toBeInTheDocument();
 
@@ -297,11 +283,10 @@ suggestedName: {{title}}
   it("keeps the template markdown source stable while editing incomplete metadata", () => {
     const templates: MarkdownTemplate[] = [
       {
-        content: "# {{title}}\n\n## Yesterday",
+        content: "# User heading\n\n## Yesterday",
         fileName: "standup.md",
         id: "standup",
-        name: "Standup",
-        suggestedName: "{{date}} standup"
+        name: "Standup"
       }
     ];
     const preferences: EditorPreferences = {
@@ -351,6 +336,6 @@ suggestedName: {{title}}
     });
 
     expect(sourceEditor).toHaveValue("# Loose markdown\n\nStill a template");
-    expect(within(templateEditor).getByText("Loose markdown")).toBeInTheDocument();
+    expect(within(templateEditor).getByText("Standup")).toBeInTheDocument();
   });
 });

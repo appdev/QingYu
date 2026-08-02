@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { history, undo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import {
@@ -580,6 +581,7 @@ describe("codeMirrorBlockDragPlugin", () => {
       effectAllowed: "none",
       getData: (type: string) => values.get(type) ?? "",
       setData: (type: string, value: string) => values.set(type, value),
+      types: ["application/x-markra-codemirror-block"],
     };
     const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
     Object.defineProperty(dragStart, "dataTransfer", { value: dataTransfer });
@@ -598,6 +600,81 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.state.doc.toString()).toBe("Second\n\nFirst\n\nThird");
     expect(view.dom.querySelector(".markra-block-drag-source")).toBeNull();
     expect(view.dom.querySelector(".markra-block-drop-indicator")).toBeNull();
+  });
+
+  it("allows a protected internal dragover before dropping the offset-zero block", () => {
+    const view = createView("First\n\nSecond\n\nThird");
+    const [first, second] = readCodeMirrorBlockRanges(view.state);
+    const handle = view.dom.querySelector<HTMLElement>(
+      `[data-block-from="${first?.from}"] .markra-block-drag-handle`,
+    );
+    const target = view.dom.querySelector<HTMLElement>(
+      `.cm-line[data-markra-block-from="${second?.from}"]`,
+    );
+    const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, "dataTransfer", {
+      value: {
+        effectAllowed: "none",
+        setData: vi.fn(),
+      },
+    });
+    const dragOver = new MouseEvent("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOver, "dataTransfer", {
+      value: {
+        dropEffect: "none",
+        getData: () => "",
+        types: {
+          0: "application/x-markra-codemirror-block",
+          contains: (type: string) => type === "application/x-markra-codemirror-block",
+          item: (index: number) => index === 0 ? "application/x-markra-codemirror-block" : null,
+          length: 1,
+        },
+      },
+    });
+    const drop = new MouseEvent("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", {
+      value: {
+        getData: (type: string) => type === "application/x-markra-codemirror-block" ? "0" : "",
+        types: ["application/x-markra-codemirror-block"],
+      },
+    });
+
+    handle?.dispatchEvent(dragStart);
+    target?.dispatchEvent(dragOver);
+
+    expect(dragOver.defaultPrevented).toBe(true);
+    expect(view.dom.querySelector(".markra-block-drop-indicator")?.getAttribute("data-show")).toBe("true");
+
+    target?.dispatchEvent(drop);
+
+    expect(drop.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe("Second\n\nFirst\n\nThird");
+  });
+
+  it("ignores external drops without block drag data when Front Matter is present", () => {
+    const doc = "---\ntitle: Native\n---\n\nFirst\n\nSecond";
+    const view = createView(doc);
+    const second = readCodeMirrorBlockRanges(view.state).find(
+      (block) => view.state.sliceDoc(block.from, block.to) === "Second",
+    );
+    const target = view.dom.querySelector<HTMLElement>(
+      `.cm-line[data-markra-block-from="${second?.from}"]`,
+    );
+    const dragOver = new MouseEvent("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOver, "dataTransfer", {
+      value: { getData: () => "", types: [] },
+    });
+    const drop = new MouseEvent("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", {
+      value: { getData: () => "", types: [] },
+    });
+
+    target?.dispatchEvent(dragOver);
+    target?.dispatchEvent(drop);
+
+    expect(dragOver.defaultPrevented).toBe(false);
+    expect(drop.defaultPrevented).toBe(false);
+    expect(view.state.doc.toString()).toBe(doc);
   });
 
   it("reorders task items through pointer dragging when native drag events are unavailable", () => {

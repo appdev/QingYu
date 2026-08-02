@@ -735,6 +735,66 @@ async fn service_creates_without_clobbering_and_lists_signed_relative_entries() 
 }
 
 #[tokio::test]
+async fn move_document_collision_preserves_both_files_without_numbering() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    let source_contents = "# A\n\0original source";
+    let target_contents = "# B\noriginal target 🐉";
+    let source = fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation.clone(),
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("A.md").unwrap(),
+            contents: DocumentContents::parse(source_contents).unwrap(),
+        })
+        .await
+        .unwrap();
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation.clone(),
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("B.md").unwrap(),
+            contents: DocumentContents::parse(target_contents).unwrap(),
+        })
+        .await
+        .unwrap();
+    let (source_id, source_revision) = match source {
+        qingyu_kernel::contract::CreatedDocumentDto::File { id, revision, .. } => (id, revision),
+        _ => panic!("file expected"),
+    };
+
+    let error = fixture
+        .service
+        .move_document(
+            source_id,
+            MoveDocumentRequest {
+                workspace_generation: generation,
+                expected_revision: source_revision,
+                target_parent: WorkspaceRelativePath::default(),
+                name: DocumentName::parse("B.md").unwrap(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.code(),
+        qingyu_kernel::contract::ErrorCode::DocumentAlreadyExists
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("A.md")).unwrap(),
+        source_contents.as_bytes()
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("B.md")).unwrap(),
+        target_contents.as_bytes()
+    );
+    assert!(!fixture.root.join("B 1.md").exists());
+}
+
+#[tokio::test]
 async fn service_rejects_stale_generation_traversal_and_symlink_or_hardlink_replacement() {
     let fixture = Fixture::new().await;
     let stale = WorkspaceGeneration::parse("stale").unwrap();

@@ -17,7 +17,7 @@ import {
   type EditorView as CodeMirrorView,
   type ViewUpdate,
 } from "@codemirror/view";
-import { readCodeMirrorFrontmatter } from "./frontmatter-preview.ts";
+import { readMarkdownFrontmatter } from "@markra/markdown";
 import { defineMarkraPlugin } from "./plugin.ts";
 import { openMarkraSlashMenu } from "./slash-menu.ts";
 
@@ -91,7 +91,10 @@ function readCodeMirrorBlockRangesIn(
     decoratedStarts.add(range.from);
     ranges.push(range);
   };
-  const frontmatter = readCodeMirrorFrontmatter(state.doc.toString());
+  const frontmatterResult = readMarkdownFrontmatter(state.doc.toString());
+  const frontmatter = frontmatterResult.status === "valid"
+    ? frontmatterResult.range
+    : null;
   if (frontmatter) {
     appendRange({
       from: state.doc.lineAt(frontmatter.from).from,
@@ -739,8 +742,28 @@ function startPointerBlockDrag(
 
 function draggedBlockFrom(event: DragEvent) {
   const value = event.dataTransfer?.getData(blockDragMime) ?? "";
+  if (value === "") return null;
   const from = Number(value);
   return Number.isInteger(from) ? from : null;
+}
+
+function hasBlockDragType(event: DragEvent) {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  const compatibleTypes = types as typeof types & {
+    contains?: (type: string) => boolean;
+    item?: (index: number) => string | null;
+  };
+  if (typeof compatibleTypes.contains === "function") {
+    return compatibleTypes.contains(blockDragMime);
+  }
+  for (let index = 0; index < compatibleTypes.length; index += 1) {
+    const type = typeof compatibleTypes.item === "function"
+      ? compatibleTypes.item(index)
+      : compatibleTypes[index];
+    if (type === blockDragMime) return true;
+  }
+  return false;
 }
 
 class BlockDragViewPlugin {
@@ -804,7 +827,7 @@ export function codeMirrorBlockDragPlugin(
       EditorView.domEventHandlers({
         dragover(event, view) {
           const target = dropTarget(event, view);
-          if (draggedBlockFrom(event) === null || !target) {
+          if (!hasBlockDragType(event) || !target) {
             return false;
           }
           event.preventDefault();

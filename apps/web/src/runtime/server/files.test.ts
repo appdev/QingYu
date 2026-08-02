@@ -82,6 +82,83 @@ describe("server file facade", () => {
     expect(indexedDbOpen).not.toHaveBeenCalled();
   });
 
+  it("returns exact server rename identity and preserves both files on collision without numbering", async () => {
+    const sourceContents = "# A\n\0original source";
+    const targetContents = "# B\noriginal target 🐉";
+    const source = entry({ locator: "document-a", name: "A.md", relativePath: "A.md" });
+    const target = entry({ locator: "document-b", name: "B.md", relativePath: "B.md" });
+    const entries = new Map([
+      [source.locator, { contents: sourceContents, entry: source }],
+      [target.locator, { contents: targetContents, entry: target }],
+    ]);
+    const kernel = kernelPort();
+    vi.mocked(kernel.documents.list).mockImplementation(async () => ({
+      items: [...entries.values()].map(({ entry }) => entry),
+      nextCursor: null,
+      workspaceGeneration: generation,
+    }));
+    vi.mocked(kernel.documents.read).mockImplementation(async ({ locator }) => {
+      const document = entries.get(locator);
+      if (document === undefined) throw new Error("document unavailable");
+      return { ...document.entry, contents: document.contents, kind: "file" as const };
+    });
+    vi.mocked(kernel.documents.move).mockImplementation(async (input) => {
+      const current = entries.get(input.locator);
+      if (current === undefined) throw new Error("document unavailable");
+      const relativePath = input.targetParent === ""
+        ? input.name
+        : `${input.targetParent}/${input.name}`;
+      if ([...entries.values()].some(({ entry }) => entry.relativePath === relativePath)) {
+        throw Object.assign(new Error("document already exists"), {
+          code: "document_already_exists",
+        });
+      }
+      const moved = {
+        ...current.entry,
+        modifiedAt: "2026-07-30T00:00:01Z",
+        name: input.name,
+        parent: input.targetParent,
+        relativePath: relativePath as never,
+        revision: "revision-2" as KernelRevision,
+      } satisfies KernelDocumentEntrySnapshot;
+      entries.delete(input.locator);
+      entries.set(moved.locator, { contents: current.contents, entry: moved });
+      return moved;
+    });
+    const files = createServerFileRuntime(kernel);
+
+    await expect(files.renameMarkdownTreeFile(
+      serverWorkspaceRoot,
+      `${serverWorkspaceRoot}/A.md`,
+      "B.md",
+    )).rejects.toMatchObject({ code: "document_already_exists" });
+    expect(kernel.documents.move).toHaveBeenCalledOnce();
+    expect(kernel.documents.move).toHaveBeenLastCalledWith(expect.objectContaining({ name: "B.md" }));
+    const sourceAfterCollision = await files.readMarkdownFile(`${serverWorkspaceRoot}/A.md`);
+    const targetAfterCollision = await files.readMarkdownFile(`${serverWorkspaceRoot}/B.md`);
+    expect(new TextEncoder().encode(sourceAfterCollision.content))
+      .toEqual(new TextEncoder().encode(sourceContents));
+    expect(new TextEncoder().encode(targetAfterCollision.content))
+      .toEqual(new TextEncoder().encode(targetContents));
+
+    vi.mocked(kernel.documents.move).mockClear();
+    const renamed = await files.renameMarkdownTreeFile(
+      serverWorkspaceRoot,
+      `${serverWorkspaceRoot}/A.md`,
+      "C.md",
+    );
+    expect({
+      name: renamed.name,
+      path: renamed.path,
+      relativePath: renamed.relativePath,
+    }).toEqual({
+      name: "C.md",
+      path: `${serverWorkspaceRoot}/C.md`,
+      relativePath: "C.md",
+    });
+    expect(kernel.documents.move).toHaveBeenCalledOnce();
+  });
+
   it("recursively exhausts every directory page and keeps nested paths stable", async () => {
     const kernel = kernelPort();
     const rootFolder = entry({

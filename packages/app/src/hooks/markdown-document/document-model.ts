@@ -4,16 +4,21 @@ import type {
 } from "../../lib/settings/app-settings";
 import { normalizeMovedPath } from "../../lib/path-move";
 import { pathNameFromPath, type DocumentState } from "@markra/shared";
+import {
+  markdownDocumentBodyContent,
+  markdownDocumentSourceForCreatedFile
+} from "../../lib/document-creation";
 
 export type MarkdownDocumentTab = DocumentState & {
   id: string;
 };
 
-export function createInitialDocumentState(): DocumentState {
+export function createInitialDocumentState(name?: string): DocumentState {
+  const blankName = blankDocumentName(name);
   return {
     path: null,
-    name: "Untitled.md",
-    content: "",
+    name: blankName,
+    content: markdownDocumentSourceForCreatedFile(blankName, ""),
     deleted: false,
     dirty: false,
     open: true,
@@ -111,12 +116,16 @@ export function activeFilePathFromTabs(tabs: readonly MarkdownDocumentTab[], act
 }
 
 export function isPristineUntitledDocument(document: DocumentState) {
-  return document.open && document.path === null && document.content === "" && !document.dirty && document.revision === 0;
+  return document.open
+    && document.path === null
+    && markdownDocumentBodyContent(document.content).trim() === ""
+    && !document.dirty
+    && document.revision === 0;
 }
 
 export function draftTabFromDocumentTab(tab: MarkdownDocumentTab): StoredWorkspaceDraftTab | null {
   if (!tab.open || !tab.dirty) return null;
-  if (tab.path === null && tab.content.trim().length === 0) return null;
+  if (tab.path === null && markdownDocumentBodyContent(tab.content).trim().length === 0) return null;
 
   return {
     content: tab.content,

@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { EditorSelection } from "@codemirror/state";
 import { redoDepth } from "@codemirror/commands";
@@ -21,6 +21,7 @@ import {
   mockPrimaryMarkdownFile,
   mockSystemColorScheme,
   mockUntitledPath,
+  withMatchingDocumentTitle,
   mockedCloseNativeWindow,
   mockedConfirmNativeMarkdownFileDelete,
   mockedConfirmNativeUnsavedMarkdownDocumentDiscard,
@@ -2332,6 +2333,7 @@ describe("QingYu workspace", () => {
   });
 
   afterEach(() => {
+    cleanup();
     resetAppRuntimeForTests();
     // jsdom shares one document selection across tests. A selection left on a
     // destroyed editor makes the next CodeMirror view treat the mismatching
@@ -2527,7 +2529,11 @@ describe("QingYu workspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New Document" }));
     await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
       kernelWorkspaceRoot,
-      "Untitled.md"
+      "Untitled.md",
+      {
+        contents: "---\ntitle: Untitled\n---\n\n",
+        parentPath: null
+      }
     ));
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(prompt).not.toHaveBeenCalled();
@@ -2549,6 +2555,59 @@ describe("QingYu workspace", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "General" }));
     expect(await screen.findByRole("combobox", { name: "Language" })).toBeInTheDocument();
+  });
+
+  it("uses localized untitled naming for Compact document creation", async () => {
+    const runtime = createDefaultAppRuntime();
+    mockedGetStoredLanguage.mockResolvedValue("zh-CN");
+    mockCompactViewport(false);
+    configureAppRuntime({
+      ...runtime,
+      platform: {
+        ...runtime.platform,
+        resolveFormFactor: () => "mobile"
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => kernelWorkspaceRoot
+        }
+      }
+    });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+
+    renderFreshApp();
+    fireEvent.click(await screen.findByRole("button", { name: "新建文档" }));
+
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      kernelWorkspaceRoot,
+      "未命名.md",
+      {
+        contents: "---\ntitle: 未命名\n---\n\n",
+        parentPath: null
+      }
+    ));
+
+    mockedCreateNativeMarkdownTreeFile.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "新建文件" }));
+    await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      kernelWorkspaceRoot,
+      "未命名.md",
+      {
+        contents: "---\ntitle: 未命名\n---\n\n",
+        parentPath: null
+      }
+    ));
   });
 
   it("subscribes Compact navigation to native Back only on true mobile", async () => {
@@ -2761,7 +2820,10 @@ describe("QingYu workspace", () => {
       }
     ]);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Mobile attachment link\n\n[Reference](assets/Reference.pdf)\n\nEditor remains here.",
+      content: withMatchingDocumentTitle(
+        "# Mobile attachment link\n\n[Reference](assets/Reference.pdf)\n\nEditor remains here.",
+        "note.md"
+      ),
       name: "note.md",
       path: notePath
     });
@@ -3469,7 +3531,7 @@ describe("QingYu workspace", () => {
       { name: "compact-autosave.md", path: notePath, relativePath: "compact-autosave.md" }
     ]);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Compact autosave",
+      content: withMatchingDocumentTitle("# Compact autosave", "compact-autosave.md"),
       name: "compact-autosave.md",
       path: notePath
     });
@@ -3486,6 +3548,9 @@ describe("QingYu workspace", () => {
       await expectVisibleCodeMirrorText(container, "Compact autosave");
       await settleEditorUpdates();
       const visualView = getVisibleCodeMirrorView(container);
+      act(() => {
+        visualView.dispatch({ selection: EditorSelection.cursor(visualView.state.doc.length) });
+      });
       mockedSaveNativeMarkdownFile.mockClear();
       mockedSyncApplication.mockClear();
       vi.useFakeTimers();
@@ -3698,7 +3763,7 @@ describe("QingYu workspace", () => {
     mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Seven formats",
+      content: withMatchingDocumentTitle("# Seven formats", "seven-formats.md"),
       name: "seven-formats.md",
       path: notePath
     });
@@ -3706,6 +3771,10 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
     await expectVisibleCodeMirrorText(container, "Seven formats");
+    const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
 
@@ -3727,7 +3796,7 @@ describe("QingYu workspace", () => {
       projectRootPath: kernelWorkspaceRoot
     }))));
     expect(mockedSaveNativeClipboardImage).not.toHaveBeenCalled();
-    await waitFor(() => expect(getVisibleCodeMirrorView(container).state.doc.toString().match(/!\[/gu)).toHaveLength(7));
+    await waitFor(() => expect(view.state.doc.toString().match(/!\[/gu)).toHaveLength(7));
   });
 
   it.each([
@@ -3774,7 +3843,10 @@ describe("QingYu workspace", () => {
     mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Rejected image remains unchanged",
+      content: withMatchingDocumentTitle(
+        "# Rejected image remains unchanged",
+        "rejected-image.md"
+      ),
       name: "rejected-image.md",
       path: notePath
     });
@@ -3883,6 +3955,10 @@ describe("QingYu workspace", () => {
     await waitFor(() => {
       expect(mockedInstallNativeApplicationMenu.mock.calls.length).toBeGreaterThan(menuInstallCountBeforeOpen);
     });
+    const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers & {
       importLocalFiles?: () => unknown | Promise<unknown>;
     };
@@ -3926,6 +4002,10 @@ describe("QingYu workspace", () => {
 
     openMarkdownFromUnifiedPicker();
     await expectVisibleMarkdownText("Native");
+    const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
 
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers & {
@@ -3962,7 +4042,7 @@ describe("QingYu workspace", () => {
     mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Primary assets",
+      content: withMatchingDocumentTitle("# Primary assets", "day.md"),
       name: "day.md",
       path: notePath
     });
@@ -3975,6 +4055,10 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await expectVisibleCodeMirrorText(container, "Primary assets");
+    const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
     expect(mockedLoadSyncConfig).not.toHaveBeenCalled();
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
@@ -4104,6 +4188,10 @@ describe("QingYu workspace", () => {
 
     openMarkdownFromUnifiedPicker();
     await expectVisibleCodeMirrorText(container, "Native");
+    const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
     expect(mockedLoadNativeMarkdownFilesForPath).not.toHaveBeenCalled();
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
@@ -4295,6 +4383,10 @@ describe("QingYu workspace", () => {
     await waitFor(() => {
       expect(mockedInstallNativeApplicationMenu.mock.calls.length).toBeGreaterThan(menuInstallCountBeforeOpen);
     });
+    const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers & {
       importLocalImages?: () => unknown | Promise<unknown>;
     };
@@ -4306,9 +4398,12 @@ describe("QingYu workspace", () => {
     expect(mockedOpenNativeLocalImages).toHaveBeenCalledWith({
       title: "Import Local Images..."
     });
-    const view = revealVisualPreviews(container);
+    revealVisualPreviews(container);
     await waitFor(() => {
-      expect(view.state.doc.toString()).toBe("![Blank Import](assets/blank-import.png)");
+      expect(view.state.doc.toString()).toBe(withMatchingDocumentTitle(
+        "![Blank Import](assets/blank-import.png)",
+        "native.md"
+      ));
       expect(container.querySelector('img[src="assets/blank-import.png"]')).toBeInTheDocument();
     });
   });
@@ -4368,7 +4463,7 @@ describe("QingYu workspace", () => {
     ]);
     mockedReadNativeMarkdownFileHistory.mockResolvedValue({
       id: "history-current",
-      contents: "# Earlier\n\nSynthetic body."
+      contents: withMatchingDocumentTitle("# Earlier\n\nSynthetic body.", "native.md")
     });
 
     const { container } = renderApp();
@@ -4390,7 +4485,11 @@ describe("QingYu workspace", () => {
     });
     expect(getVisibleCodeMirrorView(container).state.doc.toString()).toContain("Earlier");
     expect(screen.getByRole("region", { name: "History versions" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Unsaved changes")).not.toBeInTheDocument();
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      contents: withMatchingDocumentTitle("# Earlier\n\nSynthetic body.", "native.md"),
+      path: mockNativePath
+    }));
     expect(mockedListNativeMarkdownFileHistory).toHaveBeenCalledWith(mockNativePath);
     expect(mockedReadNativeMarkdownFileHistory).toHaveBeenCalledWith(mockNativePath, "history-current");
   });
@@ -5054,14 +5153,14 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === guidePath) {
         return {
-          content: "# Guide",
+          content: withMatchingDocumentTitle("# Guide", "guide.md"),
           name: "guide.md",
           path
         };
       }
 
       return {
-        content: "# Notes",
+        content: withMatchingDocumentTitle("# Notes", "notes.md"),
         name: "notes.md",
         path
       };
@@ -5397,6 +5496,9 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await expectVisibleMarkdownText("First");
+    await waitFor(() =>
+      expect(container.querySelector(".document-tabs-side-by-side-group")).toBeInTheDocument()
+    );
     const restoredGroup = container.querySelector(".document-tabs-side-by-side-group") as HTMLElement;
     expect(restoredGroup).toBeInTheDocument();
     expect(within(restoredGroup).getByRole("tab", { name: /1\.md/ })).toHaveAttribute("aria-selected", "true");
@@ -5777,14 +5879,16 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "catppuccin-latte"));
-    expect(container.querySelector(".markdown-paper")).toHaveAttribute("data-editor-theme", "catppuccin-latte");
+    await waitFor(() => expect(container.querySelector(".markdown-paper"))
+      .toHaveAttribute("data-editor-theme", "catppuccin-latte"));
 
     act(() => {
       systemColorScheme.setSystemDark(false);
     });
 
     expect(document.documentElement).toHaveAttribute("data-theme", "catppuccin-latte");
-    expect(container.querySelector(".markdown-paper")).toHaveAttribute("data-editor-theme", "catppuccin-latte");
+    await waitFor(() => expect(container.querySelector(".markdown-paper"))
+      .toHaveAttribute("data-editor-theme", "catppuccin-latte"));
     expect(mockedSaveStoredThemePreferences).not.toHaveBeenCalled();
   });
 
@@ -6833,6 +6937,7 @@ describe("QingYu workspace", () => {
   it("removes the markdown file tree hit area when the sidebar is collapsed", async () => {
     const { container } = renderApp();
 
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     const tree = container.querySelector(".markdown-file-tree");
     expect(tree).toHaveAttribute("aria-hidden", "true");
     fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
@@ -7211,8 +7316,7 @@ describe("QingYu workspace", () => {
         expect.objectContaining({
           fileName: "custom-template.md",
           id: "custom-template",
-          name: "standup",
-          suggestedName: "standup"
+          name: "standup"
         })
       ]
     }));
@@ -7221,8 +7325,7 @@ describe("QingYu workspace", () => {
         expect.objectContaining({
           fileName: "custom-template.md",
           id: "custom-template",
-          name: "standup",
-          suggestedName: "standup"
+          name: "standup"
         })
       ]
     }));
@@ -7414,7 +7517,7 @@ describe("QingYu workspace", () => {
 
     const view = getVisibleCodeMirrorView(container);
     const editorSurface = view.contentDOM;
-    const dropPosition = "First\n\n".length;
+    const dropPosition = view.state.doc.toString().indexOf("First") + "First\n\n".length;
     const posAtCoords = vi.spyOn(view, "posAtCoords").mockReturnValue(dropPosition);
     const assetButton = await screen.findByRole("button", { name: "assets/diagram.png" });
     const dataTransfer = createDragDataTransfer();
@@ -7473,7 +7576,8 @@ describe("QingYu workspace", () => {
 
     const view = getVisibleCodeMirrorView(container);
     const editorSurface = view.contentDOM;
-    const posAtCoords = vi.spyOn(view, "posAtCoords").mockReturnValue("First\n\n".length);
+    const dropPosition = view.state.doc.toString().indexOf("First") + "First\n\n".length;
+    const posAtCoords = vi.spyOn(view, "posAtCoords").mockReturnValue(dropPosition);
     const assetButton = await screen.findByRole("button", { name: "assets/diagram.png" });
     const dataTransfer = createDragDataTransfer();
 
@@ -7510,7 +7614,8 @@ describe("QingYu workspace", () => {
 
     const view = getVisibleCodeMirrorView(container);
     const editorSurface = view.contentDOM;
-    const posAtCoords = vi.spyOn(view, "posAtCoords").mockReturnValue("First\n\n".length);
+    const dropPosition = view.state.doc.toString().indexOf("First") + "First\n\n".length;
+    const posAtCoords = vi.spyOn(view, "posAtCoords").mockReturnValue(dropPosition);
     await waitFor(() => expect(mockedInstallNativeMarkdownFileDrop).toHaveBeenCalled());
     const handleDrop = mockedInstallNativeMarkdownFileDrop.mock.calls.at(-1)?.[0];
 
@@ -7556,6 +7661,9 @@ describe("QingYu workspace", () => {
     fireEvent.keyDown(window, { key: "o", metaKey: true });
     await waitFor(() => expect(mockedInstallNativeMarkdownFileDrop).toHaveBeenCalled());
     const view = getVisibleCodeMirrorView(container);
+    act(() => {
+      view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+    });
     const posAtCoords = vi.spyOn(view, "posAtCoords").mockReturnValue(null);
     const handleDrop = mockedInstallNativeMarkdownFileDrop.mock.calls.at(-1)?.[0];
 
@@ -7571,7 +7679,10 @@ describe("QingYu workspace", () => {
       });
     });
 
-    expect(view.state.doc.toString()).toBe("![System Drop](System%20Drop.png)");
+    expect(view.state.doc.toString()).toBe(withMatchingDocumentTitle(
+      "![System Drop](System%20Drop.png)",
+      "native.md"
+    ));
     act(() => {
       view.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
     });
@@ -7744,14 +7855,14 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === guidePath) {
         return {
-          content: "# Guide",
+          content: withMatchingDocumentTitle("# Guide", "guide.md"),
           name: "guide.md",
           path: guidePath
         };
       }
 
       return {
-        content: "# Notes",
+        content: withMatchingDocumentTitle("# Notes", "notes.md"),
         name: "notes.md",
         path: notesPath
       };
@@ -7772,6 +7883,12 @@ describe("QingYu workspace", () => {
     fireEvent.click(screen.getByRole("tab", { name: /guide\.md/ }));
     await expectVisibleCodeMirrorText(container, "Guide");
     await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const guideView = getVisibleCodeMirrorView(container);
+    act(() => {
+      guideView.dispatch({
+        selection: EditorSelection.cursor(guideView.state.doc.toString().indexOf("# Guide"))
+      });
+    });
     const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
 
     act(() => {
@@ -7804,8 +7921,8 @@ describe("QingYu workspace", () => {
     const mainPath = "/mock-files/vault/main.md";
     const sidePath = "/mock-files/vault/side.md";
     const diskContent = new Map([
-      [mainPath, "# Main\n\nCurrent text"],
-      [sidePath, "# Side\n\nCached text"]
+      [mainPath, withMatchingDocumentTitle("# Main\n\nCurrent text", "main.md")],
+      [sidePath, withMatchingDocumentTitle("# Side\n\nCached text", "side.md")]
     ]);
     mockOpenMarkdownTarget({
       kind: "folder",
@@ -7838,7 +7955,7 @@ describe("QingYu workspace", () => {
     fireEvent.click(screen.getByRole("tab", { name: /main\.md/ }));
     await expectVisibleCodeMirrorText(container, "Current text");
 
-    diskContent.set(sidePath, "# Side\n\nFresh disk text");
+    diskContent.set(sidePath, withMatchingDocumentTitle("# Side\n\nFresh disk text", "side.md"));
     fireEvent.click(screen.getByRole("tab", { name: /side\.md/ }));
 
     await expectVisibleCodeMirrorText(container, "Fresh disk text");
@@ -7861,14 +7978,14 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === mainPath) {
         return {
-          content: "main words",
+          content: withMatchingDocumentTitle("main words", "main.md"),
           name: "main.md",
           path: mainPath
         };
       }
 
       return {
-        content: "side pane words",
+        content: withMatchingDocumentTitle("side pane words", "side.md"),
         name: "side.md",
         path: sidePath
       };
@@ -7905,8 +8022,8 @@ describe("QingYu workspace", () => {
     const mainPath = "/mock-files/vault/main.md";
     const sidePath = "/mock-files/vault/side.md";
     const diskContent = new Map([
-      [mainPath, "# Main\n\nPrimary text"],
-      [sidePath, "# Side\n\nBefore external edit"]
+      [mainPath, withMatchingDocumentTitle("# Main\n\nPrimary text", "main.md")],
+      [sidePath, withMatchingDocumentTitle("# Side\n\nBefore external edit", "side.md")]
     ]);
     const watchHandlers = new Map<string, (path: string) => unknown | Promise<unknown>>();
     mockOpenMarkdownTarget({
@@ -7950,7 +8067,10 @@ describe("QingYu workspace", () => {
 
     await waitFor(() => expect(watchHandlers.has(sidePath)).toBe(true));
 
-    diskContent.set(sidePath, "# Side\n\nAfter external edit");
+    diskContent.set(
+      sidePath,
+      withMatchingDocumentTitle("# Side\n\nAfter external edit", "side.md")
+    );
     await act(async () => {
       await watchHandlers.get(sidePath)?.(sidePath);
     });
@@ -7978,7 +8098,7 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === guidePath) {
         return {
-          content: "# Guide\n\nReference",
+          content: withMatchingDocumentTitle("# Guide\n\nReference", "guide.md"),
           name: "guide.md",
           path: guidePath
         };
@@ -7986,14 +8106,14 @@ describe("QingYu workspace", () => {
 
       if (path === thirdPath) {
         return {
-          content: "# Third\n\nIndependent",
+          content: withMatchingDocumentTitle("# Third\n\nIndependent", "third.md"),
           name: "third.md",
           path: thirdPath
         };
       }
 
       return {
-        content: "# Notes\n\nDraft",
+        content: withMatchingDocumentTitle("# Notes\n\nDraft", "notes.md"),
         name: "notes.md",
         path: notesPath
       };
@@ -8064,13 +8184,21 @@ describe("QingYu workspace", () => {
 
     const sourceEditors = await screen.findAllByRole("textbox", { name: "Markdown source" });
     expect(sourceEditors.map((editor) => readMarkdownSource(editor).trimEnd())).toEqual(
-      expect.arrayContaining(["# Guide\n\nReference", "# Third\n\nIndependent"])
+      expect.arrayContaining([
+        withMatchingDocumentTitle("# Guide\n\nReference", "guide.md").trimEnd(),
+        withMatchingDocumentTitle("# Third\n\nIndependent", "third.md").trimEnd()
+      ])
     );
 
     const sideSource = await within(replacedSidePane).findByRole("textbox", { name: "Markdown source" });
-    expect(readMarkdownSource(sideSource).trimEnd()).toBe("# Third\n\nIndependent");
+    expect(readMarkdownSource(sideSource).trimEnd()).toBe(
+      withMatchingDocumentTitle("# Third\n\nIndependent", "third.md").trimEnd()
+    );
 
-    replaceMarkdownSource(sideSource, "# Third\n\nIndependent update");
+    replaceMarkdownSource(
+      sideSource,
+      withMatchingDocumentTitle("# Third\n\nIndependent update", "third.md")
+    );
     expect(screen.getByRole("tab", { name: /guide\.md/ })).toHaveAttribute("aria-selected", "true");
 
     await selectEditorViewMode("Preview");
@@ -8360,14 +8488,14 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === firstPath) {
         return {
-          content: "# First\n\nOriginal",
+          content: withMatchingDocumentTitle("# First\n\nOriginal", "1.md"),
           name: "1.md",
           path: firstPath
         };
       }
 
       return {
-        content: "# Second\n\nOriginal",
+        content: withMatchingDocumentTitle("# Second\n\nOriginal", "2.md"),
         name: "2.md",
         path: secondPath
       };
@@ -8423,13 +8551,14 @@ describe("QingYu workspace", () => {
     expect(sidePaneTab).toHaveAttribute("data-document-tab-pane-focus", "true");
     expect(mainPaneTab).not.toHaveAttribute("data-document-tab-pane-focus");
     await waitFor(() => expect(document.activeElement).toBe(sideSource));
-    replaceMarkdownSource(sideSource, "# Second\n\nClicked side tab edit");
+    const clickedSideContent = withMatchingDocumentTitle("# Second\n\nClicked side tab edit", "2.md");
+    replaceMarkdownSource(sideSource, clickedSideContent);
     fireEvent.click(screen.getByRole("button", { name: "Save Markdown" }));
 
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          contents: "# Second\n\nClicked side tab edit",
+          contents: clickedSideContent,
           path: secondPath,
           suggestedName: "2.md"
         })
@@ -8437,13 +8566,14 @@ describe("QingYu workspace", () => {
     );
 
     fireEvent.focus(sideSource);
-    replaceMarkdownSource(sideSource, "# Second\n\nFocused side save as");
+    const focusedSideContent = withMatchingDocumentTitle("# Second\n\nFocused side save as", "2.md");
+    replaceMarkdownSource(sideSource, focusedSideContent);
     fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
 
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          contents: "# Second\n\nFocused side save as",
+          contents: focusedSideContent,
           path: null,
           suggestedName: "2.md"
         })
@@ -8455,13 +8585,14 @@ describe("QingYu workspace", () => {
     expect(mainPaneTab).toHaveAttribute("data-document-tab-pane-focus", "true");
     expect(sidePaneTab).not.toHaveAttribute("data-document-tab-pane-focus");
     await waitFor(() => expect(document.activeElement).toBe(mainSource));
-    replaceMarkdownSource(mainSource, "# First\n\nFocused main edit");
+    const focusedMainContent = withMatchingDocumentTitle("# First\n\nFocused main edit", "1.md");
+    replaceMarkdownSource(mainSource, focusedMainContent);
     fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
 
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          contents: "# First\n\nFocused main edit",
+          contents: focusedMainContent,
           path: null,
           suggestedName: "1.md"
         })
@@ -8547,7 +8678,7 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === firstPath) {
         return {
-          content: "# First\n\nOriginal",
+          content: withMatchingDocumentTitle("# First\n\nOriginal", "1.md"),
           name: "1.md",
           path: firstPath
         };
@@ -8555,14 +8686,14 @@ describe("QingYu workspace", () => {
 
       if (path === secondPath) {
         return {
-          content: "# Second\n\nOriginal",
+          content: withMatchingDocumentTitle("# Second\n\nOriginal", "2.md"),
           name: "2.md",
           path: secondPath
         };
       }
 
       return {
-        content: "# Third\n\nOriginal",
+        content: withMatchingDocumentTitle("# Third\n\nOriginal", "3.md"),
         name: "3.md",
         path: thirdPath
       };
@@ -8596,7 +8727,10 @@ describe("QingYu workspace", () => {
     const sideSource = await within(sidePane).findByRole("textbox", { name: "Markdown source" });
 
     fireEvent.focus(sideSource);
-    replaceMarkdownSource(sideSource, "# Second\n\nFocused side draft");
+    replaceMarkdownSource(
+      sideSource,
+      withMatchingDocumentTitle("# Second\n\nFocused side draft", "2.md")
+    );
 
     fireEvent.click(screen.getByRole("tab", { name: /3\.md/ }));
     await waitFor(() => expect(container.querySelector(".editor-side-by-side-surface")).not.toBeInTheDocument());
@@ -8610,7 +8744,7 @@ describe("QingYu workspace", () => {
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          contents: "# First\n\nOriginal",
+          contents: withMatchingDocumentTitle("# First\n\nOriginal", "1.md"),
           path: firstPath,
           suggestedName: "1.md"
         })
@@ -9076,6 +9210,114 @@ describe("QingYu workspace", () => {
     );
   });
 
+  it("uses the localized untitled policy for quick creation", async () => {
+    mockedGetStoredLanguage.mockResolvedValue("zh-CN");
+
+    renderApp();
+    await screen.findByText("Editor fixture");
+    fireEvent.click(screen.getByRole("button", { name: "新建标签页" }));
+
+    expect(await screen.findByRole("tab", { name: /未命名\.md/u })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
+  });
+
+  it("immediately saves a daily note collision with the authoritative Front Matter title", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 7, 2, 23, 59, 59));
+    const createdFile = {
+      name: "2026-08-02 1.md",
+      path: `${mockFolderPath}/2026-08-02 1.md`,
+      relativePath: "2026-08-02 1.md"
+    };
+    const initialSource = `---
+title: 2026-08-02
+---
+
+Date: 2026-08-02
+
+# Notes
+
+# Tasks
+
+- [ ]
+`;
+    const finalSource = initialSource.replace("title: 2026-08-02", "title: 2026-08-02 1");
+    mockOpenMarkdownFolder({ path: mockFolderPath, name: "vault" });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([createdFile]);
+    mockedCreateNativeMarkdownTreeFile.mockImplementation(async () => {
+      vi.setSystemTime(new Date(2026, 7, 3, 0, 0, 1));
+      return createdFile;
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue(createdFile);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: finalSource,
+      name: createdFile.name,
+      path: createdFile.path
+    });
+
+    try {
+      renderApp();
+      fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+      expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
+
+      await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
+        mockFolderPath,
+        "2026-08-02.md",
+        { contents: initialSource, parentPath: null }
+      ));
+      await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contents: finalSource,
+          path: createdFile.path,
+          suggestedName: createdFile.name
+        })
+      ));
+      expect(await screen.findByRole("tab", { name: /2026-08-02 1\.md/u })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens a collision-allocated tree file as authoritative dirty source when both metadata writes fail", async () => {
+    const createdFile = {
+      name: "Untitled 1.md",
+      path: `${mockFolderPath}/Untitled 1.md`,
+      relativePath: "Untitled 1.md"
+    };
+    const requestedSource = "---\ntitle: Untitled\n---\n\n";
+    const authoritativeSource = "---\ntitle: Untitled 1\n---\n\n";
+    mockOpenMarkdownFolder({ path: mockFolderPath, name: "vault" });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+    mockedCreateNativeMarkdownTreeFile.mockResolvedValue(createdFile);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: requestedSource,
+      name: createdFile.name,
+      path: createdFile.path
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue(null);
+
+    renderApp();
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+    expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
+
+    expect(await screen.findByRole("tab", { name: /Untitled 1\.md/u })).toBeInTheDocument();
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(document.querySelector(".app-toast"))
+      .toHaveTextContent("The document title metadata could not be updated."));
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+
+    await selectEditorViewMode("Source code");
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown source" })
+    )).toBe(authoritativeSource);
+  });
+
   it("opens another file from an untouched blank document without asking to discard changes", async () => {
     window.history.pushState({}, "", "/?blank=1");
     mockedOpenNativeMarkdownFile
@@ -9171,7 +9413,10 @@ describe("QingYu workspace", () => {
 
     await selectEditorViewMode("Source code");
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
-    replaceMarkdownSource(sourceEditor, "Edited synthetic text");
+    replaceMarkdownSource(
+      sourceEditor,
+      withMatchingDocumentTitle("Edited synthetic text", "native.md")
+    );
     mockOpenMarkdownTarget({
       kind: "file",
       file: {
@@ -9573,11 +9818,73 @@ describe("QingYu workspace", () => {
 
     renderApp();
 
-    expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
-    expect(await screen.findByLabelText("Markdown editor")).toHaveTextContent(/^$/);
+    expect(await screen.findByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown document" })
+    )).toBe("---\ntitle: Untitled\n---\n\n");
     expect(screen.queryByText("Editor fixture")).not.toBeInTheDocument();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
+  });
+
+  it("initializes a native external blank from asynchronously loaded stored language", async () => {
+    window.history.pushState({}, "", "/?blank=1");
+    let resolveStoredLanguage: (language: "zh-CN") => unknown = () => undefined;
+    mockedGetStoredLanguage.mockReturnValue(new Promise((resolve) => {
+      resolveStoredLanguage = resolve;
+    }));
+
+    renderApp();
+
+    expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Document title" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+
+    await act(async () => resolveStoredLanguage("zh-CN"));
+
+    expect(await screen.findByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑视图: 预览" }));
+
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown 源码" })
+    )).toBe("---\ntitle: 未命名\n---\n\n");
+  });
+
+  it("keeps a primary deferred blank restoring until stored language is ready", async () => {
+    const controller = mockDesktopPrimaryWorkspace({ root: "/Notes", status: "ready" });
+    let resolveStoredLanguage: (language: "zh-CN") => unknown = () => undefined;
+    let resolveEditorPreferences: (
+      preferences: Parameters<typeof mockedSaveStoredEditorPreferences>[0]
+    ) => unknown = () => undefined;
+    mockedGetStoredLanguage.mockReturnValue(new Promise((resolve) => {
+      resolveStoredLanguage = resolve;
+    }));
+    mockedGetStoredEditorPreferences.mockReturnValue(new Promise((resolve) => {
+      resolveEditorPreferences = resolve;
+    }));
+
+    const app = renderApp();
+
+    controller.root = null;
+    controller.status = "loading";
+    rerenderApp(app);
+    controller.status = "deferred";
+    rerenderApp(app);
+
+    expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Document title" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+
+    await act(async () => resolveStoredLanguage("zh-CN"));
+
+    expect(await screen.findByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
+    fireEvent.click(screen.getByRole("button", { name: "编辑视图: 预览" }));
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown 源码" })
+    )).toBe("---\ntitle: 未命名\n---\n\n");
+
+    await act(async () => resolveEditorPreferences(createStoredEditorPreferences()));
   });
 
   it("focuses the editor when a native new-document window opens", async () => {
@@ -9995,7 +10302,7 @@ describe("QingYu workspace", () => {
       relativePath: "original.md"
     }]);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Primary original",
+      content: withMatchingDocumentTitle("# Primary original", "original.md"),
       name: "original.md",
       path: originalPath
     });
@@ -10058,7 +10365,7 @@ describe("QingYu workspace", () => {
       { name: "note.md", path: notePath, relativePath: "abc/note.md" }
     ]);
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Note\n\nExisting file.",
+      content: withMatchingDocumentTitle("# Note\n\nExisting file.", "note.md"),
       name: "note.md",
       path: notePath
     });
@@ -10107,12 +10414,12 @@ describe("QingYu workspace", () => {
     ]);
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === mainPath
       ? {
-        content: "# Main",
+        content: withMatchingDocumentTitle("# Main", "main.md"),
         name: "main.md",
         path: mainPath
       }
       : {
-        content: "# Side",
+        content: withMatchingDocumentTitle("# Side", "side.md"),
         name: "side.md",
         path: sidePath
       });
@@ -10254,12 +10561,12 @@ describe("QingYu workspace", () => {
     });
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === bulletinPath
       ? {
-        content: "# Bulletin\n\nFirst document.",
+        content: withMatchingDocumentTitle("# Bulletin\n\nFirst document.", "bulletin.md"),
         name: "bulletin.md",
         path
       }
       : {
-        content: "# Temporary notes\n\nSecond document.",
+        content: withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md"),
         name: "temp.md",
         path
       });
@@ -10276,10 +10583,14 @@ describe("QingYu workspace", () => {
     try {
       act(() => {
         fireEvent.compositionStart(bulletinEditor);
+        const composedContent = withMatchingDocumentTitle(
+          "# Bulletin\n\nFinished Chinese composition.",
+          "bulletin.md"
+        );
         bulletinView.dispatch({
           changes: {
             from: 0,
-            insert: "# Bulletin\n\nFinished Chinese composition.",
+            insert: composedContent,
             to: bulletinView.state.doc.length
           }
         });
@@ -10293,34 +10604,34 @@ describe("QingYu workspace", () => {
     await selectEditorViewMode("Source code");
 
     expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }))).toBe(
-      "# Temporary notes\n\nSecond document."
+      withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md")
     );
     act(() => pendingCompositionTasks.forEach((task) => task()));
     expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown source" }))).toBe(
-      "# Temporary notes\n\nSecond document."
+      withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md")
     );
 
     fireEvent.click(screen.getByRole("tab", { name: /bulletin\.md/ }));
     expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }))).toBe(
-      "# Bulletin\n\nFinished Chinese composition."
+      withMatchingDocumentTitle("# Bulletin\n\nFinished Chinese composition.", "bulletin.md")
     );
     fireEvent.click(screen.getByRole("tab", { name: /temp\.md/ }));
 
     await selectEditorViewMode("Preview + Source");
 
     expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown source" }))).toBe(
-      "# Temporary notes\n\nSecond document."
+      withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md")
     );
     await expectVisibleCodeMirrorText(document.body, "Temporary notes");
     expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown document" }))).toBe(
-      "# Temporary notes\n\nSecond document."
+      withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md")
     );
 
     await selectEditorViewMode("Preview");
 
     await expectVisibleCodeMirrorText(document.body, "Temporary notes");
     expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown document" }))).toBe(
-      "# Temporary notes\n\nSecond document."
+      withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md")
     );
   });
 
@@ -10336,12 +10647,12 @@ describe("QingYu workspace", () => {
     });
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === firstPath
       ? {
-        content: "# First document",
+        content: withMatchingDocumentTitle("# First document", "first.md"),
         name: "first.md",
         path
       }
       : {
-        content: "# Second document",
+        content: withMatchingDocumentTitle("# Second document", "second.md"),
         name: "second.md",
         path
       });
@@ -10359,7 +10670,9 @@ describe("QingYu workspace", () => {
     const secondSourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
     const secondSourceView = getMarkdownSourceView(secondSourceEditor);
     expect(secondSourceView).not.toBe(firstSourceView);
-    expect(secondSourceView.state.doc.toString()).toBe("# Second document");
+    expect(secondSourceView.state.doc.toString()).toBe(
+      withMatchingDocumentTitle("# Second document", "second.md")
+    );
   });
 
   it("shows optional line numbers in source and split source modes", async () => {
@@ -10931,7 +11244,10 @@ describe("QingYu workspace", () => {
   });
 
   it("opens oversized markdown in source mode and returns to the visual notice", async () => {
-    const largeContent = `# Oversized source\n\n${"Synthetic paragraph. ".repeat(110_000)}`;
+    const largeContent = withMatchingDocumentTitle(
+      `# Oversized source\n\n${"Synthetic paragraph. ".repeat(110_000)}`,
+      "oversized.md"
+    );
     mockedGetStoredWorkspaceState.mockResolvedValue({
       filePath: mockNativePath,
       fileTreeOpen: false,
@@ -10962,7 +11278,10 @@ describe("QingYu workspace", () => {
 
   it("keeps a restored workspace file in source mode without rerunning startup restore", async () => {
     const restoredPath = `${mockFolderPath}/native.md`;
-    const restoredContent = "# Restored source\n\nBack from the saved workspace.";
+    const restoredContent = withMatchingDocumentTitle(
+      "# Restored source\n\nBack from the saved workspace.",
+      "native.md"
+    );
     mockedGetStoredWorkspaceState.mockResolvedValue({
       filePath: restoredPath,
       fileTreeOpen: true,
@@ -11863,6 +12182,7 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     fireEvent.keyDown(window, { key: "o", metaKey: true });
+    await waitFor(() => expect(container.querySelector(".cm-markra-table")).toBeInTheDocument());
     await selectEditorViewMode("Preview + Source");
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
     const cell = await waitFor(() => {
@@ -11892,7 +12212,10 @@ describe("QingYu workspace", () => {
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
         expect.objectContaining({
-          contents: ["| Field | Value |", "| --- | --- |", "| Name | After |"].join("\n"),
+          contents: withMatchingDocumentTitle(
+            ["| Field | Value |", "| --- | --- |", "| Name | After |"].join("\n"),
+            "table.md"
+          ),
           path: mockNativePath,
           suggestedName: "table.md"
         })
@@ -11901,7 +12224,10 @@ describe("QingYu workspace", () => {
   });
 
   it("keeps a clean file unmodified when toggling markdown source mode without edits", async () => {
-    const originalContent = "Native file\n===========\n\nOpened from disk.";
+    const originalContent = withMatchingDocumentTitle(
+      "Native file\n===========\n\nOpened from disk.",
+      "native.md"
+    );
     mockOpenMarkdownFile({
       content: originalContent,
       name: "native.md",
@@ -11948,7 +12274,7 @@ describe("QingYu workspace", () => {
     await selectEditorViewMode("Source code");
 
     expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" })).trim()).toBe(
-      "### C\n\nSummary content."
+      withMatchingDocumentTitle("### C\n\nSummary content.", "test.md").trim()
     );
     expect(screen.queryByLabelText("Unsaved changes")).not.toBeInTheDocument();
   });
@@ -11970,16 +12296,20 @@ describe("QingYu workspace", () => {
     await expectVisibleMarkdownText("Native file");
 
     await selectEditorViewMode("Source code");
+    const updatedContent = withMatchingDocumentTitle(
+      "# Source save\n\nSaved from source mode.",
+      "native.md"
+    );
     replaceMarkdownSource(
       await screen.findByRole("textbox", { name: "Markdown source" }),
-      "# Source save\n\nSaved from source mode."
+      updatedContent
     );
     fireEvent.click(screen.getByRole("button", { name: "Save Markdown" }));
 
     await waitFor(() =>
       expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
         expect.objectContaining({
-          contents: "# Source save\n\nSaved from source mode.",
+          contents: updatedContent,
           path: mockNativePath,
           suggestedName: "native.md"
         })
@@ -12189,7 +12519,10 @@ describe("QingYu workspace", () => {
     act(() => {
       view.dispatch({ selection: EditorSelection.cursor(2) });
     });
-    expect(view.state.doc.toString()).toBe("[About us](https://example.test/articles/about)");
+    expect(view.state.doc.toString()).toBe(withMatchingDocumentTitle(
+      "[About us](https://example.test/articles/about)",
+      "native.md"
+    ));
 
     fireEvent.keyDown(window, { key: "s", metaKey: true });
 
@@ -12473,14 +12806,14 @@ describe("QingYu workspace", () => {
         standaloneDocuments: true
       }
     });
-    const markdown = [
+    const markdown = withMatchingDocumentTitle([
       "# Portable Markdown",
       "",
       "![Chart](assets/chart.png)",
       "[Escaped](files/reference\\(final\\).pdf)",
       "[Reference](files/reference.pdf)",
       "[Remote](https://example.test/reference.pdf)"
-    ].join("\n");
+    ].join("\n"), "portable.md");
     mockOpenMarkdownFile({
       content: markdown,
       name: "portable.md",
@@ -12847,7 +13180,10 @@ describe("QingYu workspace", () => {
       path: mockNativePath
     });
     mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Changed elsewhere\n\nReloaded from disk.",
+      content: withMatchingDocumentTitle(
+        "# Changed elsewhere\n\nReloaded from disk.",
+        "native.md"
+      ),
       name: "native.md",
       path: mockNativePath
     });
@@ -12923,5 +13259,375 @@ describe("QingYu workspace", () => {
 
     await waitFor(() => expect(mockedListNativeMarkdownFilesForPath.mock.calls.length).toBeGreaterThan(callsBeforeTreeChange));
     expect(mockedListNativeMarkdownFilesForPath).toHaveBeenLastCalledWith("/mock-files", defaultFileTreeListOptions);
+  });
+
+  it("renders the document title with the visual body in one scroll surface and keeps Front Matter hidden", async () => {
+    const content = "---\ntitle: Native\ncategory: private\n---\n\n# Visible body\n";
+    mockPrimaryMarkdownFile({ content, name: "Native.md", path: mockNativePath });
+    const { container } = renderApp();
+
+    const title = await screen.findByRole("textbox", { name: "Document title" });
+    const body = await screen.findByRole("textbox", { name: "Markdown document" });
+    const scrollSurface = title.closest(".paper-scroll");
+
+    expect(title).toHaveTextContent("Native");
+    expect(scrollSurface).toBeInTheDocument();
+    expect(scrollSurface).toContainElement(body);
+    expect(getVisibleCodeMirrorView(container).state.doc.toString()).toBe(content);
+    expect(body).not.toHaveTextContent("category: private");
+  });
+
+  it("repairs a writable missing document title exactly once from the runtime filename", async () => {
+    const sourceWithoutTitle = "# Body without metadata\n";
+    const repairedSource = "---\ntitle: Runtime title\n---\n\n# Body without metadata\n";
+    mockOpenMarkdownFile({
+      content: sourceWithoutTitle,
+      name: "Runtime title.md",
+      path: mockNativePath
+    });
+    mockedOpenNativeMarkdownFile.mockResolvedValue({
+      content: sourceWithoutTitle,
+      name: "Runtime title.md",
+      path: mockNativePath
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Runtime title.md",
+      path: mockNativePath
+    });
+    renderApp();
+
+    openMarkdownFromUnifiedPicker();
+
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Runtime title");
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: repairedSource,
+        path: mockNativePath,
+        skipHistorySnapshot: true,
+        suggestedName: "Runtime title.md"
+      })
+    ));
+    await waitFor(() => expect(getVisibleCodeMirrorView(document.body).state.doc.toString()).toBe(repairedSource));
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+  });
+
+  it("shows raw Front Matter without a document title in source mode and exactly one title in split mode", async () => {
+    const content = "---\ntitle: Native\ntag: source-visible\n---\n\n# Body\n";
+    mockPrimaryMarkdownFile({ content, name: "Native.md", path: mockNativePath });
+    renderApp();
+
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+
+    await selectEditorViewMode("Source code");
+    expect(screen.queryByRole("textbox", { name: "Document title" })).not.toBeInTheDocument();
+    expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }))).toBe(content);
+
+    await selectEditorViewMode("Preview + Source");
+    expect(screen.getAllByRole("textbox", { name: "Document title" })).toHaveLength(1);
+    expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown source" }))).toBe(content);
+  });
+
+  it("routes a visual document title edit through guarded rename, apply, and immediate save", async () => {
+    const renamedPath = "/mock-files/Renamed title.md";
+    mockPrimaryMarkdownFile({
+      content: "---\ntitle: Native\n---\n\n# Body\n",
+      name: "Native.md",
+      path: mockNativePath
+    });
+    mockedRenameNativeMarkdownTreeFile.mockResolvedValue({
+      name: "Renamed title.md",
+      path: renamedPath,
+      relativePath: "Renamed title.md"
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Renamed title.md",
+      path: renamedPath
+    });
+    renderApp();
+    const title = await screen.findByRole("textbox", { name: "Document title" });
+
+    title.textContent = "Renamed title";
+    fireEvent.input(title);
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+    fireEvent.blur(title);
+
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      "/mock-files",
+      mockNativePath,
+      "Renamed title.md"
+    ));
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: "---\ntitle: Renamed title\n---\n\n# Body\n",
+        path: renamedPath,
+        skipHistorySnapshot: true,
+        suggestedName: "Renamed title.md"
+      })
+    ));
+    expect(screen.getByRole("tab", { name: /Renamed title\.md/ })).toBeInTheDocument();
+  });
+
+  it("routes a source document title edit through rename once while preserving body-only source routing", async () => {
+    const original = "---\ntitle: Native\ntag: one\n---\n\n# Body\n";
+    const bodyOnly = "---\ntitle: Native\ntag: two\n---\n\n# Updated body\n";
+    const titleEdit = "---\ntitle: Source title\ntag: two\n---\n\n# Updated body\n";
+    const renamedPath = "/mock-files/Source title.md";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockResolvedValue({
+      name: "Source title.md",
+      path: renamedPath,
+      relativePath: "Source title.md"
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Source title.md", path: renamedPath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, bodyOnly);
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(bodyOnly));
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+
+    replaceMarkdownSource(source, titleEdit);
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: titleEdit,
+        path: renamedPath,
+        skipHistorySnapshot: true
+      })
+    ));
+    expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      "/mock-files",
+      mockNativePath,
+      "Source title.md"
+    );
+  });
+
+  it("restores a rejected source title in CodeMirror while preserving and saving its other source edits", async () => {
+    const original = "---\ntitle: Native\ntag: one\n---\n\n# Body\n";
+    const rejected = "---\ntitle: Taken\ntag: changed\n---\n\n# Changed body\n";
+    const authoritative = "---\ntitle: Native\ntag: changed\n---\n\n# Changed body\n";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockRejectedValue(new Error("File already exists"));
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Native.md", path: mockNativePath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, rejected);
+
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      "/mock-files",
+      mockNativePath,
+      "Taken.md"
+    ));
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(authoritative));
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: authoritative,
+        path: mockNativePath,
+        skipHistorySnapshot: true,
+        suggestedName: "Native.md"
+      })
+    ));
+  });
+
+  it("restores a title-only source collision in CodeMirror even when authoritative content matches the starting prop", async () => {
+    const original = "---\ntitle: Native\n---\n\n# Body\n";
+    const rejected = "---\ntitle: Taken\n---\n\n# Body\n";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockRejectedValue(new Error("File already exists"));
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Native.md", path: mockNativePath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, rejected);
+
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(original));
+  });
+
+  it("immediately restores a removed source title in CodeMirror", async () => {
+    const original = "---\ntag: keep\ntitle: Native\n---\n\n# Body\n";
+    const removed = "---\ntag: keep\n---\n\n# Body\n";
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Native.md", path: mockNativePath });
+    renderApp();
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Native");
+    await selectEditorViewMode("Source code");
+    const source = await screen.findByRole("textbox", { name: "Markdown source" });
+
+    replaceMarkdownSource(source, removed);
+
+    await waitFor(() => expect(readMarkdownSource(source)).toBe(original));
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({ contents: original, path: mockNativePath })
+    ));
+  });
+
+  it("settles a pending title rename before an ordinary save can write the document", async () => {
+    const original = "---\ntitle: Native\n---\n\n# Body\n";
+    const renamedPath = "/mock-files/Save now.md";
+    let resolveRename!: (file: { name: string; path: string; relativePath: string }) => unknown;
+    const rename = new Promise<{ name: string; path: string; relativePath: string }>((resolve) => {
+      resolveRename = resolve;
+    });
+    mockPrimaryMarkdownFile({ content: original, name: "Native.md", path: mockNativePath });
+    mockedRenameNativeMarkdownTreeFile.mockImplementation(() => rename);
+    mockedSaveNativeMarkdownFile.mockResolvedValue({ name: "Save now.md", path: renamedPath });
+    renderApp();
+    const title = await screen.findByRole("textbox", { name: "Document title" });
+
+    title.textContent = "Save now";
+    fireEvent.input(title);
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledTimes(1));
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+    resolveRename({
+      name: "Save now.md",
+      path: renamedPath,
+      relativePath: "Save now.md"
+    });
+
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2));
+    expect(mockedSaveNativeMarkdownFile.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({
+        contents: "---\ntitle: Save now\n---\n\n# Body\n",
+        path: renamedPath,
+        skipHistorySnapshot: true,
+        suggestedName: "Save now.md"
+      }),
+      expect.objectContaining({
+        contents: "---\ntitle: Save now\n---\n\n# Body\n",
+        path: renamedPath,
+        suggestedName: "Save now.md"
+      })
+    ]);
+  });
+
+  it("rolls a colliding document title back without changing the tab and shows localized feedback", async () => {
+    mockPrimaryMarkdownFile({
+      content: "---\ntitle: Native\n---\n\n# Body\n",
+      name: "Native.md",
+      path: mockNativePath
+    });
+    mockedRenameNativeMarkdownTreeFile.mockRejectedValue(new Error("File already exists"));
+    renderApp();
+    const title = await screen.findByRole("textbox", { name: "Document title" });
+
+    title.textContent = "Existing";
+    fireEvent.input(title);
+    fireEvent.blur(title);
+
+    await waitFor(() => expect(title).toHaveTextContent("Native"));
+    expect(screen.getByRole("tab", { name: /Native\.md/ })).toBeInTheDocument();
+    expect(document.querySelector(".app-toast")).toHaveTextContent(
+      "A document with this title already exists."
+    );
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: "---\ntitle: Native\n---\n\n# Body\n",
+        path: mockNativePath,
+        skipHistorySnapshot: true,
+        suggestedName: "Native.md"
+      })
+    );
+  });
+
+  it("disables malformed and read-only document titles without repairing their source", async () => {
+    const malformed = "---\ntitle: [broken\n---\n\n# Body\n";
+    mockPrimaryMarkdownFile({ content: malformed, name: "Native.md", path: mockNativePath });
+    renderApp();
+    const title = await screen.findByRole("textbox", { name: "Document title" });
+
+    expect(title).toHaveAttribute("contenteditable", "false");
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: "l", altKey: true, metaKey: true });
+    expect(title).toHaveAttribute("contenteditable", "false");
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+  });
+
+  it("gives each visual side-by-side pane its own document title and removes both in source mode", async () => {
+    const mainPath = "/mock-files/vault/Main.md";
+    const sidePath = "/mock-files/vault/Side.md";
+    mockOpenMarkdownTarget({
+      kind: "folder",
+      folder: { name: "vault", path: mockFolderPath }
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([
+      { name: "Main.md", path: mainPath, relativePath: "Main.md" },
+      { name: "Side.md", path: sidePath, relativePath: "Side.md" }
+    ]);
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === mainPath
+      ? { content: "---\ntitle: Main\n---\n\n# Main body\n", name: "Main.md", path: mainPath }
+      : { content: "---\ntitle: Side\n---\n\n# Side body\n", name: "Side.md", path: sidePath });
+    mockedRenameNativeMarkdownTreeFile.mockImplementation(async (_rootPath, path, fileName) => ({
+      name: fileName,
+      path: path.replace(/[^/]+$/u, fileName),
+      relativePath: fileName
+    }));
+    mockedSaveNativeMarkdownFile.mockImplementation(async ({ path, suggestedName }) => ({
+      name: suggestedName,
+      path: path ?? `/mock-files/vault/${suggestedName}`
+    }));
+    const { container } = renderApp();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Main.md" }));
+    await expectVisibleMarkdownText("Main body");
+    fireEvent.click(await screen.findByRole("button", { name: "Side.md" }));
+    await expectVisibleMarkdownText("Side body");
+    fireEvent.click(screen.getByRole("tab", { name: /Main\.md/ }));
+    fireEvent.contextMenu(screen.getByRole("tab", { name: /Side\.md/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open to side" }));
+
+    const mainPane = container.querySelector(".editor-side-by-side-surface > div:first-child") as HTMLElement;
+    const sidePane = container.querySelector(".side-document-pane") as HTMLElement;
+    expect(await within(mainPane).findByRole("textbox", { name: "Document title" })).toHaveTextContent("Main");
+    const sideTitle = await within(sidePane).findByRole("textbox", { name: "Document title" });
+    expect(sideTitle).toHaveTextContent("Side");
+
+    sideTitle.textContent = "Side visual rename";
+    fireEvent.input(sideTitle);
+    fireEvent.blur(sideTitle);
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      mockFolderPath,
+      sidePath,
+      "Side visual rename.md"
+    ));
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: "---\ntitle: Side visual rename\n---\n\n# Side body\n",
+        path: "/mock-files/vault/Side visual rename.md",
+        skipHistorySnapshot: true
+      })
+    ));
+
+    await selectEditorViewMode("Source code");
+    expect(screen.queryByRole("textbox", { name: "Document title" })).not.toBeInTheDocument();
+    const sideSource = await within(sidePane).findByRole("textbox", { name: "Markdown source" });
+    replaceMarkdownSource(
+      sideSource,
+      "---\ntitle: Side source rename\n---\n\n# Side body\n"
+    );
+    await waitFor(() => expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledWith(
+      mockFolderPath,
+      "/mock-files/vault/Side visual rename.md",
+      "Side source rename.md"
+    ));
+    expect(mockedRenameNativeMarkdownTreeFile).toHaveBeenCalledTimes(2);
   });
 });

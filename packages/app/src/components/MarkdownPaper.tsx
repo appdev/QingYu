@@ -1,4 +1,4 @@
-import { lazy, Suspense, type CSSProperties, type Ref, type UIEvent } from "react";
+import { lazy, Suspense, useRef, type CSSProperties, type Ref, type UIEvent } from "react";
 import { t, type AppLanguage } from "@markra/shared";
 import {
   editorContentWidthPixels,
@@ -14,6 +14,7 @@ import type { EditorTheme } from "../lib/settings/app-settings";
 import type { TableColumnWidthModePreference } from "../lib/settings/app-settings";
 import { EditorWidthResizer } from "./EditorWidthResizer";
 import type { CodeMirrorPaperSurfaceProps } from "./CodeMirrorPaperSurface";
+import { DocumentTitleEditor, type DocumentTitleEditorProps } from "./DocumentTitleEditor";
 
 const MarkdownPaperSurface = lazy(async () => {
   const module = await import("./CodeMirrorPaperSurface");
@@ -29,6 +30,7 @@ type MarkdownPaperProps = {
   contentWidthMax?: number;
   contentWidthMin?: number;
   contentWidthPx?: number | null;
+  documentTitle?: Omit<DocumentTitleEditorProps, "language">;
   documentKey?: string | null;
   documentPath?: CodeMirrorPaperSurfaceProps["documentPath"];
   editorFontFamily?: EditorFontFamilyPreference;
@@ -96,6 +98,7 @@ export function MarkdownPaper({
   contentWidthMax = editorCustomContentWidthMax,
   contentWidthMin = editorCustomContentWidthMin,
   contentWidthPx = null,
+  documentTitle,
   documentKey,
   documentPath,
   editorFontFamily = { family: null, source: "theme" },
@@ -132,6 +135,7 @@ export function MarkdownPaper({
   workspaceFiles,
   wrapCodeBlocks = true
 }: MarkdownPaperProps) {
+  const articleRef = useRef<HTMLElement>(null);
   const resolvedContentWidth = contentWidthPx ?? editorContentWidthPixels[contentWidth];
   const editorFontFamilyCss = editorFontFamilyCssValue(editorFontFamily);
   const paperStyle = {
@@ -149,6 +153,9 @@ export function MarkdownPaper({
   } satisfies MarkdownPaperStyle;
   const topInsetClassName = topInset === "tabs" ? "pt-24 max-[900px]:pt-20" : "pt-14 max-[900px]:pt-10";
   const editorInstanceKey = documentKey ?? "untitled";
+  const focusMarkdownBody = () => {
+    articleRef.current?.querySelector<HTMLElement>(".cm-content[role=\"textbox\"]")?.focus();
+  };
 
   return (
     <section
@@ -159,6 +166,7 @@ export function MarkdownPaper({
     >
       <article
         key={editorInstanceKey}
+        ref={articleRef}
         className={`markdown-paper relative mx-auto min-h-screen w-full max-w-215 px-18 ${topInsetClassName} text-[16px] leading-[1.65] text-(--text-primary) caret-(--accent) outline-none focus:outline-none max-[900px]:px-5.25`}
         style={paperStyle}
         aria-label={t(language, "app.markdownEditor")}
@@ -176,6 +184,16 @@ export function MarkdownPaper({
           onResizeEnd={onContentWidthResizeEnd}
           onResizeStart={onContentWidthResizeStart}
         />
+        {documentTitle ? (
+          <DocumentTitleEditor
+            {...documentTitle}
+            language={language}
+            onCommit={(reason) => {
+              documentTitle.onCommit(reason);
+              if (reason === "enter") focusMarkdownBody();
+            }}
+          />
+        ) : null}
         <Suspense fallback={<MarkdownPaperSurfaceFallback />}>
           <MarkdownPaperSurface
             autoFocus={autoFocus}

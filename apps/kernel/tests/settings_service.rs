@@ -1792,12 +1792,13 @@ fn fresh_editor_and_export_patches_produce_valid_portable_snapshots() {
 }
 
 #[test]
-fn patch_scrubs_polluted_groups_without_publishing_local_paths_or_unknown_secrets() {
+fn patch_scrubs_polluted_settings_groups_without_publishing_local_paths_or_unknown_secrets() {
     let golden = portable_golden_store();
     let mut editor = golden["editorPreferences"].clone();
     editor["unknownPath"] = serde_json::json!("/private/editor-state");
     editor["viewModeCustomizations"]["secret"] = serde_json::json!("editor-token");
     editor["viewModeCustomizations"]["recentFolders"] = serde_json::json!("hidden");
+    editor["markdownTemplates"][0]["suggestedName"] = serde_json::json!("obsolete-name");
     let mut export = golden["exportSettings"].clone();
     export["pandocPath"] = serde_json::json!("/private/bin/pandoc");
     export["secret"] = serde_json::json!("export-token");
@@ -1835,6 +1836,14 @@ fn patch_scrubs_polluted_groups_without_publishing_local_paths_or_unknown_secret
     assert!(stored["editorPreferences"]["viewModeCustomizations"]
         .get("secret")
         .is_none());
+    assert_eq!(
+        stored["editorPreferences"]["markdownTemplates"][0],
+        serde_json::json!({
+            "fileName": "daily.md",
+            "id": "daily",
+            "name": "Daily"
+        })
+    );
     assert_eq!(
         stored["editorPreferences"]["viewModeCustomizations"]["recentFolders"],
         serde_json::json!("hidden")

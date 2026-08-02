@@ -56,11 +56,15 @@ export function useStartupWindowReveal({
     if (!enabled || revealedRef.current) return;
 
     let cancelPaintReveal: (() => unknown) | null = null;
+    let revealScheduled = false;
     const reveal = () => {
-      if (revealedRef.current) return;
+      if (revealedRef.current || revealScheduled) return;
 
-      revealedRef.current = true;
+      revealScheduled = true;
       cancelPaintReveal = scheduleAfterNextPaint(() => {
+        if (revealedRef.current) return;
+
+        revealedRef.current = true;
         try {
           Promise.resolve(revealWindow()).catch(() => {});
         } catch {

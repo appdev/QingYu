@@ -729,8 +729,13 @@ describe("web file runtime", () => {
 
     const renamed = await runtime.files.renameMarkdownTreeFile(folder!.path, draft.path, "renamed.md");
 
-    expect(renamed).toMatchObject({
+    expect({
+      name: renamed.name,
+      path: renamed.path,
+      relativePath: renamed.relativePath
+    }).toEqual({
       name: "renamed.md",
+      path: `${folder!.path}/notes/renamed.md`,
       relativePath: "notes/renamed.md"
     });
     await expect(runtime.files.readMarkdownFile(renamed.path)).resolves.toMatchObject({
@@ -749,6 +754,45 @@ describe("web file runtime", () => {
       content: "# Draft",
       name: "renamed.md"
     });
+  });
+
+  it("rejects a browser file rename collision without overwriting or auto-numbering", async () => {
+    const sourceContents = "# A\n\0original source";
+    const targetContents = "# B\noriginal target 🐉";
+    const sourceHandle = new FakeFileHandle("A.md", sourceContents);
+    const targetHandle = new FakeFileHandle("B.md", targetContents);
+    const directory = new FakeDirectoryHandle("mock-vault", {
+      "A.md": sourceHandle,
+      "B.md": targetHandle
+    });
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+
+    const folder = await runtime.files.openMarkdownFolder();
+    const entries = await runtime.files.listMarkdownFilesForPath(folder!.path);
+    const source = entries.find((entry) => entry.relativePath === "A.md")!;
+    const target = entries.find((entry) => entry.relativePath === "B.md")!;
+
+    await expect(runtime.files.renameMarkdownTreeFile(folder!.path, source.path, "B.md"))
+      .rejects.toThrow("Target file already exists.");
+
+    const sourceFile = await sourceHandle.getFile();
+    const targetFile = await targetHandle.getFile();
+    expect([...new Uint8Array(await sourceFile.arrayBuffer())])
+      .toEqual([...new TextEncoder().encode(sourceContents)]);
+    expect([...new Uint8Array(await targetFile.arrayBuffer())])
+      .toEqual([...new TextEncoder().encode(targetContents)]);
+    await expect(runtime.files.readMarkdownFile(source.path)).resolves.toMatchObject({
+      content: sourceContents,
+      name: "A.md"
+    });
+    await expect(runtime.files.readMarkdownFile(target.path)).resolves.toMatchObject({
+      content: targetContents,
+      name: "B.md"
+    });
+    await expect(directory.getFileHandle("B 1.md")).rejects.toMatchObject({ name: "NotFoundError" });
   });
 
   it("saves pasted images into the current browser directory document folder", async () => {

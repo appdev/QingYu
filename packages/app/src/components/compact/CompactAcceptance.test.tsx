@@ -187,7 +187,11 @@ describe("Compact acceptance", () => {
 
     await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
       managedRoot,
-      "Untitled.md"
+      "Untitled.md",
+      {
+        contents: "---\ntitle: Untitled\n---\n\n",
+        parentPath: null
+      }
     ));
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: createdFile.name })).toBeInTheDocument();
@@ -205,9 +209,9 @@ describe("Compact acceptance", () => {
       openFilePaths: []
     }));
     const createdFile = {
-      name: "Untitled 1.md",
-      path: `${managedRoot}/Untitled 1.md`,
-      relativePath: "Untitled 1.md"
+      name: "未命名 1.md",
+      path: `${managedRoot}/未命名 1.md`,
+      relativePath: "未命名 1.md"
     };
     mockedListNativeMarkdownFilesForPath
       .mockResolvedValueOnce([])
@@ -226,7 +230,11 @@ describe("Compact acceptance", () => {
 
     await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
       managedRoot,
-      "Untitled.md"
+      "未命名.md",
+      {
+        contents: "---\ntitle: 未命名\n---\n\n",
+        parentPath: null
+      }
     ));
     expect(screen.queryByRole("dialog", { name: "新文件名" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: createdFile.name })).toBeInTheDocument();
@@ -286,7 +294,11 @@ describe("Compact acceptance", () => {
 
     await waitFor(() => expect(mockedCreateNativeMarkdownTreeFile).toHaveBeenCalledWith(
       managedRoot,
-      "Untitled.md"
+      "Untitled.md",
+      {
+        contents: "---\ntitle: Untitled\n---\n\n",
+        parentPath: null
+      }
     ));
     expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: createdFile.name })).toBeInTheDocument();

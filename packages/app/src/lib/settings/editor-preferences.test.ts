@@ -68,14 +68,12 @@ describe("editor preferences", () => {
           content: "# legacy content is migrated to the template file layer",
           fileName: " standup.md ",
           id: " standup ",
-          name: " Standup ",
-          suggestedName: " {{date}} standup "
+          name: " Standup "
         },
         {
           fileName: "../unsafe.md",
           id: "",
-          name: "",
-          suggestedName: ""
+          name: ""
         }
       ],
       restoreWorkspaceOnStartup: false,
@@ -111,8 +109,7 @@ describe("editor preferences", () => {
         {
           fileName: "standup.md",
           id: "standup",
-          name: "Standup",
-          suggestedName: "{{date}} standup"
+          name: "Standup"
         }
       ],
       openDroppedFilesInTabs: false,
@@ -435,8 +432,7 @@ describe("editor preferences", () => {
         {
           fileName: "weekly-review.md",
           id: "weekly-review",
-          name: "Weekly review",
-          suggestedName: "{{date}} weekly"
+          name: "Weekly review"
         }
       ],
       openDroppedFilesInTabs: false,
@@ -505,8 +501,7 @@ describe("editor preferences", () => {
         {
           fileName: "weekly-review.md",
           id: "weekly-review",
-          name: "Weekly review",
-          suggestedName: "{{date}} weekly"
+          name: "Weekly review"
         }
       ],
       openDroppedFilesInTabs: false,

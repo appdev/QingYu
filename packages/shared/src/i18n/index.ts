@@ -53,3 +53,7 @@ export function t(language: AppLanguage, key: string) {
 
   return dictionaries[language][i18nKey] ?? enMessages[i18nKey] ?? key;
 }
+
+export function untitledMarkdownDocumentName(language: AppLanguage) {
+  return `${t(language, "app.untitledDocumentName")}.md`;
+}
