@@ -12878,6 +12878,41 @@ describe("QingYu workspace", () => {
     expect(body).not.toHaveTextContent("category: private");
   });
 
+  it("repairs a writable missing document title exactly once from the runtime filename", async () => {
+    const sourceWithoutTitle = "# Body without metadata\n";
+    const repairedSource = "---\ntitle: Runtime title\n---\n\n# Body without metadata\n";
+    mockOpenMarkdownFile({
+      content: sourceWithoutTitle,
+      name: "Runtime title.md",
+      path: mockNativePath
+    });
+    mockedOpenNativeMarkdownFile.mockResolvedValue({
+      content: sourceWithoutTitle,
+      name: "Runtime title.md",
+      path: mockNativePath
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Runtime title.md",
+      path: mockNativePath
+    });
+    renderApp();
+
+    openMarkdownFromUnifiedPicker();
+
+    expect(await screen.findByRole("textbox", { name: "Document title" })).toHaveTextContent("Runtime title");
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contents: repairedSource,
+        path: mockNativePath,
+        skipHistorySnapshot: true,
+        suggestedName: "Runtime title.md"
+      })
+    ));
+    await waitFor(() => expect(getVisibleCodeMirrorView(document.body).state.doc.toString()).toBe(repairedSource));
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+    expect(mockedRenameNativeMarkdownTreeFile).not.toHaveBeenCalled();
+  });
+
   it("shows raw Front Matter without a document title in source mode and exactly one title in split mode", async () => {
     const content = "---\ntitle: Native\ntag: source-visible\n---\n\n# Body\n";
     mockPrimaryMarkdownFile({ content, name: "Native.md", path: mockNativePath });

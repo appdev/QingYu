@@ -747,6 +747,25 @@ function draggedBlockFrom(event: DragEvent) {
   return Number.isInteger(from) ? from : null;
 }
 
+function hasBlockDragType(event: DragEvent) {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  const compatibleTypes = types as typeof types & {
+    contains?: (type: string) => boolean;
+    item?: (index: number) => string | null;
+  };
+  if (typeof compatibleTypes.contains === "function") {
+    return compatibleTypes.contains(blockDragMime);
+  }
+  for (let index = 0; index < compatibleTypes.length; index += 1) {
+    const type = typeof compatibleTypes.item === "function"
+      ? compatibleTypes.item(index)
+      : compatibleTypes[index];
+    if (type === blockDragMime) return true;
+  }
+  return false;
+}
+
 class BlockDragViewPlugin {
   decorations: DecorationSet;
   tree: ReturnType<typeof syntaxTree>;
@@ -808,7 +827,7 @@ export function codeMirrorBlockDragPlugin(
       EditorView.domEventHandlers({
         dragover(event, view) {
           const target = dropTarget(event, view);
-          if (draggedBlockFrom(event) === null || !target) {
+          if (!hasBlockDragType(event) || !target) {
             return false;
           }
           event.preventDefault();
