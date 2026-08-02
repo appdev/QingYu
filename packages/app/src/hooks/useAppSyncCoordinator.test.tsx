@@ -22,6 +22,7 @@ import {
   getAppRuntime,
   resetAppRuntimeForTests
 } from "../runtime";
+import { KernelSyncRunError } from "../runtime/kernel-app/sync-config";
 import { useAppSyncCoordinator } from "./useAppSyncCoordinator";
 
 vi.mock("../lib/app-toast", () => ({ dismissAppToast: vi.fn(), showAppToast: vi.fn() }));
@@ -1823,6 +1824,236 @@ describe("application sync coordinator", () => {
       requestId: "request-403",
       runId: "run-1"
     });
+    logSpy.mockRestore();
+  });
+
+  it("logs a preserved Kernel safe error instead of degrading it to sync-failed", async () => {
+    const logSpy = vi.spyOn(appLogger, "error");
+    const settlementError = new Error("native settlement unavailable");
+    const failure = new KernelSyncRunError(
+      "apply-settlement-failed",
+      "sync-apply-settlement-failed",
+      {
+        runError: {
+        category: "configuration",
+        code: "configuration_invalid",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: null,
+        relativePath: null,
+        requestId: "00000000-0000-4000-8000-000000000011",
+        runId: "00000000-0000-4000-8000-000000000012",
+      },
+        settlementError,
+      },
+    );
+    mockedRunApplicationSync.mockRejectedValueOnce(failure);
+
+    renderCoordinator({ document: configDocument("rev-1", { provider: "s3" }) });
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization failed",
+      expect.objectContaining({
+        category: "configuration",
+        code: "configuration_invalid",
+        operation: "sync_run",
+        provider: "s3",
+        runId: "00000000-0000-4000-8000-000000000012",
+      }),
+    ));
+    logSpy.mockRestore();
+  });
+
+  it("preserves an uncategorized Kernel safe error instead of degrading it to sync-failed", async () => {
+    const logSpy = vi.spyOn(appLogger, "error");
+    const failure = Object.assign(new Error("Kernel sync cancelled"), {
+      runError: {
+        category: null,
+        code: "cancelled",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: null,
+        relativePath: null,
+        requestId: null,
+        runId: null,
+      },
+    });
+    mockedRunApplicationSync.mockRejectedValueOnce(failure);
+
+    renderCoordinator({ document: configDocument("rev-1", { provider: "s3" }) });
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization failed",
+      {
+        category: null,
+        code: "cancelled",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: null,
+        requestId: null,
+        runId: null,
+      },
+    ));
+    logSpy.mockRestore();
+  });
+
+  it("rejects a stateful wrapped runError getter without logging its second raw value", async () => {
+    const logSpy = vi.spyOn(appLogger, "error");
+    const safeRunError = {
+      category: "configuration",
+      code: "configuration_invalid",
+      httpStatus: null,
+      method: null,
+      objectId: null,
+      operation: "sync_run",
+      provider: "s3",
+      providerErrorCode: null,
+      relativePath: null,
+      requestId: null,
+      runId: null,
+    };
+    const failure = new Error("Kernel sync failed");
+    let reads = 0;
+    Object.defineProperty(failure, "runError", {
+      get: () => {
+        reads += 1;
+        return reads === 1 ? safeRunError : { ...safeRunError, code: "accessKey=RAW-CREDENTIAL" };
+      },
+    });
+    mockedRunApplicationSync.mockRejectedValueOnce(failure);
+
+    renderCoordinator({ document: configDocument("rev-1", { provider: "s3" }) });
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization failed",
+      {
+        category: null,
+        code: "sync-failed",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync",
+        provider: "s3",
+        providerErrorCode: null,
+        requestId: null,
+        runId: null,
+      },
+    ));
+    expect(JSON.stringify(logSpy.mock.calls.at(-1)?.[2])).not.toContain("RAW-CREDENTIAL");
+    logSpy.mockRestore();
+  });
+
+  it("rejects a throwing wrapped safe-error field getter without logging raw data", async () => {
+    const logSpy = vi.spyOn(appLogger, "error");
+    const runError = {
+      category: "configuration",
+      code: "configuration_invalid",
+      httpStatus: null,
+      method: null,
+      objectId: null,
+      operation: "sync_run",
+      provider: "s3",
+      providerErrorCode: null,
+      relativePath: null,
+      requestId: null,
+      runId: null,
+    };
+    Object.defineProperty(runError, "code", {
+      get: () => {
+        throw new Error("accessKey=RAW-CREDENTIAL");
+      },
+    });
+    mockedRunApplicationSync.mockRejectedValueOnce(Object.assign(new Error("Kernel sync failed"), {
+      runError,
+    }));
+
+    renderCoordinator({ document: configDocument("rev-1", { provider: "s3" }) });
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization failed",
+      {
+        category: null,
+        code: "sync-failed",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync",
+        provider: "s3",
+        providerErrorCode: null,
+        requestId: null,
+        runId: null,
+      },
+    ));
+    expect(JSON.stringify(logSpy.mock.calls.at(-1)?.[2])).not.toContain("RAW-CREDENTIAL");
+    logSpy.mockRestore();
+  });
+
+  it.each([
+    ["a mismatched provider", { provider: "webdav" }, "webdav"],
+    ["an extra credential-bearing key", { accessKeyId: "AKIA-RAW-CREDENTIAL" }, "AKIA-RAW-CREDENTIAL"],
+    ["a legacy app category", { category: "http" }, "RAW-CREDENTIAL"],
+    ["an unsafe code", { code: "accessKey=RAW-CREDENTIAL" }, "accessKey=RAW-CREDENTIAL"],
+    ["an unsafe operation", { operation: "secretAccessKey=RAW-CREDENTIAL" }, "secretAccessKey=RAW-CREDENTIAL"],
+    ["an unsafe method", { method: "Authorization RAW-CREDENTIAL" }, "Authorization RAW-CREDENTIAL"],
+    ["an unsafe provider error code", { providerErrorCode: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
+    ["an invalid HTTP status", { httpStatus: 99 }, "99"],
+    ["a native-incompatible object ID", { objectId: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
+    ["an unsafe relative path", { relativePath: "/RAW-CREDENTIAL" }, "/RAW-CREDENTIAL"],
+    ["an invalid request ID", { requestId: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
+    ["an invalid run ID", { runId: "RAW-CREDENTIAL" }, "RAW-CREDENTIAL"],
+  ])("rejects a wrapped Kernel error with %s", async (_scenario, patch, injected) => {
+    const logSpy = vi.spyOn(appLogger, "error");
+    const failure = Object.assign(new Error(`Kernel sync failed: ${injected}`), {
+      runError: {
+        category: "configuration",
+        code: "configuration_invalid",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: null,
+        relativePath: null,
+        requestId: "00000000-0000-4000-8000-000000000011",
+        runId: "00000000-0000-4000-8000-000000000012",
+        ...patch,
+      },
+    });
+    mockedRunApplicationSync.mockRejectedValueOnce(failure);
+
+    renderCoordinator({ document: configDocument("rev-1", { provider: "s3" }) });
+
+    await waitFor(() => expect(logSpy).toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization failed",
+      {
+        category: null,
+        code: "sync-failed",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync",
+        provider: "s3",
+        providerErrorCode: null,
+        requestId: null,
+        runId: null,
+      },
+    ));
+    const details = logSpy.mock.calls.at(-1)?.[2];
+    expect(JSON.stringify(details)).not.toContain(injected);
     logSpy.mockRestore();
   });
 

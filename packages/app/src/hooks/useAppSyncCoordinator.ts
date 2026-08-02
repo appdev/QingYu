@@ -141,6 +141,60 @@ const safeFallbackErrorCodes = new Set([
   "sync-failed",
   "sync-identity-changed"
 ]);
+const kernelSyncErrorCategories = new Set([
+  "authentication",
+  "authorization",
+  "configuration",
+  "conflict",
+  "network",
+  "provider",
+  "storage",
+  "transport",
+]);
+const kernelSyncErrorCodes = new Set([
+  "authentication_failed",
+  "cancelled",
+  "configuration_invalid",
+  "conflict",
+  "connection_failed",
+  "local_io",
+  "permission_denied",
+  "rate_limited",
+  "remote_unavailable",
+  "request_failed",
+  "unknown",
+]);
+const kernelSyncOperations = new Set([
+  "apply_config",
+  "delete_object",
+  "download_object",
+  "list_remote",
+  "read_local",
+  "read_manifest",
+  "sync_run",
+  "test_connection",
+  "upload_object",
+  "write_local",
+  "write_manifest",
+]);
+const kernelSyncMethods = new Set(["DELETE", "GET", "HEAD", "POST", "PROPFIND", "PUT"]);
+const kernelSyncProviderErrorCodes = new Set([
+  "AccessDenied",
+  "Conflict",
+  "Forbidden",
+  "InvalidRequest",
+  "Locked",
+  "NoSuchBucket",
+  "NoSuchKey",
+  "NotFound",
+  "PreconditionFailed",
+  "RequestTimeout",
+  "ServerError",
+  "SlowDown",
+  "TooManyRequests",
+  "Unauthorized",
+  "Unknown",
+]);
 
 function pendingRunKey(request: NormalSyncRunRequest) {
   return `${request.notesRoot}\u0000${request.notebookName}\u0000${request.revision}\u0000${request.applyToken ?? ""}`;
@@ -255,6 +309,8 @@ function fromLoadResult(result: SyncConfigLoadResult | null): SyncConfigDocument
 }
 
 function fallbackError(error: unknown, provider: SyncProvider): SyncSafeError {
+  const preserved = preservedKernelError(error, provider);
+  if (preserved) return preserved;
   const message = error instanceof Error ? error.message : String(error);
   const candidate = /^([a-z][a-z0-9-]{0,63})(?::|$)/u.exec(message)?.[1];
   return {
@@ -270,6 +326,154 @@ function fallbackError(error: unknown, provider: SyncProvider): SyncSafeError {
     requestId: null,
     runId: null
   };
+}
+
+function preservedKernelError(error: unknown, provider: SyncProvider): SyncSafeError | null {
+  try {
+    if (!isRecord(error)) return null;
+    return parseKernelSyncSafeError(ownDataValue(error, "runError"), provider);
+  } catch {
+    return null;
+  }
+}
+
+type KernelSyncErrorCategory =
+  | "authentication"
+  | "authorization"
+  | "configuration"
+  | "conflict"
+  | "network"
+  | "provider"
+  | "storage"
+  | "transport";
+
+function parseKernelSyncSafeError(value: unknown, provider: SyncProvider): SyncSafeError | null {
+  if (!isRecord(value)) return null;
+  const keys = [
+    "category",
+    "code",
+    "httpStatus",
+    "method",
+    "objectId",
+    "operation",
+    "provider",
+    "providerErrorCode",
+    "relativePath",
+    "requestId",
+    "runId",
+  ];
+  if (
+    Reflect.ownKeys(value).length !== keys.length ||
+    !keys.every((key) => Object.hasOwn(value, key))
+  ) {
+    return null;
+  }
+  const fields = keys.map((key) => ownDataValue(value, key));
+  const [
+    category,
+    code,
+    httpStatus,
+    method,
+    objectId,
+    operation,
+    errorProvider,
+    providerErrorCode,
+    relativePath,
+    requestId,
+    runId,
+  ] = fields;
+  if (
+    (category !== null && !isKernelSyncErrorCategory(category)) ||
+    !isKernelSyncErrorCode(code) ||
+    !isKernelHttpStatus(httpStatus) ||
+    !isNullableKernelMethod(method) ||
+    objectId !== null ||
+    !isKernelSyncOperation(operation) ||
+    errorProvider !== provider ||
+    !isNullableKernelProviderErrorCode(providerErrorCode) ||
+    !isNullableKernelWorkspaceRelativePath(relativePath) ||
+    !isNullableUuid(requestId) ||
+    !isNullableUuid(runId)
+  ) {
+    return null;
+  }
+  return {
+    category,
+    code,
+    httpStatus,
+    method,
+    objectId: null,
+    operation,
+    provider,
+    providerErrorCode,
+    relativePath,
+    requestId,
+    runId,
+  };
+}
+
+function ownDataValue(value: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !Object.hasOwn(descriptor, "value")) return undefined;
+  return descriptor.value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isKernelSyncErrorCategory(value: unknown): value is KernelSyncErrorCategory {
+  return typeof value === "string" && kernelSyncErrorCategories.has(value);
+}
+
+function isKernelSyncErrorCode(value: unknown): value is string {
+  return typeof value === "string" && kernelSyncErrorCodes.has(value);
+}
+
+function isKernelSyncOperation(value: unknown): value is string {
+  return typeof value === "string" && kernelSyncOperations.has(value);
+}
+
+function isKernelHttpStatus(value: unknown): value is number | null {
+  return value === null || (
+    typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
+  );
+}
+
+function isNullableKernelMethod(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && kernelSyncMethods.has(value));
+}
+
+function isNullableKernelProviderErrorCode(value: unknown): value is string | null {
+  return value === null || (
+    typeof value === "string" && kernelSyncProviderErrorCodes.has(value)
+  );
+}
+
+function isNullableKernelWorkspaceRelativePath(value: unknown): value is string | null {
+  return value === null || isKernelWorkspaceRelativePath(value);
+}
+
+function isKernelWorkspaceRelativePath(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value === "") return true;
+  if (
+    value.startsWith("/") ||
+    value.startsWith("\\") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f]/u.test(value) ||
+    /^[A-Za-z]:/u.test(value)
+  ) {
+    return false;
+  }
+  return value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function isNullableUuid(value: unknown): value is string | null {
+  return value === null || (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value)
+  );
 }
 
 export function useAppSyncCoordinator({

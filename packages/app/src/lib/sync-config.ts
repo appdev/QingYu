@@ -140,7 +140,19 @@ export type SyncSummary = {
 };
 
 export type SyncSafeError = {
-  category: "http" | "integrity" | "local" | "transport" | null;
+  category:
+    | "authentication"
+    | "authorization"
+    | "configuration"
+    | "conflict"
+    | "http"
+    | "integrity"
+    | "local"
+    | "network"
+    | "provider"
+    | "storage"
+    | "transport"
+    | null;
   code: string;
   httpStatus: number | null;
   method: string | null;
