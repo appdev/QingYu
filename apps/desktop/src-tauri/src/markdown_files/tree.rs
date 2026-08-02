@@ -1102,10 +1102,6 @@ pub(crate) fn rename_markdown_tree_file(
         target_path.clone(),
     ])?;
 
-    if target_path.exists() && target_path != source_path {
-        return Err("File already exists".to_string());
-    }
-
     if target_path != source_path {
         move_trusted_path_noreplace(&source_path, &target_path)?;
     }
@@ -2152,6 +2148,36 @@ mod tests {
         assert!(!root.join("B 1.md").exists());
 
         fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    #[test]
+    fn rename_markdown_tree_file_applies_a_case_only_markdown_name_change() {
+        let root = tempfile::tempdir().expect("test folder should be created");
+        let source = root.path().join("note.md");
+        fs::write(&source, "case-only rename").expect("source file should be created");
+
+        let renamed = rename_markdown_tree_file(
+            root.path().to_string_lossy().to_string(),
+            source.to_string_lossy().to_string(),
+            "Note.md".to_string(),
+        )
+        .expect("case-only Markdown rename should succeed");
+
+        assert_eq!(renamed.relative_path, "Note.md");
+        assert_eq!(
+            fs::read_to_string(root.path().join("Note.md"))
+                .expect("renamed document should remain readable"),
+            "case-only rename"
+        );
+        assert_eq!(
+            fs::read_dir(root.path())
+                .expect("test folder should remain readable")
+                .map(|entry| entry
+                    .expect("test entry should remain readable")
+                    .file_name())
+                .collect::<Vec<_>>(),
+            vec![std::ffi::OsString::from("Note.md")]
+        );
     }
 
     #[test]
