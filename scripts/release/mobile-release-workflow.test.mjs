@@ -119,6 +119,14 @@ test("release version sources match the root package version", () => {
   const expectedVersion = readJson("package.json").version;
   const cargoToml = fs.readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/Cargo.toml"), "utf8");
   const cargoLock = fs.readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/Cargo.lock"), "utf8");
+  const appleProject = fs.readFileSync(
+    path.join(repoRoot, "apps/desktop/src-tauri/gen/apple/project.yml"),
+    "utf8",
+  );
+  const iosInfoPlist = fs.readFileSync(
+    path.join(repoRoot, "apps/desktop/src-tauri/gen/apple/qingyu_iOS/Info.plist"),
+    "utf8",
+  );
 
   assert.match(cargoToml, /^\[package\]\nname = "qingyu"\ndefault-run = "qingyu"/m);
 
@@ -129,6 +137,14 @@ test("release version sources match the root package version", () => {
     readJson("apps/desktop/src-tauri/tauri.conf.json").version,
     cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1],
     cargoLock.match(/\[\[package\]\]\nname = "qingyu"\nversion = "([^"]+)"/)?.[1],
+    appleProject.match(/CFBundleShortVersionString:\s*"?([^"\s]+)"?/)?.[1],
+    appleProject.match(/CFBundleVersion:\s*"?([^"\s]+)"?/)?.[1],
+    iosInfoPlist.match(
+      /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/,
+    )?.[1],
+    iosInfoPlist.match(
+      /<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/,
+    )?.[1],
   ];
 
   assert.deepEqual(versions, Array(versions.length).fill(expectedVersion));

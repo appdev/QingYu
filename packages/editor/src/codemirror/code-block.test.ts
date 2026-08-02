@@ -384,6 +384,17 @@ describe("codeBlockPreviewPlugin", () => {
       view.dom.querySelector<HTMLElement>(".markra-mermaid-render .nodeLabel")
         ?.style.getPropertyValue("color"),
     ).toBe("rgb(0, 0, 0)");
+    const preview = view.dom.querySelector<HTMLElement>(
+      ".markra-mermaid-render",
+    );
+    const wrapper = preview?.closest<HTMLElement>(".markra-code-block");
+    expect(getComputedStyle(wrapper!).display).toBe("inline-block");
+    expect(getComputedStyle(wrapper!).marginTop).toBe("0px");
+    expect(getComputedStyle(wrapper!).marginBottom).toBe("0px");
+    expect(getComputedStyle(preview!).marginTop).toBe("0px");
+    expect(getComputedStyle(preview!).marginBottom).toBe("0px");
+    expect(getComputedStyle(preview!).paddingTop).toBe("0px");
+    expect(getComputedStyle(preview!).paddingBottom).toBe("0px");
     expect(renderMermaid).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "flowchart TD\n  A --> B",

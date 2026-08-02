@@ -1,3 +1,12 @@
+## 2.5.1 (2026-08-02)
+
+### Bug Fixes
+
+* **editor:** remove excess Mermaid preview spacing
+* **editor:** stabilize blank lines across preview blocks
+* **editor:** stabilize visual table line breaks
+* **editor:** support line breaks in visual table cells
+
 ## 2.5.0 (2026-08-01)
 
 ### Features
