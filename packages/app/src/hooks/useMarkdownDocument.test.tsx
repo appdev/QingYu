@@ -176,12 +176,13 @@ describe("useMarkdownDocument", () => {
     mockedTakeNativeOpenedMarkdownPaths.mockResolvedValue([]);
   });
 
-  it("uses the explicit localized blank name only for initialization and later blank resets", async () => {
+  it("localizes a pristine initial blank once after readiness and uses the latest name for explicit resets", async () => {
     const { result, rerender } = renderHook(
-      ({ initialBlankDocumentName }) => {
+      ({ initialBlankDocumentName, initialBlankDocumentReady }) => {
         const options = {
           getCurrentMarkdown: (fallbackContent: string) => fallbackContent,
           initialBlankDocumentName,
+          initialBlankDocumentReady,
           onTreeRootFromFilePath: vi.fn(),
           onTreeRootFromFolderPath: vi.fn(),
           preferencesReady: false,
@@ -189,17 +190,35 @@ describe("useMarkdownDocument", () => {
         };
         return useMarkdownDocument(options);
       },
-      { initialProps: { initialBlankDocumentName: "未命名.md" } }
+      {
+        initialProps: {
+          initialBlankDocumentName: "Untitled.md",
+          initialBlankDocumentReady: false
+        }
+      }
     );
 
     expect(result.current.document).toMatchObject({
-      content: "---\ntitle: 未命名\n---\n\n",
+      content: "---\ntitle: Untitled\n---\n\n",
       dirty: false,
-      name: "未命名.md",
+      name: "Untitled.md",
       path: null
     });
 
-    await act(async () => rerender({ initialBlankDocumentName: "Untitled.md" }));
+    await act(async () => rerender({
+      initialBlankDocumentName: "未命名.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      name: "未命名.md"
+    });
+
+    await act(async () => rerender({
+      initialBlankDocumentName: "Untitled.md",
+      initialBlankDocumentReady: true
+    }));
 
     expect(result.current.document).toMatchObject({
       content: "---\ntitle: 未命名\n---\n\n",
@@ -213,6 +232,79 @@ describe("useMarkdownDocument", () => {
       dirty: false,
       name: "Untitled.md",
       path: null
+    });
+  });
+
+  it("does not localize initial state that became non-pristine before readiness", async () => {
+    const { result, rerender } = renderHook(
+      ({ initialBlankDocumentName, initialBlankDocumentReady }) =>
+        useMarkdownDocument({
+          getCurrentMarkdown: (fallbackContent) => fallbackContent,
+          initialBlankDocumentName,
+          initialBlankDocumentReady,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false
+        }),
+      {
+        initialProps: {
+          initialBlankDocumentName: "Untitled.md",
+          initialBlankDocumentReady: false
+        }
+      }
+    );
+    const authoredSource = "---\ntitle: Untitled\n---\n\nAuthored before language readiness";
+
+    act(() => result.current.handleMarkdownChange(authoredSource));
+    await act(async () => rerender({
+      initialBlankDocumentName: "未命名.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.document).toMatchObject({
+      content: authoredSource,
+      dirty: true,
+      name: "Untitled.md"
+    });
+  });
+
+  it("keeps an external blank restoring until initial blank localization is ready", async () => {
+    window.history.pushState({}, "", "/?blank=1");
+    const { result, rerender } = renderHook(
+      ({ initialBlankDocumentName, initialBlankDocumentReady }) =>
+        useMarkdownDocument({
+          getCurrentMarkdown: (fallbackContent) => fallbackContent,
+          initialBlankDocumentName,
+          initialBlankDocumentReady,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false,
+          windowContext: parseEditorWindowContext(window.location.search),
+          workspaceReady: true
+        }),
+      {
+        initialProps: {
+          initialBlankDocumentName: "Untitled.md",
+          initialBlankDocumentReady: false
+        }
+      }
+    );
+
+    expect(result.current.workspaceSurface).toBe("restoring");
+
+    await act(async () => rerender({
+      initialBlankDocumentName: "未命名.md",
+      initialBlankDocumentReady: true
+    }));
+
+    expect(result.current.workspaceSurface).toBe("editor");
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      dirty: false,
+      name: "未命名.md",
+      revision: 0
     });
   });
 

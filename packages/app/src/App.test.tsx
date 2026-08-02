@@ -6893,6 +6893,7 @@ describe("QingYu workspace", () => {
   it("removes the markdown file tree hit area when the sidebar is collapsed", async () => {
     const { container } = renderApp();
 
+    expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
     const tree = container.querySelector(".markdown-file-tree");
     expect(tree).toHaveAttribute("aria-hidden", "true");
     fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
@@ -9717,7 +9718,7 @@ Date: 2026-08-02
 
     renderApp();
 
-    expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
     expect(readMarkdownSource(
       await screen.findByRole("textbox", { name: "Markdown document" })
     )).toBe("---\ntitle: Untitled\n---\n\n");
@@ -9726,11 +9727,20 @@ Date: 2026-08-02
     expect(mockedSyncApplication).not.toHaveBeenCalled();
   });
 
-  it("initializes a localized external blank window with exact title Front Matter", async () => {
-    window.history.pushState({}, "", "/?blank=1&startupLanguage=zh-CN");
-    mockedGetStoredLanguage.mockResolvedValue("zh-CN");
+  it("initializes a native external blank from asynchronously loaded stored language", async () => {
+    window.history.pushState({}, "", "/?blank=1");
+    let resolveStoredLanguage: (language: "zh-CN") => unknown = () => undefined;
+    mockedGetStoredLanguage.mockReturnValue(new Promise((resolve) => {
+      resolveStoredLanguage = resolve;
+    }));
 
     renderApp();
+
+    expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Document title" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+
+    await act(async () => resolveStoredLanguage("zh-CN"));
 
     expect(await screen.findByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
 
@@ -9739,6 +9749,42 @@ Date: 2026-08-02
     expect(readMarkdownSource(
       await screen.findByRole("textbox", { name: "Markdown 源码" })
     )).toBe("---\ntitle: 未命名\n---\n\n");
+  });
+
+  it("keeps a primary deferred blank restoring until stored language is ready", async () => {
+    const controller = mockDesktopPrimaryWorkspace({ root: "/Notes", status: "ready" });
+    let resolveStoredLanguage: (language: "zh-CN") => unknown = () => undefined;
+    let resolveEditorPreferences: (
+      preferences: Parameters<typeof mockedSaveStoredEditorPreferences>[0]
+    ) => unknown = () => undefined;
+    mockedGetStoredLanguage.mockReturnValue(new Promise((resolve) => {
+      resolveStoredLanguage = resolve;
+    }));
+    mockedGetStoredEditorPreferences.mockReturnValue(new Promise((resolve) => {
+      resolveEditorPreferences = resolve;
+    }));
+
+    const app = renderApp();
+
+    controller.root = null;
+    controller.status = "loading";
+    rerenderApp(app);
+    controller.status = "deferred";
+    rerenderApp(app);
+
+    expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Document title" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+
+    await act(async () => resolveStoredLanguage("zh-CN"));
+
+    expect(await screen.findByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
+    fireEvent.click(screen.getByRole("button", { name: "编辑视图: 预览" }));
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown 源码" })
+    )).toBe("---\ntitle: 未命名\n---\n\n");
+
+    await act(async () => resolveEditorPreferences(createStoredEditorPreferences()));
   });
 
   it("focuses the editor when a native new-document window opens", async () => {
@@ -11967,6 +12013,7 @@ Date: 2026-08-02
     const { container } = renderApp();
 
     fireEvent.keyDown(window, { key: "o", metaKey: true });
+    await waitFor(() => expect(container.querySelector(".cm-markra-table")).toBeInTheDocument());
     await selectEditorViewMode("Preview + Source");
     const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
     const cell = await waitFor(() => {

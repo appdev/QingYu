@@ -208,6 +208,7 @@ type UseMarkdownDocumentOptions = {
   getCurrentMarkdown: (fallbackContent: string) => string;
   globalIgnoreRules?: string;
   initialBlankDocumentName?: string;
+  initialBlankDocumentReady?: boolean;
   isCurrentMarkdownEquivalent?: (markdown: string) => boolean | undefined;
   managedWorkspace?: boolean;
   nativeCloseBlocked?: boolean;
@@ -353,6 +354,7 @@ export function useMarkdownDocument({
   getCurrentMarkdown,
   globalIgnoreRules = "",
   initialBlankDocumentName,
+  initialBlankDocumentReady = true,
   isCurrentMarkdownEquivalent,
   managedWorkspace = false,
   nativeCloseBlocked = false,
@@ -385,6 +387,7 @@ export function useMarkdownDocument({
   const documentRef = useRef(document);
   const tabsRef = useRef(tabs);
   const activeTabIdRef = useRef<string | null>(activeTabId);
+  const initialBlankDocumentInitializationAppliedRef = useRef(initialBlankDocumentReady);
   const workspaceReadyRef = useRef(workspaceReady);
   workspaceReadyRef.current = workspaceReady;
   const untitledTabIndexRef = useRef(1);
@@ -449,6 +452,39 @@ export function useMarkdownDocument({
     ? currentDeferredMarkdownSummary?.wordCount ?? emptyMarkdownDocumentSummary.wordCount
     : immediateMarkdownSummary.wordCount;
   const watchedMarkdownFilePathsKey = useMemo(() => openFilePathsFromTabs(tabs).join("\n"), [tabs]);
+
+  useEffect(() => {
+    if (initialBlankDocumentInitializationAppliedRef.current || !initialBlankDocumentReady) return;
+    initialBlankDocumentInitializationAppliedRef.current = true;
+
+    const currentDocument = documentRef.current;
+    const currentTabs = tabsRef.current;
+    const initialTab = currentTabs.length === 1 ? currentTabs[0] : null;
+    if (
+      activeTabIdRef.current !== "untitled:0" ||
+      initialTab?.id !== "untitled:0" ||
+      !isPristineUntitledDocument(currentDocument) ||
+      !isPristineUntitledDocument(documentFromTab(initialTab)) ||
+      initialTab.name !== currentDocument.name ||
+      initialTab.content !== currentDocument.content
+    ) {
+      return;
+    }
+
+    const localizedDocument = createInitialDocumentState(initialBlankDocumentName);
+    if (
+      localizedDocument.name === currentDocument.name &&
+      localizedDocument.content === currentDocument.content
+    ) {
+      return;
+    }
+
+    const localizedTab = createDocumentTab(localizedDocument, initialTab.id);
+    documentRef.current = localizedDocument;
+    tabsRef.current = [localizedTab];
+    setDocument(localizedDocument);
+    setTabs([localizedTab]);
+  }, [initialBlankDocumentName, initialBlankDocumentReady]);
 
   useEffect(() => {
     if (!markdownSummaryDeferred) return;
@@ -822,43 +858,41 @@ export function useMarkdownDocument({
       return;
     }
 
-    setTabs((currentTabs) => {
-      const nextTabs = currentTabs.map((tab) => {
-        if (tab.id !== tabId || !tab.open || tab.content === content) return tab;
-        if (options.documentRevision !== undefined && options.documentRevision !== tab.revision) return tab;
-        if (
-          !tab.dirty &&
-          options.surface === "visual" &&
-          editorSyncState.isCleanVisualMarkdownBaseline(tab.id, content)
-        ) {
-          return tab;
-        }
-        if (
-          !tab.dirty &&
-          options.surface === "visual" &&
-          options.documentRevision !== undefined &&
-          !isEquivalentEditorMarkdown(tab.content, content)
-        ) {
-          return tab;
-        }
-        if (!tab.dirty) editorSyncState.rememberCleanVisualContentBeforeDirty(tab.id, tab.content, content, options.surface);
-        const canKeepEquivalentMarkdownClean = options.surface !== "source";
-        const contentEquivalent = canKeepEquivalentMarkdownClean && isEquivalentEditorMarkdown(tab.content, content);
-        if (!tab.dirty && !contentEquivalent) {
-          editorSyncState.clearCleanVisualMarkdownBaseline(tab.id);
-        }
+    const nextTabs = tabsRef.current.map((tab) => {
+      if (tab.id !== tabId || !tab.open || tab.content === content) return tab;
+      if (options.documentRevision !== undefined && options.documentRevision !== tab.revision) return tab;
+      if (
+        !tab.dirty &&
+        options.surface === "visual" &&
+        editorSyncState.isCleanVisualMarkdownBaseline(tab.id, content)
+      ) {
+        return tab;
+      }
+      if (
+        !tab.dirty &&
+        options.surface === "visual" &&
+        options.documentRevision !== undefined &&
+        !isEquivalentEditorMarkdown(tab.content, content)
+      ) {
+        return tab;
+      }
+      if (!tab.dirty) editorSyncState.rememberCleanVisualContentBeforeDirty(tab.id, tab.content, content, options.surface);
+      const canKeepEquivalentMarkdownClean = options.surface !== "source";
+      const contentEquivalent = canKeepEquivalentMarkdownClean && isEquivalentEditorMarkdown(tab.content, content);
+      if (!tab.dirty && !contentEquivalent) {
+        editorSyncState.clearCleanVisualMarkdownBaseline(tab.id);
+      }
 
-        return {
-          ...tab,
-          content,
-          dirty: tab.dirty || !contentEquivalent
-        };
-      });
-
-      tabsRef.current = nextTabs;
-      persistWorkspaceState(draftWorkspacePatchFromTabs(nextTabs, activeTabIdRef.current));
-      return nextTabs;
+      return {
+        ...tab,
+        content,
+        dirty: tab.dirty || !contentEquivalent
+      };
     });
+
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
+    persistWorkspaceState(draftWorkspacePatchFromTabs(nextTabs, activeTabIdRef.current));
   }, [editorSyncState, handleMarkdownChange]);
 
   const rememberMarkdownTabVisualBaseline = useCallback((tabId: string, content: string) => {
@@ -2225,6 +2259,8 @@ export function useMarkdownDocument({
     }
     return openedPath;
   }, [documentTabsEnabled, handleDroppedMarkdownPath, isCurrentDocumentEmptyUntitled, isFileInCurrentWorkspace, loadNativeMarkdownPath, resolvedNativeOpenPolicy]);
+  const handleNativeOpenedMarkdownPathsRef = useRef(handleNativeOpenedMarkdownPaths);
+  handleNativeOpenedMarkdownPathsRef.current = handleNativeOpenedMarkdownPaths;
 
   useEffect(() => {
     const title = document.open && document.dirty ? `${document.name} *` : document.name;
@@ -2402,8 +2438,9 @@ export function useMarkdownDocument({
 
   useEffect(() => {
     if (managedWorkspace || windowContext.kind !== "external-blank") return;
+    if (!initialBlankDocumentReady) return;
     setWorkspaceSurface(workspaceReady ? "editor" : "recovery");
-  }, [managedWorkspace, windowContext.kind, workspaceReady]);
+  }, [initialBlankDocumentReady, managedWorkspace, windowContext.kind, workspaceReady]);
 
   useEffect(() => {
     if (resolvedNativeOpenPolicy === "managed") {
@@ -2423,7 +2460,7 @@ export function useMarkdownDocument({
       nativeOpenedPathsInitializationRef.current = (async () => {
         try {
           const paths = await takeNativeOpenedMarkdownPaths();
-          return await handleNativeOpenedMarkdownPaths(paths);
+          return await handleNativeOpenedMarkdownPathsRef.current(paths);
         } catch {
           // Native launch state is opportunistic; the normal startup path remains available.
           return false;
@@ -2443,9 +2480,9 @@ export function useMarkdownDocument({
         const cleanup = await listenNativeOpenedMarkdownPaths((paths) => {
           takeNativeOpenedMarkdownPaths()
             .then((queuedPaths) => queuedPaths.length > 0
-              ? handleNativeOpenedMarkdownPaths(queuedPaths)
+              ? handleNativeOpenedMarkdownPathsRef.current(queuedPaths)
               : false)
-            .catch(() => handleNativeOpenedMarkdownPaths(paths));
+            .catch(() => handleNativeOpenedMarkdownPathsRef.current(paths));
         });
 
         if (!active) {
@@ -2461,7 +2498,7 @@ export function useMarkdownDocument({
       if (!active) return;
       try {
         const paths = await takeNativeOpenedMarkdownPaths();
-        await handleNativeOpenedMarkdownPaths(paths);
+        await handleNativeOpenedMarkdownPathsRef.current(paths);
       } catch {
         // A failed follow-up drain leaves the native queue available for the next startup.
       }
@@ -2473,7 +2510,7 @@ export function useMarkdownDocument({
       active = false;
       cleanupNativeListener?.();
     };
-  }, [handleNativeOpenedMarkdownPaths, resolvedNativeOpenPolicy, windowContext.kind]);
+  }, [resolvedNativeOpenPolicy, windowContext.kind]);
 
   useEffect(() => {
     if (windowContext.kind !== "primary") return;

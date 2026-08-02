@@ -920,6 +920,7 @@ function WorkspaceApp() {
     getCurrentMarkdown: readCurrentMarkdownForDocument,
     globalIgnoreRules: fileIgnoreSettings.settings.rules,
     initialBlankDocumentName: untitledMarkdownDocumentName(appLanguage.language),
+    initialBlankDocumentReady: appLanguage.ready,
     isCurrentMarkdownEquivalent: isCurrentMarkdownEquivalentForDocument,
     managedWorkspace: compactMode.trueMobile,
     nativeCloseBlocked: settingsModalRequest !== null,
@@ -934,7 +935,7 @@ function WorkspaceApp() {
     onTreeRootFromFilePath: setRootFromMarkdownFilePath,
     onSwitchNotebookDirectory: handleNativeNotebookDirectory,
     openDroppedFilesInTabs: editorPreferences.preferences.openDroppedFilesInTabs,
-    preferencesReady: !editorPreferences.loading && (
+    preferencesReady: appLanguage.ready && !editorPreferences.loading && (
       !primaryWindowOwner ||
       primaryWorkspace.status === "ready" ||
       primaryWorkspace.status === "deferred"
@@ -1623,6 +1624,7 @@ function WorkspaceApp() {
   const openPrimaryFolderPathEffectDependency = fixedWorkspaceRoot ? null : openFolderPath;
   useEffect(() => {
     if (!primaryWindowOwner) return;
+    if (!appLanguage.ready) return;
 
     const generation = primaryTreeGenerationRef.current + 1;
     primaryTreeGenerationRef.current = generation;
@@ -1665,6 +1667,7 @@ function WorkspaceApp() {
       }
     };
   }, [
+    appLanguage.ready,
     clearOpenDocument,
     clearProjectRoot,
     openPrimaryFolderPathEffectDependency,
@@ -4432,12 +4435,19 @@ function WorkspaceApp() {
     saveDocumentTabViewState,
     visualEditorReadySequence
   ]);
-  const appUpdater = useAutoUpdater(appLanguage.language, updaterFeatureEnabled && appLanguage.ready && !editorPreferences.loading, {
-    autoCheck: updaterFeatureEnabled && editorPreferences.preferences.autoUpdateEnabled,
-    beforeRestart: saveDirtyMarkdownFiles,
-    confirmRestart: confirmCanDiscardCurrentDocument,
-    currentVersion: appVersion
-  });
+  const appUpdater = useAutoUpdater(
+    appLanguage.language,
+    updaterFeatureEnabled &&
+      appLanguage.ready &&
+      !editorPreferences.loading &&
+      workspaceSurface !== "restoring",
+    {
+      autoCheck: updaterFeatureEnabled && editorPreferences.preferences.autoUpdateEnabled,
+      beforeRestart: saveDirtyMarkdownFiles,
+      confirmRestart: confirmCanDiscardCurrentDocument,
+      currentVersion: appVersion
+    }
+  );
   const nativeMenuHandlers = useNativeMenuHandlers({
     checkForUpdates: updaterFeatureEnabled ? appUpdater.checkForUpdates : undefined,
     closeDocument: handleCloseCurrentFile,
