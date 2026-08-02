@@ -472,6 +472,182 @@ fn portable_snapshot_projects_supported_editor_fields_without_rewriting_local_va
 }
 
 #[test]
+fn portable_snapshot_canonicalizes_fuller_legacy_editor_without_rewriting_storage() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["aiQuickActionPrompts"] = serde_json::json!({ "continue": "local prompt" });
+    editor["imageUpload"]["provider"] = serde_json::json!("s3");
+    editor["imageUpload"]["s3"] = serde_json::json!({ "bucket": "local-only" });
+    editor["markdownShortcuts"]
+        .as_object_mut()
+        .unwrap()
+        .remove("toggleViewMode");
+    editor["markdownShortcuts"]["openSpellcheckSuggestions"] = serde_json::json!("Mod+.");
+    editor["titlebarActions"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({ "id": "aiAgent", "visible": true }));
+    editor["viewModeCustomizations"]
+        .as_object_mut()
+        .unwrap()
+        .remove("viewModeToggle");
+    editor["viewModeCustomizations"]["aiPanel"] = serde_json::json!("visible");
+    editor["viewModeCustomizations"]["recentFolders"] = serde_json::json!("hidden");
+    let preserved = editor.clone();
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let snapshot = service
+        .portable_snapshot()
+        .expect("fuller legacy editor projects to the current portable schema");
+    let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+    let published = &portable["editorPreferences"];
+
+    assert_eq!(published["markdownShortcuts"]["toggleViewMode"], "F8");
+    assert_eq!(
+        published["viewModeCustomizations"]["viewModeToggle"],
+        "visible"
+    );
+    assert!(published.get("aiQuickActionPrompts").is_none());
+    assert!(published["imageUpload"].get("provider").is_none());
+    assert!(published["imageUpload"].get("s3").is_none());
+    assert!(published["markdownShortcuts"]
+        .get("openSpellcheckSuggestions")
+        .is_none());
+    assert_eq!(published["titlebarActions"].as_array().unwrap().len(), 5);
+    assert!(published["viewModeCustomizations"].get("aiPanel").is_none());
+    assert!(published["viewModeCustomizations"]
+        .get("recentFolders")
+        .is_none());
+    assert_eq!(store.values.lock().unwrap()["editorPreferences"], preserved);
+    assert_eq!(store.saves.load(Ordering::Relaxed), 0);
+    assert_eq!(store.replaces.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn portable_snapshot_rejects_a_present_invalid_known_editor_value() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["bodyFontSize"] = serde_json::json!(19);
+    let preserved = editor.clone();
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let error = service
+        .portable_snapshot()
+        .expect_err("a known invalid portable value must fail closed");
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::ReconcileFailed);
+    assert_eq!(store.values.lock().unwrap()["editorPreferences"], preserved);
+    assert_eq!(store.saves.load(Ordering::Relaxed), 0);
+    assert_eq!(store.replaces.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn portable_snapshot_upgrades_legacy_markdown_template_metadata_without_rewriting_storage() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["markdownTemplates"] = serde_json::json!([{
+        "id": "weekly-review",
+        "name": "Weekly review",
+        "legacyLocalField": "preserve locally"
+    }]);
+    let preserved = editor.clone();
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let snapshot = service
+        .portable_snapshot()
+        .expect("legacy template metadata projects to the current schema");
+    let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+    let template = &portable["editorPreferences"]["markdownTemplates"][0];
+
+    assert_eq!(template["fileName"], "weekly-review.md");
+    assert_eq!(template["id"], "weekly-review");
+    assert_eq!(template["name"], "Weekly review");
+    assert_eq!(template["suggestedName"], "");
+    assert!(template.get("legacyLocalField").is_none());
+    assert_eq!(store.values.lock().unwrap()["editorPreferences"], preserved);
+    assert_eq!(store.replaces.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn portable_snapshot_uses_canonical_file_name_for_legacy_template_id_extension() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["markdownTemplates"] = serde_json::json!([{
+        "id": "Daily.Markdown",
+        "name": "Daily"
+    }]);
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store, Arc::new(RecordingEvents::default()));
+
+    let snapshot = service
+        .portable_snapshot()
+        .expect("legacy template id extension is normalized");
+    let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+
+    assert_eq!(
+        portable["editorPreferences"]["markdownTemplates"][0]["fileName"],
+        "daily.md"
+    );
+}
+
+#[test]
+fn portable_snapshot_rejects_oversized_legacy_template_array_without_panicking() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["markdownTemplates"] = Value::Array(
+        (0..22)
+            .map(|_| {
+                serde_json::json!({
+                    "id": "duplicate",
+                    "name": "Duplicate"
+                })
+            })
+            .collect(),
+    );
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store, Arc::new(RecordingEvents::default()));
+
+    let error = service
+        .portable_snapshot()
+        .expect_err("oversized template arrays remain fail-closed");
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::ReconcileFailed);
+}
+
+#[test]
+fn portable_snapshot_preserves_known_titlebar_order_while_omitting_unknown_actions() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["titlebarActions"] = serde_json::json!([
+        { "id": "save", "visible": true },
+        { "id": "aiAgent", "visible": true },
+        { "id": "viewMode", "visible": false },
+        { "id": "theme", "visible": true },
+        { "id": "history", "visible": true },
+        { "id": "sourceMode", "visible": true }
+    ]);
+    let preserved = editor.clone();
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let snapshot = service
+        .portable_snapshot()
+        .expect("known titlebar order remains portable");
+    let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+    let actions = portable["editorPreferences"]["titlebarActions"]
+        .as_array()
+        .unwrap();
+
+    assert_eq!(
+        actions
+            .iter()
+            .map(|action| action["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["save", "viewMode", "theme", "history", "sourceMode"]
+    );
+    assert_eq!(actions[1]["visible"], false);
+    assert_eq!(store.values.lock().unwrap()["editorPreferences"], preserved);
+    assert_eq!(store.replaces.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn atomic_json_store_survives_reopen_and_preserves_non_portable_values() {
     let root = tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -1742,7 +1918,7 @@ fn portable_replace_preserves_valid_local_only_nested_settings() {
 fn portable_snapshot_rejects_an_invalid_local_portable_group() {
     let store = Arc::new(MemorySettingsStore::with([(
         "editorPreferences",
-        serde_json::json!({ "bodyFontSize": 16 }),
+        serde_json::json!({ "bodyFontSize": 19 }),
     )]));
     let service = SettingsService::new(store, Arc::new(RecordingEvents::default()));
 

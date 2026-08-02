@@ -3520,6 +3520,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml 0.39.4",
  "reqwest 0.12.28",
+ "rustix",
  "scrypt",
  "serde",
  "serde_json",

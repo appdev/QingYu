@@ -196,9 +196,9 @@ impl StagedFile {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_no_replace(mut self) -> Result<PublishOutcome, RepoError> {
-        match fs::hard_link(&self.temp_path, &self.destination) {
+        match rename_path_noreplace(&self.temp_path, &self.destination) {
             Ok(()) => {
-                self.remove_temp()?;
+                self.cleanup_armed = false;
                 Ok(PublishOutcome::Published)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -254,13 +254,15 @@ impl CapStagedFile {
     }
 
     pub(crate) fn publish_no_replace(mut self) -> Result<PublishOutcome, RepoError> {
-        match self.stage_parent.hard_link(
+        match rename_cap_noreplace(
+            &self.stage_parent,
+            &self.temp_file,
             &self.temp_name,
             &self.destination_parent,
             &self.destination,
         ) {
             Ok(()) => {
-                self.remove_temp()?;
+                self.cleanup_armed = false;
                 Ok(PublishOutcome::Published)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -284,6 +286,127 @@ impl CapStagedFile {
         self.cleanup_armed = false;
         Ok(())
     }
+}
+
+fn single_component(name: &OsStr) -> io::Result<&OsStr> {
+    let mut components = Path::new(name).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(name)), None) if !name.is_empty() => Ok(name),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "atomic no-replace rename names must be one path component",
+        )),
+    }
+}
+
+fn rename_cap_noreplace(
+    stage_parent: &Dir,
+    temp_file: &CapFile,
+    from: &OsStr,
+    destination_parent: &Dir,
+    to: &OsStr,
+) -> io::Result<()> {
+    let from = single_component(from)?;
+    let to = single_component(to)?;
+    rename_cap_noreplace_platform(stage_parent, temp_file, from, destination_parent, to)
+}
+
+#[cfg(unix)]
+fn rename_cap_noreplace_platform(
+    stage_parent: &Dir,
+    _temp_file: &CapFile,
+    from: &OsStr,
+    destination_parent: &Dir,
+    to: &OsStr,
+) -> io::Result<()> {
+    rustix::fs::renameat_with(
+        stage_parent,
+        from,
+        destination_parent,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into)
+}
+
+#[cfg(windows)]
+fn rename_cap_noreplace_platform(
+    _stage_parent: &Dir,
+    temp_file: &CapFile,
+    _from: &OsStr,
+    destination_parent: &Dir,
+    to: &OsStr,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    };
+
+    let wide_name = to.encode_wide().collect::<Vec<_>>();
+    if wide_name.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "atomic no-replace destination contains a null character",
+        ));
+    }
+    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let name_bytes = wide_name
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
+    let buffer_size = header_size
+        .checked_add(name_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large"))?;
+    let buffer_words = buffer_size.div_ceil(std::mem::size_of::<usize>());
+    let mut buffer = vec![0usize; buffer_words];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+
+    // SAFETY: The usize buffer is aligned and large enough for the fixed
+    // FILE_RENAME_INFO header plus the exact UTF-16 component. Both handles
+    // remain valid for the duration of this no-replace rename operation.
+    let renamed = unsafe {
+        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).RootDirectory = destination_parent.as_raw_handle();
+        (*info).FileNameLength = u32::try_from(name_bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
+        std::ptr::copy_nonoverlapping(
+            wide_name.as_ptr(),
+            buffer
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(header_size)
+                .cast::<u16>(),
+            wide_name.len(),
+        );
+        SetFileInformationByHandle(
+            temp_file.as_raw_handle(),
+            FileRenameInfo,
+            info.cast(),
+            u32::try_from(buffer_size).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
+            })?,
+        )
+    };
+    if renamed == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn rename_cap_noreplace_platform(
+    _stage_parent: &Dir,
+    _temp_file: &CapFile,
+    _from: &OsStr,
+    _destination_parent: &Dir,
+    _to: &OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unsupported on this platform",
+    ))
 }
 
 impl Drop for StagedFile {
@@ -411,6 +534,50 @@ fn replace_cap_file(
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn rename_path_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        from,
+        rustix::fs::CWD,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(Into::into)
+}
+
+#[cfg(windows)]
+fn rename_path_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let from_wide = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let to_wide = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result =
+        unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn rename_path_noreplace(_from: &Path, _to: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unsupported on this platform",
+    ))
 }
 
 fn create_temp_file(path: &Path, mode: u32) -> Result<(PathBuf, File), RepoError> {
@@ -546,9 +713,44 @@ mod tests {
     use cap_std::fs::Dir;
 
     use super::{
-        create_temp_file, is_owned_stage_name, stage_cap_file, stage_file, write_cap_file_safer,
-        write_file_safer, PublishOutcome,
+        create_temp_file, is_owned_stage_name, rename_cap_noreplace, stage_cap_file, stage_file,
+        write_cap_file_safer, write_file_safer, PublishOutcome,
     };
+
+    #[test]
+    fn capability_no_replace_rename_moves_source_without_clobbering() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        fs::write(temp.path().join("candidate"), b"candidate").unwrap();
+        let candidate = parent.open("candidate").unwrap();
+
+        rename_cap_noreplace(
+            &parent,
+            &candidate,
+            OsStr::new("candidate"),
+            &parent,
+            OsStr::new("object"),
+        )
+        .unwrap();
+
+        assert!(!temp.path().join("candidate").exists());
+        assert_eq!(fs::read(temp.path().join("object")).unwrap(), b"candidate");
+
+        fs::write(temp.path().join("candidate"), b"second").unwrap();
+        let candidate = parent.open("candidate").unwrap();
+        let error = rename_cap_noreplace(
+            &parent,
+            &candidate,
+            OsStr::new("candidate"),
+            &parent,
+            OsStr::new("object"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(temp.path().join("candidate")).unwrap(), b"second");
+        assert_eq!(fs::read(temp.path().join("object")).unwrap(), b"candidate");
+    }
 
     #[test]
     fn owned_stage_name_requires_exact_lowercase_sha1_grammar() {

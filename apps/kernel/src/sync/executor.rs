@@ -1798,6 +1798,170 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn s3_executor_preserves_android_minimal_settings_without_expanding_absent_groups() {
+        let server = S3Fixture::start();
+        let factory = Arc::new(FixedDejavuFactory::watching(server.state.clone()));
+        let preserved = android_minimal_preserved_settings();
+        let kernel = TestKernel::start_s3_with_settings(
+            factory.clone(),
+            &server.endpoint(),
+            preserved.clone(),
+        )
+        .await;
+        let before = std::fs::read(kernel.app_data.join("settings.json"))
+            .expect("read preserved Android fixture");
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready S3 sync config");
+
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept Android-style S3 run");
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(&sync)
+                    .await
+                    .expect("read Android-style S3 status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Android-style S3 sync should complete");
+
+        assert_eq!(completed.completion_state, SyncCompletionState::Succeeded);
+        assert_eq!(factory.calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            std::fs::read(kernel.app_data.join("settings.json"))
+                .expect("reread preserved Android fixture"),
+            before
+        );
+        assert_eq!(
+            server
+                .file("/notes/qingyu/app/settings.json")
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()),
+            Some(serde_json::json!({
+                "appearanceMode": "system",
+                "darkThemeId": "dark",
+                "lightThemeId": "light"
+            }))
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&before).unwrap(),
+            preserved
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_executor_projects_macos_fuller_legacy_settings_before_dejavu() {
+        let server = S3Fixture::start();
+        let factory = Arc::new(FixedDejavuFactory::watching(server.state.clone()));
+        let preserved = macos_fuller_legacy_settings();
+        let kernel = TestKernel::start_s3_with_settings(
+            factory.clone(),
+            &server.endpoint(),
+            preserved.clone(),
+        )
+        .await;
+        let before = std::fs::read(kernel.app_data.join("settings.json"))
+            .expect("read preserved macOS fixture");
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready S3 sync config");
+
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept macOS-style S3 run");
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(&sync)
+                    .await
+                    .expect("read macOS-style S3 status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("macOS-style S3 sync should complete");
+
+        assert_eq!(completed.completion_state, SyncCompletionState::Succeeded);
+        assert_eq!(factory.calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            std::fs::read(kernel.app_data.join("settings.json"))
+                .expect("reread preserved macOS fixture"),
+            before
+        );
+        let remote = server
+            .file("/notes/qingyu/app/settings.json")
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .expect("canonical portable settings uploaded");
+        assert_eq!(
+            remote["editorPreferences"]["markdownShortcuts"]["toggleViewMode"],
+            "F8"
+        );
+        assert_eq!(
+            remote["editorPreferences"]["viewModeCustomizations"]["viewModeToggle"],
+            "visible"
+        );
+        assert!(remote.get("workspace").is_none());
+        assert!(remote["editorPreferences"]
+            .get("aiQuickActionPrompts")
+            .is_none());
+        assert!(remote["editorPreferences"]["imageUpload"]
+            .get("provider")
+            .is_none());
+        assert!(remote["editorPreferences"]["viewModeCustomizations"]
+            .get("recentFolders")
+            .is_none());
+        assert_eq!(
+            remote["editorPreferences"]["markdownTemplates"][0],
+            serde_json::json!({
+                "fileName": "weekly-review.md",
+                "id": "weekly-review",
+                "name": "Weekly review",
+                "suggestedName": ""
+            })
+        );
+        assert_eq!(
+            remote["editorPreferences"]["titlebarActions"]
+                .as_array()
+                .expect("portable titlebar actions")
+                .iter()
+                .map(|action| action["id"].as_str().expect("titlebar action id"))
+                .collect::<Vec<_>>(),
+            vec!["save", "viewMode", "theme", "history", "sourceMode"]
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&before).unwrap(),
+            preserved
+        );
+    }
+
+    #[tokio::test]
     async fn one_s3_run_uses_the_active_legacy_binding_and_dejavu_attempt() {
         let server = S3Fixture::start();
         let factory = Arc::new(FixedDejavuFactory::watching(server.state.clone()));
@@ -2069,7 +2233,7 @@ mod tests {
     impl TestKernel {
         async fn start(endpoint: &str, ready_sync_config: bool) -> Self {
             let config = ready_sync_config.then(|| webdav_config(endpoint, "qingyu", "run-secret"));
-            Self::start_with_config(config, None, LocalBindingFixture::Absent).await
+            Self::start_with_config(config, None, LocalBindingFixture::Absent, None).await
         }
 
         async fn start_s3(factory: Arc<dyn DejavuRunnerFactory>, endpoint: &str) -> Self {
@@ -2077,6 +2241,21 @@ mod tests {
                 Some(s3_config(endpoint)),
                 Some(factory),
                 LocalBindingFixture::LegacyDesktop,
+                None,
+            )
+            .await
+        }
+
+        async fn start_s3_with_settings(
+            factory: Arc<dyn DejavuRunnerFactory>,
+            endpoint: &str,
+            settings: serde_json::Value,
+        ) -> Self {
+            Self::start_with_config(
+                Some(s3_config(endpoint)),
+                Some(factory),
+                LocalBindingFixture::LegacyDesktop,
+                Some(settings),
             )
             .await
         }
@@ -2089,6 +2268,7 @@ mod tests {
                 Some(s3_config(endpoint)),
                 Some(factory),
                 LocalBindingFixture::FreshServer,
+                None,
             )
             .await
         }
@@ -2097,6 +2277,7 @@ mod tests {
             ready_sync_config: Option<SyncConfig>,
             dejavu_factory: Option<Arc<dyn DejavuRunnerFactory>>,
             local_binding: LocalBindingFixture,
+            settings_fixture: Option<serde_json::Value>,
         ) -> Self {
             let temporary = tempdir().expect("temporary Kernel roots");
             let cache = temporary.path().join("cache");
@@ -2154,6 +2335,15 @@ mod tests {
                 .expect("write local sync state");
             }
 
+            if let Some(settings_fixture) = settings_fixture.as_ref() {
+                std::fs::write(
+                    config_root.join("settings.json"),
+                    serde_json::to_vec_pretty(settings_fixture)
+                        .expect("serialize preserved settings fixture"),
+                )
+                .expect("write preserved settings fixture");
+            }
+
             let config = KernelConfig::generate().expect("Kernel config");
             let managed =
                 ManagedWorkspaceCollection::from_paths(&paths).expect("managed collection");
@@ -2179,10 +2369,12 @@ mod tests {
                     .expect("sync durable store");
             let settings_store =
                 Arc::new(AtomicJsonSettingsStore::new(settings_store).expect("settings store"));
-            settings_store
-                .set("language", serde_json::json!("en"))
-                .expect("set portable language");
-            settings_store.save().expect("save portable language");
+            if settings_fixture.is_none() {
+                settings_store
+                    .set("language", serde_json::json!("en"))
+                    .expect("set portable language");
+                settings_store.save().expect("save portable language");
+            }
             let primary = PrimaryWorkspaceState::new("Workspace").expect("primary workspace");
             let primary = Arc::new(
                 FixedPrimaryWorkspaceStore::new(primary).expect("fixed primary workspace"),
@@ -2264,6 +2456,66 @@ mod tests {
             }
         }))
         .expect("valid S3 config")
+    }
+
+    fn android_minimal_preserved_settings() -> serde_json::Value {
+        serde_json::json!({
+            "appConfigVersion": 1,
+            "appearanceMode": "system",
+            "darkThemeId": "dark",
+            "fileTreeSortByWorkspace": {},
+            "lightThemeId": "light",
+            "pandocPath": null,
+            "recentMarkdownFilesByWorkspace": {},
+            "uiLayout": {}
+        })
+    }
+
+    fn macos_fuller_legacy_settings() -> serde_json::Value {
+        let mut editor = serde_json::Value::Object(crate::settings::model::default_editor());
+        editor["aiQuickActionPrompts"] = serde_json::json!({ "continue": "local prompt" });
+        editor["imageUpload"]["provider"] = serde_json::json!("s3");
+        editor["imageUpload"]["s3"] = serde_json::json!({ "bucket": "local-only" });
+        editor["markdownShortcuts"]
+            .as_object_mut()
+            .expect("shortcut fixture")
+            .remove("toggleViewMode");
+        editor["markdownShortcuts"]["openSpellcheckSuggestions"] = serde_json::json!("Mod+.");
+        editor["markdownTemplates"] = serde_json::json!([{
+            "id": "weekly-review",
+            "name": "Weekly review",
+            "legacyLocalField": "preserve locally"
+        }]);
+        editor["titlebarActions"] = serde_json::json!([
+            { "id": "save", "visible": true },
+            { "id": "aiAgent", "visible": true },
+            { "id": "viewMode", "visible": false },
+            { "id": "theme", "visible": true },
+            { "id": "history", "visible": true },
+            { "id": "sourceMode", "visible": true }
+        ]);
+        editor["viewModeCustomizations"]
+            .as_object_mut()
+            .expect("view-mode fixture")
+            .remove("viewModeToggle");
+        editor["viewModeCustomizations"]["aiPanel"] = serde_json::json!("visible");
+        editor["viewModeCustomizations"]["recentFolders"] = serde_json::json!("hidden");
+        serde_json::json!({
+            "appConfigVersion": 1,
+            "appearanceMode": "system",
+            "darkThemeId": "dark",
+            "editorPreferences": editor,
+            "fileTreeSortByWorkspace": {},
+            "language": "en",
+            "lightThemeId": "light",
+            "pandocPath": null,
+            "recentMarkdownFilesByWorkspace": {},
+            "settingsSchemaVersion": 1,
+            "themeCatalogVersion": 1,
+            "uiLayout": {},
+            "welcomeDocumentSeen": true,
+            "workspace": { "kind": "legacy-local" }
+        })
     }
 
     #[cfg(unix)]

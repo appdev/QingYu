@@ -680,10 +680,7 @@ impl SettingsService {
                 if is_local_only_storage_group(key, &value) {
                     continue;
                 }
-                let mut normalized = normalize_portable_value(key, value);
-                if key == "editorPreferences" {
-                    retain_value_fields(&mut normalized, EDITOR_PUBLICATION_FIELDS);
-                }
+                let normalized = portable_publication_value(key, value);
                 portable.insert(key.to_string(), normalized);
             }
         }
@@ -893,13 +890,19 @@ impl SettingsService {
             self.store.get("exportSettings")?,
         );
 
-        match self.store.replace_portable_atomically(&storage_desired) {
-            Ok(()) => {}
-            Err(error) if error.kind() == SettingsStoreErrorKind::PublishUncertain => {
-                self.coordinator.require_recovery();
-                return Err(SettingsServiceError::recovery_required());
+        // Reconciliation still needs a deferred publication ticket when the
+        // portable values are unchanged, but it must not rewrite the local
+        // backing file merely to publish the current canonical snapshot.
+        let storage_replaced = desired != before_value;
+        if storage_replaced {
+            match self.store.replace_portable_atomically(&storage_desired) {
+                Ok(()) => {}
+                Err(error) if error.kind() == SettingsStoreErrorKind::PublishUncertain => {
+                    self.coordinator.require_recovery();
+                    return Err(SettingsServiceError::recovery_required());
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
         }
         let actual = self
             .portable_snapshot_unlocked()
@@ -915,9 +918,10 @@ impl SettingsService {
         let actual = match actual {
             Ok(actual) => actual,
             Err(_) => {
-                if self
-                    .restore_portable_storage(&before_storage_value)
-                    .is_err()
+                if storage_replaced
+                    && self
+                        .restore_portable_storage(&before_storage_value)
+                        .is_err()
                 {
                     self.coordinator.require_recovery();
                     return Err(SettingsServiceError::recovery_required());
@@ -926,9 +930,10 @@ impl SettingsService {
             }
         };
         if !verify(&actual) {
-            if self
-                .restore_portable_storage(&before_storage_value)
-                .is_err()
+            if storage_replaced
+                && self
+                    .restore_portable_storage(&before_storage_value)
+                    .is_err()
             {
                 self.coordinator.require_recovery();
                 return Err(SettingsServiceError::recovery_required());
@@ -1466,6 +1471,184 @@ fn retain_value_fields(value: &mut Value, allowed: &[&str]) {
     if let Some(object) = value.as_object_mut() {
         object.retain(|key, _| allowed.contains(&key.as_str()));
     }
+}
+
+/// Projects a present storage group onto the portable publication schema.
+///
+/// A missing top-level group stays missing because callers only invoke this
+/// function for stored values. Present known object fields overlay canonical
+/// defaults recursively, so newly introduced fields receive safe defaults.
+/// Unknown fields are local-only and omitted without mutating storage. Present
+/// known values are retained verbatim and the snapshot validator remains the
+/// fail-closed authority for invalid values.
+fn portable_publication_value(key: &str, stored: Value) -> Value {
+    let projected = match key {
+        "editorPreferences" => project_editor_publication(stored),
+        "fileIgnoreSettings" => project_known_fields(json!({ "rules": "" }), stored),
+        "exportSettings" => project_known_fields(Value::Object(default_export()), stored),
+        _ => stored,
+    };
+    normalize_portable_value(key, projected)
+}
+
+fn project_editor_publication(stored: Value) -> Value {
+    let stored_titlebar_actions = stored.get("titlebarActions").cloned();
+    let mut projected = project_known_fields(Value::Object(default_editor()), stored);
+    let Some(projected_editor) = projected.as_object_mut() else {
+        return projected;
+    };
+
+    if let Some(stored_titlebar_actions) = stored_titlebar_actions {
+        let defaults = default_editor()
+            .remove("titlebarActions")
+            .expect("default editor titlebar actions exist");
+        projected_editor.insert(
+            "titlebarActions".to_string(),
+            project_titlebar_actions(defaults, stored_titlebar_actions),
+        );
+    }
+    if let Some(templates) = projected_editor
+        .get_mut("markdownTemplates")
+        .and_then(Value::as_array_mut)
+    {
+        project_markdown_templates(templates);
+    }
+    projected
+}
+
+fn project_markdown_templates(templates: &mut [Value]) {
+    let mut used_file_names = BTreeSet::new();
+    for template in templates {
+        retain_value_fields(template, &["fileName", "id", "name", "suggestedName"]);
+        let Some(template) = template.as_object_mut() else {
+            continue;
+        };
+        template
+            .entry("suggestedName".to_string())
+            .or_insert_with(|| Value::String(String::new()));
+        if !template.contains_key("fileName") {
+            if let Some(id) = template.get("id").and_then(Value::as_str) {
+                let base_name = markdown_template_file_stem(id);
+                let file_name = (0..=20)
+                    .map(|index| {
+                        if index == 0 {
+                            format!("{base_name}.md")
+                        } else {
+                            format!("{base_name}-{}.md", index + 1)
+                        }
+                    })
+                    .find(|candidate| !used_file_names.contains(candidate));
+                if let Some(file_name) = file_name {
+                    template.insert("fileName".to_string(), Value::String(file_name));
+                }
+            }
+        }
+        if let Some(file_name) = template
+            .get("fileName")
+            .and_then(Value::as_str)
+            .filter(|file_name| valid_markdown_template_file_name(file_name))
+        {
+            used_file_names.insert(file_name.to_ascii_lowercase());
+        }
+    }
+}
+
+fn markdown_template_file_stem(id: &str) -> String {
+    let normalized_id = id.trim().to_lowercase();
+    let id = normalized_id
+        .strip_suffix(".markdown")
+        .or_else(|| normalized_id.strip_suffix(".md"))
+        .unwrap_or(&normalized_id);
+    let mut stem = String::new();
+    let mut pending_separator = false;
+    for character in id.chars() {
+        if character.is_ascii_alphanumeric() {
+            if pending_separator && !stem.is_empty() {
+                stem.push('-');
+            }
+            stem.push(character.to_ascii_lowercase());
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+    }
+    if stem.is_empty() {
+        "template".to_string()
+    } else {
+        stem
+    }
+}
+
+fn valid_markdown_template_file_name(file_name: &str) -> bool {
+    !file_name.is_empty()
+        && file_name.trim() == file_name
+        && file_name != "."
+        && file_name != ".."
+        && file_name.to_ascii_lowercase().ends_with(".md")
+        && !file_name.contains('/')
+        && !file_name.contains('\\')
+}
+
+fn project_known_fields(mut defaults: Value, stored: Value) -> Value {
+    match (&mut defaults, stored) {
+        (Value::Object(defaults), Value::Object(stored)) => {
+            for (key, default) in defaults.iter_mut() {
+                if let Some(stored) = stored.get(key) {
+                    *default = project_known_fields(default.clone(), stored.clone());
+                }
+            }
+            Value::Object(defaults.clone())
+        }
+        (_, stored) => stored,
+    }
+}
+
+fn project_titlebar_actions(defaults: Value, stored: Value) -> Value {
+    let Some(defaults) = defaults.as_array() else {
+        return stored;
+    };
+    let Some(stored_actions) = stored.as_array() else {
+        return stored;
+    };
+    let defaults_by_id = defaults
+        .iter()
+        .filter_map(|action| {
+            action
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| (id, action))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    let mut projected = Vec::new();
+    for action in stored_actions {
+        let Some(id) = action.get("id").and_then(Value::as_str) else {
+            return stored;
+        };
+        let Some(default) = defaults_by_id.get(id) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            return stored;
+        }
+        let mut action_projection = (*default).clone();
+        if let Some(visible) = action.get("visible") {
+            action_projection["visible"] = visible.clone();
+        }
+        projected.push(action_projection);
+    }
+    projected.extend(
+        defaults
+            .iter()
+            .filter(|default| {
+                default
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !seen.contains(id))
+            })
+            .cloned(),
+    );
+    Value::Array(projected)
 }
 
 fn portable_group_is_valid(key: &str, value: Value) -> bool {
