@@ -568,6 +568,20 @@ export type KernelSyncRunSnapshot = {
   runId: string;
 };
 
+export type KernelRemoteNotebookSnapshot = {
+  available: boolean;
+  disabledReason: string | null;
+  displayName: string;
+  name: string;
+  provider: "s3";
+  repositoryId: string;
+};
+
+export type KernelSyncRepositoryBindingSnapshot = {
+  jobId: string;
+  repositoryId: string;
+};
+
 export type KernelDomainPort = {
   appConfig: {
     readonly bootstrap: KernelAppConfigSnapshot;
@@ -604,6 +618,15 @@ export type KernelDomainPort = {
     read: () => Promise<KernelSettingsSnapshot>;
   };
   sync: {
+    bindRepository: (input: {
+      displayName: string;
+      expectedRevision: KernelRevision;
+      repositoryId: string;
+    }) => Promise<KernelSyncRepositoryBindingSnapshot>;
+    exportKey: () => Promise<string>;
+    importKey: (key: string) => Promise<{ configured: boolean }>;
+    listNotebooks: (expectedRevision: KernelRevision) => Promise<KernelRemoteNotebookSnapshot[]>;
+    readKeyState: () => Promise<{ configured: boolean }>;
     patchConfig: (input: KernelPatchSyncConfigInput) => Promise<KernelSyncConfigSnapshot>;
     readConfig: () => Promise<KernelSyncConfigSnapshot>;
     readStatus: () => Promise<KernelSyncStatusSnapshot>;
@@ -670,7 +693,12 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       read: rejectUnavailable,
     },
     sync: {
+      bindRepository: rejectUnavailable,
+      exportKey: rejectUnavailable,
+      importKey: rejectUnavailable,
+      listNotebooks: rejectUnavailable,
       patchConfig: rejectUnavailable,
+      readKeyState: rejectUnavailable,
       readConfig: rejectUnavailable,
       readStatus: rejectUnavailable,
       testConnection: rejectUnavailable,

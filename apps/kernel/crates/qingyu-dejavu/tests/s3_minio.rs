@@ -182,6 +182,7 @@ impl LiveFailure {
             RepoError::RepositoryBusy => "repository_busy",
             RepoError::EmptyIndex => "empty_index",
             RepoError::IndexFileChanged => "index_file_changed",
+            RepoError::FileIdentityCollision => "file_identity_collision",
             RepoError::WorkingTreeChanged => "working_tree_changed",
             RepoError::RemoteLockUnhealthy(error) => error.code(),
             RepoError::OperationAndUnlockFailed { .. } => "operation_and_unlock_failed",

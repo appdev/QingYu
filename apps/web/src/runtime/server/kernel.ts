@@ -568,6 +568,46 @@ export async function createServerKernelDomainAdapter(
       },
     },
     sync: {
+      bindRepository: async (input) => {
+        await prepareInstanceOperation();
+        const binding = await request(() => client.sync.bindRepository({
+          displayName: input.displayName,
+          expectedRevision: input.expectedRevision,
+          repositoryId: input.repositoryId,
+        }, { signal: requests.signal }));
+        await confirmWorkspaceIdentity();
+        return binding;
+      },
+      exportKey: async () => {
+        await prepareInstanceOperation();
+        const exported = await request(() => client.sync.exportKey(
+          { confirmed: true },
+          { signal: requests.signal },
+        ));
+        await confirmWorkspaceIdentity();
+        return exported.key;
+      },
+      importKey: async (key) => {
+        await prepareInstanceOperation();
+        const state = await request(() => client.sync.importKey(
+          { key },
+          { signal: requests.signal },
+        ));
+        await confirmWorkspaceIdentity();
+        return state;
+      },
+      listNotebooks: async (expectedRevision) => {
+        await prepareInstanceOperation();
+        const catalog = await request(() => client.sync.listRepositories(
+          { expectedRevision },
+          { signal: requests.signal },
+        ));
+        await confirmWorkspaceIdentity();
+        return catalog.entries.flatMap((entry) => entry.provider === "s3" ? [{
+          ...entry,
+          provider: "s3" as const,
+        }] : []);
+      },
       patchConfig: async (input) => {
         await prepareInstanceOperation();
         const config = await request(() => client.sync.patchConfig(
@@ -588,6 +628,12 @@ export async function createServerKernelDomainAdapter(
         const status = await request(() => client.sync.getStatus({ signal: requests.signal }));
         await confirmWorkspaceIdentity();
         return mapSyncStatus(status);
+      },
+      readKeyState: async () => {
+        await prepareInstanceOperation();
+        const state = await request(() => client.sync.getKeyState({ signal: requests.signal }));
+        await confirmWorkspaceIdentity();
+        return state;
       },
       testConnection: async (input) => {
         await prepareInstanceOperation();

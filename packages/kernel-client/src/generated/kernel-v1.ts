@@ -399,6 +399,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/dejavu/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDejavuKeyState"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/dejavu/key/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["exportDejavuKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/dejavu/key/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["importDejavuKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listRemoteNotebooks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sync/repository-binding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["bindSyncRepository"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sync/runs": {
         parameters: {
             query?: never;
@@ -552,6 +632,11 @@ export interface components {
         };
         /** @enum {string} */
         AuthenticateFrameKind: "authenticate";
+        BindSyncRepositoryRequest: {
+            displayName: string;
+            expectedRevision: components["schemas"]["Revision"];
+            repositoryId: string;
+        };
         ChangeServerOwnerPasswordRequest: {
             currentPassword: string;
             newPassword: string;
@@ -632,6 +717,9 @@ export interface components {
         };
         CredentialState: {
             present: boolean;
+        };
+        DejavuKeyStateDto: {
+            configured: boolean;
         };
         DeleteDocumentRequest: {
             deletionPolicy: components["schemas"]["DeletionPolicy"];
@@ -793,6 +881,12 @@ export interface components {
         EventFrameKind: "event";
         /** Format: int64 */
         EventSequence: number;
+        ExportDejavuKeyRequest: {
+            confirmed: boolean;
+        };
+        ExportedDejavuKeyDto: {
+            readonly key: string;
+        };
         /** @enum {string} */
         FileDocumentKind: "file";
         FileDocumentName: components["schemas"]["DocumentName"];
@@ -836,6 +930,9 @@ export interface components {
         HostProfile: "desktop" | "server" | "mobile";
         /** Format: int32 */
         HttpStatus: number;
+        ImportDejavuKeyRequest: {
+            key: string;
+        };
         InitializeServerOwnerRequest: {
             initializationToken: string;
             password: string;
@@ -846,6 +943,9 @@ export interface components {
             cursor?: components["schemas"]["PageCursor"];
             limit?: components["schemas"]["PageLimit"];
             parent?: components["schemas"]["WorkspaceRelativePath"];
+        };
+        ListRemoteNotebooksQuery: {
+            expectedRevision: components["schemas"]["Revision"];
         };
         ListWorkspaceInventoryQuery: {
             cursor?: components["schemas"]["PageCursor"];
@@ -946,6 +1046,17 @@ export interface components {
         };
         /** @enum {string} */
         ReloadScope: "workspace" | "documents" | "settings" | "app-config" | "sync-config" | "sync-status";
+        RemoteNotebookCatalogDto: {
+            entries: components["schemas"]["RemoteNotebookCatalogEntryDto"][];
+        };
+        RemoteNotebookCatalogEntryDto: {
+            available: boolean;
+            disabledReason: components["schemas"]["Nullable_String"];
+            displayName: string;
+            name: string;
+            provider: components["schemas"]["SyncProvider"];
+            repositoryId: string;
+        };
         /** Format: uuid */
         RequestId: string;
         /** Format: int32 */
@@ -1249,6 +1360,10 @@ export interface components {
         SyncMode: "automatic" | "startup-exit" | "fully-manual";
         /** @enum {string} */
         SyncProvider: "s3" | "webdav";
+        SyncRepositoryBindingDto: {
+            jobId: string;
+            repositoryId: string;
+        };
         SyncRunAcceptedDto: {
             acceptedAt: components["schemas"]["Rfc3339Utc"];
             configRevision: components["schemas"]["Revision"];
@@ -4826,6 +4941,550 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
                         code?: "authentication_unavailable" | "sync_not_ready";
+                    };
+                };
+            };
+        };
+    };
+    getDejavuKeyState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DejavuKeyStateDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "sync_not_ready" | "sync_run_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    exportDejavuKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportDejavuKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportedDejavuKeyDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "sync_not_ready" | "sync_run_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    importDejavuKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportDejavuKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DejavuKeyStateDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "sync_not_ready" | "sync_run_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    listRemoteNotebooks: {
+        parameters: {
+            query: {
+                expectedRevision: components["schemas"]["Revision"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemoteNotebookCatalogDto"];
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "sync_config_absent";
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "sync_config_revision_conflict";
+                    };
+                };
+            };
+            /** @description Error */
+            422: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "sync_config_invalid";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "sync_not_ready";
+                    };
+                };
+            };
+        };
+    };
+    bindSyncRepository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindSyncRepositoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            202: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncRepositoryBindingDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "sync_config_absent";
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "sync_config_revision_conflict";
+                    };
+                };
+            };
+            /** @description Error */
+            422: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "sync_config_invalid";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "sync_not_ready" | "sync_run_unavailable";
                     };
                 };
             };

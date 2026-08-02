@@ -392,7 +392,12 @@ impl KernelDejavuRunner {
         self.instance_data
             .verify_held_directory()
             .map_err(|_| DejavuRunError::RepositoryUnavailable)?;
-        map_result(&self.repository_id, result)
+        let scanned_files = repo
+            .latest()
+            .map_err(map_repo_error)?
+            .map(|index| usize_u64(index.count))
+            .unwrap_or(0);
+        map_result(&self.repository_id, scanned_files, result)
     }
 }
 
@@ -709,6 +714,7 @@ fn open_relative_parent(
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DejavuRunResult {
     pub data_changed: bool,
+    pub scanned_files: u64,
     pub transfer: DejavuTransferSummary,
     pub conflicts: Vec<DejavuConflict>,
 }
@@ -1093,6 +1099,7 @@ fn path_is_normal_absolute(path: &Path) -> bool {
 
 fn map_result(
     repository_id: &str,
+    scanned_files: u64,
     (merge, traffic): (MergeResult, TrafficStat),
 ) -> Result<DejavuRunResult, DejavuRunError> {
     let data_changed = merge.data_changed();
@@ -1123,6 +1130,7 @@ fn map_result(
         .collect::<Result<Vec<_>, DejavuRunError>>()?;
     Ok(DejavuRunResult {
         data_changed,
+        scanned_files,
         transfer: DejavuTransferSummary {
             download_bytes: nonnegative_u64(traffic.download_bytes),
             download_chunks: usize_u64(traffic.download_chunk_count),
@@ -1142,6 +1150,7 @@ fn map_repo_error(error: RepoError) -> DejavuRunError {
         RepoError::Cloud(error) => map_cloud_error(&error),
         RepoError::RemoteLockUnhealthy(error) => map_cloud_code(error.code()),
         RepoError::OperationAndUnlockFailed { operation, .. } => map_repo_error(*operation),
+        RepoError::FileIdentityCollision => DejavuRunError::IntegrityFailure,
         RepoError::UnsafePath => DejavuRunError::WorkspaceUnavailable,
         _ => DejavuRunError::RepositoryUnavailable,
     }
@@ -1224,6 +1233,10 @@ mod tests {
         for (cloud, expected) in cases {
             assert_eq!(map_repo_error(RepoError::Cloud(cloud)), expected);
         }
+        assert_eq!(
+            map_repo_error(RepoError::FileIdentityCollision),
+            super::DejavuRunError::IntegrityFailure,
+        );
     }
 
     #[tokio::test]

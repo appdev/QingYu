@@ -16,10 +16,11 @@ use crate::{
     contract::{
         ApiVersion, CreateDocumentRequest, CreateWorkspaceResourceBatchRequest,
         CreateWorkspaceResourceQuery, DocumentContents, DocumentId, DocumentName, ErrorCode,
-        ErrorDetails, FileDocumentName, ListDocumentsQuery, ListWorkspaceInventoryQuery,
-        LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, PatchAppConfigStateRequest,
-        ResourceId, ResourceKind, RunId, SearchWorkspaceQuery, SnapshotId, StartupState,
-        UpdateDocumentRequest, WorkspaceRelativePath,
+        ErrorDetails, FileDocumentName, ListDocumentsQuery, ListRemoteNotebooksQuery,
+        ListWorkspaceInventoryQuery, LiveHealthResponse, LiveStatus, MoveDocumentRequest,
+        PageQuery, PatchAppConfigStateRequest, ResourceId, ResourceKind, RunId,
+        SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
+        WorkspaceRelativePath,
     },
     runtime::ServiceFailure,
 };
@@ -61,6 +62,11 @@ enum ServiceOperation {
     GetSyncStatus,
     GetSyncRun,
     TriggerSyncRun,
+    ListRemoteNotebooks,
+    BindSyncRepository,
+    GetDejavuKeyState,
+    ImportDejavuKey,
+    ExportDejavuKey,
 }
 
 pub(crate) fn router() -> Router<ApiState> {
@@ -120,6 +126,14 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/api/v1/sync/status", get(get_sync_status))
         .route("/api/v1/sync/runs", post(trigger_sync_run))
         .route("/api/v1/sync/runs/{run_id}", get(get_sync_run))
+        .route("/api/v1/sync/repositories", get(list_remote_notebooks))
+        .route(
+            "/api/v1/sync/repository-binding",
+            post(bind_sync_repository),
+        )
+        .route("/api/v1/sync/dejavu/key", get(get_dejavu_key_state))
+        .route("/api/v1/sync/dejavu/key/import", post(import_dejavu_key))
+        .route("/api/v1/sync/dejavu/key/export", post(export_dejavu_key))
         .route("/api/v1/events", get(ws::upgrade))
         .method_not_allowed_fallback(method_not_allowed)
 }
@@ -617,6 +631,79 @@ async fn get_sync_run(
     )
 }
 
+async fn list_remote_notebooks(
+    State(state): State<ApiState>,
+    query: Result<Query<ListRemoteNotebooksQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::ListRemoteNotebooks);
+    };
+    service_response(
+        service.list_remote_notebooks(query).await,
+        StatusCode::OK,
+        ServiceOperation::ListRemoteNotebooks,
+    )
+}
+
+async fn bind_sync_repository(State(state): State<ApiState>, request: Request<Body>) -> Response {
+    let request = match parse_standard_json(request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::BindSyncRepository);
+    };
+    service_response(
+        service.bind_sync_repository(request).await,
+        StatusCode::ACCEPTED,
+        ServiceOperation::BindSyncRepository,
+    )
+}
+
+async fn get_dejavu_key_state(State(state): State<ApiState>) -> Response {
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::GetDejavuKeyState);
+    };
+    service_response(
+        service.get_dejavu_key_state().await,
+        StatusCode::OK,
+        ServiceOperation::GetDejavuKeyState,
+    )
+}
+
+async fn import_dejavu_key(State(state): State<ApiState>, request: Request<Body>) -> Response {
+    let request = match parse_sensitive_standard_json(request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::ImportDejavuKey);
+    };
+    service_response(
+        service.import_dejavu_key(request).await,
+        StatusCode::OK,
+        ServiceOperation::ImportDejavuKey,
+    )
+}
+
+async fn export_dejavu_key(State(state): State<ApiState>, request: Request<Body>) -> Response {
+    let request = match parse_sensitive_standard_json(request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::ExportDejavuKey);
+    };
+    service_response(
+        service.export_dejavu_key(request).await,
+        StatusCode::OK,
+        ServiceOperation::ExportDejavuKey,
+    )
+}
+
 async fn parse_standard_json<T>(request: Request<Body>) -> Result<T, Response>
 where
     T: DeserializeOwned,
@@ -1046,6 +1133,23 @@ impl ServiceOperation {
                 E::SyncRunUnavailable,
                 E::SyncConfigRevisionConflict,
             ],
+            Self::ListRemoteNotebooks => &[
+                E::SyncConfigAbsent,
+                E::SyncConfigInvalid,
+                E::SyncConfigRevisionConflict,
+                E::SyncNotReady,
+            ],
+            Self::BindSyncRepository => &[
+                E::InvalidRequest,
+                E::SyncConfigAbsent,
+                E::SyncConfigInvalid,
+                E::SyncConfigRevisionConflict,
+                E::SyncNotReady,
+                E::SyncRunUnavailable,
+            ],
+            Self::GetDejavuKeyState | Self::ImportDejavuKey | Self::ExportDejavuKey => {
+                &[E::InvalidRequest, E::SyncNotReady, E::SyncRunUnavailable]
+            }
         }
     }
 
@@ -1075,7 +1179,12 @@ impl ServiceOperation {
             | Self::TestSyncConnection
             | Self::GetSyncStatus
             | Self::GetSyncRun
-            | Self::TriggerSyncRun => ErrorCode::SyncNotReady,
+            | Self::TriggerSyncRun
+            | Self::ListRemoteNotebooks
+            | Self::BindSyncRepository
+            | Self::GetDejavuKeyState
+            | Self::ImportDejavuKey
+            | Self::ExportDejavuKey => ErrorCode::SyncNotReady,
         }
     }
 }

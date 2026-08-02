@@ -62,7 +62,7 @@ describe("desktop runtime composition", () => {
 
     expect(runtime.kernel).toBe(kernel);
     expect(runtime.features).toMatchObject({
-      dejavuSync: false,
+      dejavuSync: true,
       fileDrop: false,
       imageImport: true,
       localFileImport: false,

@@ -1891,6 +1891,13 @@ impl SyncCancellation {
             self.state.notification.notify_waiters();
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn cancelled_for_test() -> Self {
+        let cancellation = Self::new();
+        cancellation.cancel();
+        cancellation
+    }
 }
 
 impl fmt::Debug for SyncCancellation {
@@ -2710,6 +2717,44 @@ pub trait SyncApiService: Send + Sync {
         &self,
         request: TriggerSyncRunRequest,
     ) -> Result<SyncRunAcceptedDto, ServiceFailure>;
+    async fn list_remote_notebooks(
+        &self,
+        request: crate::contract::ListRemoteNotebooksQuery,
+    ) -> Result<crate::contract::RemoteNotebookCatalogDto, ServiceFailure> {
+        let _request = request;
+        Err(sync_repository_capability_unavailable())
+    }
+    async fn bind_sync_repository(
+        &self,
+        request: crate::contract::BindSyncRepositoryRequest,
+    ) -> Result<crate::contract::SyncRepositoryBindingDto, ServiceFailure> {
+        let _request = request;
+        Err(sync_repository_capability_unavailable())
+    }
+    async fn get_dejavu_key_state(
+        &self,
+    ) -> Result<crate::contract::DejavuKeyStateDto, ServiceFailure> {
+        Err(sync_repository_capability_unavailable())
+    }
+    async fn import_dejavu_key(
+        &self,
+        request: crate::contract::ImportDejavuKeyRequest,
+    ) -> Result<crate::contract::DejavuKeyStateDto, ServiceFailure> {
+        let _request = request;
+        Err(sync_repository_capability_unavailable())
+    }
+    async fn export_dejavu_key(
+        &self,
+        request: crate::contract::ExportDejavuKeyRequest,
+    ) -> Result<crate::contract::ExportedDejavuKeyDto, ServiceFailure> {
+        let _request = request;
+        Err(sync_repository_capability_unavailable())
+    }
+}
+
+fn sync_repository_capability_unavailable() -> ServiceFailure {
+    ServiceFailure::new(ErrorCode::SyncNotReady, None)
+        .expect("sync repository capability uses a compatible safe error")
 }
 
 #[cfg(test)]

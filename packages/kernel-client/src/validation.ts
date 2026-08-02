@@ -238,6 +238,16 @@ function isCanonicalString(value: unknown, maxCharacters: number): value is stri
   );
 }
 
+function isCanonicalUtf8String(value: unknown, maxBytes: number): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    value !== "" &&
+    !hasControl(value) &&
+    new TextEncoder().encode(value).length <= maxBytes
+  );
+}
+
 function hasControl(value: string) {
   return /\p{Cc}/u.test(value);
 }
@@ -298,6 +308,53 @@ export function isSyncRun(value: unknown): value is Schemas["SyncRunAcceptedDto"
   return isRecord(value) && isRfc3339Utc(value.acceptedAt) && isRevision(value.configRevision) && isUuid(value.runId) && exact(value, ["acceptedAt", "configRevision", "runId"]);
 }
 
+export function isRemoteNotebookCatalog(
+  value: unknown,
+): value is Schemas["RemoteNotebookCatalogDto"] {
+  return isRecord(value) &&
+    Array.isArray(value.entries) &&
+    value.entries.every((entry) => isRecord(entry) &&
+      typeof entry.available === "boolean" &&
+      (entry.disabledReason === null || typeof entry.disabledReason === "string") &&
+      isCanonicalUtf8String(entry.displayName, 255) &&
+      entry.name === entry.displayName &&
+      entry.provider === "s3" &&
+      isCanonicalUuid(entry.repositoryId) &&
+      exact(entry, [
+        "available",
+        "disabledReason",
+        "displayName",
+        "name",
+        "provider",
+        "repositoryId",
+      ])) &&
+    exact(value, ["entries"]);
+}
+
+export function isSyncRepositoryBinding(
+  value: unknown,
+): value is Schemas["SyncRepositoryBindingDto"] {
+  return isRecord(value) &&
+    isUuid(value.jobId) &&
+    isCanonicalUuid(value.repositoryId) &&
+    exact(value, ["jobId", "repositoryId"]);
+}
+
+export function isDejavuKeyState(value: unknown): value is Schemas["DejavuKeyStateDto"] {
+  return isRecord(value) &&
+    typeof value.configured === "boolean" &&
+    exact(value, ["configured"]);
+}
+
+export function isExportedDejavuKey(
+  value: unknown,
+): value is Schemas["ExportedDejavuKeyDto"] {
+  return isRecord(value) &&
+    typeof value.key === "string" &&
+    value.key.length > 0 &&
+    exact(value, ["key"]);
+}
+
 const DOCUMENT_KEYS = ["id", "kind", "modifiedAt", "name", "parent", "path", "revision", "sizeBytes"];
 
 function isDocumentBase(value: unknown): value is Record<string, unknown> {
@@ -321,6 +378,11 @@ function exact(value: Record<string, unknown>, keys: readonly string[]) {
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function isCanonicalUuid(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value);
 }
 
 function isDocumentId(value: unknown): value is string {

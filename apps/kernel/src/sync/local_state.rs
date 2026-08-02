@@ -3,7 +3,8 @@
 use std::{collections::HashSet, fmt, io::Read, path::PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -16,13 +17,15 @@ use crate::{
     },
     sync::dejavu_runner::DejavuRepositoryKey,
 };
+use qingyu_dejavu::derive_key;
 
 const LOCAL_SYNC_STATE_FILE: &str = "local-sync.json";
 const LOCAL_SYNC_STATE_VERSION: u32 = 1;
 const MAX_LOCAL_SYNC_STATE_BYTES: usize = 1024 * 1024;
+const MAX_DEJAVU_KEY_INPUT_BYTES: usize = 1024;
 const SERVER_WORKSPACE_DISPLAY_NAME: &str = "Server notes";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LegacyLocalSyncState {
     version: u32,
@@ -48,12 +51,20 @@ impl<'de> Deserialize<'de> for LegacySensitiveString {
     }
 }
 
-#[derive(Deserialize)]
+impl Serialize for LegacySensitiveString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LegacyRepositoryBinding {
     repository_id: String,
-    #[serde(rename = "displayName")]
-    _display_name: String,
+    display_name: String,
     notes_root: PathBuf,
     enabled: bool,
 }
@@ -78,13 +89,19 @@ struct FixedRepositoryBinding<'a> {
 
 pub(crate) struct DejavuLocalRepositoryBinding {
     repository_id: String,
+    display_name: String,
     device_id: String,
     repository_key: DejavuRepositoryKey,
 }
 
 impl DejavuLocalRepositoryBinding {
-    pub(crate) fn into_parts(self) -> (String, String, DejavuRepositoryKey) {
-        (self.repository_id, self.device_id, self.repository_key)
+    pub(crate) fn into_parts(self) -> (String, String, String, DejavuRepositoryKey) {
+        (
+            self.repository_id,
+            self.display_name,
+            self.device_id,
+            self.repository_key,
+        )
     }
 }
 
@@ -329,14 +346,266 @@ pub(crate) fn read_active_dejavu_binding(
             if active.is_some() {
                 return Err(DejavuLocalStateError::InvalidState);
             }
-            active = Some(repository);
+            active = Some((repository, binding.display_name));
         }
     }
-    Ok(active.map(|repository_id| DejavuLocalRepositoryBinding {
-        repository_id,
-        device_id: device.to_string(),
-        repository_key: DejavuRepositoryKey::new(*key),
-    }))
+    Ok(active.map(
+        |(repository_id, display_name)| DejavuLocalRepositoryBinding {
+            repository_id,
+            display_name,
+            device_id: device.to_string(),
+            repository_key: DejavuRepositoryKey::new(*key),
+        },
+    ))
+}
+
+pub(crate) fn bind_dejavu_repository(
+    instance: &ActiveInstanceAuthority,
+    workspace: &ActiveWorkspaceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+    repository_id: &str,
+    display_name: &str,
+) -> Result<(), DejavuLocalStateError> {
+    verify_fixed_authorities(instance, workspace)?;
+    let repository_id = canonical_repository_id(repository_id)?;
+    let display_name = display_name.trim();
+    if display_name.is_empty()
+        || display_name.len() > 255
+        || display_name.chars().any(char::is_control)
+    {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    let (store, target, mut state, revision) = load_state_for_update(instance, launch_epoch)?;
+    validate_local_state(&state)?;
+    let notes_root = workspace.root().canonical_path().to_path_buf();
+    state.bindings.retain(|binding| {
+        binding.repository_id == repository_id || binding.notes_root != notes_root
+    });
+    if let Some(binding) = state
+        .bindings
+        .iter_mut()
+        .find(|binding| binding.repository_id == repository_id)
+    {
+        binding.display_name = display_name.to_owned();
+        binding.notes_root = notes_root;
+        binding.enabled = true;
+    } else {
+        state.bindings.push(LegacyRepositoryBinding {
+            repository_id,
+            display_name: display_name.to_owned(),
+            notes_root,
+            enabled: true,
+        });
+    }
+    validate_local_state(&state)?;
+    save_state(&store, &target, &state, &revision, || {
+        verify_fixed_authorities(instance, workspace).is_ok()
+    })?;
+    require_active_fixed_binding(instance, workspace)
+}
+
+pub(crate) fn dejavu_key_configured(
+    instance: &ActiveInstanceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+) -> Result<bool, DejavuLocalStateError> {
+    verify_instance_authority(instance)?;
+    let (store, target) = local_state_store(instance, launch_epoch)?;
+    recover_state_store(&store)?;
+    let Some(stored) = store
+        .read(&target, MAX_LOCAL_SYNC_STATE_BYTES as u64)
+        .map_err(|_| DejavuLocalStateError::Storage)?
+    else {
+        return Ok(false);
+    };
+    let state: LegacyLocalSyncState =
+        serde_json::from_slice(&stored.bytes).map_err(|_| DejavuLocalStateError::InvalidState)?;
+    validate_local_state(&state)?;
+    verify_instance_authority(instance)?;
+    Ok(true)
+}
+
+pub(crate) fn export_dejavu_key(
+    instance: &ActiveInstanceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+) -> Result<String, DejavuLocalStateError> {
+    let (_store, _target, state, _revision) = load_state_for_update(instance, launch_epoch)?;
+    validate_local_state(&state)?;
+    verify_instance_authority(instance)?;
+    Ok(state.repo_key.0.to_string())
+}
+
+pub(crate) fn replace_dejavu_key(
+    instance: &ActiveInstanceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+    user_key_input: &str,
+) -> Result<(), DejavuLocalStateError> {
+    if user_key_input.trim().is_empty() || user_key_input.len() > MAX_DEJAVU_KEY_INPUT_BYTES {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    let (store, target, mut state, revision) = load_state_for_update(instance, launch_epoch)?;
+    validate_local_state(&state)?;
+    state.repo_key = LegacySensitiveString(Zeroizing::new(derive_repository_key(user_key_input)?));
+    for binding in &mut state.bindings {
+        binding.enabled = false;
+    }
+    validate_local_state(&state)?;
+    save_state(&store, &target, &state, &revision, || {
+        verify_instance_authority(instance).is_ok()
+    })
+}
+
+fn canonical_repository_id(repository_id: &str) -> Result<String, DejavuLocalStateError> {
+    let parsed =
+        uuid::Uuid::parse_str(repository_id).map_err(|_| DejavuLocalStateError::InvalidState)?;
+    if parsed.to_string() != repository_id {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    Ok(repository_id.to_owned())
+}
+
+fn validate_local_state(state: &LegacyLocalSyncState) -> Result<(), DejavuLocalStateError> {
+    if state.version != LOCAL_SYNC_STATE_VERSION {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    canonical_repository_id_for_device(&state.device_id)?;
+    let decoded = Zeroizing::new(
+        STANDARD
+            .decode(state.repo_key.as_bytes())
+            .map_err(|_| DejavuLocalStateError::InvalidState)?,
+    );
+    if decoded.len() != 32 {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    let mut repositories = HashSet::new();
+    let mut roots = HashSet::new();
+    for binding in &state.bindings {
+        canonical_repository_id(&binding.repository_id)?;
+        if !binding.notes_root.is_absolute()
+            || !repositories.insert(binding.repository_id.as_str())
+            || !roots.insert(binding.notes_root.as_path())
+        {
+            return Err(DejavuLocalStateError::InvalidState);
+        }
+    }
+    Ok(())
+}
+
+fn canonical_repository_id_for_device(device_id: &str) -> Result<(), DejavuLocalStateError> {
+    let parsed =
+        uuid::Uuid::parse_str(device_id).map_err(|_| DejavuLocalStateError::InvalidState)?;
+    if parsed.get_version() != Some(uuid::Version::Random) {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    Ok(())
+}
+
+fn derive_repository_key(input: &str) -> Result<String, DejavuLocalStateError> {
+    if let Ok(decoded) = STANDARD.decode(input) {
+        if decoded.len() == 32 {
+            return Ok(input.to_owned());
+        }
+    }
+    let digest = format!("{:x}", Sha256::digest(input.as_bytes()));
+    let key = derive_key(input, &digest[..16]).map_err(|_| DejavuLocalStateError::Storage)?;
+    Ok(STANDARD.encode(key))
+}
+
+fn local_state_store(
+    instance: &ActiveInstanceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+) -> Result<(DurableFileStore, StorageFileName), DejavuLocalStateError> {
+    verify_instance_authority(instance)?;
+    let store = DurableFileStore::at_instance_data(instance.root(), launch_epoch)
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    let target = StorageFileName::parse(LOCAL_SYNC_STATE_FILE)
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    Ok((store, target))
+}
+
+fn recover_state_store(store: &DurableFileStore) -> Result<(), DejavuLocalStateError> {
+    let recovery = store
+        .recover()
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    if recovery.iter().any(|outcome| {
+        matches!(
+            outcome,
+            RecoveryOutcome::Committed {
+                commit_state: CommitState::PublishedDurabilityUncertain,
+                ..
+            } | RecoveryOutcome::ManualInterventionRequired { .. }
+        )
+    }) {
+        Err(DejavuLocalStateError::Storage)
+    } else {
+        Ok(())
+    }
+}
+
+fn load_state_for_update(
+    instance: &ActiveInstanceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+) -> Result<
+    (
+        DurableFileStore,
+        StorageFileName,
+        LegacyLocalSyncState,
+        crate::storage::FileRevision,
+    ),
+    DejavuLocalStateError,
+> {
+    let (store, target) = local_state_store(instance, launch_epoch)?;
+    recover_state_store(&store)?;
+    let stored = store
+        .read(&target, MAX_LOCAL_SYNC_STATE_BYTES as u64)
+        .map_err(|_| DejavuLocalStateError::Storage)?
+        .ok_or(DejavuLocalStateError::InvalidState)?;
+    let state =
+        serde_json::from_slice(&stored.bytes).map_err(|_| DejavuLocalStateError::InvalidState)?;
+    verify_instance_authority(instance)?;
+    Ok((store, target, state, stored.revision.clone()))
+}
+
+fn save_state<Validate>(
+    store: &DurableFileStore,
+    target: &StorageFileName,
+    state: &LegacyLocalSyncState,
+    revision: &crate::storage::FileRevision,
+    validate_address: Validate,
+) -> Result<(), DejavuLocalStateError>
+where
+    Validate: FnMut() -> bool,
+{
+    let mut bytes = Zeroizing::new(
+        serde_json::to_vec_pretty(state).map_err(|_| DejavuLocalStateError::InvalidState)?,
+    );
+    if bytes.len() > MAX_LOCAL_SYNC_STATE_BYTES {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    let outcome = store
+        .replace_with_address_validation(
+            ReplaceRequest {
+                target,
+                bytes: bytes.as_slice(),
+                expected: ExpectedFile::Revision(revision),
+                preserve_previous: PreservePrevious::None,
+            },
+            validate_address,
+        )
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    bytes.fill(0);
+    if outcome.commit_state == CommitState::PublishedDurabilityUncertain {
+        Err(DejavuLocalStateError::Storage)
+    } else {
+        Ok(())
+    }
+}
+
+fn verify_instance_authority(
+    instance: &ActiveInstanceAuthority,
+) -> Result<(), DejavuLocalStateError> {
+    instance
+        .verify_held_directory()
+        .map_err(|_| DejavuLocalStateError::Storage)
 }
 
 #[cfg(test)]
@@ -458,7 +727,7 @@ mod tests {
             fs::read(&target_path).expect("authoritative state"),
             initial
         );
-        let (repository_id, device_id, _) =
+        let (repository_id, _display_name, device_id, _) =
             super::read_active_dejavu_binding(runtime.instance_data_root(), workspace.root())
                 .expect("valid recovered state")
                 .expect("active recovered binding")
@@ -499,10 +768,36 @@ mod tests {
             format!("{binding:?}"),
             "DejavuLocalRepositoryBinding([REDACTED])"
         );
-        let (actual_repository, actual_device, key) = binding.into_parts();
+        let (actual_repository, actual_display_name, actual_device, key) = binding.into_parts();
         assert_eq!(actual_repository, REPOSITORY_ID);
+        assert_eq!(actual_display_name, "Private notes");
         assert_eq!(actual_device, DEVICE_ID);
         assert_eq!(format!("{key:?}"), "DejavuRepositoryKey([REDACTED])");
+    }
+
+    #[test]
+    fn reads_a_canonical_legacy_repository_uuid_without_rewriting_profile_bytes() {
+        let temporary = tempdir().expect("fixture root");
+        let (app_data, paths) = paths(&temporary);
+        let mut state = state_value(paths.workspace_root().canonical_path(), true);
+        state["deviceId"] = json!(DEVICE_ID.to_uppercase());
+        state["bindings"][0]["repositoryId"] = json!("00000000-0000-1000-8000-000000000001");
+        let original = serde_json::to_vec_pretty(&state).expect("legacy state JSON");
+        let state_path = app_data.join("local-sync.json");
+        fs::write(&state_path, &original).expect("legacy state file");
+
+        let binding =
+            super::read_active_dejavu_binding(paths.instance_data_root(), paths.workspace_root())
+                .expect("legacy state remains compatible")
+                .expect("active legacy binding");
+        let (repository_id, _display_name, device_id, _key) = binding.into_parts();
+
+        assert_eq!(repository_id, "00000000-0000-1000-8000-000000000001");
+        assert_eq!(device_id, DEVICE_ID);
+        assert_eq!(
+            fs::read(state_path).expect("unchanged legacy state"),
+            original
+        );
     }
 
     #[test]
@@ -581,6 +876,127 @@ mod tests {
                 super::DejavuLocalStateError::InvalidState
             );
         }
+    }
+
+    #[test]
+    fn explicit_repository_binding_preserves_legacy_device_and_key_then_key_import_disables_it() {
+        const SELECTED_REPOSITORY_ID: &str = "9d941f26-28a7-46bc-a3a4-8f6c66a84583";
+
+        let temporary = tempdir().expect("fixture root");
+        let (app_data, paths) = paths(&temporary);
+        let original = state_value(paths.workspace_root().canonical_path(), true);
+        fs::write(
+            app_data.join("local-sync.json"),
+            serde_json::to_vec_pretty(&original).expect("state JSON"),
+        )
+        .expect("state file");
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().expect("Kernel config"),
+            paths,
+            system_kernel_ports(),
+        )
+        .expect("locked runtime");
+        let instance = runtime.active_instance_authority();
+        let workspace = runtime
+            .active_workspace_authority()
+            .expect("workspace authority");
+
+        super::bind_dejavu_repository(
+            instance.as_ref(),
+            workspace.as_ref(),
+            runtime.launch_epoch(),
+            SELECTED_REPOSITORY_ID,
+            "Selected remote",
+        )
+        .expect("explicit binding");
+
+        let rebound: serde_json::Value = serde_json::from_slice(
+            &fs::read(app_data.join("local-sync.json")).expect("rebound state"),
+        )
+        .expect("rebound JSON");
+        assert_eq!(rebound["deviceId"], original["deviceId"]);
+        assert_eq!(rebound["repoKey"], original["repoKey"]);
+        assert_eq!(rebound["bindings"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            rebound["bindings"][0]["repositoryId"],
+            SELECTED_REPOSITORY_ID
+        );
+        assert_eq!(
+            rebound["bindings"][0]["notesRoot"],
+            paths_for_assertion(&workspace)
+        );
+        assert_eq!(
+            super::export_dejavu_key(instance.as_ref(), runtime.launch_epoch())
+                .expect("exported key"),
+            original["repoKey"].as_str().unwrap()
+        );
+
+        super::replace_dejavu_key(
+            instance.as_ref(),
+            runtime.launch_epoch(),
+            "portable key phrase",
+        )
+        .expect("key import");
+        let replaced: serde_json::Value = serde_json::from_slice(
+            &fs::read(app_data.join("local-sync.json")).expect("replaced state"),
+        )
+        .expect("replaced JSON");
+        assert_ne!(replaced["repoKey"], original["repoKey"]);
+        assert_eq!(replaced["deviceId"], original["deviceId"]);
+        assert_eq!(replaced["bindings"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn invalid_repository_selection_and_empty_key_leave_legacy_state_byte_exact() {
+        let temporary = tempdir().expect("fixture root");
+        let (app_data, paths) = paths(&temporary);
+        let original =
+            serde_json::to_vec_pretty(&state_value(paths.workspace_root().canonical_path(), true))
+                .expect("state JSON");
+        let state_path = app_data.join("local-sync.json");
+        fs::write(&state_path, &original).expect("state file");
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().expect("Kernel config"),
+            paths,
+            system_kernel_ports(),
+        )
+        .expect("locked runtime");
+        let instance = runtime.active_instance_authority();
+        let workspace = runtime
+            .active_workspace_authority()
+            .expect("workspace authority");
+
+        for (repository_id, display_name) in [
+            ("not-a-repository", "Remote"),
+            ("9d941f26-28a7-46bc-a3a4-8f6c66a84583", "  \n  "),
+        ] {
+            assert_eq!(
+                super::bind_dejavu_repository(
+                    instance.as_ref(),
+                    workspace.as_ref(),
+                    runtime.launch_epoch(),
+                    repository_id,
+                    display_name,
+                )
+                .expect_err("invalid selection must fail closed"),
+                super::DejavuLocalStateError::InvalidState
+            );
+            assert_eq!(fs::read(&state_path).expect("unchanged state"), original);
+        }
+        for invalid_key in ["   ".to_owned(), "x".repeat(1025)] {
+            assert_eq!(
+                super::replace_dejavu_key(instance.as_ref(), runtime.launch_epoch(), &invalid_key,)
+                    .expect_err("invalid key must fail closed"),
+                super::DejavuLocalStateError::InvalidState
+            );
+            assert_eq!(fs::read(&state_path).expect("unchanged state"), original);
+        }
+    }
+
+    fn paths_for_assertion(
+        workspace: &crate::runtime::ActiveWorkspaceAuthority,
+    ) -> serde_json::Value {
+        serde_json::to_value(workspace.root().canonical_path()).expect("workspace path JSON")
     }
 
     #[test]

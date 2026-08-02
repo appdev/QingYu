@@ -79,6 +79,15 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
     ("get", "/api/v1/sync/config", "getSyncConfig"),
     ("patch", "/api/v1/sync/config", "patchSyncConfig"),
     ("post", "/api/v1/sync/connection-test", "testSyncConnection"),
+    ("get", "/api/v1/sync/repositories", "listRemoteNotebooks"),
+    (
+        "post",
+        "/api/v1/sync/repository-binding",
+        "bindSyncRepository",
+    ),
+    ("get", "/api/v1/sync/dejavu/key", "getDejavuKeyState"),
+    ("post", "/api/v1/sync/dejavu/key/import", "importDejavuKey"),
+    ("post", "/api/v1/sync/dejavu/key/export", "exportDejavuKey"),
     ("get", "/api/v1/sync/status", "getSyncStatus"),
     ("post", "/api/v1/sync/runs", "triggerSyncRun"),
     ("get", "/api/v1/sync/runs/{runId}", "getSyncRun"),
@@ -262,7 +271,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_thirty_five_http_operations() {
+fn openapi_has_exactly_the_frozen_forty_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -274,7 +283,7 @@ fn openapi_has_exactly_the_frozen_thirty_five_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 35);
+    assert_eq!(expected.len(), 40);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {

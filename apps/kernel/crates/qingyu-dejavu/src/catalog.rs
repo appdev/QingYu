@@ -73,14 +73,7 @@ impl S3RepositoryCatalog {
         };
         let bytes = serialize_metadata(&metadata)?;
         let key = metadata_key(repository_id);
-        match self.cloud.get_bounded(&key, MAX_METADATA_BYTES).await {
-            Ok(_) | Err(CloudError::ResponseTooLarge { .. }) => {
-                return Err(CloudError::AlreadyExists)
-            }
-            Err(CloudError::NotFound) => {}
-            Err(error) => return Err(error),
-        }
-        self.cloud.put(&key, &bytes, true).await?;
+        self.cloud.put(&key, &bytes, false).await?;
         Ok(metadata)
     }
 
@@ -296,7 +289,7 @@ fn validate_repository_id(repository_id: &str) -> Result<(), CloudError> {
 
 fn normalize_display_name(display_name: &str) -> Result<&str, CloudError> {
     let normalized = display_name.trim();
-    if normalized.is_empty() || normalized.chars().any(char::is_control) {
+    if normalized.is_empty() || normalized.len() > 255 || normalized.chars().any(char::is_control) {
         return Err(CloudError::backend("catalog_invalid_display_name"));
     }
     Ok(normalized)

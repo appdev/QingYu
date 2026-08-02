@@ -26,6 +26,8 @@ const MAX_REQUEST_ID_BYTES: usize = 128;
 const MAX_S3_ERROR_BODY_BYTES: usize = 64 * 1024;
 const MAX_S3_ERROR_CODE_BYTES: usize = 128;
 const CATALOG_ROOT_PREFIX: &str = "qingyu/repositories";
+const MAX_CATALOG_LIST_PAGES: usize = 16;
+const MAX_CATALOG_LIST_ENTRIES: usize = 256;
 
 pub(crate) struct S3CatalogDirectoryListing {
     pub prefixes: Vec<String>,
@@ -226,7 +228,14 @@ impl S3Cloud {
         let mut seen_continuations = HashSet::new();
         let mut prefixes = Vec::new();
         let mut invalid_direct_object_count = 0_usize;
+        let mut page_count = 0_usize;
         loop {
+            page_count = page_count
+                .checked_add(1)
+                .ok_or_else(|| CloudError::backend("catalog_listing_too_large"))?;
+            if page_count > MAX_CATALOG_LIST_PAGES {
+                return Err(CloudError::backend("catalog_listing_too_large"));
+            }
             let url = self.list_url("", continuation.as_deref(), Some("/"))?;
             let response = self.send_empty_with_retry(Method::GET, &url).await?;
             let page =
@@ -235,6 +244,13 @@ impl S3Cloud {
             invalid_direct_object_count = invalid_direct_object_count
                 .checked_add(page.objects.len())
                 .ok_or_else(|| CloudError::backend("catalog_issue_count_overflow"))?;
+            if prefixes
+                .len()
+                .checked_add(invalid_direct_object_count)
+                .is_none_or(|count| count > MAX_CATALOG_LIST_ENTRIES)
+            {
+                return Err(CloudError::backend("catalog_listing_too_large"));
+            }
             if !page.is_truncated {
                 break;
             }
@@ -342,14 +358,25 @@ impl S3Cloud {
         method: Method,
         url: Url,
         bytes: &[u8],
+        if_absent: bool,
     ) -> Result<reqwest::RequestBuilder, CloudError> {
-        let mut headers = self.signer.sign_bytes_at(
-            &method,
-            &url,
-            bytes,
-            Some(CONTENT_TYPE_BINARY),
-            (self.now)(),
-        )?;
+        let mut headers = if if_absent {
+            self.signer.sign_bytes_if_absent_at(
+                &method,
+                &url,
+                bytes,
+                Some(CONTENT_TYPE_BINARY),
+                (self.now)(),
+            )?
+        } else {
+            self.signer.sign_bytes_at(
+                &method,
+                &url,
+                bytes,
+                Some(CONTENT_TYPE_BINARY),
+                (self.now)(),
+            )?
+        };
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         Ok(self
             .client
@@ -364,15 +391,27 @@ impl S3Cloud {
         payload_hash: &str,
         content_length: u64,
         body: reqwest::Body,
+        if_absent: bool,
     ) -> Result<reqwest::RequestBuilder, CloudError> {
-        let mut headers = self.signer.sign_prehashed_at(
-            &Method::PUT,
-            &url,
-            payload_hash,
-            content_length,
-            Some(CONTENT_TYPE_BINARY),
-            (self.now)(),
-        )?;
+        let mut headers = if if_absent {
+            self.signer.sign_prehashed_if_absent_at(
+                &Method::PUT,
+                &url,
+                payload_hash,
+                content_length,
+                Some(CONTENT_TYPE_BINARY),
+                (self.now)(),
+            )?
+        } else {
+            self.signer.sign_prehashed_at(
+                &Method::PUT,
+                &url,
+                payload_hash,
+                content_length,
+                Some(CONTENT_TYPE_BINARY),
+                (self.now)(),
+            )?
+        };
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         Ok(self
             .client
@@ -413,10 +452,10 @@ impl S3Cloud {
         Err(CloudError::Unavailable)
     }
 
-    async fn put_bytes(&self, url: &Url, bytes: &[u8]) -> Result<u64, CloudError> {
+    async fn put_bytes(&self, url: &Url, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
         for attempt in 0..self.options.max_attempts {
             let response = self
-                .signed_bytes_request(Method::PUT, url.clone(), bytes)?
+                .signed_bytes_request(Method::PUT, url.clone(), bytes, !overwrite)?
                 .send()
                 .await;
             match response {
@@ -424,6 +463,9 @@ impl S3Cloud {
                     if response.status().is_success() {
                         return u64::try_from(bytes.len())
                             .map_err(|_| CloudError::backend("payload_length_overflow"));
+                    }
+                    if !overwrite && matches!(response.status().as_u16(), 409 | 412) {
+                        return Err(CloudError::AlreadyExists);
                     }
                     let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {
@@ -629,16 +671,16 @@ impl Cloud for S3Cloud {
         Err(CloudError::Unavailable)
     }
 
-    async fn put(&self, key: &str, bytes: &[u8], _overwrite: bool) -> Result<u64, CloudError> {
+    async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
         let url = self.object_url(key)?;
-        self.put_bytes(&url, bytes).await
+        self.put_bytes(&url, bytes, overwrite).await
     }
 
     async fn upload_from(
         &self,
         key: &str,
         source: &dyn CloudUploadSource,
-        _overwrite: bool,
+        overwrite: bool,
     ) -> Result<u64, CloudError> {
         let url = self.object_url(key)?;
         let expected = source.content_length();
@@ -655,7 +697,7 @@ impl Cloud for S3Cloud {
             );
             let body = reqwest::Body::wrap_stream(ReaderStream::new(checked));
             let response = self
-                .signed_stream_request(url.clone(), &payload_hash, expected, body)?
+                .signed_stream_request(url.clone(), &payload_hash, expected, body, !overwrite)?
                 .send()
                 .await;
             if let Some(error) = mismatch
@@ -679,6 +721,9 @@ impl Cloud for S3Cloud {
                 Ok(response) => {
                     if response.status().is_success() {
                         return Ok(expected);
+                    }
+                    if !overwrite && matches!(response.status().as_u16(), 409 | 412) {
+                        return Err(CloudError::AlreadyExists);
                     }
                     let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {

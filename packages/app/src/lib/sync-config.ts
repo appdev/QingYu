@@ -369,6 +369,7 @@ export type AppSyncConfigRuntime = {
     displayName: string;
     notesRoot: string;
     repositoryId: string;
+    revision: string;
   }): Promise<AcceptedSyncJob>;
   cancelApply(input: SyncApplyIdentity): Promise<SyncApplyWriteResult>;
   changeGlobalKey(input: { confirmed: true; newKey: string }): Promise<AcceptedMaintenanceJob>;

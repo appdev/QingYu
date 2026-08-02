@@ -137,6 +137,7 @@ export function createMobileKernelRuntimeOwner(
     ...mobileRuntime,
     features: {
       ...mobileRuntime.features,
+      dejavuSync: true,
       imageImport: true,
       projectSync: true,
       resources: true,

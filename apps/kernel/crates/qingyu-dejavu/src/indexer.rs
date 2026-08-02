@@ -8,6 +8,8 @@ use crate::chunker::StreamingRabinChunker;
 use crate::path_security::cap_metadata_is_reparse;
 use crate::{random_hash, sha1_hex, Chunk, File, Index, Repo, RepoError};
 
+const MAX_FILE_ID_COLLISION_ATTEMPTS: usize = 1_024;
+
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN as WINDOWS_HIDDEN_ATTRIBUTE;
 #[cfg(not(windows))]
@@ -271,11 +273,46 @@ fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoEr
     }
     if !after_read.file_type().is_file()
         || i64::try_from(after_read.len()).map_err(|_| RepoError::RepoFatal)? != scanned.size
-        || metadata_updated(&after_read)? / 1_000 != scanned.updated / 1_000
+        || metadata_updated(&after_read)? != scanned.updated
     {
         return Err(RepoError::IndexFileChanged);
     }
 
+    let mut file_id_available = false;
+    let mut matching_file = None;
+    for attempt in 0..MAX_FILE_ID_COLLISION_ATTEMPTS {
+        match repo.store.get_file_unlocked(&file.id) {
+            Ok(existing) if existing == file => {
+                matching_file = Some(file.clone());
+            }
+            Ok(_) => {}
+            Err(RepoError::NotFound(_)) => {
+                if let Some(matching) = matching_file.take() {
+                    file = matching;
+                }
+                file_id_available = true;
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+        if attempt + 1 < MAX_FILE_ID_COLLISION_ATTEMPTS {
+            file.updated = file
+                .sec_updated()
+                .checked_add(1)
+                .and_then(|seconds| seconds.checked_mul(1_000))
+                .ok_or(RepoError::RepoFatal)?;
+            file.id = File::new(file.path.clone(), file.size, file.updated).id;
+        }
+    }
+    if !file_id_available {
+        if let Some(matching) = matching_file {
+            file = matching;
+            file_id_available = true;
+        }
+    }
+    if !file_id_available {
+        return Err(RepoError::FileIdentityCollision);
+    }
     repo.store.put_file_unlocked(&file)?;
     Ok(file)
 }
@@ -441,6 +478,49 @@ mod tests {
         let small_chunk = repo.store.get_chunk(&files[0].chunks[0]).unwrap();
         assert_eq!(small_chunk.data, b"small file");
         assert!(!repo_paths.repo.join("refs").exists());
+    }
+
+    #[test]
+    fn different_contents_saved_within_one_mtime_second_create_a_new_file_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_paths = paths(temp.path());
+        fs::create_dir_all(&repo_paths.data).unwrap();
+        let note = repo_paths.data.join("note.md");
+        fs::write(&note, b"old").unwrap();
+        filetime::set_file_mtime(
+            &note,
+            filetime::FileTime::from_unix_time(1_800_000_000, 100_000_000),
+        )
+        .unwrap();
+        let repo = Repo::open(repo_paths, device(), key(), RepoOptions::default()).unwrap();
+        let first = repo.index("first").unwrap();
+
+        fs::write(&note, b"new-content").unwrap();
+        filetime::set_file_mtime(
+            &note,
+            filetime::FileTime::from_unix_time(1_800_000_000, 900_000_000),
+        )
+        .unwrap();
+        let second = repo.index("second").unwrap();
+
+        assert_ne!(second.id, first.id);
+        assert_ne!(second.files, first.files);
+        let file = repo.store.get_file(&second.files[0]).unwrap();
+        let contents = file
+            .chunks
+            .iter()
+            .flat_map(|id| repo.store.get_chunk(id).unwrap().data)
+            .collect::<Vec<_>>();
+        assert_eq!(file.size, 11);
+        assert_eq!(contents, b"new-content");
+        assert!(file.updated >= 1_800_000_001_000);
+        let unchanged_source_mtime =
+            filetime::FileTime::from_last_modification_time(&fs::metadata(&note).unwrap());
+        assert_eq!(unchanged_source_mtime.unix_seconds(), 1_800_000_000);
+        assert_eq!(unchanged_source_mtime.nanoseconds(), 900_000_000);
+
+        let third = repo.index("unchanged").unwrap();
+        assert_eq!(third.files, second.files);
     }
 
     #[cfg(unix)]

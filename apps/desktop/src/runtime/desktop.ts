@@ -546,7 +546,7 @@ export function createDesktopKernelRuntimeOwner(
     ...shell,
     features: {
       ...shell.features,
-      dejavuSync: false,
+      dejavuSync: true,
       fileDrop: false,
       imageImport: true,
       localFileImport: false,

@@ -406,6 +406,35 @@ impl Store {
         })
     }
 
+    pub(crate) fn remote_raw_matches(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        remote: &[u8],
+    ) -> Result<bool, RepoError> {
+        let _operation = self.lock_operation()?;
+        let local = self.export_raw_unlocked(kind, id)?;
+        self.validate_raw(kind, id, remote)?;
+        match kind {
+            RawObjectKind::Chunk => Ok(self.decode_encrypted(&local, MAX_CHUNK_DECODED_SIZE)?
+                == self.decode_encrypted(remote, MAX_CHUNK_DECODED_SIZE)?),
+            RawObjectKind::File => Ok(self.decode_raw_file_unlocked(id, &local)?
+                == self.decode_raw_file_unlocked(id, remote)?),
+            RawObjectKind::Index | RawObjectKind::CheckIndex => Ok(local == remote),
+        }
+    }
+
+    pub(crate) fn raw_content_length(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+    ) -> Result<u64, RepoError> {
+        let _operation = self.lock_operation()?;
+        Ok(self
+            .open_raw_upload_source_unlocked(kind, id)?
+            .content_length())
+    }
+
     fn validate_raw(&self, kind: RawObjectKind, id: &str, bytes: &[u8]) -> Result<(), RepoError> {
         match kind {
             RawObjectKind::Chunk => {
@@ -582,6 +611,12 @@ impl Store {
     }
 
     pub(crate) fn put_file_unlocked(&self, file: &File) -> Result<(), RepoError> {
+        match self.get_file_unlocked(&file.id) {
+            Ok(existing) if existing == *file => return Ok(()),
+            Ok(_) => return Err(RepoError::FileIdentityCollision),
+            Err(RepoError::NotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
         let path = self.object_path(&file.id)?;
         let json = serde_json::to_vec(file)?;
         let encoded = self.encode_encrypted(&json)?;
@@ -1552,7 +1587,7 @@ mod tests {
     }
 
     #[test]
-    fn file_and_chunk_puts_preserve_existing_immutable_objects() {
+    fn file_collisions_fail_closed_while_chunk_puts_preserve_immutable_objects() {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::new(temp.path(), fixture_key()).unwrap();
         let file_path = store.object_path(FILE_ID).unwrap();
@@ -1560,7 +1595,10 @@ mod tests {
         store.put_file(&file).unwrap();
         let original_file_bytes = fs::read(&file_path).unwrap();
         file.path = "/replacement.md".to_owned();
-        store.put_file(&file).unwrap();
+        assert!(matches!(
+            store.put_file(&file),
+            Err(RepoError::FileIdentityCollision)
+        ));
 
         let chunk_path = store.object_path(CHUNK_ID).unwrap();
         write_fixture(&chunk_path, b"existing object bytes");

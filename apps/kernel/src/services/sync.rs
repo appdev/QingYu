@@ -13,6 +13,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use qingyu_dejavu::CloudError;
 use tokio::sync::{oneshot, Notify};
 
 pub use crate::runtime::{
@@ -22,8 +23,11 @@ pub use crate::runtime::{
 
 use crate::{
     contract::{
-        DomainEvent, ErrorCode, ErrorDetails, Nullable, PatchSyncConfigRequest, ResourceRefDto,
-        Revision, RunId, SyncConfigReadiness, SyncConfigViewDto, SyncConnectionTestDto, SyncMode,
+        BindSyncRepositoryRequest, DejavuKeyStateDto, DomainEvent, ErrorCode, ErrorDetails,
+        ExportDejavuKeyRequest, ExportedDejavuKeyDto, ImportDejavuKeyRequest,
+        ListRemoteNotebooksQuery, Nullable, PatchSyncConfigRequest, RemoteNotebookCatalogDto,
+        RemoteNotebookCatalogEntryDto, ResourceRefDto, Revision, RunId, SyncConfigReadiness,
+        SyncConfigViewDto, SyncConnectionTestDto, SyncMode, SyncProvider, SyncRepositoryBindingDto,
         SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorCategory, SyncSafeErrorCode,
         SyncSafeErrorDto, SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
         TestSyncConnectionRequest, TriggerSyncRunRequest,
@@ -40,6 +44,13 @@ use crate::{
     },
     sync::editing::SyncEditingRegistry,
     sync::status::{SyncRunCompletion, SyncStatusState},
+    sync::{
+        catalog::KernelS3RepositoryCatalog,
+        local_state::{
+            bind_dejavu_repository, dejavu_key_configured, export_dejavu_key, replace_dejavu_key,
+            DejavuLocalStateError,
+        },
+    },
 };
 
 #[async_trait]
@@ -154,6 +165,12 @@ enum SyncRunTriggerFailure {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SyncRunAdmission {
+    Standard,
+    RepositoryRecovery,
+}
+
 pub struct SyncRunContext {
     run_id: RunId,
     trigger: SyncTrigger,
@@ -248,6 +265,19 @@ impl SyncRunContext {
 
     pub const fn cancellation(&self) -> &SyncCancellation {
         &self.cancellation
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancelled_for_test(
+        run_id: RunId,
+        snapshot: Arc<crate::runtime::ActiveWorkspaceSnapshot>,
+    ) -> Self {
+        Self {
+            run_id,
+            trigger: SyncTrigger::Manual,
+            snapshot,
+            cancellation: SyncCancellation::cancelled_for_test(),
+        }
     }
 }
 
@@ -479,7 +509,13 @@ impl SyncService {
                 return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
             }
         }
-        match self.start_sync_run(&runtime, trigger, expected_revision, mutation) {
+        match self.start_sync_run(
+            &runtime,
+            trigger,
+            expected_revision,
+            SyncRunAdmission::Standard,
+            mutation,
+        ) {
             Ok(run) => KernelSyncTriggerResult::accepted(run),
             Err(error) => KernelSyncTriggerResult::rejected(kernel_trigger_rejection(error)),
         }
@@ -605,6 +641,7 @@ impl SyncService {
         runtime: &Arc<KernelRuntime>,
         trigger: SyncTrigger,
         expected_revision: Option<Revision>,
+        admission: SyncRunAdmission,
         mutation: MutationPermit<'_>,
     ) -> Result<StartedSyncRun, SyncRunTriggerFailure> {
         let gate = self
@@ -638,14 +675,24 @@ impl SyncService {
             .to_view(revision.clone())
             .map_err(|_| SyncRunTriggerFailure::NotReady)?;
         match exposed.readiness {
+            SyncConfigReadiness::Disabled
+                if admission == SyncRunAdmission::RepositoryRecovery && exposed.configured => {}
             SyncConfigReadiness::Disabled => return Err(SyncRunTriggerFailure::Disabled),
             SyncConfigReadiness::Incomplete => return Err(SyncRunTriggerFailure::Incomplete),
             SyncConfigReadiness::Ready => {}
         }
-        if !sync_mode_allows_trigger(exposed.mode, trigger) {
+        if admission == SyncRunAdmission::Standard
+            && !sync_mode_allows_trigger(exposed.mode, trigger)
+        {
             return Err(SyncRunTriggerFailure::ModeDisallowed);
         }
-        let config = *config;
+        let config = if admission == SyncRunAdmission::RepositoryRecovery {
+            (*config)
+                .into_repository_recovery_config()
+                .map_err(|_| SyncRunTriggerFailure::Incomplete)?
+        } else {
+            *config
+        };
         let accepted_at = runtime
             .ports()
             .clock()
@@ -941,10 +988,187 @@ impl SyncApiService for SyncService {
             &runtime,
             SyncTrigger::Manual,
             Some(request.expected_config_revision),
+            SyncRunAdmission::Standard,
             mutation,
         )
         .map(|run| run.accepted)
         .map_err(api_trigger_failure)
+    }
+
+    async fn list_remote_notebooks(
+        &self,
+        request: ListRemoteNotebooksQuery,
+    ) -> Result<RemoteNotebookCatalogDto, ServiceFailure> {
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let config = self.s3_config_at_revision(&request.expected_revision)?;
+        let catalog = KernelS3RepositoryCatalog::from_config(config)
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        let listed = catalog
+            .list()
+            .await
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        self.require_config_revision(&request.expected_revision)?;
+        Ok(RemoteNotebookCatalogDto {
+            entries: listed
+                .entries
+                .into_iter()
+                .map(|entry| RemoteNotebookCatalogEntryDto {
+                    available: true,
+                    disabled_reason: Nullable::null(),
+                    display_name: entry.display_name.clone(),
+                    name: entry.display_name,
+                    provider: SyncProvider::S3,
+                    repository_id: entry.repository_id,
+                })
+                .collect(),
+        })
+    }
+
+    async fn bind_sync_repository(
+        &self,
+        request: BindSyncRepositoryRequest,
+    ) -> Result<SyncRepositoryBindingDto, ServiceFailure> {
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let config = self.s3_config_at_revision(&request.expected_revision)?;
+        let catalog = KernelS3RepositoryCatalog::from_config(config)
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        let metadata = catalog
+            .read(&request.repository_id)
+            .await
+            .map_err(catalog_bind_failure)?;
+        if metadata.display_name != request.display_name {
+            return Err(failure(ErrorCode::InvalidRequest));
+        }
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        self.require_config_revision(&request.expected_revision)?;
+        if runtime
+            .sync_run_registered(&mutation)
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?
+            || self
+                .status
+                .is_attempting()
+                .map_err(|_| failure(ErrorCode::SyncNotReady))?
+        {
+            return Err(failure(ErrorCode::SyncRunUnavailable));
+        }
+        let instance = runtime.active_instance_authority();
+        let workspace = runtime
+            .active_workspace_authority()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        bind_dejavu_repository(
+            instance.as_ref(),
+            workspace.as_ref(),
+            runtime.launch_epoch(),
+            &metadata.repository_id,
+            &metadata.display_name,
+        )
+        .map_err(local_state_failure)?;
+        let started = self
+            .start_sync_run(
+                &runtime,
+                SyncTrigger::Manual,
+                Some(request.expected_revision),
+                SyncRunAdmission::RepositoryRecovery,
+                mutation,
+            )
+            .map_err(api_trigger_failure)?;
+        Ok(SyncRepositoryBindingDto {
+            job_id: started.accepted.run_id.as_uuid().to_string(),
+            repository_id: metadata.repository_id,
+        })
+    }
+
+    async fn get_dejavu_key_state(&self) -> Result<DejavuKeyStateDto, ServiceFailure> {
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let instance = runtime.active_instance_authority();
+        Ok(DejavuKeyStateDto {
+            configured: dejavu_key_configured(instance.as_ref(), runtime.launch_epoch())
+                .map_err(local_state_failure)?,
+        })
+    }
+
+    async fn import_dejavu_key(
+        &self,
+        request: ImportDejavuKeyRequest,
+    ) -> Result<DejavuKeyStateDto, ServiceFailure> {
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        if runtime
+            .sync_run_registered(&mutation)
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?
+            || self
+                .status
+                .is_attempting()
+                .map_err(|_| failure(ErrorCode::SyncNotReady))?
+        {
+            return Err(failure(ErrorCode::SyncRunUnavailable));
+        }
+        let instance = runtime.active_instance_authority();
+        replace_dejavu_key(
+            instance.as_ref(),
+            runtime.launch_epoch(),
+            request.key.trim(),
+        )
+        .map_err(local_state_failure)?;
+        Ok(DejavuKeyStateDto { configured: true })
+    }
+
+    async fn export_dejavu_key(
+        &self,
+        request: ExportDejavuKeyRequest,
+    ) -> Result<ExportedDejavuKeyDto, ServiceFailure> {
+        if !request.confirmed {
+            return Err(failure(ErrorCode::InvalidRequest));
+        }
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let instance = runtime.active_instance_authority();
+        Ok(ExportedDejavuKeyDto {
+            key: export_dejavu_key(instance.as_ref(), runtime.launch_epoch())
+                .map_err(local_state_failure)?,
+        })
+    }
+}
+
+impl SyncService {
+    fn s3_config_at_revision(&self, expected: &Revision) -> Result<SyncConfig, ServiceFailure> {
+        match self.store.load().map_err(store_failure)? {
+            SyncConfigLoad::Absent => Err(failure(ErrorCode::SyncConfigAbsent)),
+            SyncConfigLoad::Loaded { config, revision } => {
+                if &revision != expected {
+                    return Err(revision_conflict(revision));
+                }
+                let view = config
+                    .to_view(revision)
+                    .map_err(|_| failure(ErrorCode::SyncConfigInvalid))?;
+                if !view.configured || view.provider != SyncProvider::S3 {
+                    return Err(failure(ErrorCode::SyncNotReady));
+                }
+                Ok(*config)
+            }
+            SyncConfigLoad::Corrupt { .. } | SyncConfigLoad::Unsupported { .. } => {
+                Err(failure(ErrorCode::SyncConfigInvalid))
+            }
+        }
+    }
+
+    fn require_config_revision(&self, expected: &Revision) -> Result<(), ServiceFailure> {
+        match self.store.load().map_err(store_failure)? {
+            SyncConfigLoad::Loaded { revision, .. } if &revision == expected => Ok(()),
+            SyncConfigLoad::Loaded { revision, .. } => Err(revision_conflict(revision)),
+            SyncConfigLoad::Absent => Err(failure(ErrorCode::SyncConfigAbsent)),
+            SyncConfigLoad::Corrupt { .. } | SyncConfigLoad::Unsupported { .. } => {
+                Err(failure(ErrorCode::SyncConfigInvalid))
+            }
+        }
     }
 }
 
@@ -1022,6 +1246,31 @@ fn change_failure(error: SyncConfigChangeError) -> ServiceFailure {
     }
 }
 
+fn local_state_failure(error: DejavuLocalStateError) -> ServiceFailure {
+    match error {
+        DejavuLocalStateError::InvalidState => failure(ErrorCode::InvalidRequest),
+        DejavuLocalStateError::Storage => failure(ErrorCode::SyncNotReady),
+    }
+}
+
+fn catalog_bind_failure(error: CloudError) -> ServiceFailure {
+    let invalid_request = matches!(
+        &error,
+        CloudError::NotFound
+            | CloudError::AlreadyExists
+            | CloudError::UnsafeKey
+            | CloudError::ResponseTooLarge { .. }
+    ) || matches!(
+        &error,
+        CloudError::Backend { code, .. } if code.starts_with("catalog_")
+    );
+    failure(if invalid_request {
+        ErrorCode::InvalidRequest
+    } else {
+        ErrorCode::SyncNotReady
+    })
+}
+
 fn publish_status(
     runtime: &KernelRuntime,
     status: SyncStatusDto,
@@ -1039,5 +1288,42 @@ fn publish_status(
 impl fmt::Debug for SyncService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("SyncService(..)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use qingyu_dejavu::CloudError;
+
+    use super::catalog_bind_failure;
+    use crate::contract::ErrorCode;
+
+    #[test]
+    fn catalog_bind_preserves_transport_failures_as_retryable_service_state() {
+        for error in [
+            CloudError::Dns,
+            CloudError::Unavailable,
+            CloudError::Auth,
+            CloudError::Forbidden,
+            CloudError::S3Response {
+                status: 503,
+                request_id: None,
+                retryable: true,
+            },
+        ] {
+            assert_eq!(catalog_bind_failure(error).code(), ErrorCode::SyncNotReady);
+        }
+        assert_eq!(
+            catalog_bind_failure(CloudError::NotFound).code(),
+            ErrorCode::InvalidRequest,
+        );
+        assert_eq!(
+            catalog_bind_failure(CloudError::Backend {
+                code: "catalog_invalid_metadata",
+                retryable: false,
+            })
+            .code(),
+            ErrorCode::InvalidRequest,
+        );
     }
 }

@@ -80,6 +80,7 @@ export function createServerWebRuntime(
     features: {
       applicationMenu: false,
       applicationShortcuts: true,
+      dejavuSync: true,
       export: true,
       fileDrop: false,
       imageImport: false,

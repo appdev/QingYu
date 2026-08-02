@@ -2,7 +2,9 @@ use std::fmt;
 
 use hmac::{Hmac, Mac};
 use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, NON_ALPHANUMERIC};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
+use reqwest::header::{
+    HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST, IF_NONE_MATCH,
+};
 use reqwest::Method;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -190,6 +192,26 @@ impl S3RequestSigner {
         )
     }
 
+    pub(crate) fn sign_bytes_if_absent_at(
+        &self,
+        method: &Method,
+        url: &Url,
+        payload: &[u8],
+        content_type: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<HeaderMap, CloudError> {
+        self.sign_prehashed_with_condition_at(
+            method,
+            url,
+            &sha256_hex(payload),
+            u64::try_from(payload.len())
+                .map_err(|_| CloudError::backend("s3_payload_too_large"))?,
+            content_type,
+            true,
+            now,
+        )
+    }
+
     pub fn sign_prehashed_at(
         &self,
         method: &Method,
@@ -206,12 +228,61 @@ impl S3RequestSigner {
         {
             return Err(CloudError::backend("s3_invalid_payload_hash"));
         }
+        self.sign_prehashed_with_condition_at(
+            method,
+            url,
+            payload_hash,
+            content_length,
+            content_type,
+            false,
+            now,
+        )
+    }
+
+    pub(crate) fn sign_prehashed_if_absent_at(
+        &self,
+        method: &Method,
+        url: &Url,
+        payload_hash: &str,
+        content_length: u64,
+        content_type: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<HeaderMap, CloudError> {
+        self.sign_prehashed_with_condition_at(
+            method,
+            url,
+            payload_hash,
+            content_length,
+            content_type,
+            true,
+            now,
+        )
+    }
+
+    fn sign_prehashed_with_condition_at(
+        &self,
+        method: &Method,
+        url: &Url,
+        payload_hash: &str,
+        content_length: u64,
+        content_type: Option<&str>,
+        if_absent: bool,
+        now: OffsetDateTime,
+    ) -> Result<HeaderMap, CloudError> {
+        if payload_hash.len() != 64
+            || !payload_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(CloudError::backend("s3_invalid_payload_hash"));
+        }
         self.sign_at(
             method,
             url,
             payload_hash,
             Some(content_length),
             content_type,
+            if_absent,
             now,
         )
     }
@@ -222,7 +293,7 @@ impl S3RequestSigner {
         url: &Url,
         now: OffsetDateTime,
     ) -> Result<HeaderMap, CloudError> {
-        self.sign_at(method, url, &sha256_hex(&[]), None, None, now)
+        self.sign_at(method, url, &sha256_hex(&[]), None, None, false, now)
     }
 
     fn sign_at(
@@ -232,6 +303,7 @@ impl S3RequestSigner {
         payload_hash: &str,
         content_length: Option<u64>,
         content_type: Option<&str>,
+        if_absent: bool,
         now: OffsetDateTime,
     ) -> Result<HeaderMap, CloudError> {
         let date = format!(
@@ -248,22 +320,27 @@ impl S3RequestSigner {
         );
         let host = s3_host(url)?;
         let content_type = content_type.map(sigv4_trim_all);
-        let (canonical_headers, signed_headers) = if let Some(content_type) = &content_type {
-            (
-                format!(
-                    "content-type:{}\nhost:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n",
-                    content_type
-                ),
-                "content-type;host;x-amz-content-sha256;x-amz-date",
-            )
-        } else {
-            (
-                format!(
-                    "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
-                ),
-                "host;x-amz-content-sha256;x-amz-date",
-            )
-        };
+        let mut signed = vec![
+            ("host", host.clone()),
+            ("x-amz-content-sha256", payload_hash.to_string()),
+            ("x-amz-date", amz_date.clone()),
+        ];
+        if let Some(content_type) = &content_type {
+            signed.push(("content-type", content_type.clone()));
+        }
+        if if_absent {
+            signed.push(("if-none-match", "*".to_string()));
+        }
+        signed.sort_unstable_by_key(|(name, _)| *name);
+        let canonical_headers = signed
+            .iter()
+            .map(|(name, value)| format!("{name}:{value}\n"))
+            .collect::<String>();
+        let signed_headers = signed
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(";");
         let canonical_request = format!(
             "{}\n{}\n{}\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
             method.as_str(),
@@ -293,6 +370,9 @@ impl S3RequestSigner {
         headers.insert(AUTHORIZATION, header_value(&authorization)?);
         if let Some(content_type) = content_type {
             headers.insert(CONTENT_TYPE, header_value(&content_type)?);
+        }
+        if if_absent {
+            headers.insert(IF_NONE_MATCH, HeaderValue::from_static("*"));
         }
         if let Some(content_length) = content_length {
             headers.insert(CONTENT_LENGTH, header_value(&content_length.to_string())?);
@@ -444,9 +524,11 @@ fn header_value(value: &str) -> Result<HeaderValue, CloudError> {
 
 #[cfg(test)]
 mod credential_lifecycle_tests {
+    use reqwest::{header::AUTHORIZATION, Method};
+    use time::OffsetDateTime;
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
-    use super::{signing_key, S3AddressingStyle, S3Connection};
+    use super::{signing_key, S3AddressingStyle, S3Connection, S3RequestSigner};
 
     fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
 
@@ -485,5 +567,38 @@ mod credential_lifecycle_tests {
         derived.zeroize();
 
         assert!(derived.is_empty());
+    }
+
+    #[test]
+    fn conditional_create_signs_if_none_match() {
+        let connection = S3Connection::new(
+            "https://s3.example.test",
+            "us-east-1",
+            "notes",
+            "access-key",
+            "secret-key",
+            S3AddressingStyle::Path,
+        )
+        .expect("S3 connection");
+        let url = connection.object_url("repo/metadata.json").unwrap();
+        let headers = S3RequestSigner::new(connection)
+            .sign_bytes_if_absent_at(
+                &Method::PUT,
+                &url,
+                b"metadata",
+                Some("application/octet-stream"),
+                OffsetDateTime::from_unix_timestamp(1_784_181_600).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(headers.get("if-none-match").unwrap(), "*");
+        assert!(headers
+            .get(AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains(
+                "SignedHeaders=content-type;host;if-none-match;x-amz-content-sha256;x-amz-date"
+            ));
     }
 }

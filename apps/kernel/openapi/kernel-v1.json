@@ -278,6 +278,26 @@
         ],
         "type": "string"
       },
+      "BindSyncRepositoryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "repositoryId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "displayName",
+          "repositoryId"
+        ],
+        "type": "object"
+      },
       "ChangeServerOwnerPasswordRequest": {
         "additionalProperties": false,
         "properties": {
@@ -630,6 +650,18 @@
         },
         "required": [
           "present"
+        ],
+        "type": "object"
+      },
+      "DejavuKeyStateDto": {
+        "additionalProperties": false,
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured"
         ],
         "type": "object"
       },
@@ -1311,6 +1343,31 @@
         "minimum": 0,
         "type": "integer"
       },
+      "ExportDejavuKeyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "confirmed"
+        ],
+        "type": "object"
+      },
+      "ExportedDejavuKeyDto": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "readOnly": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
       "FileDocumentKind": {
         "enum": [
           "file"
@@ -1475,6 +1532,21 @@
         "minimum": 0,
         "type": "integer"
       },
+      "ImportDejavuKeyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
       "InitializeServerOwnerRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1513,6 +1585,18 @@
             "$ref": "#/components/schemas/WorkspaceRelativePath"
           }
         },
+        "type": "object"
+      },
+      "ListRemoteNotebooksQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "expectedRevision"
+        ],
         "type": "object"
       },
       "ListWorkspaceInventoryQuery": {
@@ -1961,6 +2045,53 @@
           "sync-status"
         ],
         "type": "string"
+      },
+      "RemoteNotebookCatalogDto": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/RemoteNotebookCatalogEntryDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "type": "object"
+      },
+      "RemoteNotebookCatalogEntryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "disabledReason": {
+            "$ref": "#/components/schemas/Nullable_String"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/SyncProvider"
+          },
+          "repositoryId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available",
+          "disabledReason",
+          "displayName",
+          "name",
+          "provider",
+          "repositoryId"
+        ],
+        "type": "object"
       },
       "RequestId": {
         "format": "uuid",
@@ -3177,6 +3308,22 @@
           "webdav"
         ],
         "type": "string"
+      },
+      "SyncRepositoryBindingDto": {
+        "additionalProperties": false,
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "repositoryId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId",
+          "repositoryId"
+        ],
+        "type": "object"
       },
       "SyncRunAcceptedDto": {
         "additionalProperties": false,
@@ -12084,6 +12231,1312 @@
                           "enum": [
                             "authentication_unavailable",
                             "sync_not_ready"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
+          }
+        ],
+        "x-body-limit-bytes": 1048576
+      }
+    },
+    "/api/v1/sync/dejavu/key": {
+      "get": {
+        "operationId": "getDejavuKeyState",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DejavuKeyStateDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable",
+                            "sync_not_ready",
+                            "sync_run_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/dejavu/key/export": {
+      "post": {
+        "operationId": "exportDejavuKey",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportDejavuKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportedDejavuKeyDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "csrf_rejected",
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable",
+                            "sync_not_ready",
+                            "sync_run_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
+          }
+        ],
+        "x-body-limit-bytes": 1048576
+      }
+    },
+    "/api/v1/sync/dejavu/key/import": {
+      "post": {
+        "operationId": "importDejavuKey",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportDejavuKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DejavuKeyStateDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "csrf_rejected",
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable",
+                            "sync_not_ready",
+                            "sync_run_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
+          }
+        ],
+        "x-body-limit-bytes": 1048576
+      }
+    },
+    "/api/v1/sync/repositories": {
+      "get": {
+        "operationId": "listRemoteNotebooks",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "expectedRevision",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteNotebookCatalogDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "sync_config_absent"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "sync_config_revision_conflict"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "sync_config_invalid"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable",
+                            "sync_not_ready"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
+          }
+        ]
+      }
+    },
+    "/api/v1/sync/repository-binding": {
+      "post": {
+        "operationId": "bindSyncRepository",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindSyncRepositoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncRepositoryBindingDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "csrf_rejected",
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "sync_config_absent"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "sync_config_revision_conflict"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "sync_config_invalid"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable",
+                            "sync_not_ready",
+                            "sync_run_unavailable"
                           ],
                           "type": "string"
                         }

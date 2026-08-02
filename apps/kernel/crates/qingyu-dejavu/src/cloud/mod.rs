@@ -201,8 +201,8 @@ pub trait Cloud: Send + Sync {
     ) -> Result<u64, CloudError>;
     /// Publishes `bytes` and returns their exact payload length on success.
     ///
-    /// S3 implementations may use ordinary PUT for either `overwrite` value, matching Dejavu.
-    /// Deterministic local implementations may retain stricter no-clobber behavior when false.
+    /// Implementations must atomically reject an existing object with [`CloudError::AlreadyExists`]
+    /// when `overwrite` is false.
     async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError>;
     /// Streams a repository object from a reopenable source, rejecting any source whose bytes
     /// are shorter or longer than [`CloudUploadSource::content_length`]. Each retry must call

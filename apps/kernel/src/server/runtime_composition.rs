@@ -419,7 +419,7 @@ mod tests {
         let first_bytes = fs::read(&target).expect("fresh Server DejaVu binding state");
         assert!(first_bytes.len() <= 1024 * 1024);
         let first_workspace = first.runtime().active_workspace_snapshot().unwrap();
-        let (repository_id, device_id, repository_key) = read_active_dejavu_binding(
+        let (repository_id, _display_name, device_id, repository_key) = read_active_dejavu_binding(
             first.runtime().instance_data_root(),
             first_workspace.authority().root(),
         )
@@ -481,7 +481,8 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let (restarted_repository, restarted_device, _) = restarted_binding.into_parts();
+        let (restarted_repository, _display_name, restarted_device, _) =
+            restarted_binding.into_parts();
         assert_eq!(restarted_repository, repository_id);
         assert_eq!(restarted_device, device_id);
     }

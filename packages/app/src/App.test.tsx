@@ -1386,7 +1386,8 @@ describe("QingYu workspace", () => {
     expect(bindRepository).toHaveBeenCalledWith({
       displayName: "Shared notes",
       notesRoot: "/Workspace/A",
-      repositoryId: "00000000-0000-4000-8000-000000000051"
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "established-catalog-revision"
     });
     expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
       .not.toBeInTheDocument();

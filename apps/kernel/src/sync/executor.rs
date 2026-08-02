@@ -14,7 +14,7 @@ use std::{
 
 use async_trait::async_trait;
 use qingyu_dejavu::{
-    Device, RepositoryRuntimeState, S3AddressingStyle as DejavuAddressingStyle,
+    CloudError, Device, RepositoryRuntimeState, S3AddressingStyle as DejavuAddressingStyle,
     S3TlsVerification as DejavuTlsVerification,
 };
 
@@ -38,6 +38,7 @@ use crate::{
             notebook_name_available_on_current_platform, sync_state_key, RemoteSyncBackend,
             RemoteSyncError, RemoteSyncFile, SyncFailureCategory, ValidRemoteRoot,
         },
+        catalog::KernelS3RepositoryCatalog,
         config::{SyncConfig, SyncExecutionPlan, SyncExecutionTarget},
         dejavu_runner::{
             DejavuRunError, DejavuRunResult, DejavuRunnerInputs, DejavuS3Config, DejavuSecret,
@@ -390,7 +391,72 @@ impl ProductionSyncExecutor {
         instance_authority
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
-        let (repository_id, device_id, repository_key) = binding.into_parts();
+        let (repository_id, repository_display_name, device_id, repository_key) =
+            binding.into_parts();
+        let catalog = KernelS3RepositoryCatalog::from_s3_parts(
+            &endpoint_url,
+            &region,
+            &bucket,
+            access_key_id.expose_secret(),
+            secret_access_key.expose_secret(),
+            request_timeout_seconds,
+            addressing_style,
+            tls_verification,
+        )
+        .map_err(|error| dejavu_error(provider, run_id, catalog_dejavu_error(&error)))?;
+        let catalog_display_name = repository_display_name.trim();
+        let catalog_display_name = if catalog_display_name.is_empty()
+            || catalog_display_name.len() > 255
+            || catalog_display_name.chars().any(char::is_control)
+        {
+            "QingYu notes"
+        } else {
+            catalog_display_name
+        };
+        let verify_catalog_authority = || {
+            if context.cancellation().is_cancelled() {
+                return Err(cancelled_error(provider, run_id));
+            }
+            authority
+                .verify_held_directory()
+                .map_err(|_| local_error(provider, run_id))?;
+            instance_authority
+                .verify_held_directory()
+                .map_err(|_| local_error(provider, run_id))?;
+            runtime
+                .verify_instance_lock()
+                .map_err(|_| local_error(provider, run_id))
+        };
+        verify_catalog_authority()?;
+        match catalog.read(&repository_id).await {
+            Ok(_) => verify_catalog_authority()?,
+            Err(CloudError::NotFound) => {
+                verify_catalog_authority()?;
+                match catalog
+                    .create(
+                        &repository_id,
+                        catalog_display_name,
+                        time::OffsetDateTime::now_utc().unix_timestamp(),
+                    )
+                    .await
+                {
+                    Ok(_) => verify_catalog_authority()?,
+                    Err(CloudError::AlreadyExists) => {
+                        verify_catalog_authority()?;
+                        catalog.read(&repository_id).await.map_err(|error| {
+                            dejavu_error(provider, run_id, catalog_dejavu_error(&error))
+                        })?;
+                        verify_catalog_authority()?;
+                    }
+                    Err(error) => {
+                        return Err(dejavu_error(provider, run_id, catalog_dejavu_error(&error)));
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(dejavu_error(provider, run_id, catalog_dejavu_error(&error)));
+            }
+        }
         let transport = S3TransportOptions {
             addressing_style,
             request_timeout_seconds,
@@ -1148,7 +1214,7 @@ fn dejavu_remote_summary(result: &DejavuRunResult) -> RemoteSyncSummary {
         bytes_uploaded: result.transfer.upload_bytes,
         conflict_files: conflicts,
         downloaded_files: result.transfer.download_files,
-        scanned_files: 0,
+        scanned_files: result.scanned_files,
         skipped_files: 0,
         uploaded_files: result.transfer.upload_files,
     }
@@ -1222,6 +1288,29 @@ fn dejavu_error(
             Some(SyncSafeErrorCategory::Conflict),
             Some(run_id),
         ),
+    }
+}
+
+fn catalog_dejavu_error(error: &CloudError) -> DejavuRunError {
+    match error {
+        CloudError::Auth => DejavuRunError::AuthenticationFailed,
+        CloudError::Forbidden => DejavuRunError::PermissionDenied,
+        CloudError::Dns => DejavuRunError::DnsUnavailable,
+        CloudError::RateLimited => DejavuRunError::RateLimited,
+        CloudError::QuotaExceeded => DejavuRunError::QuotaExceeded,
+        CloudError::ClockSkew => DejavuRunError::ClockSkew,
+        CloudError::Locked | CloudError::AlreadyExists => DejavuRunError::RemoteConflict,
+        CloudError::UnsafeKey => DejavuRunError::InvalidConfiguration,
+        CloudError::ResponseTooLarge { .. }
+        | CloudError::LengthMismatch { .. }
+        | CloudError::Backend { .. } => DejavuRunError::IntegrityFailure,
+        CloudError::NotFound
+        | CloudError::Unavailable
+        | CloudError::S3Response { .. }
+        | CloudError::Injected(_)
+        | CloudError::Io(_)
+        | CloudError::LockFailed { .. }
+        | CloudError::UnlockFailed { .. } => DejavuRunError::CloudUnavailable,
     }
 }
 
@@ -1498,20 +1587,29 @@ mod tests {
             Arc, Mutex,
         },
         thread,
-        time::Duration,
+        time::{Duration, SystemTime},
     };
 
     use tempfile::{tempdir, TempDir};
 
     use crate::{
+        composition::install_fixed_kernel_services,
         config::KernelConfig,
-        contract::{SyncCompletionState, SyncProvider, TriggerSyncRunRequest},
+        contract::{
+            BindSyncRepositoryRequest, CreateDocumentRequest, CreatedDocumentDto,
+            DeleteDocumentRequest, DeletionPolicy, DocumentContents, DocumentId, DocumentName,
+            ExportDejavuKeyRequest, FileDocumentName, HostProfile, ImportDejavuKeyRequest,
+            ListRemoteNotebooksQuery, MoveDocumentRequest, PatchSyncConfigRequest, Revision, RunId,
+            SyncCompletionState, SyncConfigChangesDto, SyncProvider, SyncRunCompletionState,
+            TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceGeneration,
+            WorkspaceRelativePath,
+        },
         events::EventSink,
         paths::KernelPaths,
         ports::system::system_kernel_ports,
-        runtime::{KernelRuntime, SyncApiService},
+        runtime::{DocumentsApiService, KernelRuntime, SyncApiService},
         services::{
-            sync::{SyncExecutor as _, SyncService},
+            sync::{SyncExecutor as _, SyncRunContext, SyncService},
             workspace::WorkspaceService,
         },
         settings::{
@@ -1533,6 +1631,9 @@ mod tests {
     };
 
     use super::{DejavuAttempt, DejavuRunnerFactory, ProductionSyncExecutor};
+
+    const SHARED_EXECUTOR_REPOSITORY_ID: &str = "323df833-764a-44b3-a534-492640c258f2";
+    const SHARED_EXECUTOR_DISPLAY_NAME: &str = "Shared executor notes";
 
     #[test]
     fn combined_summary_saturates_successful_counts_at_the_wire_limit() {
@@ -2004,6 +2105,7 @@ mod tests {
         assert_eq!(summary.bytes_uploaded.get(), 30);
         assert_eq!(summary.downloaded_files.get(), 2);
         assert_eq!(summary.uploaded_files.get(), 4);
+        assert_eq!(summary.scanned_files.get(), 5);
         assert_eq!(summary.conflict_files.get(), 1);
         let remote_settings = server
             .file("/notes/qingyu/app/settings.json")
@@ -2211,6 +2313,507 @@ mod tests {
         assert!(!requests[0].contains("executor-access-secret"));
         assert!(!requests[0].contains("executor-signing-secret"));
         assert!(server.state.lock().expect("S3 state").files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_s3_execution_writes_neither_catalog_nor_repository_objects() {
+        let server = S3Fixture::start();
+        let kernel =
+            TestKernel::start_s3(Arc::new(FixedDejavuFactory::default()), &server.endpoint()).await;
+        let run_id = RunId::new(uuid::Uuid::new_v4());
+        let context = SyncRunContext::cancelled_for_test(
+            run_id,
+            kernel
+                .runtime
+                .active_workspace_snapshot()
+                .expect("active S3 workspace"),
+        );
+
+        let error = kernel
+            .executor
+            .run(s3_config(&server.endpoint()), context)
+            .await
+            .expect_err("pre-cancelled execution must stop before remote catalog I/O");
+
+        assert_eq!(error, super::cancelled_error(SyncProvider::S3, run_id));
+        assert!(server.requests().is_empty());
+        assert!(server.state.lock().expect("S3 state").files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn complete_s3_executor_converges_server_mobile_and_desktop_document_workspaces() {
+        let server = S3Fixture::start();
+        let source = CompleteExecutorFixture::start(
+            HostProfile::Server,
+            &server.endpoint(),
+            CompleteBinding::Shared,
+        )
+        .await;
+        assert_eq!(source.runtime.host_profile(), HostProfile::Server);
+
+        source.create_directory("", "Endurance-A").await;
+        let root = source
+            .create_file("", "Web-Seed-A.md", "# Web Seed A\n")
+            .await;
+        let nested = source
+            .create_file(
+                "Endurance-A",
+                "Nested-Web-B.md",
+                "| A | B |\n|---|---|\n| 1 | 2 |\n",
+            )
+            .await;
+        let empty = source.create_file("Endurance-A", "Untitled.md", "").await;
+
+        let first_mtime = SystemTime::UNIX_EPOCH + Duration::from_millis(1_900_000_000_100);
+        set_fixture_mtime(
+            &source.workspace.join("Endurance-A/Nested-Web-B.md"),
+            first_mtime,
+        );
+        let nested = source
+            .documents
+            .get_document(nested.id.clone())
+            .await
+            .expect("refresh nested revision after deterministic mtime");
+
+        let uploaded = source.run_manual_sync().await;
+        assert_eq!(uploaded.completion_state, SyncRunCompletionState::Succeeded);
+        let uploaded_summary = uploaded.summary.into_option().expect("upload summary");
+        assert!(uploaded_summary.uploaded_files.get() > 0);
+        assert_eq!(
+            uploaded_summary.scanned_files.get(),
+            5,
+            "three Markdown notes, protected syncignore, and portable settings are scanned"
+        );
+
+        let exported = source
+            .sync
+            .export_dejavu_key(ExportDejavuKeyRequest { confirmed: true })
+            .await
+            .expect("explicitly export the source repository key");
+        assert!(!format!("{exported:?}").contains(&exported.key));
+
+        let mobile = CompleteExecutorFixture::start(
+            HostProfile::Mobile,
+            &server.endpoint(),
+            CompleteBinding::Distinct,
+        )
+        .await;
+        assert_eq!(mobile.runtime.host_profile(), HostProfile::Mobile);
+        let revision = mobile.set_enabled(false).await;
+        let catalog = mobile
+            .sync
+            .list_remote_notebooks(ListRemoteNotebooksQuery {
+                expected_revision: revision.clone(),
+            })
+            .await
+            .expect("list the server-created remote notebook");
+        let shared = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.repository_id == SHARED_EXECUTOR_REPOSITORY_ID)
+            .expect("shared notebook catalog entry");
+        assert_eq!(shared.display_name, SHARED_EXECUTOR_DISPLAY_NAME);
+        mobile
+            .sync
+            .import_dejavu_key(ImportDejavuKeyRequest {
+                key: exported.key.clone(),
+            })
+            .await
+            .expect("import the shared repository key");
+        let bound = mobile
+            .sync
+            .bind_sync_repository(BindSyncRepositoryRequest {
+                expected_revision: revision,
+                display_name: shared.display_name.clone(),
+                repository_id: shared.repository_id.clone(),
+            })
+            .await
+            .expect("bind managed mobile workspace to shared notebook");
+        let initial_mobile = mobile.wait_for_job(&bound.job_id).await;
+        assert_eq!(
+            initial_mobile.completion_state,
+            SyncRunCompletionState::Succeeded,
+            "mobile restore failed: {:?}; requests: {:?}",
+            initial_mobile.error.as_ref().map(|error| (
+                error.code(),
+                error.category(),
+                error.operation()
+            )),
+            server.requests(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(mobile.workspace.join("Web-Seed-A.md"))
+                .expect("mobile root note"),
+            "# Web Seed A\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mobile.workspace.join("Endurance-A/Nested-Web-B.md"))
+                .expect("mobile nested note"),
+            "| A | B |\n|---|---|\n| 1 | 2 |\n"
+        );
+        assert!(mobile.workspace.join("Endurance-A/Untitled.md").is_file());
+        let disabled = mobile
+            .sync
+            .get_sync_config()
+            .await
+            .expect("disabled S3 config remains readable");
+        assert!(
+            !disabled.enabled,
+            "one-shot restore must not enable scheduled sync"
+        );
+
+        source
+            .documents
+            .update_document(
+                nested.id.clone(),
+                UpdateDocumentRequest {
+                    workspace_generation: source.generation.clone(),
+                    expected_revision: nested.revision,
+                    contents: DocumentContents::parse("# Temporary Web Note\n")
+                        .expect("updated nested contents"),
+                },
+            )
+            .await
+            .expect("update nested note through documents-v1");
+        let second_mtime = SystemTime::UNIX_EPOCH + Duration::from_millis(1_900_000_000_900);
+        set_fixture_mtime(
+            &source.workspace.join("Endurance-A/Nested-Web-B.md"),
+            second_mtime,
+        );
+        source
+            .documents
+            .move_document(
+                root.id,
+                MoveDocumentRequest {
+                    workspace_generation: source.generation.clone(),
+                    expected_revision: root.revision,
+                    target_parent: WorkspaceRelativePath::parse("").expect("workspace root"),
+                    name: DocumentName::parse("Web-Seed-Renamed.md").expect("renamed document"),
+                },
+            )
+            .await
+            .expect("rename root note through documents-v1");
+        source
+            .documents
+            .delete_document(
+                empty.id,
+                DeleteDocumentRequest {
+                    workspace_generation: source.generation.clone(),
+                    expected_revision: empty.revision,
+                    deletion_policy: DeletionPolicy::Permanent,
+                },
+            )
+            .await
+            .expect("delete empty note through documents-v1");
+
+        let updated = source.run_manual_sync().await;
+        assert_eq!(updated.completion_state, SyncRunCompletionState::Succeeded);
+        assert!(
+            updated
+                .summary
+                .into_option()
+                .expect("update summary")
+                .uploaded_files
+                .get()
+                > 0
+        );
+        assert!(server
+            .file(&format!(
+                "/notes/qingyu/repositories/{SHARED_EXECUTOR_REPOSITORY_ID}/metadata.json"
+            ))
+            .is_some());
+        assert!(server
+            .state
+            .lock()
+            .expect("S3 object state")
+            .files
+            .keys()
+            .any(|path| path.starts_with(&format!(
+                "/notes/qingyu/repositories/{SHARED_EXECUTOR_REPOSITORY_ID}/repo/"
+            ))));
+
+        mobile.set_enabled(true).await;
+        let converged_mobile = mobile.run_manual_sync().await;
+        assert_eq!(
+            converged_mobile.completion_state,
+            SyncRunCompletionState::Succeeded
+        );
+        assert_eq!(
+            std::fs::read_to_string(mobile.workspace.join("Endurance-A/Nested-Web-B.md"))
+                .expect("updated mobile nested note"),
+            "# Temporary Web Note\n"
+        );
+        assert!(mobile.workspace.join("Web-Seed-Renamed.md").is_file());
+        assert!(!mobile.workspace.join("Web-Seed-A.md").exists());
+        assert!(!mobile.workspace.join("Endurance-A/Untitled.md").exists());
+
+        let desktop = CompleteExecutorFixture::start(
+            HostProfile::Desktop,
+            &server.endpoint(),
+            CompleteBinding::Shared,
+        )
+        .await;
+        assert_eq!(desktop.runtime.host_profile(), HostProfile::Desktop);
+        let converged_desktop = desktop.run_manual_sync().await;
+        assert_eq!(
+            converged_desktop.completion_state,
+            SyncRunCompletionState::Succeeded,
+            "desktop convergence failed: {:?}",
+            converged_desktop.error.as_ref().map(|error| (
+                error.code(),
+                error.category(),
+                error.operation()
+            )),
+        );
+        assert_eq!(
+            std::fs::read_to_string(desktop.workspace.join("Endurance-A/Nested-Web-B.md"))
+                .expect("desktop nested note"),
+            "# Temporary Web Note\n"
+        );
+        assert!(desktop.workspace.join("Web-Seed-Renamed.md").is_file());
+        assert!(!desktop.workspace.join("Web-Seed-A.md").exists());
+        assert!(!desktop.workspace.join("Endurance-A/Untitled.md").exists());
+    }
+
+    struct CompleteExecutorFixture {
+        _temporary: TempDir,
+        documents: Arc<dyn DocumentsApiService>,
+        generation: WorkspaceGeneration,
+        runtime: Arc<KernelRuntime>,
+        sync: Arc<SyncService>,
+        workspace: PathBuf,
+    }
+
+    #[derive(Clone, Copy)]
+    enum CompleteBinding {
+        Shared,
+        Distinct,
+    }
+
+    struct CreatedFileFixture {
+        id: DocumentId,
+        revision: Revision,
+    }
+
+    impl CompleteExecutorFixture {
+        async fn start(profile: HostProfile, endpoint: &str, binding: CompleteBinding) -> Self {
+            let temporary = tempdir().expect("complete executor roots");
+            let cache = temporary.path().join("cache");
+            std::fs::create_dir(&cache).expect("complete executor cache");
+            let paths = match profile {
+                HostProfile::Server => {
+                    let data = temporary.path().join("data");
+                    std::fs::create_dir(&data).expect("server data root");
+                    crate::paths::ServerPathLayout::for_test(&data, &cache)
+                        .activate()
+                        .expect("server Kernel paths")
+                }
+                HostProfile::Mobile => {
+                    let app_data = temporary.path().join("mobile-data");
+                    std::fs::create_dir(&app_data).expect("mobile app data");
+                    KernelPaths::mobile(&app_data, &cache, "primary")
+                        .expect("managed mobile Kernel paths")
+                }
+                HostProfile::Desktop => {
+                    let workspace = temporary.path().join("desktop-workspace");
+                    let app_data = temporary.path().join("desktop-data");
+                    std::fs::create_dir(&workspace).expect("desktop workspace");
+                    std::fs::create_dir(&app_data).expect("desktop app data");
+                    KernelPaths::desktop(&workspace, &app_data, &cache)
+                        .expect("desktop Kernel paths")
+                }
+            };
+            let workspace = paths.workspace_root().canonical_path().to_path_buf();
+            let config_root = paths.config_root().canonical_path().to_path_buf();
+            let instance_root = paths.instance_data_root().canonical_path().to_path_buf();
+            std::fs::write(
+                config_root.join("sync-config.json"),
+                serde_json::to_vec_pretty(&s3_config(endpoint)).expect("serialize S3 config"),
+            )
+            .expect("write S3 config");
+            std::fs::write(
+                config_root.join("settings.json"),
+                br#"{"appConfigVersion":1,"language":"en"}"#,
+            )
+            .expect("write portable settings");
+
+            let (repository_id, repository_key, display_name) = match binding {
+                CompleteBinding::Shared => (
+                    SHARED_EXECUTOR_REPOSITORY_ID,
+                    [7_u8; 32],
+                    SHARED_EXECUTOR_DISPLAY_NAME,
+                ),
+                CompleteBinding::Distinct => (
+                    "fb62f56a-1ed1-49ec-b6b9-b525c5994880",
+                    [9_u8; 32],
+                    "Different local notebook",
+                ),
+            };
+            let device_id = match profile {
+                HostProfile::Server => "9ba9e553-0d21-4222-9a19-2ea87d89fa47",
+                HostProfile::Mobile => "8c3d853f-9407-47b2-91c6-d79fe57b55cf",
+                HostProfile::Desktop => "618da7e6-da96-4db7-b081-d53442365e17",
+            };
+            std::fs::write(
+                instance_root.join("local-sync.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "version": 1,
+                    "deviceId": device_id,
+                    "repoKey": base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        repository_key,
+                    ),
+                    "bindings": [{
+                        "repositoryId": repository_id,
+                        "displayName": display_name,
+                        "notesRoot": workspace,
+                        "enabled": true
+                    }]
+                }))
+                .expect("serialize complete local sync state"),
+            )
+            .expect("write complete local sync state");
+
+            let managed =
+                ManagedWorkspaceCollection::from_paths(&paths).expect("managed workspace set");
+            let runtime = KernelRuntime::activate(
+                KernelConfig::generate().expect("Kernel config"),
+                paths,
+                system_kernel_ports(),
+            )
+            .expect("complete Kernel runtime");
+            let primary = Arc::new(
+                FixedPrimaryWorkspaceStore::new(
+                    PrimaryWorkspaceState::new("Executor fixture")
+                        .expect("primary workspace state"),
+                )
+                .expect("fixed primary workspace"),
+            );
+            let services =
+                install_fixed_kernel_services(&runtime, primary, managed, "Executor fixture")
+                    .await
+                    .expect("complete fixed Kernel composition");
+            let active = runtime
+                .active_workspace_snapshot()
+                .expect("active complete workspace");
+            let generation = active.workspace().generation.clone();
+            let documents = runtime
+                .documents_api_service()
+                .expect("documents-v1 service")
+                .clone();
+            Self {
+                _temporary: temporary,
+                documents,
+                generation,
+                runtime,
+                sync: services.sync,
+                workspace,
+            }
+        }
+
+        async fn create_directory(&self, parent: &str, name: &str) {
+            let created = self
+                .documents
+                .create_document(CreateDocumentRequest::Directory {
+                    workspace_generation: self.generation.clone(),
+                    parent: WorkspaceRelativePath::parse(parent).expect("directory parent"),
+                    name: DocumentName::parse(name).expect("directory name"),
+                })
+                .await
+                .expect("create directory through documents-v1");
+            assert!(matches!(created, CreatedDocumentDto::Directory { .. }));
+        }
+
+        async fn create_file(
+            &self,
+            parent: &str,
+            name: &str,
+            contents: &str,
+        ) -> CreatedFileFixture {
+            let created = self
+                .documents
+                .create_document(CreateDocumentRequest::File {
+                    workspace_generation: self.generation.clone(),
+                    parent: WorkspaceRelativePath::parse(parent).expect("file parent"),
+                    name: FileDocumentName::parse(name).expect("Markdown file name"),
+                    contents: DocumentContents::parse(contents).expect("document contents"),
+                })
+                .await
+                .expect("create file through documents-v1");
+            match created {
+                CreatedDocumentDto::File { id, revision, .. } => {
+                    CreatedFileFixture { id, revision }
+                }
+                CreatedDocumentDto::Directory { .. } => panic!("expected created file"),
+            }
+        }
+
+        async fn sync_revision(&self) -> Revision {
+            self.sync
+                .get_sync_config()
+                .await
+                .expect("S3 sync config")
+                .revision
+        }
+
+        async fn set_enabled(&self, enabled: bool) -> Revision {
+            self.sync
+                .patch_sync_config(PatchSyncConfigRequest {
+                    expected_revision: self.sync_revision().await,
+                    changes: SyncConfigChangesDto {
+                        enabled: Some(enabled),
+                        ..SyncConfigChangesDto::default()
+                    },
+                })
+                .await
+                .expect("toggle complete executor sync config")
+                .revision
+        }
+
+        async fn run_manual_sync(&self) -> crate::contract::SyncRunStatusDto {
+            let accepted = self
+                .sync
+                .trigger_sync_run(TriggerSyncRunRequest {
+                    expected_config_revision: self.sync_revision().await,
+                })
+                .await
+                .expect("accept manual full executor sync");
+            wait_for_complete_sync(&self.sync, accepted.run_id).await
+        }
+
+        async fn wait_for_job(&self, job_id: &str) -> crate::contract::SyncRunStatusDto {
+            let run_id = RunId::new(uuid::Uuid::parse_str(job_id).expect("binding run UUID"));
+            wait_for_complete_sync(&self.sync, run_id).await
+        }
+    }
+
+    async fn wait_for_complete_sync(
+        sync: &SyncService,
+        run_id: RunId,
+    ) -> crate::contract::SyncRunStatusDto {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let status = sync
+                    .get_sync_run(run_id)
+                    .await
+                    .expect("read full executor run");
+                if status.completion_state != SyncRunCompletionState::Attempting {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("full executor sync should settle")
+    }
+
+    fn set_fixture_mtime(path: &Path, modified: SystemTime) {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open fixture note for mtime");
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("set deterministic fixture mtime");
     }
 
     struct TestKernel {
@@ -2578,6 +3181,7 @@ mod tests {
         > {
             Ok(crate::sync::dejavu_runner::DejavuRunResult {
                 data_changed: true,
+                scanned_files: 4,
                 transfer: crate::sync::dejavu_runner::DejavuTransferSummary {
                     download_bytes: 11,
                     download_chunks: 1,
@@ -2738,8 +3342,8 @@ mod tests {
             .push(format!("{} {}", request.method, request.path));
         let object_path = request.path.split('?').next().unwrap_or(&request.path);
         let response = match request.method.as_str() {
-            "GET" if request.path.contains("list-type=2") => s3_list_response(),
-            "PUT" => fixture_s3_put(state, object_path, request.body),
+            "GET" if request.path.contains("list-type=2") => s3_list_response(state, &request.path),
+            "PUT" => fixture_s3_put(state, object_path, request.body, request.if_none_match),
             "HEAD" => fixture_s3_get(state, object_path, true),
             "GET" => fixture_s3_get(state, object_path, false),
             "DELETE" => {
@@ -2751,10 +3355,19 @@ mod tests {
         stream.write_all(&response).expect("write S3 response");
     }
 
-    fn fixture_s3_put(state: &Mutex<S3FixtureState>, path: &str, body: Vec<u8>) -> Vec<u8> {
+    fn fixture_s3_put(
+        state: &Mutex<S3FixtureState>,
+        path: &str,
+        body: Vec<u8>,
+        if_none_match: bool,
+    ) -> Vec<u8> {
         static VERSION: AtomicU64 = AtomicU64::new(1);
+        let mut state = state.lock().expect("S3 state");
+        if if_none_match && state.files.contains_key(path) {
+            return empty_response("412 Precondition Failed");
+        }
         let version = VERSION.fetch_add(1, Ordering::Relaxed);
-        state.lock().expect("S3 state").files.insert(
+        state.files.insert(
             path.to_owned(),
             StoredFixtureFile {
                 bytes: body,
@@ -2787,13 +3400,109 @@ mod tests {
         response
     }
 
-    fn s3_list_response() -> Vec<u8> {
-        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>";
+    fn s3_list_response(state: &Mutex<S3FixtureState>, request_path: &str) -> Vec<u8> {
+        let prefix = fixture_query_value(request_path, "prefix").unwrap_or_default();
+        let delimiter = fixture_query_value(request_path, "delimiter");
+        let state = state.lock().expect("S3 list state");
+        let mut objects = Vec::new();
+        let mut common_prefixes = BTreeSet::new();
+        for (path, file) in &state.files {
+            let Some(key) = path.strip_prefix("/notes/") else {
+                continue;
+            };
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+            if let Some(delimiter) = delimiter.as_deref() {
+                let remainder = &key[prefix.len()..];
+                if let Some(index) = remainder.find(delimiter) {
+                    common_prefixes.insert(format!("{prefix}{}{}", &remainder[..index], delimiter));
+                    continue;
+                }
+            }
+            objects.push((key, file));
+        }
+        let contents = objects
+            .into_iter()
+            .map(|(key, file)| format!(
+                "<Contents><Key>{}</Key><LastModified>2026-07-30T00:00:00Z</LastModified><ETag>&quot;v{}&quot;</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
+                fixture_xml_escape(key),
+                file.version,
+                file.bytes.len(),
+            ))
+            .collect::<String>();
+        let prefixes = common_prefixes
+            .into_iter()
+            .map(|prefix| {
+                format!(
+                    "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
+                    fixture_xml_escape(&prefix),
+                )
+            })
+            .collect::<String>();
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><Name>notes</Name><Prefix>{}</Prefix><KeyCount>{}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>{contents}{prefixes}</ListBucketResult>",
+            fixture_xml_escape(&prefix),
+            state.files.len(),
+        );
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .into_bytes()
+    }
+
+    fn fixture_query_value(request_path: &str, name: &str) -> Option<String> {
+        let query = request_path.split_once('?')?.1;
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (fixture_percent_decode(key).as_deref() == Some(name))
+                .then(|| fixture_percent_decode(value))
+                .flatten()
+        })
+    }
+
+    fn fixture_percent_decode(value: &str) -> Option<String> {
+        let bytes = value.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'%' if index + 2 < bytes.len() => {
+                    let high = fixture_hex_value(bytes[index + 1])?;
+                    let low = fixture_hex_value(bytes[index + 2])?;
+                    decoded.push(high * 16 + low);
+                    index += 3;
+                }
+                b'+' => {
+                    decoded.push(b' ');
+                    index += 1;
+                }
+                byte => {
+                    decoded.push(byte);
+                    index += 1;
+                }
+            }
+        }
+        String::from_utf8(decoded).ok()
+    }
+
+    const fn fixture_hex_value(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn fixture_xml_escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
     }
 
     struct WebDavFixture {
@@ -2887,6 +3596,7 @@ mod tests {
     struct FixtureRequest {
         body: Vec<u8>,
         depth: Option<String>,
+        if_none_match: bool,
         method: String,
         path: String,
     }
@@ -2936,6 +3646,7 @@ mod tests {
         let path = start.next().expect("request path").to_string();
         let mut content_length = 0_usize;
         let mut depth = None;
+        let mut if_none_match = false;
         for line in lines {
             let Some((name, value)) = line.split_once(':') else {
                 continue;
@@ -2944,6 +3655,8 @@ mod tests {
                 content_length = value.trim().parse().expect("content length");
             } else if name.eq_ignore_ascii_case("depth") {
                 depth = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("if-none-match") {
+                if_none_match = value.trim() == "*";
             }
         }
         while bytes.len() < header_end + content_length {
@@ -2954,6 +3667,7 @@ mod tests {
         FixtureRequest {
             body: bytes[header_end..header_end + content_length].to_vec(),
             depth,
+            if_none_match,
             method,
             path,
         }

@@ -1130,7 +1130,8 @@ function WorkspaceApp() {
       await getAppRuntime().syncConfig.bindRepository({
         displayName: request.displayName,
         notesRoot: request.notesRoot,
-        repositoryId: request.repositoryId
+        repositoryId: request.repositoryId,
+        revision: request.revision
       });
       return true;
     }
@@ -1362,7 +1363,7 @@ function WorkspaceApp() {
     syncConfig.status
   ]);
   const restoreDesktopRemoteNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
-    requireCurrentRemoteNotebookCatalogRevision();
+    const revision = requireCurrentRemoteNotebookCatalogRevision();
     if (entry.provider === "s3") {
       if (!appFeatures.dejavuSync) throw new Error("S3 repository binding is unavailable.");
       if (primaryWorkspace.status !== "ready" || !primaryWorkspace.root) {
@@ -1371,7 +1372,8 @@ function WorkspaceApp() {
       await getAppRuntime().syncConfig.bindRepository({
         displayName: entry.displayName,
         notesRoot: primaryWorkspace.root,
-        repositoryId: entry.repositoryId
+        repositoryId: entry.repositoryId,
+        revision
       });
       closeRemoteNotebookDialog();
       return;
@@ -1535,7 +1537,8 @@ function WorkspaceApp() {
       await getAppRuntime().syncConfig.bindRepository({
         displayName: entry.displayName,
         notesRoot: primaryWorkspace.root,
-        repositoryId: entry.repositoryId
+        repositoryId: entry.repositoryId,
+        revision: remoteNotebookCatalogRevision
       });
       closeMobileNotebookDialog();
       return;

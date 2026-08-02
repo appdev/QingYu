@@ -34,20 +34,23 @@ use uuid::Uuid;
 
 use crate::{
     contract::{
-        ApiErrorEnvelope, AppConfigSnapshotDto, ChangeServerOwnerPasswordRequest, ConnectionId,
-        CreateDocumentRequest, CreateServerSessionRequest, CreateWorkspaceResourceBatchItem,
+        ApiErrorEnvelope, AppConfigSnapshotDto, BindSyncRepositoryRequest,
+        ChangeServerOwnerPasswordRequest, ConnectionId, CreateDocumentRequest,
+        CreateServerSessionRequest, CreateWorkspaceResourceBatchItem,
         CreateWorkspaceResourceBatchRequest, CreateWorkspaceResourceBatchResponse,
-        CreateWorkspaceResourceQuery, CreatedDocumentDto, DeleteDocumentRequest,
+        CreateWorkspaceResourceQuery, CreatedDocumentDto, DejavuKeyStateDto, DeleteDocumentRequest,
         DocumentContentDto, DocumentContents, DocumentEntryDto, DocumentHistoryPageDto,
         DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode,
-        ErrorDetails, EventSequence, GapReason, InitializeServerOwnerRequest, InstanceId,
-        ListDocumentsQuery, ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest,
-        PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest, PatchSyncConfigRequest,
-        ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope, RequestId,
-        ResourceEntryDto, ResourceKind, ResourceRefDto, RestoreDocumentHistoryRequest, Revision,
-        SearchPageDto, SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame,
-        ServerSessionDto, SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto,
-        SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto,
+        ErrorDetails, EventSequence, ExportDejavuKeyRequest, ExportedDejavuKeyDto, GapReason,
+        ImportDejavuKeyRequest, InitializeServerOwnerRequest, InstanceId, ListDocumentsQuery,
+        ListRemoteNotebooksQuery, ListWorkspaceInventoryQuery, LiveHealthResponse,
+        MoveDocumentRequest, PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest,
+        PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope,
+        RemoteNotebookCatalogDto, RemoteNotebookCatalogEntryDto, RequestId, ResourceEntryDto,
+        ResourceKind, ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
+        SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto,
+        SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto,
+        SyncRepositoryBindingDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto,
         SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
         UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
@@ -814,6 +817,15 @@ impl std::error::Error for OpenApiExportError {}
         PatchSyncConfigRequest,
         TestSyncConnectionRequest,
         SyncConnectionTestDto,
+        ListRemoteNotebooksQuery,
+        RemoteNotebookCatalogEntryDto,
+        RemoteNotebookCatalogDto,
+        BindSyncRepositoryRequest,
+        SyncRepositoryBindingDto,
+        DejavuKeyStateDto,
+        ImportDejavuKeyRequest,
+        ExportDejavuKeyRequest,
+        ExportedDejavuKeyDto,
         SyncSafeErrorDto,
         SyncStatusDto,
         TriggerSyncRunRequest,
@@ -1374,6 +1386,46 @@ fn install_paths(document: &mut serde_json::Value) {
             "SyncRunStatusDto",
             true,
         ),
+        (
+            "get",
+            "/api/v1/sync/repositories",
+            "listRemoteNotebooks",
+            "200",
+            "RemoteNotebookCatalogDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/sync/repository-binding",
+            "bindSyncRepository",
+            "202",
+            "SyncRepositoryBindingDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/sync/dejavu/key",
+            "getDejavuKeyState",
+            "200",
+            "DejavuKeyStateDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/sync/dejavu/key/import",
+            "importDejavuKey",
+            "200",
+            "DejavuKeyStateDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/sync/dejavu/key/export",
+            "exportDejavuKey",
+            "200",
+            "ExportedDejavuKeyDto",
+            true,
+        ),
     ];
     for (method, path, operation_id, status, schema, protected) in operations {
         let mut success = if schema.is_empty() {
@@ -1704,9 +1756,33 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
             "TestSyncConnectionRequest",
         ),
         ("/api/v1/sync/runs", "post", "TriggerSyncRunRequest"),
+        (
+            "/api/v1/sync/repository-binding",
+            "post",
+            "BindSyncRepositoryRequest",
+        ),
+        (
+            "/api/v1/sync/dejavu/key/import",
+            "post",
+            "ImportDejavuKeyRequest",
+        ),
+        (
+            "/api/v1/sync/dejavu/key/export",
+            "post",
+            "ExportDejavuKeyRequest",
+        ),
     ] {
         set_request_body(document, path, method, schema, 1024 * 1024);
     }
+    push_parameter(
+        document,
+        "/api/v1/sync/repositories",
+        "get",
+        "expectedRevision",
+        "query",
+        "Revision",
+        true,
+    );
     set_request_body(
         document,
         "/api/v1/app-config/state",
@@ -2137,6 +2213,45 @@ fn install_operation_errors(document: &mut serde_json::Value) {
             "sync_config_revision_conflict",
         ],
     );
+    add_errors_with(
+        document,
+        "/api/v1/sync/repositories",
+        "get",
+        TRANSPORT,
+        &[
+            "sync_config_absent",
+            "sync_config_invalid",
+            "sync_config_revision_conflict",
+            "sync_not_ready",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/sync/repository-binding",
+        "post",
+        TRANSPORT,
+        &[
+            "invalid_request",
+            "sync_config_absent",
+            "sync_config_invalid",
+            "sync_config_revision_conflict",
+            "sync_not_ready",
+            "sync_run_unavailable",
+        ],
+    );
+    for (path, method) in [
+        ("/api/v1/sync/dejavu/key", "get"),
+        ("/api/v1/sync/dejavu/key/import", "post"),
+        ("/api/v1/sync/dejavu/key/export", "post"),
+    ] {
+        add_errors_with(
+            document,
+            path,
+            method,
+            TRANSPORT,
+            &["invalid_request", "sync_not_ready", "sync_run_unavailable"],
+        );
+    }
 }
 
 fn add_errors_with(

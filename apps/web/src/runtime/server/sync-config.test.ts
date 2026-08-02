@@ -79,6 +79,44 @@ describe("server sync config facade", () => {
     expect(kernel.sync.trigger).toHaveBeenCalledWith(revision);
   });
 
+  it("lists and binds S3 notebooks through the Kernel repository contract", async () => {
+    const kernel = kernelPort();
+    const listNotebooks = vi.fn(async () => [{
+      available: true,
+      disabledReason: null,
+      displayName: "Shared notes",
+      name: "Shared notes",
+      provider: "s3" as const,
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    }]);
+    const bindRepository = vi.fn(async () => ({
+      jobId: "bind-1",
+      notesRoot: "kernel-workspace://primary",
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    }));
+    Object.assign(kernel.sync, { bindRepository, listNotebooks });
+    const syncConfig = createServerSyncConfigRuntime(kernel);
+
+    await expect(syncConfig.listNotebooks({ revision })).resolves.toEqual([
+      expect.objectContaining({
+        displayName: "Shared notes",
+        repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+      }),
+    ]);
+    await expect(syncConfig.bindRepository({
+      displayName: "Shared notes",
+      notesRoot: "kernel-workspace://primary",
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+      revision,
+    })).resolves.toMatchObject({ jobId: "bind-1" });
+    expect(listNotebooks).toHaveBeenCalledWith(revision);
+    expect(bindRepository).toHaveBeenCalledWith({
+      displayName: "Shared notes",
+      expectedRevision: revision,
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    });
+  });
+
   it("correlates an attempting run by run id before accepting its terminal status", async () => {
     const kernel = kernelPort();
     vi.mocked(kernel.sync.readStatus).mockResolvedValueOnce({

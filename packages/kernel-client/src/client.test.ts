@@ -6,6 +6,39 @@ import {
   type FetchLike,
   type KernelClient,
 } from "./index.ts";
+import { isRemoteNotebookCatalog } from "./validation.ts";
+
+describe("remote notebook catalog validation", () => {
+  const entry = (repositoryId: string, displayName: string) => ({
+    entries: [{
+      available: true,
+      disabledReason: null,
+      displayName,
+      name: displayName,
+      provider: "s3",
+      repositoryId,
+    }],
+  });
+
+  it("accepts canonical legacy repository UUIDs and bounds display names by UTF-8 bytes", () => {
+    expect(isRemoteNotebookCatalog(entry(
+      "00000000-0000-4000-8000-000000000001",
+      "界".repeat(85),
+    ))).toBe(true);
+    expect(isRemoteNotebookCatalog(entry(
+      "00000000-0000-1000-8000-000000000001",
+      "Notes",
+    ))).toBe(true);
+    expect(isRemoteNotebookCatalog(entry(
+      "00000000-0000-4000-8000-00000000000A",
+      "Notes",
+    ))).toBe(false);
+    expect(isRemoteNotebookCatalog(entry(
+      "00000000-0000-4000-8000-000000000001",
+      "界".repeat(86),
+    ))).toBe(false);
+  });
+});
 
 describe("createKernelClient", () => {
   it("uploads an image selection through one validated batch request", async () => {
@@ -186,6 +219,15 @@ describe("createKernelClient", () => {
       { expectedConfigRevision: "sync-3" },
       { signal },
     );
+    await client.sync.listRepositories({ expectedRevision: "sync-4" }, { signal });
+    await client.sync.bindRepository({
+      displayName: "Shared notes",
+      expectedRevision: "sync-4",
+      repositoryId: UUID,
+    }, { signal });
+    await client.sync.getKeyState({ signal });
+    await client.sync.importKey({ key: "portable-secret" }, { signal });
+    await client.sync.exportKey({ confirmed: true }, { signal });
 
     expect(calls.map(({ url, init }) => `${init.method} ${url.pathname}${url.search}`)).toEqual([
       "GET /api/v1/health/live",
@@ -216,6 +258,11 @@ describe("createKernelClient", () => {
       "GET /api/v1/sync/status",
       `GET /api/v1/sync/runs/${UUID}`,
       "POST /api/v1/sync/runs",
+      "GET /api/v1/sync/repositories?expectedRevision=sync-4",
+      "POST /api/v1/sync/repository-binding",
+      "GET /api/v1/sync/dejavu/key",
+      "POST /api/v1/sync/dejavu/key/import",
+      "POST /api/v1/sync/dejavu/key/export",
     ]);
     expect(new Headers(calls[0]?.init.headers).has("authorization")).toBe(false);
     for (const call of calls.slice(1)) {
@@ -239,6 +286,13 @@ describe("createKernelClient", () => {
     expect(JSON.parse(String(calls[27]?.init.body))).toMatchObject({
       expectedConfigRevision: "sync-3",
     });
+    expect(JSON.parse(String(calls[29]?.init.body))).toEqual({
+      displayName: "Shared notes",
+      expectedRevision: "sync-4",
+      repositoryId: UUID,
+    });
+    expect(JSON.parse(String(calls[31]?.init.body))).toEqual({ key: "portable-secret" });
+    expect(JSON.parse(String(calls[32]?.init.body))).toEqual({ confirmed: true });
   });
 
   it("adds browser CSRF only to the AppConfig mutation", async () => {
@@ -269,6 +323,41 @@ describe("createKernelClient", () => {
     expect(new Headers(calls[0]?.init.headers).has("x-csrf-token")).toBe(false);
     expect(new Headers(calls[1]?.init.headers).get("x-csrf-token")).toBe("csrf-proof");
     expect(new Headers(calls[1]?.init.headers).has("authorization")).toBe(false);
+  });
+
+  it("requires browser CSRF for repository binding and key mutations", async () => {
+    const calls: Array<{ url: URL; init: RequestInit }> = [];
+    const client = createKernelClient({
+      baseUrl: "https://notes.example",
+      fetch: async (url, init = {}) => {
+        const parsed = new URL(url);
+        calls.push({ url: parsed, init });
+        return operationResponse(parsed.pathname, String(init.method));
+      },
+      auth: {
+        kind: "browser-session",
+        browserOrigin: "https://notes.example",
+        getCsrfToken: () => "csrf-proof",
+      },
+    });
+
+    await client.sync.listRepositories({ expectedRevision: "sync-1" });
+    await client.sync.getKeyState();
+    await client.sync.bindRepository({
+      displayName: "Shared notes",
+      expectedRevision: "sync-1",
+      repositoryId: UUID,
+    });
+    await client.sync.importKey({ key: "portable-secret" });
+    await client.sync.exportKey({ confirmed: true });
+
+    for (const call of calls.slice(0, 2)) {
+      expect(new Headers(call.init.headers).has("x-csrf-token")).toBe(false);
+    }
+    for (const call of calls.slice(2)) {
+      expect(new Headers(call.init.headers).get("x-csrf-token")).toBe("csrf-proof");
+      expect(new Headers(call.init.headers).has("authorization")).toBe(false);
+    }
   });
 
   it("rejects malformed or extra nested AppConfig response fields", async () => {
@@ -700,6 +789,15 @@ function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
     () => client.sync.getStatus(),
     () => client.sync.getRun(UUID),
     () => client.sync.trigger({ expectedConfigRevision: "sync-1" }),
+    () => client.sync.listRepositories({ expectedRevision: "sync-1" }),
+    () => client.sync.bindRepository({
+      displayName: "Shared notes",
+      expectedRevision: "sync-1",
+      repositoryId: UUID,
+    }),
+    () => client.sync.getKeyState(),
+    () => client.sync.importKey({ key: "portable-secret" }),
+    () => client.sync.exportKey({ confirmed: true }),
   ];
 }
 
@@ -816,6 +914,11 @@ function operationResponseWithoutRequestId(path: string, method: string) {
   if (path === "/api/v1/sync/connection-test") return Response.json({ checkedTarget: "s3", configRevision: "sync-1", provider: "s3" });
   if (path === "/api/v1/sync/status") return Response.json({ activeRunId: null, completionState: "idle", configRevision: "sync-1", error: null, lastAttemptAt: null, lastSuccessfulSyncAt: null, lastTrigger: null, provider: "s3", summary: null });
   if (path.startsWith("/api/v1/sync/runs/") && method === "GET") return Response.json({ acceptedAt: "2026-01-01T00:00:00Z", completionState: "succeeded", configRevision: "sync-1", error: null, finishedAt: "2026-01-01T00:00:01Z", provider: "s3", runId: UUID, summary: null });
+  if (path === "/api/v1/sync/repositories") return Response.json({ entries: [{ available: true, disabledReason: null, displayName: "Shared notes", name: "Shared notes", provider: "s3", repositoryId: UUID }] });
+  if (path === "/api/v1/sync/repository-binding") return Response.json({ jobId: UUID, repositoryId: UUID }, { status: 202 });
+  if (path === "/api/v1/sync/dejavu/key") return Response.json({ configured: true });
+  if (path === "/api/v1/sync/dejavu/key/import") return Response.json({ configured: true });
+  if (path === "/api/v1/sync/dejavu/key/export") return Response.json({ key: "portable-secret" });
   return Response.json({ acceptedAt: "2026-01-01T00:00:00Z", configRevision: "sync-1", runId: UUID }, { status: 202 });
 }
 

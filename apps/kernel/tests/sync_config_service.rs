@@ -19,11 +19,12 @@ use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
     contract::{
-        ApiErrorEnvelope, CredentialChange, DomainEvent, ErrorCode, ErrorDetails,
-        PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId, SafeUnsignedInteger,
-        SyncCompletionState, SyncConfigChangesDto, SyncConfigReadiness, SyncIntervalSeconds,
-        SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
-        SyncSafeErrorOperation, SyncSummaryDto, SyncTrigger, TriggerSyncRunRequest, WorkspaceDto,
+        ApiErrorEnvelope, BindSyncRepositoryRequest, CredentialChange, DomainEvent, ErrorCode,
+        ErrorDetails, PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId,
+        SafeUnsignedInteger, SyncCompletionState, SyncConfigChangesDto, SyncConfigReadiness,
+        SyncIntervalSeconds, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
+        SyncSafeErrorDto, SyncSafeErrorOperation, SyncSummaryDto, SyncTrigger,
+        TriggerSyncRunRequest, WorkspaceDto,
     },
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
@@ -1660,6 +1661,45 @@ async fn stale_patch_returns_current_revision_without_writing() {
         std::fs::read(app_data.join("sync-config.json")).unwrap(),
         original
     );
+}
+
+#[tokio::test]
+async fn stale_repository_bind_revision_mutates_neither_local_state_nor_run_status() {
+    let temporary = tempdir().unwrap();
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(CountingExecutor::default());
+    let service = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let current = SyncApiService::get_sync_config(&service).await.unwrap();
+    let local_state = temporary.path().join("app-data/local-sync.json");
+    assert!(!local_state.exists());
+
+    let error = SyncApiService::bind_sync_repository(
+        &service,
+        BindSyncRepositoryRequest {
+            display_name: "Shared notes".to_string(),
+            expected_revision: Revision::parse("0".repeat(64)).unwrap(),
+            repository_id: "323df833-764a-44b3-a534-492640c258f2".to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::SyncConfigRevisionConflict);
+    assert!(matches!(
+        error.details(),
+        Some(ErrorDetails::RevisionConflict {
+            current_revision: Some(revision)
+        }) if revision == &current.revision
+    ));
+    assert!(!local_state.exists());
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+    let status = SyncApiService::get_sync_status(&service).await.unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Idle);
+    assert!(status.active_run_id.as_ref().is_none());
 }
 
 #[tokio::test]

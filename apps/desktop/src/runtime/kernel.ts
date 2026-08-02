@@ -541,6 +541,50 @@ export async function createDesktopKernelDomainAdapter(
         },
       },
       sync: {
+        bindRepository: async (input) => {
+          await prepareInstanceOperation();
+          const binding = await client.sync.bindRepository({
+            displayName: input.displayName,
+            expectedRevision: input.expectedRevision,
+            repositoryId: input.repositoryId,
+          }, { signal: requests.signal });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return binding;
+        },
+        exportKey: async () => {
+          await prepareInstanceOperation();
+          const exported = await client.sync.exportKey(
+            { confirmed: true },
+            { signal: requests.signal },
+          );
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return exported.key;
+        },
+        importKey: async (key) => {
+          await prepareInstanceOperation();
+          const state = await client.sync.importKey(
+            { key },
+            { signal: requests.signal },
+          );
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return state;
+        },
+        listNotebooks: async (expectedRevision) => {
+          await prepareInstanceOperation();
+          const catalog = await client.sync.listRepositories(
+            { expectedRevision },
+            { signal: requests.signal },
+          );
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return catalog.entries.flatMap((entry) => entry.provider === "s3" ? [{
+            ...entry,
+            provider: "s3" as const,
+          }] : []);
+        },
         patchConfig: async (input) => {
           await prepareInstanceOperation();
           const config = await client.sync.patchConfig(mapSyncPatchRequest(input), {
@@ -563,6 +607,13 @@ export async function createDesktopKernelDomainAdapter(
           assertActive();
           await confirmWorkspaceIdentity();
           return mapSyncStatus(status);
+        },
+        readKeyState: async () => {
+          await prepareInstanceOperation();
+          const state = await client.sync.getKeyState({ signal: requests.signal });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return state;
         },
         testConnection: async (input) => {
           await prepareInstanceOperation();

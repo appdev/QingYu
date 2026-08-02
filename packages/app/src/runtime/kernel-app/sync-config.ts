@@ -20,9 +20,26 @@ export function createKernelSyncConfigRuntime(
   options: KernelSyncConfigRuntimeOptions,
 ): AppSyncConfigRuntime {
   return {
-    bindRepository: () => unavailableSyncCapability("bindRepository"),
+    bindRepository: async (input) => {
+      if (input.notesRoot !== kernelWorkspaceRoot) {
+        throw new Error("The repository binding does not address the active Kernel workspace.");
+      }
+      const binding = await kernel.sync.bindRepository({
+        displayName: input.displayName,
+        expectedRevision: input.revision as KernelRevision,
+        repositoryId: input.repositoryId,
+      });
+      return { ...binding, notesRoot: kernelWorkspaceRoot };
+    },
     cancelApply: options.local.cancelApply,
-    changeGlobalKey: () => unavailableSyncCapability("changeGlobalKey"),
+    changeGlobalKey: async (input) => {
+      await kernel.sync.importKey(input.newKey);
+      return {
+        jobId: "kernel-key-import-completed",
+        operation: "change-global-key",
+        repositoryId: null,
+      };
+    },
     deleteRemoteRepository: () => unavailableSyncCapability("deleteRemoteRepository"),
     enable: async ({ expectedRevision }) => {
       const revision = expectedRevision === null
@@ -37,12 +54,12 @@ export function createKernelSyncConfigRuntime(
       ...mapConfig(await kernel.sync.readConfig()),
       status: "loaded",
     }),
-    exportGlobalKey: () => unavailableSyncCapability("exportGlobalKey"),
-    initializeGlobalKey: () => unavailableSyncCapability("initializeGlobalKey"),
+    exportGlobalKey: () => kernel.sync.exportKey(),
+    initializeGlobalKey: (input) => kernel.sync.importKey(input.key),
     loadEditing: options.local.loadEditing,
-    loadKeyState: async () => ({ configured: false }),
+    loadKeyState: () => kernel.sync.readKeyState(),
     listDejavuConflictHistory: async () => [],
-    listNotebooks: () => unavailableSyncCapability("listNotebooks"),
+    listNotebooks: (input) => kernel.sync.listNotebooks(input.revision as KernelRevision),
     loadRepositoryStatus: async () => null,
     loadStatus: async () => mapStatus(await kernel.sync.readStatus()),
     patch: async ({ expectedRevision, patch }) => mapConfig(

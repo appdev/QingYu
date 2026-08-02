@@ -21,6 +21,7 @@ use crate::{
 };
 
 const SEVEN_MINUTES_MILLIS: i64 = 7 * 60 * 1_000;
+const MAX_REMOTE_FILE_ID_COLLISION_ATTEMPTS: usize = 1_024;
 const CLOUD_LATEST_KEY: &str = "refs/latest";
 const CLOUD_SEQUENCE_PREFIX: &str = "refs/latest-";
 const QINGYU_SYNCIGNORE_PATH: &str = "/.qingyu/syncignore";
@@ -819,7 +820,8 @@ async fn publish_remote_index(
     mut index: Index,
     traffic: &mut TrafficStat,
 ) -> Result<Index, RepoError> {
-    let files = files_for_index(store, &index)?;
+    let files = resolve_remote_file_identities(store, cloud, guard, &index, traffic).await?;
+    index.files = files.iter().map(|file| file.id.clone()).collect();
     let check = CheckIndex {
         id: random_hash().map_err(|_| RepoError::RandomnessUnavailable)?,
         index_id: index.id.clone(),
@@ -925,6 +927,79 @@ async fn publish_remote_index(
     Ok(index)
 }
 
+async fn resolve_remote_file_identities(
+    store: &Store,
+    cloud: &Arc<dyn Cloud>,
+    guard: &RemoteLockGuard,
+    index: &Index,
+    traffic: &mut TrafficStat,
+) -> Result<Vec<File>, RepoError> {
+    let files = files_for_index(store, index)?;
+    let mut resolved = Vec::with_capacity(files.len());
+    for mut file in files {
+        let mut available = false;
+        for _attempt in 0..MAX_REMOTE_FILE_ID_COLLISION_ATTEMPTS {
+            {
+                let _operation = store.lock_operation()?;
+                match store.get_file_unlocked(&file.id) {
+                    Ok(existing) if existing == file => {}
+                    Ok(_) => {
+                        advance_file_identity(&mut file)?;
+                        continue;
+                    }
+                    Err(RepoError::NotFound(_)) => store.put_file_unlocked(&file)?,
+                    Err(error) => return Err(error),
+                }
+            }
+            guard.ensure_healthy()?;
+            let key = object_key(&file.id)?;
+            let max_bytes = store.raw_content_length(RawObjectKind::File, &file.id)?;
+            match tracked_get(cloud, &key, max_bytes, TransferKind::File, traffic).await {
+                Err(CloudError::NotFound) => {
+                    available = true;
+                    break;
+                }
+                Err(CloudError::ResponseTooLarge { .. }) => {}
+                Err(error) => return Err(error.into()),
+                Ok(remote) => {
+                    match store.remote_raw_matches(RawObjectKind::File, &file.id, &remote) {
+                        Ok(true) => {
+                            available = true;
+                            break;
+                        }
+                        Ok(false)
+                        | Err(
+                            RepoError::Serialization(_)
+                            | RepoError::Compression(_)
+                            | RepoError::DecodedSizeLimitExceeded { .. }
+                            | RepoError::DecryptionFailed
+                            | RepoError::InvalidData(_)
+                            | RepoError::FileIdentityCollision,
+                        ) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            advance_file_identity(&mut file)?;
+        }
+        if !available {
+            return Err(RepoError::FileIdentityCollision);
+        }
+        resolved.push(file);
+    }
+    Ok(resolved)
+}
+
+fn advance_file_identity(file: &mut File) -> Result<(), RepoError> {
+    file.updated = file
+        .sec_updated()
+        .checked_add(1)
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .ok_or(RepoError::RepoFatal)?;
+    file.id = File::new(file.path.clone(), file.size, file.updated).id;
+    Ok(())
+}
+
 async fn repair_cloud_refs(
     cloud: &Arc<dyn Cloud>,
     guard: &RemoteLockGuard,
@@ -999,7 +1074,21 @@ async fn publish_raw(
         RawObjectKind::CheckIndex => format!("check/indexes/{id}"),
     };
     match tracked_upload(cloud, guard, &key, &source, false, transfer, traffic).await {
-        Ok(()) | Err(RepoError::Cloud(CloudError::AlreadyExists)) => Ok(()),
+        Ok(()) => Ok(()),
+        Err(RepoError::Cloud(CloudError::AlreadyExists)) => {
+            guard.ensure_healthy()?;
+            let remote =
+                tracked_get(cloud, &key, source.content_length(), transfer, traffic).await?;
+            if store.remote_raw_matches(kind, id, &remote)? {
+                Ok(())
+            } else if kind == RawObjectKind::File {
+                Err(RepoError::FileIdentityCollision)
+            } else {
+                Err(RepoError::InvalidData(
+                    "remote immutable object already exists with different bytes",
+                ))
+            }
+        }
         Err(error) => Err(error),
     }
 }
@@ -1609,6 +1698,120 @@ mod tests {
             downloader.repo.latest().unwrap().unwrap().id,
             downloader.repo.latest_sync().unwrap().unwrap().id
         );
+    }
+
+    #[tokio::test]
+    async fn independent_hosts_reuse_semantically_equal_encrypted_objects() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let first = repo_fixture("semantic-first", RepoOptions::default());
+        let second = repo_fixture("semantic-second", RepoOptions::default());
+        let updated = 1_700_000_100_123;
+        write_file(&first.data, "shared.md", b"same", updated);
+        write_file(&second.data, "shared.md", b"same", updated);
+        write_file(&second.data, "second-only.md", b"local", updated + 2_000);
+
+        first
+            .repo
+            .sync(cloud.clone(), coordinator())
+            .await
+            .expect("first host publishes the shared object");
+        second
+            .repo
+            .sync(cloud.clone(), coordinator())
+            .await
+            .expect("second host accepts equal plaintext with a different encryption nonce");
+
+        assert_eq!(fs::read(second.data.join("shared.md")).unwrap(), b"same");
+        assert_eq!(
+            fs::read(second.data.join("second-only.md")).unwrap(),
+            b"local"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_remote_file_id_collision_is_remapped_without_overwriting_history() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let first = repo_fixture("collision-first", RepoOptions::default());
+        let second = repo_fixture("collision-second", RepoOptions::default());
+        let original_updated = 1_700_000_200_123;
+        write_file(&first.data, "shared.md", b"remote-old", original_updated);
+        first
+            .repo
+            .sync(cloud.clone(), coordinator())
+            .await
+            .expect("publish the historical object");
+        let historical_index = first.repo.latest_sync().unwrap().unwrap();
+        let historical_file = super::files_for_index(&first.repo.store, &historical_index)
+            .unwrap()
+            .into_iter()
+            .find(|file| file.path == "/shared.md")
+            .expect("historical shared file");
+        let historical_key = super::object_key(&historical_file.id).unwrap();
+        let historical_raw = cloud
+            .get_bounded(&historical_key, 1024 * 1024)
+            .await
+            .unwrap();
+
+        write_file(
+            &first.data,
+            "shared.md",
+            b"remote-latest",
+            original_updated + 2_000,
+        );
+        first
+            .repo
+            .sync(cloud.clone(), coordinator())
+            .await
+            .expect("advance the remote latest while retaining history");
+
+        write_file(
+            &second.data,
+            "shared.md",
+            b"different-local",
+            original_updated,
+        );
+        write_file(
+            &second.data,
+            "second-only.md",
+            b"second",
+            original_updated + 4_000,
+        );
+        second
+            .repo
+            .sync(cloud.clone(), coordinator())
+            .await
+            .expect("remap the colliding local file identity before publishing refs");
+
+        assert_eq!(
+            cloud
+                .get_bounded(&historical_key, 1024 * 1024)
+                .await
+                .unwrap(),
+            historical_raw,
+            "the historical immutable object must not be overwritten"
+        );
+        let converged_latest = cloud
+            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let (result, traffic) = second
+                .repo
+                .sync(cloud.clone(), coordinator())
+                .await
+                .expect("unchanged remapped identity remains stable");
+            assert!(!result.data_changed());
+            assert_eq!(traffic.upload_file_count, 0);
+            assert_eq!(traffic.upload_chunk_count, 0);
+            assert_eq!(
+                cloud
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
+                    .await
+                    .unwrap(),
+                converged_latest,
+                "unchanged sync must not churn the remote latest ref"
+            );
+        }
     }
 
     #[tokio::test]

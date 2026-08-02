@@ -1,6 +1,7 @@
 //! Kernel-owned sync configuration and execution.
 
 pub mod backend;
+pub(crate) mod catalog;
 pub mod config;
 pub mod credentials;
 pub mod dejavu_runner;

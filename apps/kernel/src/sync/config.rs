@@ -258,6 +258,37 @@ impl SyncConfig {
         })
     }
 
+    pub(crate) fn into_configured_s3_target(
+        mut self,
+    ) -> Result<SyncExecutionTarget, SyncExecutionPlanError> {
+        if self.provider != SyncProvider::S3 {
+            return Err(SyncExecutionPlanError);
+        }
+        self.enabled = true;
+        let plan = self.into_execution_plan()?;
+        match plan.target {
+            target @ SyncExecutionTarget::S3 { .. } => Ok(target),
+            SyncExecutionTarget::WebDav { .. } => Err(SyncExecutionPlanError),
+        }
+    }
+
+    pub(crate) fn into_repository_recovery_config(
+        mut self,
+    ) -> Result<Self, SyncExecutionPlanError> {
+        if self.provider != SyncProvider::S3 {
+            return Err(SyncExecutionPlanError);
+        }
+        self.enabled = true;
+        let readiness = self
+            .to_view(Revision::parse("repository-recovery").expect("static revision is valid"))
+            .map_err(|_| SyncExecutionPlanError)?
+            .readiness;
+        if readiness != SyncConfigReadiness::Ready {
+            return Err(SyncExecutionPlanError);
+        }
+        Ok(self)
+    }
+
     pub fn apply_changes(
         &mut self,
         changes: &SyncConfigChangesDto,

@@ -41,7 +41,8 @@ export function listNativeNotebooks(
 export function bindNativeDejavuRepository(
   input: Parameters<AppSyncConfigRuntime["bindRepository"]>[0]
 ): Promise<AcceptedSyncJob> {
-  return invokeNative("bind_dejavu_repository", { request: input });
+  const { revision: _revision, ...request } = input;
+  return invokeNative("bind_dejavu_repository", { request });
 }
 
 export function loadNativeSyncConfigEditing(): ReturnType<AppSyncConfigRuntime["loadEditing"]> {

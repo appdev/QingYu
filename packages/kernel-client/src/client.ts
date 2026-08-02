@@ -9,11 +9,14 @@ import {
   isDocumentContent,
   isDocumentEntry,
   isDocumentPage,
+  isDejavuKeyState,
+  isExportedDejavuKey,
   isHistoryPage,
   isHistorySnapshot,
   isInventoryPage,
   isLiveHealth,
   isReadyHealth,
+  isRemoteNotebookCatalog,
   isRuntime,
   isResourceEntry,
   isResourceBatchResponse,
@@ -24,6 +27,7 @@ import {
   isSyncConfig,
   isSyncConnection,
   isSyncRun,
+  isSyncRepositoryBinding,
   isSyncRunStatus,
   isSyncStatus,
   isVersion,
@@ -208,6 +212,23 @@ export interface KernelSyncClient {
     request: Schemas["TriggerSyncRunRequest"],
     options?: KernelRequestOptions,
   ): Promise<Schemas["SyncRunAcceptedDto"]>;
+  listRepositories(
+    query: Schemas["ListRemoteNotebooksQuery"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["RemoteNotebookCatalogDto"]>;
+  bindRepository(
+    request: Schemas["BindSyncRepositoryRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["SyncRepositoryBindingDto"]>;
+  getKeyState(options?: KernelRequestOptions): Promise<Schemas["DejavuKeyStateDto"]>;
+  importKey(
+    request: Schemas["ImportDejavuKeyRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["DejavuKeyStateDto"]>;
+  exportKey(
+    request: Schemas["ExportDejavuKeyRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["ExportedDejavuKeyDto"]>;
 }
 
 export interface KernelClient {
@@ -504,6 +525,40 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           body: request,
           signal: requestOptions?.signal,
         }, { status: 202, validate: isSyncRun }),
+      listRepositories: (query, requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/sync/repositories",
+          query,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isRemoteNotebookCatalog }),
+      bindRepository: (request, requestOptions) =>
+        transport.request({
+          method: "POST",
+          path: "/api/v1/sync/repository-binding",
+          body: request,
+          signal: requestOptions?.signal,
+        }, { status: 202, validate: isSyncRepositoryBinding }),
+      getKeyState: (requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/sync/dejavu/key",
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isDejavuKeyState }),
+      importKey: (request, requestOptions) =>
+        transport.request({
+          method: "POST",
+          path: "/api/v1/sync/dejavu/key/import",
+          body: request,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isDejavuKeyState }),
+      exportKey: (request, requestOptions) =>
+        transport.request({
+          method: "POST",
+          path: "/api/v1/sync/dejavu/key/export",
+          body: request,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isExportedDejavuKey }),
     },
   };
 }

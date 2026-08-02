@@ -88,6 +88,33 @@ const request = {
 };
 
 describe("Kernel sync apply settlement", () => {
+  it("rejects repository bindings for a non-Kernel workspace before calling Kernel", async () => {
+    const kernel = createKernel("succeeded");
+    const bindRepository = vi.fn(async () => ({
+      jobId: "bind-1",
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    }));
+    Object.assign(kernel.sync, { bindRepository });
+    const shared = createDefaultAppRuntime().syncConfig;
+    const runtime = createKernelSyncConfigRuntime(kernel, {
+      local: {
+        cancelApply: shared.cancelApply,
+        loadEditing: shared.loadEditing,
+        requestApply: shared.requestApply,
+        setEditing: shared.setEditing,
+        settleApply: shared.settleApply,
+      },
+    });
+
+    await expect(runtime.bindRepository({
+      displayName: "Shared notes",
+      notesRoot: "/tmp/not-the-active-kernel-workspace",
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+      revision,
+    })).rejects.toThrow("does not address the active Kernel workspace");
+    expect(bindRepository).not.toHaveBeenCalled();
+  });
+
   it("settles an exact settings apply after Kernel success", async () => {
     const { runtime, settleApply } = createRuntime("succeeded");
 

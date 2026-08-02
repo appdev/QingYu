@@ -2176,6 +2176,100 @@ pub struct SyncConnectionTestDto {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ListRemoteNotebooksQuery {
+    pub expected_revision: Revision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RemoteNotebookCatalogEntryDto {
+    pub available: bool,
+    pub disabled_reason: Nullable<String>,
+    pub display_name: String,
+    pub name: String,
+    pub provider: SyncProvider,
+    pub repository_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RemoteNotebookCatalogDto {
+    pub entries: Vec<RemoteNotebookCatalogEntryDto>,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct BindSyncRepositoryRequest {
+    pub expected_revision: Revision,
+    pub display_name: String,
+    pub repository_id: String,
+}
+
+impl fmt::Debug for BindSyncRepositoryRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("BindSyncRepositoryRequest(..)")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SyncRepositoryBindingDto {
+    pub job_id: String,
+    pub repository_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DejavuKeyStateDto {
+    pub configured: bool,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ImportDejavuKeyRequest {
+    #[schema(write_only, min_length = 1, max_length = 1024)]
+    pub key: String,
+}
+
+impl fmt::Debug for ImportDejavuKeyRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ImportDejavuKeyRequest([REDACTED])")
+    }
+}
+
+impl Drop for ImportDejavuKeyRequest {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExportDejavuKeyRequest {
+    pub confirmed: bool,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExportedDejavuKeyDto {
+    #[schema(read_only)]
+    pub key: String,
+}
+
+impl fmt::Debug for ExportedDejavuKeyDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExportedDejavuKeyDto([REDACTED])")
+    }
+}
+
+impl Drop for ExportedDejavuKeyDto {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SyncSummaryDto {
     pub bytes_downloaded: SafeUnsignedInteger,
     pub bytes_uploaded: SafeUnsignedInteger,

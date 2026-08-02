@@ -1155,6 +1155,8 @@ function kernelPort(): ServerKernelDomainPort {
     },
     settings: { patch: unavailable(), read: unavailable() },
     sync: {
+      bindRepository: unavailable(), exportKey: unavailable(), importKey: unavailable(),
+      listNotebooks: unavailable(), readKeyState: unavailable(),
       patchConfig: unavailable(),
       readConfig: unavailable(),
       readStatus: unavailable(),

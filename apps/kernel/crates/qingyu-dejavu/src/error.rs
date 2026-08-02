@@ -30,6 +30,8 @@ pub enum RepoError {
     EmptyIndex,
     #[error("a file changed while the repository index was being built")]
     IndexFileChanged,
+    #[error("a repository file identity resolved to different immutable contents")]
+    FileIdentityCollision,
     #[error("the working tree changed after the operation was planned")]
     WorkingTreeChanged,
     #[error(transparent)]
