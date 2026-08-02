@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { history, undo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import {

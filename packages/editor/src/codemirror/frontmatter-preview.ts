@@ -28,7 +28,10 @@ const frontmatterHiddenDecorations = StateField.define<DecorationSet>({
       ? readFrontmatterHiddenDecorations(transaction.state.doc.toString())
       : decorations;
   },
-  provide: (field) => EditorView.decorations.from(field),
+  provide: (field) => [
+    EditorView.decorations.from(field),
+    EditorView.atomicRanges.of((view) => view.state.field(field)),
+  ],
 });
 
 export function frontmatterHiddenPlugin() {

@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+import { cursorCharBackward } from "@codemirror/commands";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
@@ -67,6 +69,24 @@ describe("frontmatterHiddenPlugin", () => {
 
     expect(view.state.doc.sliceString(0, bodyFrom)).toBe(metadata);
     expect(view.state.doc.toString()).toBe(`${source}!`);
+  });
+
+  it("skips the complete hidden range when moving backward from the body", () => {
+    const source = ["---", "title: Synthetic", "---", "# Body"].join("\n");
+    const bodyFrom = source.indexOf("# Body");
+    const metadataTo = bodyFrom - 1;
+    const view = createView(source);
+    const positions: number[] = [];
+
+    view.dispatch({ selection: EditorSelection.cursor(bodyFrom) });
+    while (view.state.selection.main.head > 0) {
+      expect(cursorCharBackward(view)).toBe(true);
+      positions.push(view.state.selection.main.head);
+    }
+
+    expect(view.state.selection.main.head).toBe(0);
+    expect(positions).toContain(0);
+    expect(positions.every((position) => position >= metadataTo || position === 0)).toBe(true);
   });
 
   it("leaves malformed leading Front Matter visible", () => {
