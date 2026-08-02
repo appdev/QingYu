@@ -1968,6 +1968,118 @@ describe("useMarkdownDocument", () => {
     });
   });
 
+  it("saveMarkdownTabContentById saves only a background tab and preserves the active tab", async () => {
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
+      if (path === "/mock-files/guide.md") {
+        return {
+          content: "# Guide\n\nClean",
+          name: "guide.md",
+          path
+        };
+      }
+
+      return {
+        content: "# Notes\n\nClean",
+        name: "notes.md",
+        path
+      };
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "notes-renamed.md",
+      path: "/mock-files/notes-renamed.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "guide.md",
+        path: "/mock-files/guide.md",
+        relativePath: "guide.md"
+      });
+    });
+    const backgroundTabId = await act(async () =>
+      result.current.openTreeMarkdownFileInBackground({
+        name: "notes.md",
+        path: "/mock-files/notes.md",
+        relativePath: "notes.md"
+      })
+    );
+    const activeTabId = result.current.activeTabId;
+    let savedFile: Awaited<ReturnType<typeof result.current.saveMarkdownTabContentById>> = null;
+
+    await act(async () => {
+      savedFile = await result.current.saveMarkdownTabContentById(backgroundTabId!, "# Notes\n\nSaved", {
+        skipHistorySnapshot: true
+      });
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      contents: "# Notes\n\nSaved",
+      path: "/mock-files/notes.md",
+      skipHistorySnapshot: true,
+      suggestedName: "notes.md"
+    }));
+    expect(savedFile).toEqual({
+      name: "notes-renamed.md",
+      path: "/mock-files/notes-renamed.md"
+    });
+    expect(result.current.activeTabId).toBe(activeTabId);
+    expect(result.current.document).toMatchObject({
+      content: "# Guide\n\nClean",
+      name: "guide.md",
+      path: "/mock-files/guide.md"
+    });
+    expect(result.current.tabs.find((tab) => tab.id === backgroundTabId)).toMatchObject({
+      content: "# Notes\n\nSaved",
+      dirty: false,
+      name: "notes-renamed.md",
+      path: "/mock-files/notes-renamed.md"
+    });
+  });
+
+  it("saveMarkdownTabContentById returns null for a missing or closed tab", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    let missingResult: Awaited<ReturnType<typeof result.current.saveMarkdownTabContentById>> = null;
+    await act(async () => {
+      missingResult = await result.current.saveMarkdownTabContentById("missing-tab", "# Missing");
+    });
+
+    await act(async () => {
+      await result.current.createBlankDocument();
+    });
+    const closedTabId = result.current.activeTabId!;
+    await act(async () => {
+      await result.current.closeMarkdownTab(closedTabId);
+    });
+    let closedResult: Awaited<ReturnType<typeof result.current.saveMarkdownTabContentById>> = null;
+    await act(async () => {
+      closedResult = await result.current.saveMarkdownTabContentById(closedTabId, "# Closed");
+    });
+
+    expect(missingResult).toBeNull();
+    expect(closedResult).toBeNull();
+    expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
+  });
+
   it("keeps dirty inactive tabs protected when the document tabs setting is disabled", async () => {
     const confirmDiscardUnsavedChanges = vi.fn(() => false);
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {

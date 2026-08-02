@@ -1765,6 +1765,20 @@ export function useMarkdownDocument({
     [applySavedCurrentDocument, defaultSaveDirectory]
   );
 
+  const saveMarkdownTabContentById = useCallback(
+    async (
+      tabId: string,
+      contents: string,
+      options: SaveCurrentDocumentContentOptions = {}
+    ) => {
+      const tab = tabsRef.current.find((candidate) => candidate.id === tabId);
+      if (!tab?.open) return null;
+
+      return saveMarkdownTabContent(tab, contents, options);
+    },
+    [saveMarkdownTabContent]
+  );
+
   const saveCurrentDocumentContent = useCallback(
     async (contents: string, options: SaveCurrentDocumentContentOptions = {}) => {
       const current = documentRef.current;
@@ -2788,6 +2802,7 @@ export function useMarkdownDocument({
     saveCurrentDocument,
     saveDirtyMarkdownFiles,
     saveDirtyMarkdownPaths,
+    saveMarkdownTabContentById,
     saveMarkdownTab,
     selectMarkdownTab,
     wordCount
