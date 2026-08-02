@@ -62,7 +62,6 @@ import { usePrimaryWorkspace } from "./hooks/usePrimaryWorkspace";
 import { useCodeMirrorEditorController } from "./hooks/useCodeMirrorEditorController";
 import { shouldFocusEditorOnReady } from "./lib/editor-focus";
 import {
-  markdownDocumentBodyContent,
   useMarkdownDocument,
   type ActiveDiskFileContentChange
 } from "./hooks/useMarkdownDocument";
@@ -116,7 +115,10 @@ import {
   parseMarkdownLocalResourceReferences
 } from "@markra/markdown";
 import { buildMarkdownHtmlDocument, exportDocumentFileName, localFileUrlFromPath } from "./lib/document-export";
-import { markdownDocumentSourceForCreatedFile } from "./lib/document-creation";
+import {
+  markdownDocumentBodyContent,
+  markdownDocumentSourceForCreatedFile
+} from "./lib/document-creation";
 import {
   generateCrashDiagnosticsReport,
   generateDiagnosticsIssueUrl
@@ -917,6 +919,7 @@ function WorkspaceApp() {
     editorReady: isDocumentEditorReady,
     getCurrentMarkdown: readCurrentMarkdownForDocument,
     globalIgnoreRules: fileIgnoreSettings.settings.rules,
+    initialBlankDocumentName: untitledMarkdownDocumentName(appLanguage.language),
     isCurrentMarkdownEquivalent: isCurrentMarkdownEquivalentForDocument,
     managedWorkspace: compactMode.trueMobile,
     nativeCloseBlocked: settingsModalRequest !== null,
@@ -1040,14 +1043,15 @@ function WorkspaceApp() {
 
     const authoritativeSource = markdownDocumentSourceForCreatedFile(file.name, requestedSource);
     if (authoritativeSource !== requestedSource) {
-      const persistedFile = await saveNativeMarkdownFile({
-        contents: authoritativeSource,
-        path: file.path,
-        skipHistorySnapshot: true,
-        suggestedName: file.name
-      });
-      if (!persistedFile) {
-        throw new Error("Created document metadata could not be persisted.");
+      try {
+        await saveNativeMarkdownFile({
+          contents: authoritativeSource,
+          path: file.path,
+          skipHistorySnapshot: true,
+          suggestedName: file.name
+        });
+      } catch {
+        // Opening the created file lets title reconciliation retry while preserving recoverability.
       }
     }
 

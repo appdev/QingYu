@@ -176,6 +176,46 @@ describe("useMarkdownDocument", () => {
     mockedTakeNativeOpenedMarkdownPaths.mockResolvedValue([]);
   });
 
+  it("uses the explicit localized blank name only for initialization and later blank resets", async () => {
+    const { result, rerender } = renderHook(
+      ({ initialBlankDocumentName }) => {
+        const options = {
+          getCurrentMarkdown: (fallbackContent: string) => fallbackContent,
+          initialBlankDocumentName,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false
+        };
+        return useMarkdownDocument(options);
+      },
+      { initialProps: { initialBlankDocumentName: "未命名.md" } }
+    );
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      dirty: false,
+      name: "未命名.md",
+      path: null
+    });
+
+    await act(async () => rerender({ initialBlankDocumentName: "Untitled.md" }));
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: 未命名\n---\n\n",
+      name: "未命名.md"
+    });
+
+    await act(async () => result.current.clearOpenDocument({ openBlank: true, persistWorkspace: false }));
+
+    expect(result.current.document).toMatchObject({
+      content: "---\ntitle: Untitled\n---\n\n",
+      dirty: false,
+      name: "Untitled.md",
+      path: null
+    });
+  });
+
   it("reports restoring until the retained layout settles", async () => {
     const deferredWorkspace = createDeferredStoredWorkspaceState();
     mockedGetStoredWorkspaceState.mockReturnValue(deferredWorkspace.promise);
@@ -727,6 +767,53 @@ describe("useMarkdownDocument", () => {
     });
   });
 
+  it.each(["null", "throw"] as const)(
+    "retains an allocated file as an authoritative dirty document when title persistence returns %s",
+    async (failureKind) => {
+      const workspaceRoot = "kernel-workspace://primary";
+      const documentPath = `${workspaceRoot}/%E6%9C%AA%E5%91%BD%E5%90%8D%201.md`;
+      mockedSaveNativeMarkdownFile.mockResolvedValueOnce({
+        name: "未命名 1.md",
+        path: documentPath
+      });
+      if (failureKind === "null") {
+        mockedSaveNativeMarkdownFile.mockResolvedValueOnce(null);
+      } else {
+        mockedSaveNativeMarkdownFile.mockRejectedValueOnce(new Error("Synthetic metadata write failure"));
+      }
+      const { result } = renderHook(() =>
+        useMarkdownDocument({
+          defaultSaveDirectory: workspaceRoot,
+          documentTabsEnabled: true,
+          getCurrentMarkdown: (fallbackContent) => fallbackContent,
+          onTreeRootFromFilePath: vi.fn(),
+          onTreeRootFromFolderPath: vi.fn(),
+          preferencesReady: false,
+          restoreWorkspaceOnStartup: false
+        })
+      );
+
+      let created = false;
+      await act(async () => {
+        created = await result.current.createBlankDocument({ name: "未命名.md" });
+      });
+
+      expect(created).toBe(true);
+      expect(result.current.document).toMatchObject({
+        content: "---\ntitle: 未命名 1\n---\n\n",
+        dirty: true,
+        name: "未命名 1.md",
+        path: documentPath
+      });
+      expect(result.current.tabs.at(-1)).toMatchObject({
+        content: "---\ntitle: 未命名 1\n---\n\n",
+        dirty: true,
+        name: "未命名 1.md",
+        path: documentPath
+      });
+    }
+  );
+
   it("allocates a no-file-tree draft before inserting its localized Front Matter title", async () => {
     const { result } = renderHook(() =>
       useMarkdownDocument({
@@ -775,14 +862,21 @@ describe("useMarkdownDocument", () => {
     expect(mockedSaveNativeMarkdownFile).not.toHaveBeenCalled();
   });
 
-  it("does not append a duplicate tab when a Kernel allocation path is already open", async () => {
+  it("fails a Kernel allocation that returns an already-open path without changing the active document", async () => {
     const workspaceRoot = "kernel-workspace://primary";
     const documentPath = `${workspaceRoot}/Untitled.md`;
-    mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# Existing",
-      name: "Untitled.md",
-      path: documentPath
-    });
+    const currentPath = `${workspaceRoot}/Current.md`;
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === documentPath
+      ? {
+        content: "# Existing",
+        name: "Untitled.md",
+        path: documentPath
+      }
+      : {
+        content: "# Current",
+        name: "Current.md",
+        path: currentPath
+      });
     mockedSaveNativeMarkdownFile.mockResolvedValue({
       name: "Untitled.md",
       path: documentPath
@@ -805,15 +899,30 @@ describe("useMarkdownDocument", () => {
         path: documentPath,
         relativePath: "Untitled.md"
       });
-      expect(await result.current.createBlankDocument()).toBe(true);
+      await result.current.openTreeMarkdownFile({
+        name: "Current.md",
+        path: currentPath,
+        relativePath: "Current.md"
+      });
     });
 
+    const previousDocument = result.current.document;
+    const previousTabs = result.current.tabs;
+    let created = true;
+
+    await act(async () => {
+      created = await result.current.createBlankDocument();
+    });
+
+    expect(created).toBe(false);
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
       contents: "---\ntitle: Untitled 1\n---\n\n",
       defaultDirectory: workspaceRoot,
       path: null,
       suggestedName: "Untitled 1.md"
     });
+    expect(result.current.document).toEqual(previousDocument);
+    expect(result.current.tabs).toEqual(previousTabs);
     expect(result.current.tabs.filter((tab) => tab.path === documentPath)).toHaveLength(1);
     expect(new Set(result.current.tabs.map((tab) => tab.id)).size).toBe(result.current.tabs.length);
   });

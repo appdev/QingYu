@@ -15,7 +15,6 @@ import {
 import {
   getMarkdownOutline,
   getWordCount,
-  readMarkdownFrontmatter,
   type MarkdownOutlineItem
 } from "@markra/markdown";
 import {
@@ -88,7 +87,10 @@ import {
   type EditorWindowContext
 } from "../lib/editor-window-context";
 import { workspaceSurfaceForRestore } from "./markdown-document/restore-outcome";
-import { markdownDocumentSourceForCreatedFile } from "../lib/document-creation";
+import {
+  markdownDocumentBodyContent,
+  markdownDocumentSourceForCreatedFile
+} from "../lib/document-creation";
 
 export type { MarkdownDocumentTab } from "./markdown-document/document-model";
 export type WorkspaceSurface = "restoring" | "editor" | "home" | "recovery";
@@ -196,13 +198,6 @@ function calculateMarkdownDocumentSummary(
   }), detail);
 }
 
-export function markdownDocumentBodyContent(content: string) {
-  const frontmatter = readMarkdownFrontmatter(content);
-  return frontmatter.status === "valid"
-    ? content.slice(frontmatter.range.to).replace(/^(?:\r?\n)+/u, "")
-    : content;
-}
-
 type UseMarkdownDocumentOptions = {
   autoSaveEnabled?: boolean;
   autoSaveIntervalMinutes?: number;
@@ -212,6 +207,7 @@ type UseMarkdownDocumentOptions = {
   editorReady?: boolean | (() => boolean);
   getCurrentMarkdown: (fallbackContent: string) => string;
   globalIgnoreRules?: string;
+  initialBlankDocumentName?: string;
   isCurrentMarkdownEquivalent?: (markdown: string) => boolean | undefined;
   managedWorkspace?: boolean;
   nativeCloseBlocked?: boolean;
@@ -356,6 +352,7 @@ export function useMarkdownDocument({
   editorReady = true,
   getCurrentMarkdown,
   globalIgnoreRules = "",
+  initialBlankDocumentName,
   isCurrentMarkdownEquivalent,
   managedWorkspace = false,
   nativeCloseBlocked = false,
@@ -376,8 +373,10 @@ export function useMarkdownDocument({
   workspacePersistencePolicy = "shared"
 }: UseMarkdownDocumentOptions) {
   const resolvedNativeOpenPolicy = nativeOpenPolicy ?? (managedWorkspace ? "managed" : "editor");
-  const [document, setDocument] = useState<DocumentState>(() => createInitialDocumentState());
-  const [tabs, setTabs] = useState<MarkdownDocumentTab[]>(() => [createDocumentTab(createInitialDocumentState(), "untitled:0")]);
+  const [document, setDocument] = useState<DocumentState>(() => createInitialDocumentState(initialBlankDocumentName));
+  const [tabs, setTabs] = useState<MarkdownDocumentTab[]>(() => [
+    createDocumentTab(createInitialDocumentState(initialBlankDocumentName), "untitled:0")
+  ]);
   const [activeTabId, setActiveTabId] = useState<string | null>("untitled:0");
   const [workspaceSurface, setWorkspaceSurface] = useState<WorkspaceSurface>("restoring");
   const [nativeOpenedPathsReady, setNativeOpenedPathsReady] = useState(false);
@@ -770,7 +769,7 @@ export function useMarkdownDocument({
   }, [confirmCanDiscardCurrentDocument, persistActiveDocumentDraftSnapshot, persistNativeEditorWindowRestoreSnapshot]);
 
   const handleMarkdownChange = useCallback((content: string, options: MarkdownChangeOptions = {}) => {
-    if (!resolveEditorReady(editorReady)) return;
+    if (!resolveEditorReady(editorReady) && options.surface !== "source") return;
 
     const current = documentRef.current;
     if (options.documentRevision !== undefined && options.documentRevision !== current.revision) return;
@@ -905,7 +904,8 @@ export function useMarkdownDocument({
 
   const resetToBlankDocument = useCallback((
     options: CreateBlankDocumentOptions = {},
-    savedFile: SavedNativeMarkdownFile | null = null
+    savedFile: SavedNativeMarkdownFile | null = null,
+    savedContentPersisted = savedFile !== null
   ) => {
     const content = options.content ?? "";
     const name = savedFile?.name || (documentTabsEnabled
@@ -916,7 +916,7 @@ export function useMarkdownDocument({
       name,
       content,
       deleted: false,
-      dirty: savedFile === null,
+      dirty: !savedContentPersisted,
       open: true,
       revision: documentRef.current.revision + 1
     };
@@ -949,7 +949,9 @@ export function useMarkdownDocument({
       setActiveTabState(nextTabs, tab.id);
       const nextActiveFilePath = activeFilePathFromTabs(nextTabs, tab.id);
       const nextOpenFilePaths = openFilePathsFromTabs(nextTabs);
-      if (savedFile) editorSyncState.rememberSavedVisualEditorStaleContent(tab.id, content);
+      if (savedFile && savedContentPersisted) {
+        editorSyncState.rememberSavedVisualEditorStaleContent(tab.id, content);
+      }
       registerWindowRestoreState(nextActiveFilePath, nextOpenFilePaths);
       persistWorkspaceState({
         ...draftWorkspacePatchFromTabs(nextTabs, tab.id),
@@ -1020,25 +1022,28 @@ export function useMarkdownDocument({
       const existingSavedTab = tabsRef.current.find((tab) =>
         tab.path !== null && sameNativePath(tab.path, savedFile.path)
       );
-      if (existingSavedTab) {
-        return resetToBlankDocument(requestedDocument, savedFile);
-      }
+      if (existingSavedTab) return false;
+      let authoritativeContentPersisted = true;
       if (authoritativeContent !== requestedContent) {
-        const persistedFile = await saveNativeMarkdownFile({
-          ...defaultSaveDirectoryInput(defaultSaveDirectory, savedFile.path),
-          contents: authoritativeContent,
-          path: savedFile.path,
-          skipHistorySnapshot: true,
-          suggestedName: savedFile.name
-        });
-        if (!persistedFile) return false;
+        try {
+          const persistedFile = await saveNativeMarkdownFile({
+            ...defaultSaveDirectoryInput(defaultSaveDirectory, savedFile.path),
+            contents: authoritativeContent,
+            path: savedFile.path,
+            skipHistorySnapshot: true,
+            suggestedName: savedFile.name
+          });
+          authoritativeContentPersisted = persistedFile !== null;
+        } catch {
+          authoritativeContentPersisted = false;
+        }
       }
 
       return resetToBlankDocument({
         ...requestedDocument,
         content: authoritativeContent,
         name: savedFile.name
-      }, savedFile);
+      }, savedFile, authoritativeContentPersisted);
     };
 
     if (documentTabsEnabled) return create();
@@ -1058,10 +1063,11 @@ export function useMarkdownDocument({
 
   const clearOpenDocument = useCallback((options: ClearOpenDocumentOptions = {}) => {
     const openBlank = options.openBlank === true;
+    const blankName = blankDocumentName(initialBlankDocumentName);
     const nextDocument = {
       path: null,
-      name: openBlank ? "Untitled.md" : "",
-      content: "",
+      name: openBlank ? blankName : "",
+      content: openBlank ? markdownDocumentSourceForCreatedFile(blankName, "") : "",
       deleted: false,
       dirty: false,
       open: openBlank,
@@ -1088,7 +1094,7 @@ export function useMarkdownDocument({
         openFilePaths: []
       });
     }
-  }, [editorSyncState, persistWorkspaceState, registerWindowRestoreState]);
+  }, [editorSyncState, initialBlankDocumentName, persistWorkspaceState, registerWindowRestoreState]);
 
   const readMarkdownFileWithPerformance = useCallback(
     (path: string, reason: string) =>

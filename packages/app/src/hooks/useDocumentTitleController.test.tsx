@@ -76,7 +76,7 @@ function renderController(
     const handleMarkdownTabChange = useCallback((
       tabId: string,
       source: string,
-      options: { documentRevision: number }
+      options: { documentRevision: number; surface: "source" }
     ) => {
       operations.handleMarkdownTabChange(tabId, source, options);
       onRouteBeforeState?.(tabId, source);
@@ -125,7 +125,7 @@ function ControllerTitleEditorHarness({ operations }: { operations: TestOperatio
   const handleMarkdownTabChange = useCallback((
     tabId: string,
     source: string,
-    options: { documentRevision: number }
+    options: { documentRevision: number; surface: "source" }
   ) => {
     operations.handleMarkdownTabChange(tabId, source, options);
     setTabs((currentTabs) => currentTabs.map((tab) => tab.id === tabId
@@ -205,7 +205,7 @@ describe("useDocumentTitleController", () => {
     expect(operations.handleMarkdownTabChange).toHaveBeenCalledWith(
       "notes-tab",
       expectedSource,
-      { documentRevision: 7 }
+      { documentRevision: 7, surface: "source" }
     );
     expect(operations.saveMarkdownTabContentById).toHaveBeenCalledWith(
       "notes-tab",
@@ -590,6 +590,15 @@ describe("useDocumentTitleController", () => {
       reason: "metadata-blocked",
       tabId: "notes-tab"
     });
+    expect(result.current.tabs[0]).toMatchObject({
+      content: "---\ntitle: Notes\n---\n\n# Body\n",
+      dirty: true
+    });
+    expect(operations.handleMarkdownTabChange).toHaveBeenCalledWith(
+      "notes-tab",
+      "---\ntitle: Notes\n---\n\n# Body\n",
+      { documentRevision: 7, surface: "source" }
+    );
   });
 
   it("distinguishes a blocked rename from an existing-name collision", async () => {

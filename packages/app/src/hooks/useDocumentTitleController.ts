@@ -29,7 +29,7 @@ export type UseDocumentTitleControllerOptions = {
   handleMarkdownTabChange: (
     tabId: string,
     source: string,
-    options: { documentRevision: number }
+    options: { documentRevision: number; surface: "source" }
   ) => unknown;
   isReadOnlyPath: (path: string | null) => boolean;
   language: AppLanguage;
@@ -206,7 +206,8 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     const currentOptions = optionsRef.current;
     rememberAuthoredSource(tab.id, source);
     currentOptions.handleMarkdownTabChange(tab.id, source, {
-      documentRevision: tab.revision
+      documentRevision: tab.revision,
+      surface: "source"
     });
     try {
       const saved = await currentOptions.saveMarkdownTabContentById(tab.id, source, {

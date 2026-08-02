@@ -1,4 +1,4 @@
-import { upsertMarkdownFrontmatterTitle } from "@markra/markdown";
+import { readMarkdownFrontmatter, upsertMarkdownFrontmatterTitle } from "@markra/markdown";
 import { markdownDocumentTitleFromFileName } from "@markra/shared";
 
 export function markdownDocumentSourceForCreatedFile(fileName: string, source: string) {
@@ -11,4 +11,11 @@ export function markdownDocumentSourceForCreatedFile(fileName: string, source: s
   }
 
   return patched.source;
+}
+
+export function markdownDocumentBodyContent(source: string) {
+  const frontmatter = readMarkdownFrontmatter(source);
+  return frontmatter.status === "valid"
+    ? source.slice(frontmatter.range.to).replace(/^(?:\r?\n)+/u, "")
+    : source;
 }

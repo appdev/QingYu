@@ -7876,8 +7876,8 @@ describe("QingYu workspace", () => {
     const mainPath = "/mock-files/vault/main.md";
     const sidePath = "/mock-files/vault/side.md";
     const diskContent = new Map([
-      [mainPath, "# Main\n\nCurrent text"],
-      [sidePath, "# Side\n\nCached text"]
+      [mainPath, withMatchingDocumentTitle("# Main\n\nCurrent text", "main.md")],
+      [sidePath, withMatchingDocumentTitle("# Side\n\nCached text", "side.md")]
     ]);
     mockOpenMarkdownTarget({
       kind: "folder",
@@ -7910,7 +7910,7 @@ describe("QingYu workspace", () => {
     fireEvent.click(screen.getByRole("tab", { name: /main\.md/ }));
     await expectVisibleCodeMirrorText(container, "Current text");
 
-    diskContent.set(sidePath, "# Side\n\nFresh disk text");
+    diskContent.set(sidePath, withMatchingDocumentTitle("# Side\n\nFresh disk text", "side.md"));
     fireEvent.click(screen.getByRole("tab", { name: /side\.md/ }));
 
     await expectVisibleCodeMirrorText(container, "Fresh disk text");
@@ -7977,8 +7977,8 @@ describe("QingYu workspace", () => {
     const mainPath = "/mock-files/vault/main.md";
     const sidePath = "/mock-files/vault/side.md";
     const diskContent = new Map([
-      [mainPath, "# Main\n\nPrimary text"],
-      [sidePath, "# Side\n\nBefore external edit"]
+      [mainPath, withMatchingDocumentTitle("# Main\n\nPrimary text", "main.md")],
+      [sidePath, withMatchingDocumentTitle("# Side\n\nBefore external edit", "side.md")]
     ]);
     const watchHandlers = new Map<string, (path: string) => unknown | Promise<unknown>>();
     mockOpenMarkdownTarget({
@@ -8022,7 +8022,10 @@ describe("QingYu workspace", () => {
 
     await waitFor(() => expect(watchHandlers.has(sidePath)).toBe(true));
 
-    diskContent.set(sidePath, "# Side\n\nAfter external edit");
+    diskContent.set(
+      sidePath,
+      withMatchingDocumentTitle("# Side\n\nAfter external edit", "side.md")
+    );
     await act(async () => {
       await watchHandlers.get(sidePath)?.(sidePath);
     });
@@ -9233,6 +9236,43 @@ Date: 2026-08-02
     }
   });
 
+  it("opens a collision-allocated tree file as authoritative dirty source when both metadata writes fail", async () => {
+    const createdFile = {
+      name: "Untitled 1.md",
+      path: `${mockFolderPath}/Untitled 1.md`,
+      relativePath: "Untitled 1.md"
+    };
+    const requestedSource = "---\ntitle: Untitled\n---\n\n";
+    const authoritativeSource = "---\ntitle: Untitled 1\n---\n\n";
+    mockOpenMarkdownFolder({ path: mockFolderPath, name: "vault" });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+    mockedCreateNativeMarkdownTreeFile.mockResolvedValue(createdFile);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: requestedSource,
+      name: createdFile.name,
+      path: createdFile.path
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue(null);
+
+    renderApp();
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+    expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
+
+    expect(await screen.findByRole("tab", { name: /Untitled 1\.md/u })).toBeInTheDocument();
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(document.querySelector(".app-toast"))
+      .toHaveTextContent("The document title metadata could not be updated."));
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+
+    await selectEditorViewMode("Source code");
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown source" })
+    )).toBe(authoritativeSource);
+  });
+
   it("opens another file from an untouched blank document without asking to discard changes", async () => {
     window.history.pushState({}, "", "/?blank=1");
     mockedOpenNativeMarkdownFile
@@ -9680,10 +9720,25 @@ Date: 2026-08-02
     expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
     expect(readMarkdownSource(
       await screen.findByRole("textbox", { name: "Markdown document" })
-    )).toBe("");
+    )).toBe("---\ntitle: Untitled\n---\n\n");
     expect(screen.queryByText("Editor fixture")).not.toBeInTheDocument();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
+  });
+
+  it("initializes a localized external blank window with exact title Front Matter", async () => {
+    window.history.pushState({}, "", "/?blank=1&startupLanguage=zh-CN");
+    mockedGetStoredLanguage.mockResolvedValue("zh-CN");
+
+    renderApp();
+
+    expect(await screen.findByRole("textbox", { name: "文档标题" })).toHaveTextContent("未命名");
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑视图: 预览" }));
+
+    expect(readMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown 源码" })
+    )).toBe("---\ntitle: 未命名\n---\n\n");
   });
 
   it("focuses the editor when a native new-document window opens", async () => {
