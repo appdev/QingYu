@@ -191,6 +191,25 @@ describe("upsertMarkdownFrontmatterTitle", () => {
     });
   });
 
+  it("inserts a missing YAML title before an explicit document-end marker", () => {
+    const source = "---\nauthor: A\n...\n---\n\n# Body\n";
+    const expected = "---\nauthor: A\ntitle: New\n...\n---\n\n# Body\n";
+    const result = upsertMarkdownFrontmatterTitle(source, "New");
+
+    expect(result).toEqual({
+      ok: true,
+      changed: true,
+      kind: "yaml",
+      source: expected,
+    });
+    if (result.ok) {
+      expect(readMarkdownFrontmatter(result.source)).toMatchObject({
+        status: "valid",
+        title: "New",
+      });
+    }
+  });
+
   it("replaces a TOML title without disturbing comments, key order, delimiters, or CRLF", () => {
     const source = "+++\r\n# identity\r\nauthor = \"Ying\"\r\ntitle = \"Old\" # visible\r\n[options]\r\n  enabled = true\r\n+++\r\n\r\n# Body\r\n";
     const expected = source.replace('title = "Old"', 'title = "New title"');

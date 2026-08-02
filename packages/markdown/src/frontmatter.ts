@@ -271,8 +271,12 @@ function patchYaml(content: string, title: string, newline: string) {
   if (!encoded) return null;
   const node = topLevelYamlValue(document.contents, "title");
   if (!node?.range) {
-    const separator = content.length > 0 && !content.endsWith("\n") ? newline : "";
-    return `${content}${separator}${encoded.entry}`;
+    const insertionAt = document.directives?.docEnd && document.range
+      ? document.range[1]
+      : content.length;
+    const before = content.slice(0, insertionAt);
+    const separator = before.length > 0 && !before.endsWith("\n") ? newline : "";
+    return replaceRange(content, insertionAt, insertionAt, `${separator}${encoded.entry}`);
   }
 
   const [from, to] = node.range;
