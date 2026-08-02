@@ -7,7 +7,7 @@ import {
 } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { EditorTextSelection } from "../text-selection.ts";
-import { getMarkdownOutline } from "@markra/markdown";
+import { getMarkdownOutline, readMarkdownFrontmatter } from "@markra/markdown";
 import {
   normalizedExternalAutolinkUrl,
   type SearchRange,
@@ -163,11 +163,19 @@ export function readCodeMirrorHeadingAnchors(
   state: EditorState,
 ): CodeMirrorHeadingAnchor[] {
   const headings: CodeMirrorHeadingAnchor[] = [];
-
+  const frontmatter = readMarkdownFrontmatter(state.doc.toString());
+  const frontmatterRange = frontmatter.status === "valid" ? frontmatter.range : null;
   syntaxTree(state).iterate({
     enter(node) {
       const match = headingNodePattern.exec(node.name);
       if (!match) return;
+      if (
+        frontmatterRange &&
+        node.from >= frontmatterRange.from &&
+        node.to <= frontmatterRange.to
+      ) {
+        return;
+      }
 
       const level = Number(match[1]);
       const source = state.sliceDoc(node.from, node.to);

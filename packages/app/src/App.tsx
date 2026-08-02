@@ -48,6 +48,10 @@ import type { CompactAppController } from "./components/compact/types";
 import { useAppLanguage } from "./hooks/useAppLanguage";
 import { useAppTheme } from "./hooks/useAppTheme";
 import { useDocumentSearchState } from "./hooks/useDocumentSearchState";
+import {
+  useDocumentTitleController,
+  type DocumentTitleFailure
+} from "./hooks/useDocumentTitleController";
 import { useEditorContentWidthState } from "./hooks/useEditorContentWidthState";
 import { useEditorPreferences } from "./hooks/useEditorPreferences";
 import { useExportSettings } from "./hooks/useExportSettings";
@@ -57,7 +61,11 @@ import { useCompactAutoSave } from "./hooks/useCompactAutoSave";
 import { usePrimaryWorkspace } from "./hooks/usePrimaryWorkspace";
 import { useCodeMirrorEditorController } from "./hooks/useCodeMirrorEditorController";
 import { shouldFocusEditorOnReady } from "./lib/editor-focus";
-import { useMarkdownDocument, type ActiveDiskFileContentChange } from "./hooks/useMarkdownDocument";
+import {
+  markdownDocumentBodyContent,
+  useMarkdownDocument,
+  type ActiveDiskFileContentChange
+} from "./hooks/useMarkdownDocument";
 import { useMarkdownFileTree } from "./hooks/useMarkdownFileTree";
 import { useCompactSyncSettings } from "./hooks/useCompactSyncSettings";
 import { useAppSyncCoordinator } from "./hooks/useAppSyncCoordinator";
@@ -969,6 +977,7 @@ function WorkspaceApp() {
     saveCurrentDocument,
     saveDirtyMarkdownFiles,
     saveDirtyMarkdownPaths,
+    saveMarkdownTabContentById,
     saveMarkdownTab,
     selectMarkdownTab,
     wordCount
@@ -1997,6 +2006,43 @@ function WorkspaceApp() {
     ));
     setActiveImageFile((currentFile) => currentFile?.path === previousPath ? renamedFile : currentFile);
   }, [persistSideDocumentGroupPathUpdate, replaceOpenDocumentFile]);
+  const isDocumentTitlePathReadOnly = useCallback((path: string | null) => (
+    editorReadOnlyForPath(readOnlyMode, path, guardedPaths)
+  ), [guardedPaths, readOnlyMode]);
+  const handleDocumentTitleFailure = useCallback((failure: DocumentTitleFailure) => {
+    const key = failure.reason === "invalid"
+      ? "app.documentTitleInvalid"
+      : failure.reason === "rename-collision"
+        ? "app.documentTitleRenameCollision"
+        : failure.reason === "rename-blocked"
+          ? "app.markdownFileRenameFailed"
+          : "app.documentTitleMetadataBlocked";
+    showAppToast({
+      message: translate(key),
+      status: "error"
+    });
+  }, [translate]);
+  const titleController = useDocumentTitleController({
+    applyRenamedTreeFile,
+    handleMarkdownTabChange,
+    isReadOnlyPath: isDocumentTitlePathReadOnly,
+    language: appLanguage.language,
+    onFailure: handleDocumentTitleFailure,
+    renameMarkdownTreeFile,
+    saveMarkdownTabContentById,
+    tabs: documentTabs
+  });
+  useEffect(() => {
+    documentTabs.forEach((tab) => {
+      if (!tab.open) return;
+      titleController.reconcileOpenDocument(tab.id).catch(() => {});
+    });
+  }, [
+    documentTabs,
+    guardedPaths,
+    readOnlyMode,
+    titleController.reconcileOpenDocument
+  ]);
   const applyMovedTreeFile = useCallback((
     previousFile: NativeMarkdownFolderFile,
     movedFile: NativeMarkdownFolderFile,
@@ -3467,7 +3513,7 @@ function WorkspaceApp() {
     [editorImageSrcResolverForPath, sideDocumentTab?.path]
   );
   const sideDocumentWordCount = useMemo(
-    () => sideDocumentTab ? getWordCount(sideDocumentTab.content) : 0,
+    () => sideDocumentTab ? getWordCount(markdownDocumentBodyContent(sideDocumentTab.content)) : 0,
     [sideDocumentTab?.content]
   );
   const documentTabsVisible =
@@ -3544,10 +3590,12 @@ function WorkspaceApp() {
     content: string,
     options?: { documentRevision?: number }
   ) => {
-    if (mainEditorReadOnly) return;
+    const previousTab = documentTabs.find((tab) => tab.id === tabId && tab.open);
+    if (!previousTab || isDocumentTitlePathReadOnly(previousTab.path)) return;
+    if (titleController.handleSourceTitleChange(tabId, previousTab.content, content)) return;
     if (
-      content !== document.content &&
-      (options?.documentRevision === undefined || options.documentRevision === document.revision)
+      content !== previousTab.content &&
+      (options?.documentRevision === undefined || options.documentRevision === previousTab.revision)
     ) {
       sourceEditSequenceRef.current += 1;
     }
@@ -3562,12 +3610,12 @@ function WorkspaceApp() {
       tabId
     });
   }, [
-    document.content,
-    document.revision,
+    documentTabs,
     handleMarkdownTabChange,
+    isDocumentTitlePathReadOnly,
     markSourceEditForHistory,
-    mainEditorReadOnly,
-    splitMode
+    splitMode,
+    titleController.handleSourceTitleChange
   ]);
   const handleSourceMarkdownChange = useCallback((
     content: string,
@@ -4510,9 +4558,18 @@ function WorkspaceApp() {
   ]);
   const handleSideDocumentChange = useCallback((content: string) => {
     if (!sideDocumentGroup || sideEditorReadOnly) return;
+    const sideTab = documentTabs.find((tab) => tab.id === sideDocumentGroup.sideTabId && tab.open);
+    if (!sideTab) return;
+    if (titleController.handleSourceTitleChange(sideTab.id, sideTab.content, content)) return;
 
     handleMarkdownTabChange(sideDocumentGroup.sideTabId, content);
-  }, [handleMarkdownTabChange, sideDocumentGroup, sideEditorReadOnly]);
+  }, [
+    documentTabs,
+    handleMarkdownTabChange,
+    sideDocumentGroup,
+    sideEditorReadOnly,
+    titleController.handleSourceTitleChange
+  ]);
 
   const handleCloseTitlebarTab = useCallback(async (tabId: string) => {
     captureActiveDocumentViewState();
@@ -4699,6 +4756,7 @@ function WorkspaceApp() {
               contentWidthPx={activeEditorContentWidthPx}
               documentKey={tab.id}
               documentPath={tab.path}
+              documentTitle={titleController.modelForTab(tab.id) ?? undefined}
               editorFontFamily={editorPreferences.preferences.editorFontFamily}
               editorTheme={appTheme.editorTheme}
               extendedSyntax={editorPreferences.preferences.extendedSyntax}
@@ -5380,6 +5438,7 @@ function WorkspaceApp() {
                         contentWidthPx={activeEditorContentWidthPx}
                         documentKey={sideDocumentTab.id}
                         documentPath={sideDocumentTab.path}
+                        documentTitle={titleController.modelForTab(sideDocumentTab.id)}
                         editorFontFamily={editorPreferences.preferences.editorFontFamily}
                         editorTheme={appTheme.editorTheme}
                         extendedSyntax={editorPreferences.preferences.extendedSyntax}

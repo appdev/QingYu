@@ -62,7 +62,8 @@ function renderController(
   initialTabs: MarkdownDocumentTab[],
   operations: TestOperations = createOperations(),
   readOnlyPaths: ReadonlySet<string> = new Set(),
-  onRouteBeforeState?: (tabId: string, source: string) => unknown
+  onRouteBeforeState?: (tabId: string, source: string) => unknown,
+  onFailure?: (failure: { reason: string; tabId: string }) => unknown
 ) {
   const rendered = renderHook(() => {
     const [tabs, setTabs] = useState(initialTabs);
@@ -101,6 +102,7 @@ function renderController(
       handleMarkdownTabChange,
       isReadOnlyPath: (path) => path !== null && readOnlyPaths.has(path),
       language: "en",
+      onFailure,
       renameMarkdownTreeFile: operations.renameMarkdownTreeFile,
       saveMarkdownTabContentById,
       tabs
@@ -538,6 +540,80 @@ describe("useDocumentTitleController", () => {
     expect(operations.applyRenamedTreeFile).not.toHaveBeenCalled();
     expect(operations.handleMarkdownTabChange).not.toHaveBeenCalled();
     expect(operations.saveMarkdownTabContentById).not.toHaveBeenCalled();
+  });
+
+  it("reports typed invalid-title and rename-collision failures to the application boundary", async () => {
+    const operations = createOperations();
+    const onFailure = vi.fn();
+    operations.renameMarkdownTreeFile.mockRejectedValueOnce(new Error("File already exists"));
+    const { result } = renderController(
+      [markdownTab()],
+      operations,
+      new Set(),
+      undefined,
+      onFailure
+    );
+
+    act(() => {
+      result.current.controller.modelForTab("notes-tab")?.onInput("   ");
+      result.current.controller.modelForTab("notes-tab")?.onCommit("blur");
+    });
+    await settle();
+    act(() => {
+      result.current.controller.modelForTab("notes-tab")?.onInput("Existing");
+      result.current.controller.modelForTab("notes-tab")?.onCommit("blur");
+    });
+    await settle();
+
+    expect(onFailure.mock.calls).toEqual([
+      [{ reason: "invalid", tabId: "notes-tab" }],
+      [{ reason: "rename-collision", tabId: "notes-tab" }]
+    ]);
+  });
+
+  it("reports a metadata failure when immediate reconciliation cannot save", async () => {
+    const operations = createOperations();
+    const onFailure = vi.fn();
+    const { result } = renderController(
+      [markdownTab({ content: "# Body\n" })],
+      operations,
+      new Set(),
+      undefined,
+      onFailure
+    );
+
+    await act(async () => {
+      await result.current.controller.reconcileOpenDocument("notes-tab");
+    });
+
+    expect(onFailure).toHaveBeenCalledWith({
+      reason: "metadata-blocked",
+      tabId: "notes-tab"
+    });
+  });
+
+  it("distinguishes a blocked rename from an existing-name collision", async () => {
+    const operations = createOperations();
+    const onFailure = vi.fn();
+    operations.renameMarkdownTreeFile.mockRejectedValueOnce(new Error("Permission denied"));
+    const { result } = renderController(
+      [markdownTab()],
+      operations,
+      new Set(),
+      undefined,
+      onFailure
+    );
+
+    act(() => {
+      result.current.controller.modelForTab("notes-tab")?.onInput("Blocked");
+      result.current.controller.modelForTab("notes-tab")?.onCommit("blur");
+    });
+    await settle();
+
+    expect(onFailure).toHaveBeenCalledWith({
+      reason: "rename-blocked",
+      tabId: "notes-tab"
+    });
   });
 
   it("visibly resets a focused failed draft and accepts a subsequent edit", async () => {

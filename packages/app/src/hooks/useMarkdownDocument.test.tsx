@@ -32,7 +32,10 @@ const markdownHelperMocks = vi.hoisted(() => ({
   getWordCount: vi.fn((): number => 0)
 }));
 
-vi.mock("@markra/markdown", () => markdownHelperMocks);
+vi.mock("@markra/markdown", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@markra/markdown")>(),
+  ...markdownHelperMocks
+}));
 
 vi.mock("../lib/settings/app-settings", () => ({
   clearStoredRecentMarkdownFiles: vi.fn(async () => {}),
@@ -1363,7 +1366,8 @@ describe("useMarkdownDocument", () => {
   });
 
   it("defers medium document summaries until idle time", async () => {
-    const mediumContent = "# Medium file\n\nSynthetic content.";
+    const mediumBody = "# Medium file\n\nSynthetic content.";
+    const mediumContent = `---\ntitle: Medium\n---\n\n${mediumBody}`;
     const outlineItems = [{ level: 1, title: "Medium file" }];
     mockedReadNativeMarkdownFile.mockResolvedValueOnce({
       content: mediumContent,
@@ -1398,11 +1402,43 @@ describe("useMarkdownDocument", () => {
     expect(markdownHelperMocks.getMarkdownOutline).not.toHaveBeenCalled();
     expect(markdownHelperMocks.getWordCount).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(mediumContent));
+    await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(mediumBody));
 
-    expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(mediumContent);
+    expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(mediumBody);
     expect(result.current.outlineItems).toEqual(outlineItems);
     expect(result.current.wordCount).toBe(4);
+  });
+
+  it("keeps malformed Front Matter-like source in document summaries", async () => {
+    const malformedContent = "---\ntitle: [broken\n---\n\n# Body";
+    mockedReadNativeMarkdownFile.mockResolvedValueOnce({
+      content: malformedContent,
+      name: "malformed.md",
+      path: "/mock-files/malformed.md",
+      sizeBytes: 300_000
+    } as Awaited<ReturnType<typeof readNativeMarkdownFile>>);
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    markdownHelperMocks.getMarkdownOutline.mockClear();
+    markdownHelperMocks.getWordCount.mockClear();
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "malformed.md",
+        path: "/mock-files/malformed.md",
+        relativePath: "malformed.md"
+      });
+    });
+
+    await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(malformedContent));
+    expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(malformedContent);
   });
 
   it("restores historical content into the active document as an unsaved edit", async () => {

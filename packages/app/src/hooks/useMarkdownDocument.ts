@@ -12,7 +12,12 @@ import {
   type StoredWorkspaceState,
   type StoredWorkspaceWindow
 } from "../lib/settings/app-settings";
-import { getMarkdownOutline, getWordCount, type MarkdownOutlineItem } from "@markra/markdown";
+import {
+  getMarkdownOutline,
+  getWordCount,
+  readMarkdownFrontmatter,
+  type MarkdownOutlineItem
+} from "@markra/markdown";
 import {
   destroyNativeWindow,
   exitNativeApp,
@@ -181,10 +186,18 @@ function calculateMarkdownDocumentSummary(
   content: string,
   detail: Record<string, unknown>
 ): Omit<MarkdownDocumentSummary, "key"> {
+  const visibleContent = markdownDocumentBodyContent(content);
   return measureAppPerformance("markdown-summary", () => ({
-    outlineItems: getMarkdownOutline(content),
-    wordCount: getWordCount(content)
+    outlineItems: getMarkdownOutline(visibleContent),
+    wordCount: getWordCount(visibleContent)
   }), detail);
+}
+
+export function markdownDocumentBodyContent(content: string) {
+  const frontmatter = readMarkdownFrontmatter(content);
+  return frontmatter.status === "valid"
+    ? content.slice(frontmatter.range.to).replace(/^(?:\r?\n)+/u, "")
+    : content;
 }
 
 type UseMarkdownDocumentOptions = {

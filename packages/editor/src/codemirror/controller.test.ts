@@ -182,6 +182,34 @@ describe("CodeMirror editor controller", () => {
     expect(sections[0]?.text).toBe(doc.slice(0, doc.indexOf("# Three")));
   });
 
+  it("excludes recognized Front Matter from visual heading anchors", () => {
+    const doc = "---\ntitle: Native\n---\n\n# Native file\n\n## Details";
+
+    expect(readCodeMirrorHeadingAnchors(createView(doc).state)).toEqual([
+      {
+        from: doc.indexOf("# Native file"),
+        level: 1,
+        title: "Native file",
+        to: doc.indexOf("# Native file") + "# Native file".length,
+      },
+      {
+        from: doc.indexOf("## Details"),
+        level: 2,
+        title: "Details",
+        to: doc.indexOf("## Details") + "## Details".length,
+      },
+    ]);
+  });
+
+  it("keeps malformed Front Matter-like headings in visual heading anchors", () => {
+    const doc = "---\ntitle: [broken\n---\n\n# Body";
+
+    expect(readCodeMirrorHeadingAnchors(createView(doc).state).map(({ from, title }) => ({ from, title }))).toEqual([
+      { from: doc.indexOf("title:"), title: "title: [broken" },
+      { from: doc.indexOf("# Body"), title: "Body" },
+    ]);
+  });
+
   it("extracts GFM table anchors under their current heading", () => {
     const doc = [
       "# Data",

@@ -601,6 +601,26 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.dom.querySelector(".markra-block-drop-indicator")).toBeNull();
   });
 
+  it("ignores external drops without block drag data when Front Matter is present", () => {
+    const doc = "---\ntitle: Native\n---\n\nFirst\n\nSecond";
+    const view = createView(doc);
+    const second = readCodeMirrorBlockRanges(view.state).find(
+      (block) => view.state.sliceDoc(block.from, block.to) === "Second",
+    );
+    const target = view.dom.querySelector<HTMLElement>(
+      `.cm-line[data-markra-block-from="${second?.from}"]`,
+    );
+    const drop = new MouseEvent("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", {
+      value: { getData: () => "" },
+    });
+
+    target?.dispatchEvent(drop);
+
+    expect(drop.defaultPrevented).toBe(false);
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
   it("reorders task items through pointer dragging when native drag events are unavailable", () => {
     const view = createView(
       "- [ ] First task\n- [ ] Second task\n- [ ] Third task",

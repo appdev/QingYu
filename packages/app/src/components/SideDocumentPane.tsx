@@ -6,6 +6,7 @@ import type { EditorContentWidth } from "../lib/editor-width";
 import type { EditorFontFamilyPreference } from "../lib/editor-font";
 import type { EditorTheme, ExtendedSyntaxPreferences, TableColumnWidthModePreference } from "../lib/settings/app-settings";
 import type { MarkdownDocumentLinkFile } from "../lib/document-links";
+import type { DocumentTitleModel } from "../hooks/useDocumentTitleController";
 import { shouldBlockLargeMarkdownVisual } from "../lib/large-markdown";
 import { LazyMarkdownSourceEditor } from "./LazyMarkdownSourceEditor";
 import { LargeMarkdownNotice } from "./LargeMarkdownNotice";
@@ -19,6 +20,7 @@ type SideDocumentPaneProps = {
   contentWidthPx: number | null;
   documentKey?: string | null;
   documentPath?: string | null;
+  documentTitle?: DocumentTitleModel | null;
   editorFontFamily: EditorFontFamilyPreference;
   editorTheme: EditorTheme;
   extendedSyntax?: ExtendedSyntaxPreferences;
@@ -61,6 +63,7 @@ export function SideDocumentPane({
   contentWidthPx,
   documentKey,
   documentPath,
+  documentTitle,
   editorFontFamily,
   editorTheme,
   extendedSyntax,
@@ -130,6 +133,7 @@ export function SideDocumentPane({
           contentWidthPx={contentWidthPx}
           documentKey={documentKey}
           documentPath={documentPath}
+          documentTitle={documentTitle ?? undefined}
           editorFontFamily={editorFontFamily}
           editorTheme={editorTheme}
           extendedSyntax={extendedSyntax}

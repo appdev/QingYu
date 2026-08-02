@@ -742,6 +742,7 @@ function startPointerBlockDrag(
 
 function draggedBlockFrom(event: DragEvent) {
   const value = event.dataTransfer?.getData(blockDragMime) ?? "";
+  if (value === "") return null;
   const from = Number(value);
   return Number.isInteger(from) ? from : null;
 }

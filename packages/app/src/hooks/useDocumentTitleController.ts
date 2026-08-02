@@ -19,6 +19,11 @@ export type DocumentTitleModel = {
   title: string;
 };
 
+export type DocumentTitleFailure = {
+  reason: "invalid" | "metadata-blocked" | "rename-blocked" | "rename-collision";
+  tabId: string;
+};
+
 export type UseDocumentTitleControllerOptions = {
   applyRenamedTreeFile: (previousPath: string, file: NativeMarkdownFolderFile) => unknown;
   handleMarkdownTabChange: (
@@ -28,6 +33,7 @@ export type UseDocumentTitleControllerOptions = {
   ) => unknown;
   isReadOnlyPath: (path: string | null) => boolean;
   language: AppLanguage;
+  onFailure?: (failure: DocumentTitleFailure) => unknown;
   renameMarkdownTreeFile: (
     file: NativeMarkdownFolderFile,
     fileName: string
@@ -81,6 +87,24 @@ type RuntimeFileIdentity = {
 
 const documentTitleDebounceMilliseconds = 256;
 const sourceComparisonTitle = "markra-title-comparison";
+
+function isRenameCollision(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "document_already_exists"
+  ) {
+    return true;
+  }
+
+  const detail = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "";
+  return /\b(?:already exists|destination exists|file exists)\b/iu.test(detail);
+}
 
 function tabAsFolderFile(tab: MarkdownDocumentTab): NativeMarkdownFolderFile | null {
   if (!tab.path) return null;
@@ -184,9 +208,16 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     currentOptions.handleMarkdownTabChange(tab.id, source, {
       documentRevision: tab.revision
     });
-    await currentOptions.saveMarkdownTabContentById(tab.id, source, {
-      skipHistorySnapshot: true
-    });
+    try {
+      const saved = await currentOptions.saveMarkdownTabContentById(tab.id, source, {
+        skipHistorySnapshot: true
+      });
+      if (!saved) {
+        currentOptions.onFailure?.({ reason: "metadata-blocked", tabId: tab.id });
+      }
+    } catch {
+      currentOptions.onFailure?.({ reason: "metadata-blocked", tabId: tab.id });
+    }
   }, [rememberAuthoredSource]);
 
   const executeTransaction = useCallback(async (
@@ -204,6 +235,7 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     if (request.kind === "title") {
       const normalized = normalizeMarkdownDocumentTitle(request.title);
       if (!normalized.ok) {
+        currentOptions.onFailure?.({ reason: "invalid", tabId });
         syncTitleModelIfCurrent(tabId, request.generation);
         return;
       }
@@ -216,7 +248,11 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
             authoritativeFile,
             normalized.fileName
           );
-        } catch {
+        } catch (error) {
+          optionsRef.current.onFailure?.({
+            reason: isRenameCollision(error) ? "rename-collision" : "rename-blocked",
+            tabId
+          });
           syncTitleModelIfCurrent(tabId, request.generation);
           return;
         }
@@ -246,7 +282,10 @@ export function useDocumentTitleController(options: UseDocumentTitleControllerOp
     const source = sourceForRequest(latest, request);
     const title = markdownDocumentTitleFromFileName(authoritativeFile.name);
     const patched = upsertMarkdownFrontmatterTitle(source, title);
-    if (!patched.ok) return;
+    if (!patched.ok) {
+      optionsRef.current.onFailure?.({ reason: "metadata-blocked", tabId });
+      return;
+    }
     if (request.kind === "repair") {
       syncTitleModelIfCurrent(tabId, request.generation);
       if (!patched.changed) return;
