@@ -15,14 +15,15 @@ use qingyu_kernel::{
         ApiErrorEnvelope, ApiVersion, AppConfigSnapshotDto, CreateDocumentRequest,
         CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto, DocumentEntryDto,
         DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentKind,
-        DocumentPageDto, ErrorCode, ErrorDetails, ListDocumentsQuery, MoveDocumentRequest,
-        PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest, ReadyHealthResponse,
-        ReadyStatus, RestoreDocumentHistoryRequest, Revision, RunId, RuntimeCapabilitiesDto,
-        RuntimeStateDto, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
-        StartupState, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncRunStatusDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
-        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceGeneration,
-        WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
+        DocumentPageDto, ErrorCode, ErrorDetails, ListDocumentsQuery, ListRemoteNotebooksQuery,
+        MoveDocumentRequest, PageQuery, PatchAppConfigStateRequest, PatchSettingsRequest,
+        ReadyHealthResponse, ReadyStatus, RemoteNotebookCatalogDto, RestoreDocumentHistoryRequest,
+        Revision, RunId, RuntimeCapabilitiesDto, RuntimeStateDto, SearchPageDto,
+        SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId, StartupState, SyncConfigViewDto,
+        SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto,
+        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        UpdateDocumentRequest, WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceReadiness,
+        WorkspaceRelativePath,
     },
     paths::KernelPaths,
     ports::KernelPorts,
@@ -37,6 +38,8 @@ use tower::ServiceExt as _;
 
 const HOST: &str = "127.0.0.1:43123";
 const ORIGIN: &str = "tauri://localhost";
+const FIELD_SYNC_REVISION: &str =
+    "b7f99541b1f844aa3f172d1e3dcff03721b3c7b110c8acaf46d5bbb77e32b8f8";
 
 struct TestApi {
     router: Router,
@@ -48,6 +51,7 @@ struct TestApi {
     app_config_calls: Arc<AtomicUsize>,
     app_config_failure: Arc<AtomicUsize>,
     sync_connection_test_calls: Arc<AtomicUsize>,
+    repository_list_calls: Arc<AtomicUsize>,
     sync_run_calls: Arc<AtomicUsize>,
     _root: tempfile::TempDir,
 }
@@ -74,6 +78,7 @@ struct TestAppConfigService {
 
 struct TestSyncService {
     connection_test_calls: Arc<AtomicUsize>,
+    repository_list_calls: Arc<AtomicUsize>,
     run_calls: Arc<AtomicUsize>,
 }
 
@@ -293,6 +298,23 @@ impl SyncApiService for TestSyncService {
         self.run_calls.fetch_add(1, Ordering::SeqCst);
         Err(ServiceFailure::new(ErrorCode::InternalError, None).unwrap())
     }
+
+    async fn list_remote_notebooks(
+        &self,
+        request: ListRemoteNotebooksQuery,
+    ) -> Result<RemoteNotebookCatalogDto, ServiceFailure> {
+        if request.expected_revision.as_str() != FIELD_SYNC_REVISION {
+            return Err(ServiceFailure::new(
+                ErrorCode::SyncConfigRevisionConflict,
+                Some(ErrorDetails::RevisionConflict {
+                    current_revision: Some(Revision::parse(FIELD_SYNC_REVISION).unwrap()),
+                }),
+            )
+            .unwrap());
+        }
+        self.repository_list_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(RemoteNotebookCatalogDto { entries: vec![] })
+    }
 }
 
 #[async_trait::async_trait]
@@ -386,6 +408,7 @@ impl TestApi {
         let app_config_calls = Arc::new(AtomicUsize::new(0));
         let app_config_failure = Arc::new(AtomicUsize::new(0));
         let sync_connection_test_calls = Arc::new(AtomicUsize::new(0));
+        let repository_list_calls = Arc::new(AtomicUsize::new(0));
         let sync_run_calls = Arc::new(AtomicUsize::new(0));
         runtime
             .install_documents_api_service(Arc::new(TestDocumentsService {
@@ -407,6 +430,7 @@ impl TestApi {
             runtime
                 .install_sync_api_service(Arc::new(TestSyncService {
                     connection_test_calls: sync_connection_test_calls.clone(),
+                    repository_list_calls: repository_list_calls.clone(),
                     run_calls: sync_run_calls.clone(),
                 }))
                 .expect("install sync API service once");
@@ -422,6 +446,7 @@ impl TestApi {
             app_config_calls,
             app_config_failure,
             sync_connection_test_calls,
+            repository_list_calls,
             sync_run_calls,
             _root: root,
         }
@@ -1052,6 +1077,97 @@ async fn sync_mutation_routes_delegate_exactly_once_without_transport_retries() 
 
     assert_eq!(api.sync_connection_test_calls.load(Ordering::SeqCst), 1);
     assert_eq!(api.sync_run_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_bearer_catalog_get_accepts_the_exact_camel_case_revision() {
+    let api = TestApi::new();
+    let response = api
+        .router
+        .clone()
+        .oneshot(api.authorized_request(
+            "GET",
+            &format!("/api/v1/sync/repositories?expectedRevision={FIELD_SYNC_REVISION}"),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await, json!({ "entries": [] }));
+    assert_eq!(api.repository_list_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sync_repository_catalog_query_remains_strict_and_fail_closed() {
+    let api = TestApi::new();
+    for path in [
+        "/api/v1/sync/repositories",
+        "/api/v1/sync/repositories?expectedRevision=",
+        "/api/v1/sync/repositories?expected_revision=b7f99541b1f844aa3f172d1e3dcff03721b3c7b110c8acaf46d5bbb77e32b8f8",
+        "/api/v1/sync/repositories?expectedRevision=b7f99541b1f844aa3f172d1e3dcff03721b3c7b110c8acaf46d5bbb77e32b8f8&expectedRevision=b7f99541b1f844aa3f172d1e3dcff03721b3c7b110c8acaf46d5bbb77e32b8f8",
+        "/api/v1/sync/repositories?expectedRevision=b7f99541b1f844aa3f172d1e3dcff03721b3c7b110c8acaf46d5bbb77e32b8f8&unknown=value",
+    ] {
+        let response = api
+            .router
+            .clone()
+            .oneshot(api.authorized_request("GET", path))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        assert_eq!(body_json(response).await["code"], "invalid_request", "{path}");
+    }
+    assert_eq!(api.repository_list_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn sync_repository_routes_preflight_only_their_exact_methods() {
+    let api = TestApi::new();
+    for (path, accepted_method, rejected_method) in [
+        ("/api/v1/sync/repositories", "GET", "POST"),
+        ("/api/v1/sync/repository-binding", "POST", "GET"),
+        ("/api/v1/sync/dejavu/key", "GET", "POST"),
+        ("/api/v1/sync/dejavu/key/import", "POST", "GET"),
+        ("/api/v1/sync/dejavu/key/export", "POST", "GET"),
+    ] {
+        let accepted = Request::builder()
+            .method("OPTIONS")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, accepted_method)
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization, content-type, x-csrf-token",
+            )
+            .body(Body::empty())
+            .unwrap();
+        let accepted = api.router.clone().oneshot(accepted).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT, "{path}");
+        assert_eq!(
+            accepted.headers()[header::ACCESS_CONTROL_ALLOW_METHODS],
+            accepted_method,
+            "{path}"
+        );
+
+        let rejected = Request::builder()
+            .method("OPTIONS")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, rejected_method)
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap();
+        let rejected = api.router.clone().oneshot(rejected).await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST, "{path}");
+        assert!(
+            rejected
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]

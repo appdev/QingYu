@@ -597,6 +597,8 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         | "/api/v1/inventory"
         | "/api/v1/search"
         | "/api/v1/app-config"
+        | "/api/v1/sync/repositories"
+        | "/api/v1/sync/dejavu/key"
         | "/api/v1/sync/status"
         | "/api/v1/events" => &[Method::GET],
         "/api/v1/auth/initialize" | "/api/v1/auth/logout" => &[Method::POST],
@@ -605,7 +607,11 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         "/api/v1/documents" => &[Method::GET, Method::POST],
         "/api/v1/settings" | "/api/v1/sync/config" => &[Method::GET, Method::PATCH],
         "/api/v1/app-config/state" => &[Method::PATCH],
-        "/api/v1/sync/connection-test" | "/api/v1/sync/runs" => &[Method::POST],
+        "/api/v1/sync/connection-test"
+        | "/api/v1/sync/runs"
+        | "/api/v1/sync/repository-binding"
+        | "/api/v1/sync/dejavu/key/import"
+        | "/api/v1/sync/dejavu/key/export" => &[Method::POST],
         _ => match path.split('/').collect::<Vec<_>>().as_slice() {
             ["", "api", "v1", "resources", resource_id] if !resource_id.is_empty() => {
                 &[Method::GET]

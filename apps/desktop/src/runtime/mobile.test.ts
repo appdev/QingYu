@@ -72,6 +72,14 @@ describe("mobile Kernel runtime boundary", () => {
 
   it("composes document, settings, and sync over one ready Kernel port", async () => {
     const kernel = readyKernelPort();
+    const listNotebooks = vi.fn(async () => [{
+      available: true,
+      disabledReason: null,
+      displayName: "Mobile shared notes",
+      name: "Mobile shared notes",
+      provider: "s3" as const,
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    }]);
     const readRun = vi.fn(async () => ({
       acceptedAt: "2026-08-02T10:00:00Z",
       completionState: "succeeded" as const,
@@ -82,7 +90,7 @@ describe("mobile Kernel runtime boundary", () => {
       runId: "00000000-0000-4000-8000-0000000000d2",
       summary: null,
     }));
-    Object.assign(kernel.sync, { readRun });
+    Object.assign(kernel.sync, { listNotebooks, readRun });
     const committed = {
       ...kernel.appConfig.bootstrap,
       localState: {
@@ -147,6 +155,13 @@ describe("mobile Kernel runtime boundary", () => {
       revision: "sync-mobile-1",
     });
     expect(readRun).toHaveBeenCalledWith("00000000-0000-4000-8000-0000000000d2");
+    await expect(owner.runtime.syncConfig.listNotebooks({
+      revision: "sync-mobile-1",
+    })).resolves.toEqual([expect.objectContaining({
+      displayName: "Mobile shared notes",
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    })]);
+    expect(listNotebooks).toHaveBeenCalledWith("sync-mobile-1");
     expect(owner.runtime.workspace.rootPolicy).toMatchObject({
       canChooseLocalRoot: false,
       kind: "fixed",

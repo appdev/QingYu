@@ -1306,7 +1306,8 @@ describe("desktop Kernel domain adapter", () => {
   it("routes settings and sync through the authenticated Kernel with explicit revisions", async () => {
     const requests: Array<{ body: unknown; method: string; pathname: string }> = [];
     const fetch: FetchLike = async (url, init = {}) => {
-      const pathname = new URL(url).pathname;
+      const requestUrl = new URL(url);
+      const pathname = requestUrl.pathname;
       if (pathname === "/api/v1/settings") {
         requests.push({
           body: init.body === undefined ? undefined : JSON.parse(String(init.body)),
@@ -1329,6 +1330,23 @@ describe("desktop Kernel domain adapter", () => {
           checkedTarget: "s3://redacted",
           configRevision: "sync-2",
           provider: "s3",
+        });
+      }
+      if (pathname === "/api/v1/sync/repositories") {
+        requests.push({
+          body: undefined,
+          method: String(init.method),
+          pathname: `${pathname}${requestUrl.search}`,
+        });
+        return jsonResponse({
+          entries: [{
+            available: true,
+            disabledReason: null,
+            displayName: "Shared notes",
+            name: "Shared notes",
+            provider: "s3",
+            repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+          }],
         });
       }
       if (pathname === "/api/v1/sync/status") {
@@ -1405,6 +1423,16 @@ describe("desktop Kernel domain adapter", () => {
       configRevision: "sync-2",
       provider: "s3",
     });
+    await expect(
+      adapter.port.sync.listNotebooks("sync-2" as KernelRevision),
+    ).resolves.toEqual([{
+      available: true,
+      disabledReason: null,
+      displayName: "Shared notes",
+      name: "Shared notes",
+      provider: "s3",
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    }]);
     await expect(adapter.port.sync.readStatus()).resolves.toMatchObject({
       completionState: "idle",
       configRevision: "sync-2",
@@ -1443,6 +1471,11 @@ describe("desktop Kernel domain adapter", () => {
         },
         method: "POST",
         pathname: "/api/v1/sync/connection-test",
+      },
+      {
+        body: undefined,
+        method: "GET",
+        pathname: "/api/v1/sync/repositories?expectedRevision=sync-2",
       },
       { body: undefined, method: "GET", pathname: "/api/v1/sync/status" },
       {

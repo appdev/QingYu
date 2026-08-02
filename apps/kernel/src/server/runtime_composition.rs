@@ -1192,6 +1192,35 @@ mod tests {
             .unwrap();
         assert_eq!(ready.status(), reqwest::StatusCode::OK);
 
+        let sync_config = client
+            .get(endpoint("/api/v1/sync/config"))
+            .header(reqwest::header::HOST, "notes.example.com")
+            .header(reqwest::header::ORIGIN, "https://notes.example.com")
+            .header(reqwest::header::COOKIE, session_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sync_config.status(), reqwest::StatusCode::OK);
+        let sync_config: serde_json::Value =
+            serde_json::from_slice(&sync_config.bytes().await.unwrap()).unwrap();
+        let revision = sync_config["revision"]
+            .as_str()
+            .expect("fixed server sync configuration revision");
+        let catalog = client
+            .get(endpoint(&format!(
+                "/api/v1/sync/repositories?expectedRevision={revision}"
+            )))
+            .header(reqwest::header::HOST, "notes.example.com")
+            .header(reqwest::header::ORIGIN, "https://notes.example.com")
+            .header(reqwest::header::COOKIE, session_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(catalog.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let catalog: serde_json::Value =
+            serde_json::from_slice(&catalog.bytes().await.unwrap()).unwrap();
+        assert_eq!(catalog["code"], "sync_not_ready");
+
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
     }
