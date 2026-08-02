@@ -1181,6 +1181,7 @@ fn open_desktop_notebook_target(
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::notebook_scope::validate_portable_notebook_name(&target_name)?;
             if let Err(error) = parent_directory.create_dir(&target_name) {
                 if error.kind() != std::io::ErrorKind::AlreadyExists {
                     return Err(notebook_target_error());
@@ -3545,23 +3546,15 @@ mod tests {
         let parent = temporary.path().join("parent");
         std::fs::create_dir(&parent).unwrap();
 
-        let prepared = super::prepare_desktop_notebook_target_at_path(
-            parent.to_str().unwrap(),
-            "  个人 笔记  ",
-        )
-        .unwrap();
+        let prepared =
+            super::prepare_desktop_notebook_target_at_path(parent.to_str().unwrap(), "个人 笔记")
+                .unwrap();
 
-        assert_eq!(
-            prepared,
-            parent.join("  个人 笔记  ").canonicalize().unwrap()
-        );
+        assert_eq!(prepared, parent.join("个人 笔记").canonicalize().unwrap());
         assert!(prepared.is_dir());
         assert_eq!(
-            super::prepare_desktop_notebook_target_at_path(
-                parent.to_str().unwrap(),
-                "  个人 笔记  ",
-            )
-            .unwrap(),
+            super::prepare_desktop_notebook_target_at_path(parent.to_str().unwrap(), "个人 笔记",)
+                .unwrap(),
             prepared
         );
         for invalid in ["", ".", "..", "nested/name", r"nested\name", ".qingyu"] {
@@ -3571,6 +3564,37 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn desktop_restore_target_resolves_an_existing_legacy_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("parent");
+        let legacy = parent.join("CON");
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        let prepared =
+            super::prepare_desktop_notebook_target_at_path(parent.to_str().unwrap(), "CON")
+                .expect("an existing legacy notebook should remain recoverable");
+
+        assert_eq!(prepared, legacy.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn desktop_restore_target_rejects_a_missing_non_portable_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("parent");
+        let candidate = parent.join("CON");
+        std::fs::create_dir(&parent).unwrap();
+
+        let error = super::prepare_desktop_notebook_target_at_path(parent.to_str().unwrap(), "CON")
+            .expect_err("a missing notebook must require a portable name");
+
+        assert!(error.starts_with("portable-name-required:"));
+        assert!(
+            !candidate.exists(),
+            "the rejected child must not be created"
+        );
     }
 
     #[cfg(unix)]

@@ -45,11 +45,7 @@ pub(crate) async fn list_remote_notebooks(
             let catalog = list_s3_repository_catalog(snapshot)
                 .await
                 .map_err(|_| CATALOG_UNAVAILABLE.to_string())?;
-            Ok(catalog
-                .entries
-                .into_iter()
-                .filter_map(s3_catalog_entry)
-                .collect())
+            Ok(catalog.entries.into_iter().map(s3_catalog_entry).collect())
         }
         SyncTarget::Webdav {
             password,
@@ -64,17 +60,17 @@ pub(crate) async fn list_remote_notebooks(
     }
 }
 
-fn s3_catalog_entry(entry: RepositoryCatalogEntry) -> Option<RemoteNotebookCatalogEntry> {
-    let name = crate::notebook_scope::validate_notebook_name(&entry.display_name).ok()?;
-    let available = crate::notebook_scope::validate_portable_notebook_name(&name).is_ok();
-    Some(RemoteNotebookCatalogEntry {
+fn s3_catalog_entry(entry: RepositoryCatalogEntry) -> RemoteNotebookCatalogEntry {
+    let available =
+        crate::notebook_scope::validate_portable_notebook_name(&entry.display_name).is_ok();
+    RemoteNotebookCatalogEntry {
         available,
         disabled_reason: (!available).then(|| "notebook-name-unavailable".to_string()),
-        display_name: name.clone(),
-        name,
+        display_name: entry.display_name.clone(),
+        name: entry.display_name,
         provider: RemoteNotebookProvider::S3,
         repository_id: Some(entry.repository_id),
-    })
+    }
 }
 
 fn webdav_catalog_entry(name: String) -> Option<RemoteNotebookCatalogEntry> {
@@ -385,24 +381,52 @@ mod tests {
     }
 
     #[test]
-    fn s3_catalog_keeps_a_legacy_display_name_visible_but_unavailable() {
-        let entry = s3_catalog_entry(RepositoryCatalogEntry {
-            repository_id: "repo-1".to_string(),
-            display_name: "CON".to_string(),
-            created_at: 1,
-            updated_at: 2,
-        })
-        .expect("a locally safe legacy S3 notebook should remain visible");
+    fn s3_catalog_keeps_non_portable_display_names_visible_but_unavailable() {
+        for (repository_id, display_name) in [
+            ("repo-con", "CON".to_string()),
+            ("repo-space", "trailing ".to_string()),
+            ("repo-long", "x".repeat(256)),
+        ] {
+            let entry = s3_catalog_entry(RepositoryCatalogEntry {
+                repository_id: repository_id.to_string(),
+                display_name: display_name.clone(),
+                created_at: 1,
+                updated_at: 2,
+            });
 
-        assert_eq!(entry.display_name, "CON");
-        assert_eq!(entry.name, "CON");
-        assert_eq!(entry.provider, RemoteNotebookProvider::S3);
-        assert_eq!(entry.repository_id.as_deref(), Some("repo-1"));
-        assert!(!entry.available);
-        assert_eq!(
-            entry.disabled_reason.as_deref(),
-            Some("notebook-name-unavailable")
-        );
+            assert_eq!(entry.display_name, display_name);
+            assert_eq!(entry.name, display_name);
+            assert_eq!(entry.provider, RemoteNotebookProvider::S3);
+            assert_eq!(entry.repository_id.as_deref(), Some(repository_id));
+            assert!(!entry.available);
+            assert_eq!(
+                entry.disabled_reason.as_deref(),
+                Some("notebook-name-unavailable")
+            );
+        }
+    }
+
+    #[test]
+    fn s3_catalog_preserves_prior_visibility_for_locally_unsafe_display_names() {
+        for (repository_id, display_name) in
+            [("repo-path", "team/notes"), ("repo-control", ".qingyu")]
+        {
+            let entry = s3_catalog_entry(RepositoryCatalogEntry {
+                repository_id: repository_id.to_string(),
+                display_name: display_name.to_string(),
+                created_at: 1,
+                updated_at: 2,
+            });
+
+            assert_eq!(entry.display_name, display_name);
+            assert_eq!(entry.name, display_name);
+            assert_eq!(entry.repository_id.as_deref(), Some(repository_id));
+            assert!(!entry.available);
+            assert_eq!(
+                entry.disabled_reason.as_deref(),
+                Some("notebook-name-unavailable")
+            );
+        }
     }
 
     #[test]
