@@ -4975,7 +4975,11 @@ function WorkspaceApp() {
             onChooseDesktopRoot={() => notebookSwitch.switchDesktopNotebook()}
             onCreateMobileRoot={openMobileNotebookDialog}
             onDeferDesktopSetup={primaryWorkspace.deferDesktopSetup}
-            onOpenExternalFile={openExternalFileInNewWindow}
+            onOpenExternalFile={
+              appFeatures.standaloneDocuments
+                ? openExternalFileInNewWindow
+                : undefined
+            }
             onRestoreFromCloud={
               !compactMode.trueMobile && canChooseLocalWorkspace
                 ? openDesktopRemoteNotebookDialog
@@ -5201,7 +5205,7 @@ function WorkspaceApp() {
                 <WorkspaceHome
                   actions={{
                     createDocument: handleQuickCreateMarkdownTreeFile,
-                    openDocument: canChooseLocalWorkspace
+                    openDocument: canChooseLocalWorkspace && appFeatures.standaloneDocuments
                       ? handleOpenWorkspaceHomeDocument
                       : undefined,
                     quickOpen: fileTreeFiles.length > 0 ? handleQuickOpenOpen : undefined,

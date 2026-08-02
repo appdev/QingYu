@@ -933,9 +933,9 @@ export function createWebFileRuntime(
         ? optionsOrParentPath
         : { parentPath: optionsOrParentPath };
       return withMarkdownTreeFileCreateLock(async () => {
-        const { directory, id } = await directoryForPath(rootPath);
-        const parent = options.parentPath ? (await directoryForPath(options.parentPath)).directory : directory;
-        if (!parent.getFileHandle || !parent.removeEntry) {
+        const target = await targetDirectoryForPath(rootPath, options.parentPath);
+        const parent = target.directory;
+        if (!parent.getFileHandle) {
           throw new Error("Browser directory handle cannot safely create files.");
         }
         for (let attempt = 0; attempt < maximumNewMarkdownDocumentCreateAttempts; attempt += 1) {
@@ -949,25 +949,16 @@ export function createWebFileRuntime(
           }
 
           const handle = await parent.getFileHandle(allocatedName, { create: true });
-          try {
-            if (!await writeFileHandle(handle, options.contents ?? "")) {
-              throw new Error("Browser file handle is not writable.");
-            }
-          } catch (error: unknown) {
-            try {
-              await parent.removeEntry(allocatedName);
-            } catch {
-              // Preserve the original write failure when browser cleanup is unavailable.
-            }
-            throw error;
+          const allocatedFile = await handle.getFile();
+          if (allocatedFile.size > 0) continue;
+          if (!await writeFileHandle(handle, options.contents ?? "")) {
+            throw new Error("Browser file handle is not writable.");
           }
-          const relativePath = options.parentPath
-            ? joinRelativePath(parseWebHandlePath(options.parentPath)?.relativePath ?? "", allocatedName)
-            : allocatedName;
+          const relativePath = joinRelativePath(target.relativePath, allocatedName);
 
           return {
             name: allocatedName,
-            path: createFolderPath(id, relativePath),
+            path: createFolderPath(target.id, relativePath),
             relativePath
           };
         }

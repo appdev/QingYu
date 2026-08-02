@@ -1087,6 +1087,14 @@ describe("QingYu workspace", () => {
       onboardingCompleted: false,
       version: 3
     });
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: {
+        ...runtime.features,
+        standaloneDocuments: true
+      }
+    });
     renderApp();
 
     expect(await screen.findByRole("button", { name: "Open single file" })).toBeInTheDocument();
@@ -1098,6 +1106,30 @@ describe("QingYu workspace", () => {
       version: 3
     });
     expect(mockedLoadNativeMarkdownFilesForPath).not.toHaveBeenCalledWith("/External", expect.anything());
+  });
+
+  it("hides standalone-file onboarding when the runtime cannot open standalone documents", async () => {
+    configurePrimaryWorkspaceForAppTest({
+      desktopWorkspaceRoot: null,
+      desktopPath: null,
+      managedName: null,
+      onboardingCompleted: false,
+      version: 3
+    });
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: {
+        ...runtime.features,
+        standaloneDocuments: false
+      }
+    });
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Choose your notes folder" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open single file" })).not.toBeInTheDocument();
   });
 
   it("routes an onboarding notebook choice through the primary switch coordinator", async () => {
@@ -9371,6 +9403,30 @@ describe("QingYu workspace", () => {
     expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open Document" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Switch Workspace" })).not.toBeInTheDocument();
+  });
+
+  it("omits the standalone document action from Home when the runtime does not support it", async () => {
+    const runtime = createDefaultAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: {
+        ...runtime.features,
+        standaloneDocuments: false
+      }
+    });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+
+    renderFreshApp();
+
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open Document" })).not.toBeInTheDocument();
   });
 
   it("does not render an editor or Workspace Home action while restoration is pending", async () => {

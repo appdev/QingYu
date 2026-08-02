@@ -576,7 +576,54 @@ describe("web file runtime", () => {
     await expect(secondRuntime.files.readMarkdownFile(second.path)).resolves.toMatchObject({ content: "# Second" });
   });
 
-  it("reports a browser-created note that cannot be written", async () => {
+  it("rejects a create parent from a different browser workspace", async () => {
+    const firstDirectory = new FakeDirectoryHandle("first-vault", {});
+    const secondDirectory = new FakeDirectoryHandle("second-vault", {});
+    const directories = [firstDirectory, secondDirectory];
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      showDirectoryPicker: async () => directories.shift()!
+    });
+    const firstFolder = await runtime.files.openMarkdownFolder();
+    const secondFolder = await runtime.files.openMarkdownFolder();
+
+    await expect(runtime.files.createMarkdownTreeFile(firstFolder!.path, "Untitled.md", {
+      parentPath: secondFolder!.path
+    })).rejects.toThrow("Target path belongs to a different web folder.");
+    await expect(secondDirectory.getFileHandle("Untitled.md")).rejects.toMatchObject({
+      name: "NotFoundError"
+    });
+  });
+
+  it("does not overwrite a nonempty browser file that appears during name allocation", async () => {
+    const externalFile = new FakeFileHandle("Untitled.md", "# External");
+    const directory = new FakeDirectoryHandle("mock-vault", {});
+    const getFileHandle = directory.getFileHandle.bind(directory);
+    let raced = false;
+    directory.getFileHandle = async (name, options = {}) => {
+      if (name === "Untitled.md" && options.create && !raced) {
+        raced = true;
+        return externalFile;
+      }
+
+      return getFileHandle(name, options);
+    };
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+    const folder = await runtime.files.openMarkdownFolder();
+
+    const created = await runtime.files.createMarkdownTreeFile(folder!.path, "Untitled.md", {
+      contents: "# New"
+    });
+
+    expect(created.name).toBe("Untitled 1.md");
+    expect(externalFile.writes).toEqual([]);
+    await expect(externalFile.getFile()).resolves.toHaveProperty("size", 10);
+  });
+
+  it("reports an unwritable browser-created note without deleting a candidate it cannot prove it owns", async () => {
     const backingDirectory = new FakeDirectoryHandle("mock-vault", {});
     const getFileHandle = backingDirectory.getFileHandle.bind(backingDirectory);
     const directory: WebDirectoryHandle = backingDirectory;
@@ -597,7 +644,7 @@ describe("web file runtime", () => {
 
     await expect(runtime.files.createMarkdownTreeFile(folder!.path, "Untitled.md"))
       .rejects.toThrow("Browser file handle is not writable.");
-    await expect(getFileHandle("Untitled.md")).rejects.toMatchObject({ name: "NotFoundError" });
+    await expect(getFileHandle("Untitled.md")).resolves.toMatchObject({ name: "Untitled.md" });
   });
 
   it("stores markdown templates in IndexedDB-backed web settings", async () => {

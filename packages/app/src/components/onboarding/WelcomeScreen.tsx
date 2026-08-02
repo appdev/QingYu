@@ -19,7 +19,7 @@ export type WelcomeScreenProps = {
   onChooseDesktopRoot: () => Promise<unknown>;
   onCreateMobileRoot: () => Promise<unknown>;
   onDeferDesktopSetup: () => Promise<unknown>;
-  onOpenExternalFile: () => Promise<unknown>;
+  onOpenExternalFile?: () => Promise<unknown>;
   onRestoreFromCloud?: () => Promise<unknown>;
   onRetry: () => Promise<unknown>;
   status: PrimaryWorkspaceStatus;
@@ -162,10 +162,12 @@ function DesktopWelcome({
                 ) : null}
               </div>
 
-              <DesktopExternalActions
-                language={language}
-                onOpenExternalFile={onOpenExternalFile}
-              />
+              {onOpenExternalFile ? (
+                <DesktopExternalActions
+                  language={language}
+                  onOpenExternalFile={onOpenExternalFile}
+                />
+              ) : null}
             </>
           )}
         </div>
