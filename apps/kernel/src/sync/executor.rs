@@ -2549,6 +2549,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repository_with_wrong_key_reports_authentication_without_rewriting_local_state() {
+        let server = S3Fixture::start();
+        let source = CompleteExecutorFixture::start(
+            HostProfile::Server,
+            &server.endpoint(),
+            CompleteBinding::Shared,
+        )
+        .await;
+        source
+            .create_file("", "Shared.md", "# Shared repository\n")
+            .await;
+        let uploaded = source.run_manual_sync().await;
+        assert_eq!(uploaded.completion_state, SyncRunCompletionState::Succeeded);
+
+        let target = CompleteExecutorFixture::start(
+            HostProfile::Desktop,
+            &server.endpoint(),
+            CompleteBinding::SharedWrongKey,
+        )
+        .await;
+        let local_state_path = target
+            .runtime
+            .instance_data_root()
+            .canonical_path()
+            .join("local-sync.json");
+        let local_state_before = std::fs::read(&local_state_path).expect("read local sync state");
+
+        let failed = target.run_manual_sync().await;
+
+        assert_eq!(failed.completion_state, SyncRunCompletionState::Failed);
+        let error = failed.error.as_ref().expect("safe sync error");
+        assert_eq!(error.code(), "authentication_failed");
+        assert_eq!(error.category(), Some("authentication"));
+        assert_eq!(error.operation(), "sync_run");
+        assert_eq!(
+            std::fs::read(&local_state_path).expect("reread local sync state"),
+            local_state_before,
+        );
+        let local_state: serde_json::Value =
+            serde_json::from_slice(&local_state_before).expect("parse local sync state");
+        assert_eq!(
+            local_state["bindings"][0]["repositoryId"],
+            SHARED_EXECUTOR_REPOSITORY_ID,
+        );
+    }
+
+    #[tokio::test]
     async fn complete_s3_executor_converges_server_mobile_and_desktop_document_workspaces() {
         let server = S3Fixture::start();
         let source = CompleteExecutorFixture::start(
@@ -2795,6 +2842,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum CompleteBinding {
         Shared,
+        SharedWrongKey,
         Distinct,
     }
 
@@ -2849,6 +2897,11 @@ mod tests {
                 CompleteBinding::Shared => (
                     SHARED_EXECUTOR_REPOSITORY_ID,
                     [7_u8; 32],
+                    SHARED_EXECUTOR_DISPLAY_NAME,
+                ),
+                CompleteBinding::SharedWrongKey => (
+                    SHARED_EXECUTOR_REPOSITORY_ID,
+                    [9_u8; 32],
                     SHARED_EXECUTOR_DISPLAY_NAME,
                 ),
                 CompleteBinding::Distinct => (

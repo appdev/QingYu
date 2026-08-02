@@ -1153,6 +1153,7 @@ fn map_repo_error(error: RepoError) -> DejavuRunError {
         RepoError::RemoteLockUnhealthy(error) => map_cloud_code(error.code()),
         RepoError::OperationAndUnlockFailed { operation, .. } => map_repo_error(*operation),
         RepoError::FileIdentityCollision => DejavuRunError::IntegrityFailure,
+        RepoError::DecryptionFailed => DejavuRunError::AuthenticationFailed,
         RepoError::UnsafePath => DejavuRunError::WorkspaceUnavailable,
         RepoError::PortableNameRequired { component } => {
             DejavuRunError::PortableNameRequired { component }
@@ -1241,6 +1242,10 @@ mod tests {
         assert_eq!(
             map_repo_error(RepoError::FileIdentityCollision),
             super::DejavuRunError::IntegrityFailure,
+        );
+        assert_eq!(
+            map_repo_error(RepoError::DecryptionFailed),
+            super::DejavuRunError::AuthenticationFailed,
         );
     }
 
