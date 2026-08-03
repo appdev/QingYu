@@ -29,7 +29,10 @@ describe("DocumentTitleEditor", () => {
     expect(titleEditor).toHaveAttribute("contenteditable", "true");
     expect(titleEditor).toHaveAttribute("aria-multiline", "false");
     expect(titleEditor).toHaveClass("whitespace-pre-wrap", "break-words");
-    expect(titleEditor).not.toHaveClass("border", "outline-none", "focus:ring");
+    titleEditor.focus();
+    expect(titleEditor).toHaveFocus();
+    expect(titleEditor).toHaveClass("outline-none", "focus:outline-none");
+    expect(titleEditor).not.toHaveClass("border", "ring", "focus:ring");
     expect(titleEditor).not.toHaveClass("truncate", "whitespace-nowrap", "overflow-hidden");
   });
 

@@ -112,7 +112,7 @@ export function DocumentTitleEditor({
       aria-multiline="false"
       contentEditable={!disabled}
       suppressContentEditableWarning
-      className="mb-6 w-full whitespace-pre-wrap break-words text-4xl leading-tight font-semibold text-(--text-primary)"
+      className="mb-6 w-full whitespace-pre-wrap break-words text-4xl leading-tight font-semibold text-(--text-primary) outline-none focus:outline-none"
       onBlur={() => {
         compositionEndTitleRef.current = null;
         if (skipEnterBlurCommitRef.current) {
