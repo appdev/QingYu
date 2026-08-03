@@ -359,6 +359,170 @@ describe("CompactRepositoryAccess", () => {
     }));
   });
 
+  it("awaits one native runtime confirmation before compact bind submission", async () => {
+    const pendingConfirmation = deferred<boolean>();
+    const syncConfig = installRuntime();
+    const confirm = vi.fn(() => pendingConfirmation.promise);
+    Object.assign(getAppRuntime().dialog, { confirm });
+    const browserConfirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    const join = screen.getByRole("button", { name: "Join notebook" });
+    fireEvent.click(join);
+    fireEvent.click(join);
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      "Join this cloud notebook? Existing local files with matching names will be merged during recovery."
+    );
+    expect(browserConfirm).not.toHaveBeenCalled();
+    expect(syncConfig.bindRepository).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingConfirmation.resolve(true);
+    });
+
+    await waitFor(() => expect(syncConfig.bindRepository).toHaveBeenCalledTimes(1));
+    expect(syncConfig.bindRepository).toHaveBeenCalledWith({
+      displayName: "Shared notes",
+      notesRoot: "kernel-workspace://primary",
+      repositoryId,
+      revision: "rev-1"
+    });
+  });
+
+  it("does not bind an obsolete workspace root after async confirmation", async () => {
+    const pendingConfirmation = deferred<boolean>();
+    const syncConfig = installRuntime();
+    Object.assign(getAppRuntime().dialog, {
+      confirm: vi.fn(() => pendingConfirmation.promise)
+    });
+    const view = renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join notebook" }));
+    view.rerender(
+      <CompactRepositoryAccess
+        configDocument={configDocument()}
+        dirty={false}
+        language="en"
+        primaryRoot="kernel-workspace://replacement"
+        saving={false}
+      />
+    );
+
+    await act(async () => {
+      pendingConfirmation.resolve(true);
+    });
+
+    expect(syncConfig.bindRepository).not.toHaveBeenCalled();
+  });
+
+  it("does not bind an obsolete catalog revision after async confirmation", async () => {
+    const pendingConfirmation = deferred<boolean>();
+    const syncConfig = installRuntime();
+    Object.assign(getAppRuntime().dialog, {
+      confirm: vi.fn(() => pendingConfirmation.promise)
+    });
+    const view = renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join notebook" }));
+    view.rerender(
+      <CompactRepositoryAccess
+        configDocument={configDocument("rev-2")}
+        dirty={false}
+        language="en"
+        primaryRoot="kernel-workspace://primary"
+        saving={false}
+      />
+    );
+    await waitFor(() => expect(syncConfig.listNotebooks).toHaveBeenLastCalledWith({
+      revision: "rev-2"
+    }));
+
+    await act(async () => {
+      pendingConfirmation.resolve(true);
+    });
+
+    expect(syncConfig.bindRepository).not.toHaveBeenCalled();
+  });
+
+  it("does not bind after the compact repository screen unmounts during confirmation", async () => {
+    const pendingConfirmation = deferred<boolean>();
+    const syncConfig = installRuntime();
+    Object.assign(getAppRuntime().dialog, {
+      confirm: vi.fn(() => pendingConfirmation.promise)
+    });
+    const view = renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join notebook" }));
+    view.unmount();
+
+    await act(async () => {
+      pendingConfirmation.resolve(true);
+    });
+
+    expect(syncConfig.bindRepository).not.toHaveBeenCalled();
+  });
+
+  it("does not bind a repository deselected during async confirmation", async () => {
+    const pendingConfirmation = deferred<boolean>();
+    const syncConfig = installRuntime({
+      listNotebooks: vi.fn(async () => [
+        entry(),
+        entry("Other notes", {
+          displayName: "Other notes",
+          repositoryId: "00000000-0000-4000-8000-0000000000d3"
+        })
+      ])
+    });
+    Object.assign(getAppRuntime().dialog, {
+      confirm: vi.fn(() => pendingConfirmation.promise)
+    });
+    renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Join notebook" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Other notes" }));
+
+    await act(async () => {
+      pendingConfirmation.resolve(true);
+    });
+
+    expect(syncConfig.bindRepository).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["canceled", () => Promise.resolve(false)],
+    ["unavailable", () => Promise.reject(new Error("native dialog unavailable"))]
+  ])("fails closed when runtime confirmation is %s", async (_state, firstConfirmation) => {
+    const syncConfig = installRuntime();
+    const confirm = vi.fn()
+      .mockImplementationOnce(firstConfirmation)
+      .mockResolvedValueOnce(true);
+    Object.assign(getAppRuntime().dialog, { confirm });
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderAccess();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Shared notes" }));
+    const join = screen.getByRole("button", { name: "Join notebook" });
+    fireEvent.click(join);
+    await act(async () => Promise.resolve());
+
+    expect(syncConfig.bindRepository).not.toHaveBeenCalled();
+    expect(screen.queryByText("Starting repository recovery…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(join).toBeEnabled();
+
+    fireEvent.click(join);
+
+    await waitFor(() => expect(syncConfig.bindRepository).toHaveBeenCalledTimes(1));
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
   it("shows accepted separately and waits for terminal success before claiming recovery", async () => {
     const pendingTerminal = deferred<SyncJobStatus>();
     const loadJob = vi.fn(() => pendingTerminal.promise);
@@ -402,9 +566,11 @@ describe("CompactRepositoryAccess", () => {
     fireEvent.click(join);
     fireEvent.click(join);
 
-    expect(bindRepository).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Starting repository recovery…")).toBeVisible();
-    pendingAccepted.resolve({ jobId, notesRoot: "kernel-workspace://primary", repositoryId });
+    await waitFor(() => expect(bindRepository).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Starting repository recovery…")).toBeVisible();
+    await act(async () => {
+      pendingAccepted.resolve({ jobId, notesRoot: "kernel-workspace://primary", repositoryId });
+    });
     expect(await screen.findByText("Notebook joined and recovered.")).toBeVisible();
     expect(syncConfig.loadJob).toHaveBeenCalledWith({ jobId });
   });

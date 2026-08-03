@@ -1,5 +1,5 @@
 import { Cloud, KeyRound, LoaderCircle, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   sanitizeDiagnosticText,
   t,
@@ -40,6 +40,16 @@ type BindState =
   | null;
 type CatalogState = "error" | "idle" | "loaded" | "loading";
 
+type BindAuthority = {
+  allowed: boolean;
+  catalogRevision: string | null;
+  configRevision: string;
+  displayName: string | null;
+  notesRoot: string;
+  repositoryId: string | null;
+  selectedEntryKey: string | null;
+};
+
 const targetClass = "min-h-11 min-w-11";
 const inputClass = "min-h-11 min-w-0 w-full rounded-xl border border-(--border-subtle) bg-(--bg-secondary) px-3 text-base text-(--text-primary)";
 const primaryButtonClass = `${targetClass} inline-flex w-full items-center justify-center gap-2 rounded-xl bg-(--accent) px-4 text-sm font-semibold text-white disabled:opacity-50`;
@@ -64,6 +74,17 @@ function safeBindAdmissionCode(error: unknown) {
   } catch {
     return null;
   }
+}
+
+function sameBindAuthority(left: BindAuthority, right: BindAuthority | null) {
+  return right !== null &&
+    left.allowed === right.allowed &&
+    left.catalogRevision === right.catalogRevision &&
+    left.configRevision === right.configRevision &&
+    left.displayName === right.displayName &&
+    left.notesRoot === right.notesRoot &&
+    left.repositoryId === right.repositoryId &&
+    left.selectedEntryKey === right.selectedEntryKey;
 }
 
 function delay(milliseconds: number) {
@@ -104,6 +125,7 @@ export function CompactRepositoryAccess({
   const keyRequestRef = useRef(false);
   const catalogGenerationRef = useRef(0);
   const bindGenerationRef = useRef(0);
+  const bindAuthorityRef = useRef<BindAuthority | null>(null);
   const bindRequestRef = useRef(false);
   const mountedRef = useRef(true);
 
@@ -231,6 +253,27 @@ export function CompactRepositoryAccess({
     bindState !== "succeeded" &&
     !binding
   );
+  useLayoutEffect(() => {
+    bindAuthorityRef.current = {
+      allowed: canBind,
+      catalogRevision,
+      configRevision: revision,
+      displayName: selectedEntry?.provider === "s3" ? selectedEntry.displayName : null,
+      notesRoot: primaryRoot,
+      repositoryId: selectedEntry?.provider === "s3" ? selectedEntry.repositoryId : null,
+      selectedEntryKey
+    };
+    return () => {
+      bindAuthorityRef.current = null;
+    };
+  }, [
+    canBind,
+    catalogRevision,
+    primaryRoot,
+    revision,
+    selectedEntry,
+    selectedEntryKey
+  ]);
 
   const monitorAcceptedJob = async (job: AcceptedRecoveryJob, generation: number) => {
     for (let readCount = 0; readCount < maxAutomaticStatusReads; readCount += 1) {
@@ -277,40 +320,61 @@ export function CompactRepositoryAccess({
       !canBind || bindRequestRef.current ||
       selectedEntry?.provider !== "s3" || !catalogRevision
     ) return;
-    if (!window.confirm(t(language, "compact.sync.repository.bindConfirm"))) return;
-
-    const generation = bindGenerationRef.current + 1;
-    bindGenerationRef.current = generation;
+    const authority: BindAuthority = {
+      allowed: true,
+      catalogRevision,
+      configRevision: revision,
+      displayName: selectedEntry.displayName,
+      notesRoot: primaryRoot,
+      repositoryId: selectedEntry.repositoryId,
+      selectedEntryKey
+    };
     bindRequestRef.current = true;
-    setBindState("submitting");
-    setBindErrorCode(null);
     try {
-      const accepted = await runtime.syncConfig.bindRepository({
-        displayName: selectedEntry.displayName,
-        notesRoot: primaryRoot,
-        repositoryId: selectedEntry.repositoryId,
-        revision: catalogRevision
-      });
-      if (!mountedRef.current || bindGenerationRef.current !== generation) return;
+      try {
+        if (!(await runtime.dialog.confirm(
+          t(language, "compact.sync.repository.bindConfirm")
+        ))) return;
+      } catch {
+        return;
+      }
       if (
-        accepted.notesRoot !== primaryRoot ||
-        accepted.repositoryId !== selectedEntry.repositoryId
-      ) throw new Error("Repository binding identity changed");
-      const job = {
-        jobId: accepted.jobId,
-        repositoryId: accepted.repositoryId,
-        revision: catalogRevision
-      };
-      setAcceptedJob(job);
-      setBindState("accepted");
-      await monitorAcceptedJob(job, generation);
-    } catch (error) {
-      if (!mountedRef.current || bindGenerationRef.current !== generation) return;
-      const safeCode = safeBindAdmissionCode(error);
-      setBindState(safeCode ? "run-unavailable" : "start-failed");
-      setBindErrorCode(safeCode);
+        !mountedRef.current ||
+        !sameBindAuthority(authority, bindAuthorityRef.current)
+      ) return;
+
+      const generation = bindGenerationRef.current + 1;
+      bindGenerationRef.current = generation;
+      setBindState("submitting");
+      setBindErrorCode(null);
+      try {
+        const accepted = await runtime.syncConfig.bindRepository({
+          displayName: selectedEntry.displayName,
+          notesRoot: primaryRoot,
+          repositoryId: selectedEntry.repositoryId,
+          revision: catalogRevision
+        });
+        if (!mountedRef.current || bindGenerationRef.current !== generation) return;
+        if (
+          accepted.notesRoot !== primaryRoot ||
+          accepted.repositoryId !== selectedEntry.repositoryId
+        ) throw new Error("Repository binding identity changed");
+        const job = {
+          jobId: accepted.jobId,
+          repositoryId: accepted.repositoryId,
+          revision: catalogRevision
+        };
+        setAcceptedJob(job);
+        setBindState("accepted");
+        await monitorAcceptedJob(job, generation);
+      } catch (error) {
+        if (!mountedRef.current || bindGenerationRef.current !== generation) return;
+        const safeCode = safeBindAdmissionCode(error);
+        setBindState(safeCode ? "run-unavailable" : "start-failed");
+        setBindErrorCode(safeCode);
+      }
     } finally {
-      if (bindGenerationRef.current === generation) bindRequestRef.current = false;
+      bindRequestRef.current = false;
     }
   };
 
