@@ -677,10 +677,16 @@ export function useMarkdownDocument({
       : workspaceReadyRef.current ? "home" : "recovery");
   }, []);
 
-  const createUntitledTabId = useCallback(() => {
-    const tabId = `untitled:${untitledTabIndexRef.current}`;
-    untitledTabIndexRef.current += 1;
-    return tabId;
+  const createAvailableTabId = useCallback((preferredId?: string) => {
+    if (preferredId && !tabsRef.current.some((tab) => tab.id === preferredId)) return preferredId;
+
+    for (let attempt = 0; attempt < 10_000; attempt += 1) {
+      const tabId = `untitled:${untitledTabIndexRef.current}`;
+      untitledTabIndexRef.current += 1;
+      if (!tabsRef.current.some((tab) => tab.id === tabId)) return tabId;
+    }
+
+    throw new Error("Unable to allocate a unique Markdown tab ID after 10,000 attempts.");
   }, []);
 
   const syncActiveDocumentFromEditor = useCallback(() => {
@@ -1000,7 +1006,7 @@ export function useMarkdownDocument({
       }
       const tab = createDocumentTab(
         nextDocument,
-        savedFile ? fileTabId(savedFile.path) : createUntitledTabId()
+        createAvailableTabId(savedFile ? fileTabId(savedFile.path) : undefined)
       );
       const nextTabs = [...tabsRef.current, tab];
       setActiveTabState(nextTabs, tab.id);
@@ -1029,7 +1035,7 @@ export function useMarkdownDocument({
     if (savedFile) rememberRecentMarkdownFile(savedFile);
     return true;
   }, [
-    createUntitledTabId,
+    createAvailableTabId,
     documentTabsEnabled,
     editorSyncState,
     registerWindowRestoreState,
@@ -1487,17 +1493,26 @@ export function useMarkdownDocument({
       } satisfies WorkspaceDraftRestoreResult;
     }
 
+    const restoredDraftTabId = (draft: StoredWorkspaceDraftTab) =>
+      draft.path === null ? draft.id : fileTabId(draft.path);
     const draftDocumentTabs = draftTabs.map((draft, index) =>
-      createDocumentTab(documentFromDraftTab(draft, documentRef.current.revision + index + 1), draft.id)
+      createDocumentTab(
+        documentFromDraftTab(draft, documentRef.current.revision + index + 1),
+        restoredDraftTabId(draft)
+      )
     );
+    const activeDraft = activeDraftId
+      ? draftTabs.find((draft) => draft.id === activeDraftId)
+      : undefined;
+    const restoredActiveDraftId = activeDraft ? restoredDraftTabId(activeDraft) : null;
     const currentTabs = tabsRef.current.filter((tab) =>
       !isPristineUntitledDocument(documentFromTab(tab)) &&
       !draftDocumentTabs.some((draftTab) => draftTab.id === tab.id || (draftTab.path !== null && draftTab.path === tab.path))
     );
     const nextTabs = [...currentTabs, ...draftDocumentTabs];
     const nextActiveTabId =
-      activeDraftId && nextTabs.some((tab) => tab.id === activeDraftId)
-        ? activeDraftId
+      restoredActiveDraftId && nextTabs.some((tab) => tab.id === restoredActiveDraftId)
+        ? restoredActiveDraftId
         : activeTabIdRef.current && nextTabs.some((tab) => tab.id === activeTabIdRef.current)
           ? activeTabIdRef.current
           : draftDocumentTabs.at(-1)?.id ?? nextTabs.at(-1)?.id ?? null;
