@@ -24,6 +24,7 @@ pub(crate) fn run() {
             crate::themes::activation::cancel_theme_activation,
             crate::themes::activation::release_theme_activation,
             crate::themes::delete_theme,
+            crate::mobile_back::begin_mobile_back,
             crate::mobile_back::complete_mobile_back,
         ])
         .build(tauri::generate_context!())
@@ -31,10 +32,7 @@ pub(crate) fn run() {
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested {
                 code: None, api, ..
-            } => {
-                api.prevent_exit();
-                crate::mobile_back::emit_mobile_back_requested(app);
-            }
+            } => request_mobile_kernel_exit(app, 0, &api),
             tauri::RunEvent::ExitRequested {
                 code: Some(code),
                 api,

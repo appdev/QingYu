@@ -261,7 +261,7 @@ impl MobileKernelRuntimeState {
         Ok(generation)
     }
 
-    fn configured_origin(&self) -> &str {
+    pub(crate) fn configured_origin(&self) -> &str {
         &self.origin
     }
 

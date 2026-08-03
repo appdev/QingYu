@@ -280,12 +280,37 @@ export function useCompactNavigation({
     return navigation;
   }, [reconcileToLatestTarget, transitionPending]);
 
+  const guardRootExit = useCallback(() => {
+    if (transitionPending()) return Promise.resolve(true);
+
+    const rootExit = (async () => {
+      try {
+        await onBeforePopRef.current?.(stackRef.current.at(-1) ?? editorPage);
+        return false;
+      } catch (error) {
+        try {
+          onNavigationErrorRef.current?.(error);
+        } catch {
+          // The guarded exit failure remains primary even if its observer throws.
+        }
+        return true;
+      }
+    })();
+
+    apiBackPromiseRef.current = rootExit;
+    const clearRootExit = () => {
+      if (apiBackPromiseRef.current === rootExit) apiBackPromiseRef.current = null;
+    };
+    rootExit.then(clearRootExit, clearRootExit);
+    return rootExit;
+  }, [transitionPending]);
+
   const pop = useCallback(() => {
     if (transitionPending()) return Promise.resolve(true);
     const currentState = stackRef.current;
-    if (currentState.length === 1) return Promise.resolve(false);
+    if (currentState.length === 1) return guardRootExit();
     return navigateBack(currentState.slice(0, -1), 1);
-  }, [navigateBack, transitionPending]);
+  }, [guardRootExit, navigateBack, transitionPending]);
 
   const popIfCurrent = useCallback((page: CompactOverlayPage) => {
     const currentState = stackRef.current;

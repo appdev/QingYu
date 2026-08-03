@@ -1,65 +1,85 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type Event } from "@tauri-apps/api/event";
 import { subscribeToMobileSystemBack } from "./mobile-back";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn()
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn()
-}));
-
 const mockedInvoke = vi.mocked(invoke);
-const mockedListen = vi.mocked(listen);
+const mobileBackRequestedEvent = "qingyu://mobile-back-requested";
+
+function dispatchMobileBack() {
+  window.dispatchEvent(new Event(mobileBackRequestedEvent));
+}
 
 describe("mobile system Back adapter", () => {
   beforeEach(() => {
     mockedInvoke.mockReset();
-    mockedListen.mockReset();
-    mockedInvoke.mockResolvedValue(undefined);
+    mockedInvoke.mockImplementation(async (command) => (
+      command === "begin_mobile_back" ? true : undefined
+    ));
   });
 
   it.each([
     [true, true],
     [false, false]
-  ])("acknowledges a completed handler result %s", async (handlerResult, consumed) => {
-    let mobileBack: ((event: Event<unknown>) => unknown) | undefined;
-    const cleanup = vi.fn();
-    mockedListen.mockImplementation(async (event, handler) => {
-      expect(event).toBe("qingyu://mobile-back-requested");
-      mobileBack = handler as (event: Event<unknown>) => unknown;
-      return cleanup;
-    });
+  ])("acquires native authority before acknowledging handler result %s", async (handlerResult, consumed) => {
     const handler = vi.fn(async () => handlerResult);
 
     const unsubscribe = await subscribeToMobileSystemBack(handler);
-    await mobileBack?.({ event: "qingyu://mobile-back-requested", id: 1, payload: null } as Event<unknown>);
+    dispatchMobileBack();
 
+    await vi.waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith(
+      "complete_mobile_back",
+      { consumed }
+    ));
+    expect(mockedInvoke).toHaveBeenNthCalledWith(1, "begin_mobile_back");
     expect(handler).toHaveBeenCalledTimes(1);
-    expect(mockedInvoke).toHaveBeenCalledWith("complete_mobile_back", { consumed });
+    expect(mockedInvoke.mock.invocationCallOrder[0]).toBeLessThan(handler.mock.invocationCallOrder[0]);
 
     await unsubscribe();
-    expect(cleanup).toHaveBeenCalledTimes(1);
+    dispatchMobileBack();
+    await Promise.resolve();
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when navigation rejects so Android cannot exit accidentally", async () => {
     const navigationError = new Error("sync form could not flush");
-    let mobileBack: ((event: Event<unknown>) => unknown) | undefined;
-    mockedListen.mockImplementation(async (_event, handler) => {
-      mobileBack = handler as (event: Event<unknown>) => unknown;
-      return () => undefined;
-    });
-
-    await subscribeToMobileSystemBack(async () => {
+    const unsubscribe = await subscribeToMobileSystemBack(async () => {
       throw navigationError;
     });
-    await expect(mobileBack?.({
-      event: "qingyu://mobile-back-requested",
-      id: 2,
-      payload: null
-    } as Event<unknown>)).resolves.toBeUndefined();
+    dispatchMobileBack();
 
-    expect(mockedInvoke).toHaveBeenCalledWith("complete_mobile_back", { consumed: true });
+    await vi.waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith(
+      "complete_mobile_back",
+      { consumed: true }
+    ));
+    await unsubscribe();
+  });
+
+  it("ignores forged or duplicate Back delivery without native authority", async () => {
+    let beginCalls = 0;
+    mockedInvoke.mockImplementation(async (command) => {
+      if (command !== "begin_mobile_back") return undefined;
+      beginCalls += 1;
+      return beginCalls === 1;
+    });
+    let releaseHandler!: (value: boolean) => unknown;
+    const handler = vi.fn(() => new Promise<boolean>((resolve) => {
+      releaseHandler = resolve;
+    }));
+
+    const unsubscribe = await subscribeToMobileSystemBack(handler);
+    dispatchMobileBack();
+    dispatchMobileBack();
+
+    await vi.waitFor(() => expect(mockedInvoke).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    releaseHandler(true);
+    await vi.waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith(
+      "complete_mobile_back",
+      { consumed: true }
+    ));
+    await unsubscribe();
   });
 });

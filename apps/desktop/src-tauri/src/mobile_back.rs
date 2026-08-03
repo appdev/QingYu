@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(mobile)]
-use tauri::{Emitter, Manager};
+use std::sync::Arc;
 
 #[cfg(mobile)]
-const MOBILE_BACK_REQUESTED_EVENT: &str = "qingyu://mobile-back-requested";
+use crate::mobile_kernel_runtime::{validated_mobile_renderer_origin, MobileKernelRuntimeState};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MobileBackCompletion {
@@ -24,11 +24,6 @@ impl MobileBackState {
             .is_ok()
     }
 
-    #[cfg(mobile)]
-    pub(crate) fn cancel_request(&self) {
-        self.pending.store(false, Ordering::Release);
-    }
-
     pub(crate) fn complete_request(&self, consumed: bool) -> MobileBackCompletion {
         if !self.pending.swap(false, Ordering::AcqRel) {
             return MobileBackCompletion::Ignored;
@@ -43,28 +38,40 @@ impl MobileBackState {
 }
 
 #[cfg(mobile)]
-pub(crate) fn emit_mobile_back_requested<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    let state = app.state::<MobileBackState>();
-    if !state.begin_request() {
+fn mobile_back_renderer_is_authorized(
+    window: &tauri::WebviewWindow,
+    runtime: &MobileKernelRuntimeState,
+) -> bool {
+    let Ok(url) = window.url() else {
         return false;
-    }
+    };
 
-    let emitted = app
-        .get_webview_window("main")
-        .is_some_and(|window| window.emit(MOBILE_BACK_REQUESTED_EVENT, ()).is_ok());
-    if !emitted {
-        state.cancel_request();
-    }
-    emitted
+    validated_mobile_renderer_origin(window.label(), runtime.configured_origin(), &url).is_ok()
+}
+
+#[tauri::command]
+#[cfg(mobile)]
+pub(crate) fn begin_mobile_back(
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, Arc<MobileKernelRuntimeState>>,
+    state: tauri::State<'_, MobileBackState>,
+) -> bool {
+    mobile_back_renderer_is_authorized(&window, &runtime) && state.begin_request()
 }
 
 #[tauri::command]
 #[cfg(mobile)]
 pub(crate) fn complete_mobile_back(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, Arc<MobileKernelRuntimeState>>,
     state: tauri::State<'_, MobileBackState>,
     consumed: bool,
 ) {
+    if !mobile_back_renderer_is_authorized(&window, &runtime) {
+        return;
+    }
+
     if state.complete_request(consumed) == MobileBackCompletion::Exit {
         app.exit(0);
     }

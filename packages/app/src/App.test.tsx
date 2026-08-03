@@ -6728,6 +6728,9 @@ describe("QingYu workspace", () => {
     expect(notice).toHaveClass("shadow-[0_2px_6px_rgba(15,23,42,0.08)]");
     expect(notice).not.toHaveClass("app-toast-centered");
     expect(notice).not.toHaveClass("left-1/2", "-translate-x-1/2");
+    const noticeToaster = notice?.closest<HTMLElement>("[data-sonner-toaster]");
+    expect(noticeToaster).toHaveStyle({ "--width": "fit-content", position: "fixed" });
+    expect(noticeToaster?.style.width).toBe("");
     expect(screen.queryByRole("heading", { name: "QingYu needs to reload" })).not.toBeInTheDocument();
 
     const submitIssueButton = screen.getByRole("button", { name: "Submit issue" });

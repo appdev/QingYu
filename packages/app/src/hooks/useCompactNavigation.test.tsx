@@ -430,6 +430,46 @@ describe("useCompactNavigation", () => {
     expect(historyBack).not.toHaveBeenCalled();
   });
 
+  it("waits for the editor root exit guard and coalesces repeated Back attempts", async () => {
+    let finishExit: (() => unknown) | undefined;
+    const beforePop = vi.fn(() => new Promise<unknown>((resolve) => {
+      finishExit = () => resolve(undefined);
+    }));
+    const { result } = renderHook(() => useCompactNavigation({ onBeforePop: beforePop }));
+
+    let firstBack: Promise<boolean> | undefined;
+    act(() => {
+      firstBack = result.current.pop();
+    });
+
+    expect(beforePop).toHaveBeenCalledTimes(1);
+    expect(beforePop).toHaveBeenCalledWith({ kind: "editor" });
+    await expect(result.current.pop()).resolves.toBe(true);
+    expect(beforePop).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      finishExit?.();
+      await firstBack;
+    });
+
+    await expect(firstBack).resolves.toBe(false);
+  });
+
+  it("consumes editor root Back when its exit guard fails", async () => {
+    const exitError = new Error("save failed");
+    const onNavigationError = vi.fn();
+    const { result } = renderHook(() => useCompactNavigation({
+      onBeforePop: () => Promise.reject(exitError),
+      onNavigationError
+    }));
+
+    await expect(result.current.pop()).resolves.toBe(true);
+
+    expect(onNavigationError).toHaveBeenCalledTimes(1);
+    expect(onNavigationError).toHaveBeenCalledWith(exitError);
+    expect(result.current.page).toEqual({ kind: "editor" });
+  });
+
   it("pops only when the expected page is still current", async () => {
     const historyBack = vi.spyOn(window.history, "back").mockImplementation(() => undefined);
     const { result } = renderHook(() => useCompactNavigation());

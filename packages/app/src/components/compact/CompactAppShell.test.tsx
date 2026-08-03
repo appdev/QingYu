@@ -82,6 +82,64 @@ describe("CompactAppShell", () => {
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
   });
 
+  it("flushes the editor before allowing system Back to leave the root", async () => {
+    const setup = controllerWithEditorHost();
+    let finishFlush: (() => unknown) | undefined;
+    setup.saveState.flush = vi.fn(() => new Promise<unknown>((resolve) => {
+      finishFlush = () => resolve(undefined);
+    }));
+    let systemBack: (() => Promise<boolean>) | undefined;
+    const subscribeToSystemBack = async (handler: () => Promise<boolean>) => {
+      systemBack = handler;
+      return vi.fn();
+    };
+
+    render(
+      <CompactAppShell
+        controller={setup}
+        subscribeToSystemBack={subscribeToSystemBack}
+      />
+    );
+
+    await waitFor(() => expect(systemBack).toBeDefined());
+    let backSettled = false;
+    const backAttempt = systemBack?.().then((consumed) => {
+      backSettled = true;
+      return consumed;
+    });
+
+    expect(setup.saveState.flush).toHaveBeenCalledTimes(1);
+    expect(setup.saveState.flush).toHaveBeenCalledWith("navigation");
+    await act(async () => Promise.resolve());
+    expect(backSettled).toBe(false);
+
+    await act(async () => finishFlush?.());
+    await expect(backAttempt).resolves.toBe(false);
+  });
+
+  it("consumes system Back at the editor root when its flush fails", async () => {
+    const setup = controllerWithEditorHost();
+    setup.saveState.flush = vi.fn(() => Promise.reject(new Error("save failed")));
+    let systemBack: (() => Promise<boolean>) | undefined;
+    const subscribeToSystemBack = async (handler: () => Promise<boolean>) => {
+      systemBack = handler;
+      return vi.fn();
+    };
+
+    render(
+      <CompactAppShell
+        controller={setup}
+        subscribeToSystemBack={subscribeToSystemBack}
+      />
+    );
+
+    await waitFor(() => expect(systemBack).toBeDefined());
+    await expect(systemBack?.()).resolves.toBe(true);
+
+    expect(setup.saveState.flush).toHaveBeenCalledTimes(1);
+    expect(setup.saveState.flush).toHaveBeenCalledWith("navigation");
+  });
+
   it("consumes an explicit controller request by opening the real Compact sync stack", async () => {
     const setup = controllerWithEditorHost();
     setup.navigationRequest = {

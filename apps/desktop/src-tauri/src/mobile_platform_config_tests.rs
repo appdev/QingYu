@@ -220,6 +220,18 @@ fn mobile_platform_config_android_exposes_no_import_share_or_storage_surface() {
 }
 
 #[test]
+fn mobile_platform_config_android_intercepts_back_before_activity_destruction() {
+    let activity = source("gen/android/app/src/main/java/dev/markra/app/MainActivity.kt");
+
+    assert!(activity.contains("onBackPressedDispatcher.addCallback"));
+    assert!(activity.contains("override fun onWebViewCreate"));
+    assert!(activity.contains("evaluateJavascript"));
+    assert!(activity.contains("qingyu://mobile-back-requested"));
+    assert!(!activity.contains("moveTaskToBack"));
+    assert!(!activity.contains("finish()"));
+}
+
+#[test]
 fn mobile_platform_config_apple_allows_only_local_networking_exception() {
     let project = source("gen/apple/project.yml");
     let info_plist = source("gen/apple/qingyu_iOS/Info.plist");

@@ -3,7 +3,7 @@ import { Toaster } from "sonner";
 import { t, type AppLanguage } from "@markra/shared";
 import { appNoticeToasterId } from "../lib/app-toast";
 
-const toasterStyle = { "--width": "fit-content", position: "fixed", width: "fit-content" } as CSSProperties;
+const toasterStyle = { "--width": "fit-content", position: "fixed" } as CSSProperties;
 
 export function AppToaster({ language }: { language: AppLanguage }) {
   return (

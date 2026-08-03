@@ -22,6 +22,7 @@ const MOBILE_COMMANDS: &[&str] = &[
     "cancel_theme_activation",
     "release_theme_activation",
     "delete_theme",
+    "begin_mobile_back",
     "complete_mobile_back",
 ];
 
@@ -585,14 +586,16 @@ fn builder_boundary_theme_activation_uses_window_identity_and_narrow_lifetimes()
 }
 
 #[test]
-fn builder_boundary_mobile_back_intercepts_only_uncoded_exit_requests() {
+fn builder_boundary_mobile_back_is_authorized_before_activity_destruction() {
     let runtime = source("src/mobile_runtime.rs");
     assert!(runtime.contains("MobileBackState::default()"));
+    assert!(runtime.contains("crate::mobile_back::begin_mobile_back"));
     assert!(runtime.contains("crate::mobile_back::complete_mobile_back"));
     assert!(runtime.contains("tauri::RunEvent::ExitRequested"));
     assert!(runtime.contains("code: None"));
     assert!(runtime.contains("api.prevent_exit()"));
-    assert!(runtime.contains("emit_mobile_back_requested"));
+    assert!(!runtime.contains("emit_mobile_back_requested"));
+    assert!(runtime.contains("request_mobile_kernel_exit(app, 0, &api)"));
     assert!(runtime.contains("request_mobile_kernel_exit(app, code, &api)"));
     assert!(runtime.contains("runtime.stop().await"));
     assert!(runtime.contains("mark_terminal_exit_succeeded"));
@@ -603,7 +606,10 @@ fn builder_boundary_mobile_back_intercepts_only_uncoded_exit_requests() {
     assert!(!desktop_exit.contains("handle_native_sync_exit"));
 
     let mobile_back = source("src/mobile_back.rs");
+    assert!(mobile_back.contains("pub(crate) fn begin_mobile_back"));
     assert!(mobile_back.contains("pub(crate) fn complete_mobile_back"));
+    assert!(mobile_back.contains("validated_mobile_renderer_origin"));
+    assert!(mobile_back.contains("window: tauri::WebviewWindow"));
     assert!(mobile_back.contains("app.exit(0)"));
 }
 

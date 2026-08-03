@@ -129,6 +129,7 @@ export function CompactAppShell({
   releaseSyncFormOnTeardownRef.current = releaseSyncFormOnTeardown;
   const navigation = useCompactNavigation({
     onBeforePop: (page) => {
+      if (page.kind === "editor") return controller.saveState.flush("navigation");
       if (page.kind !== "sync-form") return;
       return exitSyncForm();
     },
