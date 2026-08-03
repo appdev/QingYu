@@ -22,6 +22,7 @@ apps/kernel/crates/qingyu-dejavu/src/indexer.rs
 apps/kernel/crates/qingyu-dejavu/src/lib.rs
 apps/kernel/crates/qingyu-dejavu/src/lifecycle.rs
 apps/kernel/crates/qingyu-dejavu/src/path_security.rs
+apps/kernel/crates/qingyu-dejavu/src/portable_path.rs
 apps/kernel/crates/qingyu-dejavu/src/purge.rs
 apps/kernel/crates/qingyu-dejavu/src/ref_store.rs
 apps/kernel/crates/qingyu-dejavu/src/repo.rs
@@ -100,6 +101,7 @@ apps/kernel/src/storage/capability.rs
 apps/kernel/src/storage/mod.rs
 apps/kernel/src/storage/no_replace.rs
 apps/kernel/src/sync/backend.rs
+apps/kernel/src/sync/catalog.rs
 apps/kernel/src/sync/config.rs
 apps/kernel/src/sync/credentials.rs
 apps/kernel/src/sync/dejavu_runner.rs
@@ -191,6 +193,9 @@ packages/app/src/app/editor-link-command.ts
 packages/app/src/app/pandoc-setup.ts
 packages/app/src/app/primary-workspace-documents.test.ts
 packages/app/src/app/primary-workspace-documents.ts
+packages/app/src/app/workspace-directory.test.ts
+packages/app/src/app/workspace-directory.ts
+packages/app/src/app/workspace-model.test.ts
 packages/app/src/app/workspace-model.ts
 packages/app/src/components/AppErrorBoundary.test.tsx
 packages/app/src/components/AppErrorBoundary.tsx
@@ -208,6 +213,8 @@ packages/app/src/components/DocumentHistoryDialog.test.tsx
 packages/app/src/components/DocumentHistoryDialog.tsx
 packages/app/src/components/DocumentLinksPanel.tsx
 packages/app/src/components/DocumentSearchBar.tsx
+packages/app/src/components/DocumentTitleEditor.test.tsx
+packages/app/src/components/DocumentTitleEditor.tsx
 packages/app/src/components/EditorWidthResizer.tsx
 packages/app/src/components/GlobalSearchPanel.test.tsx
 packages/app/src/components/GlobalSearchPanel.tsx
@@ -275,6 +282,8 @@ packages/app/src/components/compact/CompactMoveTargetScreen.test.tsx
 packages/app/src/components/compact/CompactMoveTargetScreen.tsx
 packages/app/src/components/compact/CompactNameDialog.test.tsx
 packages/app/src/components/compact/CompactNameDialog.tsx
+packages/app/src/components/compact/CompactRepositoryAccess.test.tsx
+packages/app/src/components/compact/CompactRepositoryAccess.tsx
 packages/app/src/components/compact/CompactSettingsDetail.test.tsx
 packages/app/src/components/compact/CompactSettingsDetail.tsx
 packages/app/src/components/compact/CompactSettingsHome.test.tsx
@@ -336,9 +345,12 @@ packages/app/src/components/sync/SyncConflictHistoryDialog.test.tsx
 packages/app/src/components/sync/SyncConflictHistoryDialog.tsx
 packages/app/src/hooks/compact-navigation-history.test.ts
 packages/app/src/hooks/compact-navigation-history.ts
+packages/app/src/hooks/markdown-document/document-model.test.ts
 packages/app/src/hooks/markdown-document/document-model.ts
 packages/app/src/hooks/markdown-document/editor-sync.test.ts
 packages/app/src/hooks/markdown-document/editor-sync.ts
+packages/app/src/hooks/markdown-document/realtime-autosave.test.ts
+packages/app/src/hooks/markdown-document/realtime-autosave.ts
 packages/app/src/hooks/markdown-document/restore-outcome.test.ts
 packages/app/src/hooks/markdown-document/restore-outcome.ts
 packages/app/src/hooks/useAppLanguage.ts
@@ -362,6 +374,8 @@ packages/app/src/hooks/useDefaultContextMenuBlocker.test.tsx
 packages/app/src/hooks/useDefaultContextMenuBlocker.ts
 packages/app/src/hooks/useDocumentSearchState.test.tsx
 packages/app/src/hooks/useDocumentSearchState.ts
+packages/app/src/hooks/useDocumentTitleController.test.tsx
+packages/app/src/hooks/useDocumentTitleController.ts
 packages/app/src/hooks/useEditorContentWidthState.test.tsx
 packages/app/src/hooks/useEditorContentWidthState.ts
 packages/app/src/hooks/useEditorPreferences.test.tsx
@@ -437,6 +451,7 @@ packages/app/src/lib/deferred-markdown-change.test.ts
 packages/app/src/lib/deferred-markdown-change.ts
 packages/app/src/lib/diagnostics/diagnostics-report.test.ts
 packages/app/src/lib/diagnostics/diagnostics-report.ts
+packages/app/src/lib/document-creation.ts
 packages/app/src/lib/document-export.test.ts
 packages/app/src/lib/document-export.ts
 packages/app/src/lib/document-links.test.ts
@@ -606,13 +621,17 @@ packages/editor-react/tsconfig.test.json
 packages/editor-react/vitest.config.ts
 packages/editor/package.json
 packages/editor/src/clipboard-asset-types.ts
+packages/editor/src/code-support.test.ts
 packages/editor/src/code-support.ts
+packages/editor/src/codemirror/blank-lines.test.ts
+packages/editor/src/codemirror/blank-lines.ts
 packages/editor/src/codemirror/block-drag.test.ts
 packages/editor/src/codemirror/block-drag.ts
 packages/editor/src/codemirror/blocks.test.ts
 packages/editor/src/codemirror/blocks.ts
 packages/editor/src/codemirror/callout-preview.test.ts
 packages/editor/src/codemirror/callout-preview.ts
+packages/editor/src/codemirror/changes.ts
 packages/editor/src/codemirror/clipboard-assets.test.ts
 packages/editor/src/codemirror/clipboard-assets.ts
 packages/editor/src/codemirror/code-block.test.ts
@@ -707,11 +726,14 @@ packages/kernel-client/src/generated/kernel-v1.ts
 packages/kernel-client/src/index.ts
 packages/kernel-client/src/transport.test.ts
 packages/kernel-client/src/transport.ts
+packages/kernel-client/src/validation.test.ts
 packages/kernel-client/src/validation.ts
 packages/kernel-client/tsconfig.build.json
 packages/kernel-client/tsconfig.json
 packages/kernel-client/tsconfig.test.json
 packages/markdown/package.json
+packages/markdown/src/frontmatter.test.ts
+packages/markdown/src/frontmatter.ts
 packages/markdown/src/index.ts
 packages/markdown/src/links.test.ts
 packages/markdown/src/links.ts
