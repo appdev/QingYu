@@ -897,22 +897,10 @@ export async function saveNativeSettingsFile({
   suggestedName,
   contents
 }: SaveNativeSettingsFileInput): Promise<SavedNativeSettingsFile | null> {
-  const targetPath = await save({
-    defaultPath: suggestedName,
-    filters: settingsFilters
-  });
-
-  if (!targetPath) return null;
-
-  await invokeNative("write_text_file", {
-    path: targetPath,
+  return invokeNative<SavedNativeSettingsFile | null>("save_settings_file", {
+    suggestedName,
     contents
   });
-
-  return {
-    path: targetPath,
-    name: fileNameFromPath(targetPath)
-  };
 }
 
 export async function saveNativePandocFile({

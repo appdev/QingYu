@@ -1158,26 +1158,46 @@ describe("native file access", () => {
   });
 
   it("saves a QingYu settings JSON file through the native save dialog", async () => {
-    mockedSave.mockResolvedValue("/mock-files/markra-settings.json");
-    mockedInvoke.mockResolvedValue(undefined);
+    mockedInvoke.mockResolvedValue({
+      path: "/mock-files/markra-settings.json",
+      name: "markra-settings.json"
+    });
 
     await expect(
       saveNativeSettingsFile({
         suggestedName: "markra-settings.json",
-        contents: "{\"format\":\"markra-settings\"}"
+        contents:
+          "{\"exportedAt\":\"2026-08-03T13:39:05.523Z\",\"format\":\"markra-settings\",\"settings\":{},\"version\":3}"
       })
     ).resolves.toEqual({
       path: "/mock-files/markra-settings.json",
       name: "markra-settings.json"
     });
 
-    expect(mockedSave).toHaveBeenCalledWith({
-      defaultPath: "markra-settings.json",
-      filters: [{ name: "QingYu settings", extensions: ["json"] }]
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(mockedInvoke).toHaveBeenCalledWith("save_settings_file", {
+      suggestedName: "markra-settings.json",
+      contents:
+        "{\"exportedAt\":\"2026-08-03T13:39:05.523Z\",\"format\":\"markra-settings\",\"settings\":{},\"version\":3}"
     });
-    expect(mockedInvoke).toHaveBeenCalledWith("write_text_file", {
-      path: "/mock-files/markra-settings.json",
-      contents: "{\"format\":\"markra-settings\"}"
+  });
+
+  it("returns null when the native settings save dialog is canceled", async () => {
+    mockedInvoke.mockResolvedValue(null);
+
+    await expect(
+      saveNativeSettingsFile({
+        suggestedName: "markra-settings.json",
+        contents:
+          "{\"exportedAt\":\"2026-08-03T13:39:05.523Z\",\"format\":\"markra-settings\",\"settings\":{},\"version\":3}"
+      })
+    ).resolves.toBeNull();
+
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(mockedInvoke).toHaveBeenCalledWith("save_settings_file", {
+      suggestedName: "markra-settings.json",
+      contents:
+        "{\"exportedAt\":\"2026-08-03T13:39:05.523Z\",\"format\":\"markra-settings\",\"settings\":{},\"version\":3}"
     });
   });
 

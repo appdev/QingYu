@@ -42,6 +42,8 @@ mod protected_paths;
 mod remote_sync;
 mod s3_http;
 #[cfg(desktop)]
+mod settings_file;
+#[cfg(desktop)]
 mod shell_command;
 mod storage_capability;
 mod sync_config;

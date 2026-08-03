@@ -897,7 +897,7 @@ pub(crate) fn run() {
                 crate::web_http::download_web_image,
                 crate::markdown_files::document::write_markdown_file,
                 crate::markdown_files::document::write_markdown_export_file,
-                crate::text_file::write_text_file,
+                crate::settings_file::save_settings_file,
                 crate::markdown_files::markdown_export::export_markdown_file,
                 crate::markdown_files::export::export_pdf_file,
                 crate::markdown_files::export::check_pandoc_available,

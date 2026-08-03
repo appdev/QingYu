@@ -101,7 +101,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "download_web_image",
     "write_markdown_file",
     "write_markdown_export_file",
-    "write_text_file",
+    "save_settings_file",
     "export_markdown_file",
     "export_pdf_file",
     "check_pandoc_available",

@@ -16,7 +16,6 @@ pub(crate) fn read_text_file(path: String) -> Result<TextFile, String> {
     Ok(TextFile { path, contents })
 }
 
-#[tauri::command]
 pub(crate) fn write_text_file(path: String, contents: String) -> Result<(), String> {
     write_text_file_with_registry(
         crate::dejavu_sync::path_guard::native_working_tree_registry(),

@@ -984,7 +984,6 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "write_markdown_file",
             "write_markdown_template_file",
             "write_standalone_document_cas",
-            "write_text_file",
         ],
     },
     LegacyWriterSurface {
@@ -1077,6 +1076,7 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "set_editor_window_restore_state",
             "update_mcp_settings",
             "uninstall_shell_command",
+            "save_settings_file",
         ],
     },
 ];
@@ -2110,6 +2110,23 @@ mod tests {
             }),
             "host-only writes must stay separate from workspace ownership claims"
         );
+    }
+
+    #[test]
+    fn normal_desktop_allows_native_settings_exports_as_host_only_writes() {
+        let surface = legacy_writer_surface_inventory()
+            .iter()
+            .find(|surface| surface.entry_points.contains(&"save_settings_file"))
+            .expect("settings export writer surface");
+
+        assert_eq!(surface.disposition, WriterSurfaceDisposition::HostOnly);
+        assert_eq!(surface.integration, WriterSurfaceIntegration::Independent);
+        assert!(normal_desktop_command_is_allowed("save_settings_file"));
+    }
+
+    #[test]
+    fn normal_desktop_does_not_expose_generic_text_writes() {
+        assert!(!normal_desktop_command_is_allowed("write_text_file"));
     }
 
     #[test]
