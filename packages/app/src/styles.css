@@ -3871,14 +3871,14 @@
 }
 
 .theme-tree-row[aria-current="page"] {
-  border-left: 3px solid var(--tree-current-indicator, var(--text-secondary));
+  box-shadow: inset 3px 0 0 var(--tree-current-indicator, var(--text-secondary));
   background-color: var(--bg-tree-current, var(--bg-active));
   color: var(--text-tree-current, var(--text-heading));
   font-weight: var(--sidebar-tree-current-font-weight, var(--sidebar-tree-font-weight, 400));
 }
 
 .theme-tree-row[aria-selected="true"] {
-  border-left: 3px solid var(--tree-selected-indicator, var(--accent));
+  box-shadow: inset 3px 0 0 var(--tree-selected-indicator, var(--accent));
   background-color: var(--bg-tree-selected, var(--accent-soft));
   color: var(--text-tree-selected, var(--text-heading));
 }

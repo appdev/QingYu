@@ -2201,6 +2201,26 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("var(--text-outline-current, var(--text-heading))");
   });
 
+  it("paints file-tree state indicators without adding a layout border", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const currentSelector = '.theme-tree-row[aria-current="page"]';
+    const selectedSelector = '.theme-tree-row[aria-selected="true"]';
+    const stateStyles = document.createElement("style");
+    stateStyles.textContent = `${currentSelector} {${readRuleDeclarations(styles, currentSelector)}}\n${selectedSelector} {${readRuleDeclarations(styles, selectedSelector)}}`;
+    document.head.append(stateStyles);
+
+    try {
+      const rules = Array.from(stateStyles.sheet?.cssRules ?? []) as CSSStyleRule[];
+      expect(rules).toHaveLength(2);
+      for (const rule of rules) {
+        expect(rule.style.getPropertyValue("border-left")).toBe("");
+        expect(rule.style.getPropertyValue("box-shadow")).toMatch(/^inset 3px 0 0 /u);
+      }
+    } finally {
+      stateStyles.remove();
+    }
+  });
+
   it("exposes P0 sidebar typography, state, wrapping, and outline-level fallbacks", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 
