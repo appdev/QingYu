@@ -9,6 +9,7 @@ import type {
 import {
   configureAppRuntime,
   createDefaultAppRuntime,
+  getAppRuntime,
   resetAppRuntimeForTests
 } from "../../runtime";
 import { CompactRepositoryAccess } from "./CompactRepositoryAccess";
@@ -217,7 +218,13 @@ describe("CompactRepositoryAccess", () => {
     const syncConfig = installRuntime({
       changeGlobalKey: vi.fn(() => pendingChange.promise)
     });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const rejectedConfirmation = deferred<boolean>();
+    const acceptedConfirmation = deferred<boolean>();
+    const confirm = vi.fn()
+      .mockReturnValueOnce(rejectedConfirmation.promise)
+      .mockReturnValueOnce(acceptedConfirmation.promise);
+    Object.assign(getAppRuntime().dialog, { confirm });
+    const browserConfirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderAccess();
 
     expect(await screen.findByRole("radio", { name: "Shared notes" })).toBeEnabled();
@@ -227,7 +234,16 @@ describe("CompactRepositoryAccess", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change key" }));
     expect(syncConfig.changeGlobalKey).not.toHaveBeenCalled();
 
+    await act(async () => {
+      rejectedConfirmation.resolve(false);
+    });
+    expect(syncConfig.changeGlobalKey).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByRole("button", { name: "Change key" }));
+    expect(syncConfig.changeGlobalKey).not.toHaveBeenCalled();
+    await act(async () => {
+      acceptedConfirmation.resolve(true);
+    });
     expect(screen.queryByRole("radio", { name: "Shared notes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Join notebook" })).not.toBeInTheDocument();
     pendingChange.resolve({
@@ -242,6 +258,7 @@ describe("CompactRepositoryAccess", () => {
     expect(confirm).toHaveBeenCalledWith(
       "Change the global key? Local repository data will be reset and current bindings disabled."
     );
+    expect(browserConfirm).not.toHaveBeenCalled();
     expect(syncConfig.bindRepository).not.toHaveBeenCalled();
     await waitFor(() => expect(syncConfig.listNotebooks).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("radio", { name: "Shared notes" })).not.toBeChecked();

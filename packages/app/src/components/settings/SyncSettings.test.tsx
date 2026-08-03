@@ -133,6 +133,17 @@ function formattedDate(value: string) {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => undefined;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = (value) => {
+      resolvePromise(value);
+      return undefined;
+    };
+  });
+  return { promise, resolve };
+}
+
 function createEventBus() {
   const listeners = new Map<string, Set<(event: RuntimeEvent<unknown>) => unknown>>();
   const events: AppEventsRuntime = {
@@ -435,6 +446,45 @@ describe("SyncSettings application scope", () => {
       resetAppRuntimeForTests();
       vi.restoreAllMocks();
     }
+  });
+
+  it("awaits runtime confirmation before replacing a configured repository key", async () => {
+    const runtime = createDefaultAppRuntime();
+    const confirmation = deferred<boolean>();
+    const changeGlobalKey = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-0000000000c4",
+      operation: "change-global-key" as const,
+      repositoryId: null
+    }));
+    const confirm = vi.fn(() => confirmation.promise);
+    runtime.syncConfig.changeGlobalKey = changeGlobalKey;
+    runtime.syncConfig.loadKeyState = vi.fn(async () => ({ configured: true }));
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => null);
+    Object.assign(runtime.dialog, { confirm });
+    configureAppRuntime(runtime);
+    vi.spyOn(window, "confirm").mockImplementation(() => {
+      throw new Error("plugin:dialog|confirm is unavailable");
+    });
+
+    renderS3Settings();
+    fireEvent.change(await screen.findByLabelText("Repository key or passphrase"), {
+      target: { value: "replacement-key" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change key" }));
+
+    expect(confirm).toHaveBeenCalledWith(
+      "Change the global key? Local repository data will be reset and current bindings disabled."
+    );
+    expect(changeGlobalKey).not.toHaveBeenCalled();
+
+    await act(async () => {
+      confirmation.resolve(true);
+    });
+
+    await waitFor(() => expect(changeGlobalKey).toHaveBeenCalledWith({
+      confirmed: true,
+      newKey: "replacement-key"
+    }));
   });
 
   it("copies a confirmed repository key only through the secure-context clipboard", async () => {

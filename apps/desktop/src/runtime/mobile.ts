@@ -20,6 +20,7 @@ import {
 } from "./kernel";
 import { listenNativeEvent } from "./tauri/events";
 import * as fileConfirm from "./tauri/file/confirm";
+import * as dialog from "./tauri/dialog";
 import * as mobileFiles from "./tauri/file/mobile";
 import * as logs from "./tauri/logs/shared";
 import * as mobileBack from "./tauri/mobile-back";
@@ -53,6 +54,10 @@ export const mobileRuntime = {
     systemFonts: false,
     templateMutation: false,
     updater: false,
+  },
+  dialog: {
+    ...defaultRuntime.dialog,
+    confirm: dialog.confirmNativeAction,
   },
   files: {
     ...defaultRuntime.files,

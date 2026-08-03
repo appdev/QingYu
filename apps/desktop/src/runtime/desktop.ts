@@ -114,6 +114,7 @@ export function createDesktopRuntime({
     ? createKernelAppConfigRuntime(kernel, windowRuntime.getCurrentNativeWindowLabel)
     : createUnavailableAppConfigRuntime(),
   dialog: {
+    confirm: dialog.confirmNativeAction,
     showAppAbout: dialog.showNativeAppAbout,
     showPandocSetup: dialog.showNativePandocSetup
   },

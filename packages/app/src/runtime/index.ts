@@ -224,6 +224,7 @@ export type AppWorkspaceRuntime = {
 };
 
 export type AppDialogRuntime = {
+  confirm: (message: string) => Promise<boolean>;
   showAppAbout: () => Promise<unknown>;
   showPandocSetup: (
     labels: {
@@ -639,6 +640,9 @@ export function createDefaultAppRuntime(): AppRuntime {
   return {
     appConfig: createUnavailableAppConfigRuntime(),
     dialog: {
+      confirm: async (message) => (
+        typeof globalThis.confirm === "function" ? globalThis.confirm(message) : false
+      ),
       showAppAbout: async () => undefined,
       showPandocSetup: async () => "cancel"
     },

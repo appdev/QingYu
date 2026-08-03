@@ -1,8 +1,12 @@
 import { invokeNative } from "./invoke";
-import { message } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
 
 export function showNativeAppAbout() {
   return invokeNative("show_native_app_about");
+}
+
+export function confirmNativeAction(message: string) {
+  return confirm(message, { kind: "warning", title: "QingYu" });
 }
 
 type NativePandocSetupLabels = {

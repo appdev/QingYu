@@ -620,7 +620,9 @@ export function SyncSettings({
     setKeyFeedback(null);
     try {
       if (dejavuKeyState?.configured) {
-        if (!window.confirm(translate("settings.sync.key.changeConfirm"))) return;
+        if (!(await getAppRuntime().dialog.confirm(
+          translate("settings.sync.key.changeConfirm")
+        ))) return;
         await getAppRuntime().syncConfig.changeGlobalKey({ confirmed: true, newKey: nextKey });
       } else {
         setDejavuKeyState(await getAppRuntime().syncConfig.initializeGlobalKey({ key: nextKey }));

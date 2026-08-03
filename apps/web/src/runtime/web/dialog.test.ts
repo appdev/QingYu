@@ -16,4 +16,15 @@ describe("web dialog runtime", () => {
     })).resolves.toBe("cancel");
     await expect(runtime.dialog.showAppAbout()).resolves.toBeUndefined();
   });
+
+  it("confirms browser actions through the runtime adapter", async () => {
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB
+    });
+    const confirm = vi.spyOn(globalThis, "confirm").mockReturnValue(true);
+
+    await expect(runtime.dialog.confirm("Change the global key?")).resolves.toBe(true);
+
+    expect(confirm).toHaveBeenCalledWith("Change the global key?");
+  });
 });

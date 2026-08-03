@@ -169,7 +169,7 @@ export function CompactRepositoryAccess({
     if (!available || !nextKey || keySaving || recoveryLocked || bindRequestRef.current) return;
     if (
       keyState?.configured &&
-      !window.confirm(t(language, "settings.sync.key.changeConfirm"))
+      !(await runtime.dialog.confirm(t(language, "settings.sync.key.changeConfirm")))
     ) return;
 
     const generation = keyGenerationRef.current + 1;
@@ -201,7 +201,7 @@ export function CompactRepositoryAccess({
     } finally {
       if (mountedRef.current && keyGenerationRef.current === generation) setKeySaving(false);
     }
-  }, [available, keyInput, keySaving, keyState?.configured, language, recoveryLocked, runtime.syncConfig]);
+  }, [available, keyInput, keySaving, keyState?.configured, language, recoveryLocked, runtime.dialog, runtime.syncConfig]);
 
   const refreshKey = () => {
     setKeyReload((current) => current + 1);

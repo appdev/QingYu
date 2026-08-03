@@ -275,6 +275,8 @@ describe("mobile Kernel runtime boundary", () => {
   it("keeps native confirmation, image picker, system back, external links, and themes", async () => {
     mockedConfirm.mockResolvedValue(true);
 
+    await expect(mobileRuntime.dialog.confirm("Change the global key?")).resolves.toBe(true);
+
     await expect(mobileRuntime.files.confirmMarkdownFileDelete("note.md", {
       cancelLabel: "Cancel",
       message: "Delete note?",
@@ -292,6 +294,10 @@ describe("mobile Kernel runtime boundary", () => {
       list: themes.listNativeThemes,
       prepareActivation: themes.prepareNativeThemeActivation,
       releaseActivation: themes.releaseNativeThemeActivation,
+    });
+    expect(mockedConfirm).toHaveBeenCalledWith("Change the global key?", {
+      kind: "warning",
+      title: "QingYu",
     });
   });
 
