@@ -1,3 +1,9 @@
+## [2.5.3](https://github.com/markrahq/markra/compare/v2.5.2...v2.5.3) (2026-08-03)
+
+### Bug Fixes
+
+* **app:** keep deferred outline visible while editing ([#640](https://github.com/markrahq/markra/issues/640)) ([6e341ff](https://github.com/markrahq/markra/commit/6e341ff537647527e246bac6cc0b913e228d1340)), closes [#639](https://github.com/markrahq/markra/issues/639)
+
 ## [2.5.2](https://github.com/markrahq/markra/compare/v2.5.1...v2.5.2) (2026-08-03)
 
 ### Bug Fixes
