@@ -1226,7 +1226,7 @@ function mapInvalidation(notice: ServerKernelEventNotice): KernelInvalidationNot
     case "sync-status-changed":
       return event.status.completionState === "succeeded"
         ? {
-            documentChange: "tree",
+            documentChange: "snapshot",
             scopes: ["sync-status", "documents", "resources"],
           }
         : { scopes: ["sync-status"] };

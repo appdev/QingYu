@@ -1124,7 +1124,7 @@ function documentChangedNotice(_revisionValue: string): KernelInvalidationNotice
 
 function syncSucceededNotice(): KernelInvalidationNotice {
   return {
-    documentChange: "tree",
+    documentChange: "snapshot",
     scopes: ["sync-status", "documents", "resources"],
   };
 }

@@ -1,3 +1,9 @@
+import {
+  createKernelFileRuntime,
+  createUnavailableKernelDomainPort,
+  kernelWorkspaceRoot,
+} from "@markra/app/runtime";
+
 import { createDesktopKernelInvalidationBridge } from "./kernel-invalidations";
 
 const identity = {
@@ -50,7 +56,7 @@ describe("desktop Kernel invalidation bridge", () => {
         scopes: ["sync-status"],
       }],
       [{ status: { completionState: "succeeded" }, type: "sync-status-changed" }, {
-        documentChange: "tree", scopes: ["sync-status", "documents", "resources"],
+        documentChange: "snapshot", scopes: ["sync-status", "documents", "resources"],
       }],
     ] as const;
 
@@ -89,6 +95,41 @@ describe("desktop Kernel invalidation bridge", () => {
       },
       { scopes: ["app-config"] },
     ]);
+  });
+
+  it("refreshes watched document content and tree after successful sync", async () => {
+    const bridge = createDesktopKernelInvalidationBridge();
+    const files = createKernelFileRuntime(createUnavailableKernelDomainPort(), {
+      invalidations: bridge.source,
+    });
+    const watchedPath = `${kernelWorkspaceRoot}/note.md`;
+    const onChange = vi.fn(async () => undefined);
+    const onTreeChange = vi.fn(async () => undefined);
+    const stopWatching = await files.watchMarkdownFile(watchedPath, onChange, onTreeChange);
+
+    bridge.publish({
+      ...identity,
+      frame: {
+        connectionId: identity.instanceId,
+        event: {
+          status: { completionState: "succeeded" },
+          type: "sync-status-changed",
+        },
+        protocolVersion: 1,
+        resource: { kind: "sync" },
+        revision: "revision-sync-succeeded",
+        sequence: 1,
+        type: "event",
+      } as never,
+      kind: "event",
+      scope: "sync-status",
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(watchedPath));
+    expect(onTreeChange).toHaveBeenCalledWith(watchedPath);
+
+    stopWatching();
+    bridge.close();
   });
 
   it("closes subscriptions and ignores late invalidations", () => {
