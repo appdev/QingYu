@@ -182,6 +182,24 @@ describe("CompactRepositoryAccess", () => {
     await waitFor(() => expect(syncConfig.listNotebooks).toHaveBeenCalledWith({ revision: "rev-1" }));
   });
 
+  it("restores the authoritative repository binding when the compact catalog remounts", async () => {
+    const loadRepositoryBinding = vi.fn(async () => ({ repositoryId }));
+    installRuntime({ loadRepositoryBinding });
+
+    const firstView = renderAccess();
+    expect(await screen.findByRole("radio", { name: "Shared notes" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Join notebook" })).toBeDisabled();
+    expect(loadRepositoryBinding).toHaveBeenCalledWith({
+      notesRoot: "kernel-workspace://primary"
+    });
+
+    firstView.unmount();
+    renderAccess();
+
+    expect(await screen.findByRole("radio", { name: "Shared notes" })).toBeChecked();
+    expect(loadRepositoryBinding).toHaveBeenCalledTimes(2);
+  });
+
   it("fails closed when repository key state cannot be determined", async () => {
     const initializeGlobalKey = vi.fn(async () => ({ configured: true }));
     installRuntime({

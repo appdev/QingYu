@@ -5,7 +5,8 @@ import {
   configureAppRuntime,
   createDefaultAppRuntime,
   resetAppRuntimeForTests,
-  type AppEventsRuntime
+  type AppEventsRuntime,
+  type KernelInvalidationNotice
 } from "../runtime";
 import { useCompactSyncSettings } from "./useCompactSyncSettings";
 
@@ -125,5 +126,45 @@ describe("useCompactSyncSettings", () => {
     }));
 
     await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+  });
+
+  it("re-reads authoritative status after a Kernel sync-status invalidation", async () => {
+    const defaultRuntime = createDefaultAppRuntime();
+    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(status("/Notes", "rev-1"));
+    configureAppRuntime({
+      ...defaultRuntime,
+      kernel: {
+        ...defaultRuntime.kernel,
+        availability: "available",
+        invalidations: {
+          available: true,
+          subscribe: (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          }
+        }
+      },
+      syncConfig: { ...defaultRuntime.syncConfig, loadStatus }
+    });
+    const observedLoadResult = { ...document(), status: "loaded" as const };
+    const { result } = renderHook(() => useCompactSyncSettings({
+      available: true,
+      observedLoadResult,
+      primaryRoot: "/Notes",
+      shouldBegin: false
+    }));
+
+    await waitFor(() => expect(loadStatus).toHaveBeenCalledTimes(1));
+    expect(result.current.status).toBeNull();
+
+    act(() => {
+      for (const listener of listeners) listener({ scopes: ["sync-status"] });
+    });
+
+    await waitFor(() => expect(result.current.status?.completionState).toBe("succeeded"));
+    expect(loadStatus).toHaveBeenCalledTimes(2);
   });
 });

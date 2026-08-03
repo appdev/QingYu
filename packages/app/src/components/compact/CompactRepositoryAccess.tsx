@@ -117,6 +117,7 @@ export function CompactRepositoryAccess({
   const [catalogState, setCatalogState] = useState<CatalogState>("idle");
   const [catalogRevision, setCatalogRevision] = useState<string | null>(null);
   const [entries, setEntries] = useState<RemoteNotebookCatalogEntry[]>([]);
+  const [boundRepositoryId, setBoundRepositoryId] = useState<string | null>(null);
   const [selectedEntryKey, setSelectedEntryKey] = useState<string | null>(null);
   const [acceptedJob, setAcceptedJob] = useState<AcceptedRecoveryJob | null>(null);
   const [bindState, setBindState] = useState<BindState>(null);
@@ -163,6 +164,7 @@ export function CompactRepositoryAccess({
     const generation = catalogGenerationRef.current + 1;
     catalogGenerationRef.current = generation;
     setEntries([]);
+    setBoundRepositoryId(null);
     setSelectedEntryKey(null);
     setCatalogRevision(null);
     if (!stableConfig || keyState?.configured !== true) {
@@ -171,16 +173,23 @@ export function CompactRepositoryAccess({
     }
 
     setCatalogState("loading");
-    runtime.syncConfig.listNotebooks({ revision }).then((nextEntries) => {
+    Promise.all([
+      runtime.syncConfig.listNotebooks({ revision }),
+      runtime.syncConfig.loadRepositoryBinding({ notesRoot: primaryRoot })
+    ]).then(([nextEntries, binding]) => {
       if (!mountedRef.current || catalogGenerationRef.current !== generation) return;
-      setEntries(nextEntries.filter((entry) => entry.provider === "s3"));
+      const s3Entries = nextEntries.filter((entry) => entry.provider === "s3");
+      const boundEntry = s3Entries.find((entry) => entry.repositoryId === binding?.repositoryId);
+      setEntries(s3Entries);
+      setBoundRepositoryId(binding?.repositoryId ?? null);
+      setSelectedEntryKey(boundEntry ? catalogEntryKey(boundEntry) : null);
       setCatalogRevision(revision);
       setCatalogState("loaded");
     }).catch(() => {
       if (!mountedRef.current || catalogGenerationRef.current !== generation) return;
       setCatalogState("error");
     });
-  }, [catalogReload, keyState?.configured, revision, runtime.syncConfig, stableConfig]);
+  }, [catalogReload, keyState?.configured, primaryRoot, revision, runtime.syncConfig, stableConfig]);
 
   const binding = bindState === "accepted"
     || bindState === "attempting"
@@ -208,6 +217,7 @@ export function CompactRepositoryAccess({
       setKeyFeedback(null);
       setKeyError(false);
       setEntries([]);
+      setBoundRepositoryId(null);
       setSelectedEntryKey(null);
       setCatalogRevision(null);
       setCatalogState("idle");
@@ -245,6 +255,7 @@ export function CompactRepositoryAccess({
   const canBind = Boolean(
     selectedEntry?.provider === "s3" &&
     selectedEntry.available &&
+    selectedEntry.repositoryId !== boundRepositoryId &&
     catalogRevision === revision &&
     stableConfig &&
     !keyError &&

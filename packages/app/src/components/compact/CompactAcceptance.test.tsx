@@ -15,7 +15,8 @@ import {
   configureAppRuntime,
   createDefaultAppRuntime,
   kernelWorkspaceRoot,
-  resetAppRuntimeForTests
+  resetAppRuntimeForTests,
+  type KernelInvalidationNotice
 } from "../../runtime";
 
 installAppTestHarness();
@@ -516,5 +517,144 @@ describe("Compact acceptance", () => {
     expect(loadJob).toHaveBeenCalledWith({
       jobId: "00000000-0000-4000-8000-0000000000d2"
     });
+  });
+
+  it("restores Kernel terminal status and binding after returning to compact Sync", async () => {
+    const runtime = createDefaultAppRuntime();
+    const repositoryId = "00000000-0000-4000-8000-0000000000e1";
+    const invalidationListeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+    const terminalStatus = {
+      completionState: "succeeded" as const,
+      error: null,
+      lastAttemptAt: "2030-01-02T03:04:05.000Z",
+      lastSuccessfulSyncAt: "2030-01-02T03:04:05.000Z",
+      lastTrigger: "interval" as const,
+      notebookName: null,
+      notesRoot: managedRoot,
+      provider: "s3" as const,
+      revision: "sync-mobile-bound-1",
+      summary: {
+        bytesDownloaded: 16,
+        bytesUploaded: 8,
+        conflictFiles: 0,
+        downloadedFiles: 2,
+        scannedFiles: 3,
+        skippedFiles: 0,
+        uploadedFiles: 1
+      },
+      version: 1 as const
+    };
+    let terminalAvailable = false;
+    const loadStatus = vi.fn(async () => terminalAvailable ? terminalStatus : null);
+    const loadRepositoryBinding = vi.fn(async () => ({ repositoryId }));
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true, projectSync: true },
+      kernel: {
+        ...runtime.kernel,
+        availability: "available",
+        invalidations: {
+          available: true,
+          subscribe: (listener) => {
+            invalidationListeners.add(listener);
+            return () => invalidationListeners.delete(listener);
+          }
+        }
+      },
+      platform: {
+        ...runtime.platform,
+        resolveFormFactor: () => "mobile"
+      },
+      syncConfig: {
+        ...runtime.syncConfig,
+        listNotebooks: vi.fn(async () => [{
+          available: true,
+          disabledReason: null,
+          displayName: "Bound notes",
+          name: "Bound notes",
+          provider: "s3" as const,
+          repositoryId
+        }]),
+        load: async () => ({
+          config: {
+            enabled: true,
+            generateConflictDocument: false,
+            intervalSeconds: 30,
+            mode: "fully-manual",
+            provider: "s3",
+            remoteRoot: "qingyu",
+            s3: {
+              accessKeyId: "",
+              addressingStyle: "auto",
+              bucket: "notes",
+              endpointUrl: "https://s3.example.test",
+              region: "auto",
+              requestTimeoutSeconds: 60,
+              secretAccessKey: "",
+              tlsVerification: "verify"
+            },
+            version: 3,
+            webdav: { password: "", serverUrl: "", username: "" }
+          },
+          configured: true,
+          issues: [],
+          readiness: "ready",
+          revision: "sync-mobile-bound-1",
+          status: "loaded"
+        }),
+        loadKeyState: vi.fn(async () => ({ configured: true })),
+        loadRepositoryBinding,
+        loadStatus
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
+      }
+    });
+    const currentFile = {
+      name: "Current.md",
+      path: `${managedRoot}/Current.md`,
+      relativePath: "Current.md"
+    };
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: currentFile.path,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [currentFile.path]
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([currentFile]);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Current",
+      name: currentFile.name,
+      path: currentFile.path
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+    expect(await screen.findByText("No sync attempt has been recorded.")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByTestId("compact-settings-home");
+    await act(async () => {
+      terminalAvailable = true;
+      for (const listener of invalidationListeners) {
+        await listener({ scopes: ["sync-status"] });
+      }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sync" }));
+
+    expect(await screen.findByRole("heading", { name: "Synced" })).toBeVisible();
+    expect(screen.getByText("Downloaded files: 2")).toBeVisible();
+    expect(await screen.findByRole("radio", { name: "Bound notes" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Join notebook" })).toBeDisabled();
+    expect(loadRepositoryBinding).toHaveBeenCalledWith({ notesRoot: managedRoot });
   });
 });

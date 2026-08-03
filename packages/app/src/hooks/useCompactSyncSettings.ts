@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   SyncConfigDocument,
   SyncConfigLoadResult,
@@ -60,8 +60,25 @@ export function useCompactSyncSettings({
   const configDocument = documentFromResult(loadResult);
   const revision = configDocument?.revision ?? null;
   const [statusView, setStatusView] = useState<SyncStatus | null>(null);
+  const statusGenerationRef = useRef(0);
   const identityRef = useRef({ primaryRoot, revision });
   identityRef.current = { primaryRoot, revision };
+
+  const reloadStatus = useCallback(async () => {
+    const generation = statusGenerationRef.current + 1;
+    statusGenerationRef.current = generation;
+    if (!available || !primaryRoot || !revision) {
+      setStatusView(null);
+      return;
+    }
+    try {
+      const status = await getAppRuntime().syncConfig.loadStatus();
+      if (statusGenerationRef.current !== generation) return;
+      setStatusView(statusMatches(status, primaryRoot, revision) ? status : null);
+    } catch {
+      // Keep the last identity-matched status when a refresh is temporarily unavailable.
+    }
+  }, [available, primaryRoot, revision]);
 
   useEffect(() => {
     if (!available || !shouldBegin) return;
@@ -69,16 +86,25 @@ export function useCompactSyncSettings({
   }, [available, session.begin, shouldBegin]);
 
   useEffect(() => {
-    let cancelled = false;
     setStatusView(null);
-    if (!available || !primaryRoot || !revision) return;
-    getAppRuntime().syncConfig.loadStatus().then((status) => {
-      if (!cancelled && statusMatches(status, primaryRoot, revision)) setStatusView(status);
-    }).catch(() => {});
+    reloadStatus().catch(() => {});
     return () => {
-      cancelled = true;
+      statusGenerationRef.current += 1;
     };
-  }, [available, primaryRoot, revision]);
+  }, [reloadStatus]);
+
+  useEffect(() => {
+    if (!available) return;
+    const invalidations = getAppRuntime().kernel.invalidations;
+    if (!invalidations.available) return;
+    const unsubscribe = invalidations.subscribe((notice) => {
+      if (!notice.scopes.includes("sync-status")) return;
+      reloadStatus().catch(() => {});
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [available, reloadStatus]);
 
   useEffect(() => {
     if (!available) return;
@@ -92,6 +118,7 @@ export function useCompactSyncSettings({
         eventRevision !== identity.revision ||
         !statusMatches(status, identity.primaryRoot, identity.revision)
       ) return;
+      statusGenerationRef.current += 1;
       setStatusView(status);
     }).then((stop) => {
       if (!cancelled) cleanup = stop;
