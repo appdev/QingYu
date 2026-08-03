@@ -1377,7 +1377,6 @@ export function installAppTestHarness() {
     mockedGetStoredEditorPreferences.mockResolvedValue({
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 16,
       clipboardImageFolder: "assets",

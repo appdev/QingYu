@@ -1215,7 +1215,7 @@ export interface components {
             value: components["schemas"]["SettingValueDto"];
         };
         /** @enum {string} */
-        SettingKey: "appearance.mode" | "appearance.lightTheme" | "appearance.darkTheme" | "theme.customCss.light" | "theme.customCss.dark" | "language" | "editor.bodyFontSize" | "editor.contentWidth" | "editor.contentWidthPx" | "editor.fontFamily" | "editor.lineHeight" | "editor.paragraphSpacingPx" | "editor.showWordCount" | "editor.wrapCodeBlocks" | "editor.viewMode" | "files.ignoreRules" | "export.fontFamily" | "export.pdfAuthor" | "export.pdfFooter" | "export.pdfHeader" | "export.pdfHeightMm" | "export.pdfWidthMm" | "export.pdfMarginMm" | "export.pdfMarginPreset" | "export.pdfPageBreakOnH1" | "export.pdfPageSize";
+        SettingKey: "appearance.mode" | "appearance.lightTheme" | "appearance.darkTheme" | "theme.customCss.light" | "theme.customCss.dark" | "language" | "editor.autoSaveEnabled" | "editor.bodyFontSize" | "editor.contentWidth" | "editor.contentWidthPx" | "editor.fontFamily" | "editor.lineHeight" | "editor.paragraphSpacingPx" | "editor.showWordCount" | "editor.wrapCodeBlocks" | "editor.viewMode" | "files.ignoreRules" | "export.fontFamily" | "export.pdfAuthor" | "export.pdfFooter" | "export.pdfHeader" | "export.pdfHeightMm" | "export.pdfWidthMm" | "export.pdfMarginMm" | "export.pdfMarginPreset" | "export.pdfPageBreakOnH1" | "export.pdfPageSize";
         SettingValueDto: {
             /** @enum {string} */
             type: "boolean";

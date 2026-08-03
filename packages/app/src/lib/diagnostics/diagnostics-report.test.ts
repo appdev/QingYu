@@ -14,7 +14,6 @@ describe("generateDiagnosticsReport", () => {
       appVersion: "9.9.9",
       editorPreferences: {
         ...defaultEditorPreferences,
-        autoSaveIntervalMinutes: 10,
         imageUpload: { fileNamePattern: "{name}-{timestamp}" }
       },
       exportSettings: {
@@ -52,7 +51,8 @@ describe("generateDiagnosticsReport", () => {
     expect(report).toContain("- Platform: macos");
     expect(report).toContain("- OS version: 15.5");
     expect(report).toContain("- App language: zh-CN");
-    expect(report).toContain("- Auto-save interval: 5-15m");
+    expect(report).toContain("- Auto-save enabled: true");
+    expect(report).not.toContain("- Auto-save interval:");
     expect(report).toContain("- Application menu enabled: true");
     expect(report).toContain("- Application shortcuts enabled: true");
     expect(report).toContain("- Export feature enabled: true");

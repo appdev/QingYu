@@ -93,7 +93,7 @@ describe("GeneralSettings", () => {
     });
   });
 
-  it("updates automatic save preferences", () => {
+  it("shows one automatic save switch without an interval control", () => {
     const onUpdatePreferences = vi.fn();
 
     render(
@@ -109,21 +109,16 @@ describe("GeneralSettings", () => {
     );
 
     const autoSaveSwitch = screen.getByRole("switch", { name: "Auto-save" });
-    const autoSaveInterval = screen.getByRole("spinbutton", { name: "Save interval" });
 
     expect(autoSaveSwitch).toHaveAttribute("aria-checked", "true");
-    expect(autoSaveInterval).toHaveValue(10);
+    expect(screen.getAllByRole("switch", { name: "Auto-save" })).toHaveLength(1);
+    expect(screen.queryByRole("spinbutton", { name: "Save interval" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Save interval")).not.toBeInTheDocument();
 
     fireEvent.click(autoSaveSwitch);
     expect(onUpdatePreferences).toHaveBeenCalledWith({
       ...defaultEditorPreferences,
       autoSaveEnabled: false
-    });
-
-    fireEvent.change(autoSaveInterval, { target: { value: "30" } });
-    expect(onUpdatePreferences).toHaveBeenCalledWith({
-      ...defaultEditorPreferences,
-      autoSaveIntervalMinutes: 30
     });
   });
 

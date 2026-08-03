@@ -1253,6 +1253,8 @@ pub enum SettingKey {
     ThemeCustomCssDark,
     #[serde(rename = "language")]
     Language,
+    #[serde(rename = "editor.autoSaveEnabled")]
+    EditorAutoSaveEnabled,
     #[serde(rename = "editor.bodyFontSize")]
     EditorBodyFontSize,
     #[serde(rename = "editor.contentWidth")]

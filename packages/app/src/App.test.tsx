@@ -129,6 +129,27 @@ import {
   requestPrimaryCloudNotebookRestore
 } from "./lib/cloud-notebook-restore-events";
 
+const { mockedVisualEditorReady } = vi.hoisted(() => ({
+  mockedVisualEditorReady: vi.fn()
+}));
+
+vi.mock("./components/CodeMirrorPaperSurface", async (importOriginal) => {
+  const ReactModule = await import("react");
+  const actual = await importOriginal<typeof import("./components/CodeMirrorPaperSurface")>();
+
+  return {
+    ...actual,
+    CodeMirrorPaperSurface: (props: Parameters<typeof actual.CodeMirrorPaperSurface>[0]) =>
+      ReactModule.createElement(actual.CodeMirrorPaperSurface, {
+        ...props,
+        onEditorReady: (readyEditor: EditorView | null, disposedEditor?: EditorView) => {
+          mockedVisualEditorReady(readyEditor, disposedEditor);
+          return props.onEditorReady(readyEditor, disposedEditor);
+        }
+      })
+  };
+});
+
 installAppTestHarness();
 
 // Vitest shards files only, so CI needs a local registration boundary to split this monolithic suite by test title.
@@ -752,6 +773,15 @@ function replaceMarkdownSource(sourceEditor: HTMLElement, value: string) {
   });
 }
 
+function deferred<T>() {
+  let resolvePromise: (value: T) => unknown = () => undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  return { promise, resolve: resolvePromise };
+}
+
 function typeVisualText(view: EditorView, text: string) {
   act(() => {
     for (const char of text) {
@@ -848,7 +878,6 @@ function createStoredEditorPreferences(
   return {
     autoRevealActiveFile: true,
     autoSaveEnabled: true,
-    autoSaveIntervalMinutes: 10,
     autoUpdateEnabled: true,
     bodyFontSize: 16,
     clipboardImageFolder: "assets",
@@ -4989,7 +5018,6 @@ describe("QingYu workspace", () => {
       expect(mockedSaveStoredEditorPreferences).toHaveBeenCalledWith({
         autoRevealActiveFile: true,
         autoSaveEnabled: true,
-        autoSaveIntervalMinutes: 10,
         autoUpdateEnabled: true,
         bodyFontSize: 16,
         clipboardImageFolder: "assets",
@@ -5047,7 +5075,6 @@ describe("QingYu workspace", () => {
       expect(mockedNotifyAppEditorPreferencesChanged).toHaveBeenCalledWith({
         autoRevealActiveFile: true,
         autoSaveEnabled: true,
-        autoSaveIntervalMinutes: 10,
         autoUpdateEnabled: true,
         bodyFontSize: 16,
         clipboardImageFolder: "assets",
@@ -6573,7 +6600,6 @@ describe("QingYu workspace", () => {
     mockedGetStoredEditorPreferences.mockResolvedValue({
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 16,
       clipboardImageFolder: "assets",
@@ -6660,7 +6686,7 @@ describe("QingYu workspace", () => {
     })));
   });
 
-   it("renders long error details as a readable toast description", async () => {
+  it("renders long error details as a readable toast description", async () => {
     renderApp();
 
     act(() => {
@@ -6683,6 +6709,126 @@ describe("QingYu workspace", () => {
     expect(toastDescription).toHaveTextContent("Could not write assets/image.png: disk full");
     expect(toastDescription).toHaveClass("whitespace-normal", "break-words", "text-(--text-secondary)");
     expect(toastTitle).not.toHaveTextContent("Could not write assets/image.png: disk full");
+  });
+
+  it("shows a localized bottom-right error notice when real-time Markdown auto-save fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockPrimaryMarkdownFile({
+        content: "# Durable note",
+        name: "durable.md",
+        path: "/mock-files/durable.md"
+      });
+      mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences({
+        autoSaveEnabled: true
+      }));
+      mockedSaveNativeMarkdownFile.mockRejectedValue(new Error("/private/path/durable.md: disk unavailable"));
+
+      renderApp();
+      expect(await screen.findByText("Durable note")).toBeInTheDocument();
+      await selectEditorViewMode("Source code");
+      replaceMarkdownSource(
+        await screen.findByRole("textbox", { name: "Markdown source" }),
+        "# Dirty real-time edit"
+      );
+
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+      await waitFor(() => expect(document.querySelector(".app-toast-notice"))
+        .toHaveTextContent("The document could not be saved."));
+
+      const notice = document.querySelector(".app-toast-notice");
+      expect(notice).toHaveClass("app-toast-readable-error");
+      expect(notice).not.toHaveTextContent("/private/path/durable.md");
+      expect(notice?.closest(".app-notice-toaster")).toBeInTheDocument();
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+        contents: expect.stringContaining("# Dirty real-time edit"),
+        path: "/mock-files/durable.md",
+        skipHistorySnapshot: true
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the active visual editor responsive and mounted while a real-time save is pending", async () => {
+    try {
+      const notePath = "/mock-files/responsive.md";
+      const firstWrite = deferred<{ name: string; path: string }>();
+      mockPrimaryMarkdownFile({
+        content: "# Responsive note",
+        name: "responsive.md",
+        path: notePath
+      });
+      mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences({
+        autoSaveEnabled: true
+      }));
+      mockedSaveNativeMarkdownFile
+        .mockReturnValueOnce(firstWrite.promise)
+        .mockResolvedValueOnce({ name: "responsive.md", path: notePath });
+      mockedVisualEditorReady.mockClear();
+
+      const { container } = renderApp();
+      await expectVisibleCodeMirrorText(container, "Responsive note");
+      const activeTab = screen.getByRole("tab", { name: /responsive\.md/ });
+      const visualView = getVisibleCodeMirrorView(container);
+      act(() => {
+        visualView.dispatch({
+          selection: EditorSelection.cursor(visualView.state.doc.length)
+        });
+      });
+      const initialSelection = visualView.state.selection.main.head;
+
+      expect(mockedVisualEditorReady).toHaveBeenCalledTimes(1);
+      expect(mockedVisualEditorReady).toHaveBeenLastCalledWith(visualView, undefined);
+      expect(activeTab).toHaveAttribute("aria-selected", "true");
+      mockedSaveNativeMarkdownFile.mockClear();
+      vi.useFakeTimers();
+
+      typeVisualText(visualView, "\n\nFirst edit");
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(expect.objectContaining({
+        contents: expect.stringContaining("First edit"),
+        path: notePath,
+        skipHistorySnapshot: true
+      }));
+
+      typeVisualText(visualView, " while saving");
+      const latestContent = visualView.state.doc.toString();
+      const latestSelection = visualView.state.selection.main.head;
+
+      expect(latestContent).toContain("First edit while saving");
+      expect(latestSelection).toBe(initialSelection + "\n\nFirst edit while saving".length);
+      expect(getVisibleCodeMirrorView(container)).toBe(visualView);
+      expect(screen.getByRole("tab", { name: /responsive\.md/ })).toBe(activeTab);
+      expect(activeTab).toHaveAttribute("aria-selected", "true");
+      expect(mockedVisualEditorReady).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        firstWrite.resolve({ name: "responsive.md", path: notePath });
+        await firstWrite.promise;
+      });
+
+      expect(getVisibleCodeMirrorView(container)).toBe(visualView);
+      expect(visualView.state.doc.toString()).toBe(latestContent);
+      expect(visualView.state.selection.main.head).toBe(latestSelection);
+      expect(activeTab).toHaveAttribute("aria-selected", "true");
+      expect(mockedVisualEditorReady).toHaveBeenCalledTimes(1);
+
+      await act(() => vi.advanceTimersByTimeAsync(999));
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2);
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(expect.objectContaining({
+        contents: latestContent,
+        path: notePath,
+        skipHistorySnapshot: true
+      }));
+      expect(getVisibleCodeMirrorView(container)).toBe(visualView);
+      expect(mockedVisualEditorReady).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders the transient sync failure toast without technical detail or a close control", async () => {
@@ -7996,6 +8142,10 @@ describe("QingYu workspace", () => {
   it("keeps visual undo history after switching document tabs", async () => {
     const guidePath = "/mock-files/vault/docs/guide.md";
     const notesPath = "/mock-files/vault/docs/notes.md";
+    const diskContent = new Map([
+      [guidePath, withMatchingDocumentTitle("# Guide", "guide.md")],
+      [notesPath, withMatchingDocumentTitle("# Notes", "notes.md")]
+    ]);
     mockOpenMarkdownTarget({
       kind: "folder",
       folder: {
@@ -8010,17 +8160,22 @@ describe("QingYu workspace", () => {
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
       if (path === guidePath) {
         return {
-          content: withMatchingDocumentTitle("# Guide", "guide.md"),
+          content: diskContent.get(guidePath)!,
           name: "guide.md",
           path: guidePath
         };
       }
 
       return {
-        content: withMatchingDocumentTitle("# Notes", "notes.md"),
+        content: diskContent.get(notesPath)!,
         name: "notes.md",
         path: notesPath
       };
+    });
+    mockedSaveNativeMarkdownFile.mockImplementation(async ({ contents, path, suggestedName }) => {
+      if (!path) throw new Error("expected a path-backed tab save");
+      diskContent.set(path, contents);
+      return { name: suggestedName, path };
     });
 
     const { container } = renderApp();
@@ -9243,7 +9398,6 @@ describe("QingYu workspace", () => {
     mockedGetStoredEditorPreferences.mockResolvedValue({
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 16,
       clipboardImageFolder: "assets",
@@ -9503,7 +9657,6 @@ Date: 2026-08-02
     mockedGetStoredEditorPreferences.mockResolvedValue({
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 16,
       clipboardImageFolder: "assets",
@@ -10707,6 +10860,10 @@ Date: 2026-08-02
   it("keeps the active tab content across editor modes after a prior tab finishes IME composition", async () => {
     const bulletinPath = "/mock-files/vault/bulletin.md";
     const tempPath = "/mock-files/vault/temp.md";
+    const diskContent = new Map([
+      [bulletinPath, withMatchingDocumentTitle("# Bulletin\n\nFirst document.", "bulletin.md")],
+      [tempPath, withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md")]
+    ]);
     mockedGetStoredWorkspaceState.mockResolvedValue({
       filePath: bulletinPath,
       fileTreeOpen: false,
@@ -10716,15 +10873,20 @@ Date: 2026-08-02
     });
     mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === bulletinPath
       ? {
-        content: withMatchingDocumentTitle("# Bulletin\n\nFirst document.", "bulletin.md"),
+        content: diskContent.get(bulletinPath)!,
         name: "bulletin.md",
         path
       }
       : {
-        content: withMatchingDocumentTitle("# Temporary notes\n\nSecond document.", "temp.md"),
+        content: diskContent.get(tempPath)!,
         name: "temp.md",
         path
       });
+    mockedSaveNativeMarkdownFile.mockImplementation(async ({ contents, path, suggestedName }) => {
+      if (!path) throw new Error("expected a path-backed tab save");
+      diskContent.set(path, contents);
+      return { name: suggestedName, path };
+    });
 
     renderApp();
 

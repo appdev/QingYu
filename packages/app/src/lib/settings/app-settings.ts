@@ -116,6 +116,7 @@ export type AppAppearanceMode = typeof appAppearanceModeOptions[number];
 export type SidebarLayoutMode = "stacked" | "tabs";
 export type TableColumnWidthModePreference = "auto" | "even";
 type LegacyEditorPreferences = {
+  autoSaveIntervalMinutes?: unknown;
   // The replacement uses opposite boolean semantics, so normalization must
   // invert this value when upgrading preferences written by beta.6/beta.7.
   revealMarkdownMarkersOnFocus?: boolean;
@@ -220,7 +221,6 @@ export type ExtendedSyntaxPreferences = {
 export type EditorPreferences = {
   autoRevealActiveFile: boolean;
   autoSaveEnabled: boolean;
-  autoSaveIntervalMinutes: number;
   autoUpdateEnabled: boolean;
   bodyFontSize: number;
   clipboardImageFolder: string;
@@ -338,9 +338,6 @@ export const defaultTitlebarActions: readonly TitlebarActionPreference[] = [
 export const splitVisualPanePercentMin = 25;
 export const splitVisualPanePercentMax = 75;
 export const defaultSplitVisualPanePercent = 50;
-export const autoSaveIntervalMinutesMin = 1;
-export const autoSaveIntervalMinutesMax = 120;
-export const defaultAutoSaveIntervalMinutes = 10;
 
 export const defaultImageUploadSettings: ImageUploadSettings = {
   fileNamePattern: "pasted-image-{timestamp}"
@@ -354,7 +351,6 @@ export const defaultExtendedSyntaxPreferences: ExtendedSyntaxPreferences = {
 export const defaultEditorPreferences: EditorPreferences = {
   autoRevealActiveFile: false,
   autoSaveEnabled: true,
-  autoSaveIntervalMinutes: defaultAutoSaveIntervalMinutes,
   autoUpdateEnabled: true,
   bodyFontSize: 16,
   clipboardImageFolder: "assets",
@@ -826,13 +822,6 @@ function normalizeSidebarLayoutMode(value: unknown): SidebarLayoutMode {
     : defaultEditorPreferences.sidebarLayoutMode;
 }
 
-function normalizeAutoSaveIntervalMinutes(value: unknown) {
-  const clamped = clampNumber(value, autoSaveIntervalMinutesMin, autoSaveIntervalMinutesMax);
-  if (clamped === null) return defaultAutoSaveIntervalMinutes;
-
-  return Math.round(clamped);
-}
-
 function normalizeTableColumnWidthMode(value: unknown): TableColumnWidthModePreference {
   return tableColumnWidthModeOptions.includes(value as TableColumnWidthModePreference)
     ? (value as TableColumnWidthModePreference)
@@ -861,7 +850,6 @@ export function normalizeEditorPreferences(value: unknown): EditorPreferences {
       typeof preferences.autoSaveEnabled === "boolean"
         ? preferences.autoSaveEnabled
         : defaultEditorPreferences.autoSaveEnabled,
-    autoSaveIntervalMinutes: normalizeAutoSaveIntervalMinutes(preferences.autoSaveIntervalMinutes),
     autoUpdateEnabled:
       typeof preferences.autoUpdateEnabled === "boolean"
         ? preferences.autoUpdateEnabled

@@ -8,7 +8,6 @@ import {
 import type { NativeShellCommandStatus } from "../../lib/tauri/shell-command";
 import {
   SettingsButton,
-  SettingsNumberInput,
   SettingsRow,
   SettingsSection,
   SettingsSwitch
@@ -239,25 +238,6 @@ export function GeneralSettings({
                 onUpdatePreferences({
                   ...preferences,
                   autoSaveEnabled: !preferences.autoSaveEnabled
-                })
-              }
-            />
-          }
-        />
-        <SettingsRow
-          title={translate("settings.editor.autoSaveInterval")}
-          description={translate("settings.editor.autoSaveIntervalDescription")}
-          action={
-            <SettingsNumberInput
-              label={translate("settings.editor.autoSaveInterval")}
-              min={1}
-              max={120}
-              unit={translate("settings.editor.autoSaveIntervalUnit")}
-              value={preferences.autoSaveIntervalMinutes}
-              onChange={(autoSaveIntervalMinutes) =>
-                onUpdatePreferences({
-                  ...preferences,
-                  autoSaveIntervalMinutes
                 })
               }
             />

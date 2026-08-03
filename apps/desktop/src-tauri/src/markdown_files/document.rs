@@ -22,7 +22,7 @@ pub(crate) fn read_markdown_file(
 }
 
 #[tauri::command]
-pub(crate) fn write_markdown_file(
+pub(crate) async fn write_markdown_file(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     path: String,
@@ -31,25 +31,44 @@ pub(crate) fn write_markdown_file(
     history_cursor_id: Option<String>,
     sync_path_guard_request_id: Option<String>,
 ) -> Result<(), String> {
-    let _mutation = acquire_document_write_guard(
-        crate::dejavu_sync::path_guard::native_working_tree_registry(),
-        &path,
-        window.label(),
-        sync_path_guard_request_id.as_deref(),
-    )?;
-    match markdown_history_root(&app) {
-        Ok(history_root) if skip_history_snapshot.unwrap_or(false) => {
-            write_markdown_file_with_optional_history_root(
-                Some(&history_root),
-                path,
-                contents,
-                true,
-                history_cursor_id,
-            )
+    let window_label = window.label().to_string();
+
+    run_markdown_write_blocking(move || {
+        let _mutation = acquire_document_write_guard(
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+            &path,
+            &window_label,
+            sync_path_guard_request_id.as_deref(),
+        )?;
+        match markdown_history_root(&app) {
+            Ok(history_root) if skip_history_snapshot.unwrap_or(false) => {
+                write_markdown_file_with_optional_history_root(
+                    Some(&history_root),
+                    path,
+                    contents,
+                    true,
+                    history_cursor_id,
+                )
+            }
+            Ok(history_root) => {
+                write_markdown_file_with_history_root(&history_root, path, contents)
+            }
+            Err(_) => {
+                write_markdown_file_with_optional_history_root(None, path, contents, false, None)
+            }
         }
-        Ok(history_root) => write_markdown_file_with_history_root(&history_root, path, contents),
-        Err(_) => write_markdown_file_with_optional_history_root(None, path, contents, false, None),
-    }
+    })
+    .await
+}
+
+async fn run_markdown_write_blocking<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("Markdown write task failed: {error}"))?
 }
 
 #[cfg(desktop)]
@@ -91,8 +110,22 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{acquire_document_write_guard, write_markdown_export_file_with_registry};
+    use super::{
+        acquire_document_write_guard, run_markdown_write_blocking,
+        write_markdown_export_file_with_registry,
+    };
     use crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry;
+
+    #[tokio::test]
+    async fn markdown_write_work_runs_on_the_blocking_pool() {
+        let caller = std::thread::current().id();
+        let worker =
+            run_markdown_write_blocking(move || Ok::<_, String>(std::thread::current().id()))
+                .await
+                .unwrap();
+
+        assert_ne!(caller, worker);
+    }
 
     #[test]
     fn save_as_rejects_an_existing_native_guarded_destination_before_writing() {
