@@ -167,4 +167,43 @@ describe("useCompactSyncSettings", () => {
     await waitFor(() => expect(result.current.status?.completionState).toBe("succeeded"));
     expect(loadStatus).toHaveBeenCalledTimes(2);
   });
+
+  it("subscribes before the initial status read can publish an invalidation", async () => {
+    const defaultRuntime = createDefaultAppRuntime();
+    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+    let readCount = 0;
+    const loadStatus = vi.fn(async () => {
+      readCount += 1;
+      if (readCount === 1) {
+        for (const listener of listeners) listener({ scopes: ["sync-status"] });
+        return null;
+      }
+      return status("/Notes", "rev-1");
+    });
+    configureAppRuntime({
+      ...defaultRuntime,
+      kernel: {
+        ...defaultRuntime.kernel,
+        availability: "available",
+        invalidations: {
+          available: true,
+          subscribe: (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          }
+        }
+      },
+      syncConfig: { ...defaultRuntime.syncConfig, loadStatus }
+    });
+    const observedLoadResult = { ...document(), status: "loaded" as const };
+    const { result } = renderHook(() => useCompactSyncSettings({
+      available: true,
+      observedLoadResult,
+      primaryRoot: "/Notes",
+      shouldBegin: false
+    }));
+
+    await waitFor(() => expect(result.current.status?.completionState).toBe("succeeded"));
+    expect(loadStatus).toHaveBeenCalledTimes(2);
+  });
 });

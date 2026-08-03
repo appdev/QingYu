@@ -87,22 +87,17 @@ export function useCompactSyncSettings({
 
   useEffect(() => {
     setStatusView(null);
+    const invalidations = getAppRuntime().kernel.invalidations;
+    const unsubscribe = available && invalidations.available
+      ? invalidations.subscribe((notice) => {
+          if (!notice.scopes.includes("sync-status")) return;
+          reloadStatus().catch(() => {});
+        })
+      : null;
     reloadStatus().catch(() => {});
     return () => {
       statusGenerationRef.current += 1;
-    };
-  }, [reloadStatus]);
-
-  useEffect(() => {
-    if (!available) return;
-    const invalidations = getAppRuntime().kernel.invalidations;
-    if (!invalidations.available) return;
-    const unsubscribe = invalidations.subscribe((notice) => {
-      if (!notice.scopes.includes("sync-status")) return;
-      reloadStatus().catch(() => {});
-    });
-    return () => {
-      unsubscribe();
+      unsubscribe?.();
     };
   }, [available, reloadStatus]);
 
