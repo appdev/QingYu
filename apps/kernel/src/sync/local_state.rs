@@ -5,6 +5,7 @@ use std::{collections::HashSet, fmt, io::Read, path::PathBuf};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -448,7 +449,24 @@ pub(crate) fn replace_dejavu_key(
     }
     let (store, target, mut state, revision) = load_state_for_update(instance, launch_epoch)?;
     validate_local_state(&state)?;
-    state.repo_key = LegacySensitiveString(Zeroizing::new(derive_repository_key(user_key_input)?));
+    let replacement = Zeroizing::new(derive_repository_key(user_key_input)?);
+    let current_bytes = Zeroizing::new(
+        STANDARD
+            .decode(state.repo_key.as_bytes())
+            .map_err(|_| DejavuLocalStateError::InvalidState)?,
+    );
+    let replacement_bytes = Zeroizing::new(
+        STANDARD
+            .decode(replacement.as_bytes())
+            .map_err(|_| DejavuLocalStateError::InvalidState)?,
+    );
+    if current_bytes.len() != 32 || replacement_bytes.len() != 32 {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    if bool::from(current_bytes.as_slice().ct_eq(replacement_bytes.as_slice())) {
+        return verify_instance_authority(instance);
+    }
+    state.repo_key = LegacySensitiveString(replacement);
     for binding in &mut state.bindings {
         binding.enabled = false;
     }
@@ -948,6 +966,45 @@ mod tests {
         assert_ne!(replaced["repoKey"], original["repoKey"]);
         assert_eq!(replaced["deviceId"], original["deviceId"]);
         assert_eq!(replaced["bindings"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn importing_the_current_repository_key_is_a_byte_exact_binding_preserving_no_op() {
+        let temporary = tempdir().expect("fixture root");
+        let (app_data, paths) = paths(&temporary);
+        let original =
+            serde_json::to_vec_pretty(&state_value(paths.workspace_root().canonical_path(), true))
+                .expect("state JSON");
+        let state_path = app_data.join("local-sync.json");
+        fs::write(&state_path, &original).expect("state file");
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().expect("Kernel config"),
+            paths,
+            system_kernel_ports(),
+        )
+        .expect("locked runtime");
+        let instance = runtime.active_instance_authority();
+        let workspace = runtime
+            .active_workspace_authority()
+            .expect("workspace authority");
+        let current_key = state_value(workspace.root().canonical_path(), true)["repoKey"]
+            .as_str()
+            .expect("repository key")
+            .to_owned();
+
+        super::replace_dejavu_key(instance.as_ref(), runtime.launch_epoch(), &current_key)
+            .expect("idempotent key import");
+
+        assert_eq!(
+            fs::read(&state_path).expect("unchanged local state"),
+            original,
+            "the same repository key must not rewrite or disable the active binding",
+        );
+        let binding =
+            super::read_active_dejavu_binding(runtime.instance_data_root(), workspace.root())
+                .expect("valid local state")
+                .expect("active binding remains enabled");
+        assert_eq!(binding.repository_id(), REPOSITORY_ID);
     }
 
     #[test]

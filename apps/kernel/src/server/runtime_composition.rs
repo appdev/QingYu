@@ -289,6 +289,7 @@ mod tests {
     use std::{fs, time::Duration};
 
     use tempfile::tempdir;
+    use zeroize::Zeroize as _;
 
     use crate::{
         api::{build_server_router, TransportPolicy},
@@ -302,7 +303,10 @@ mod tests {
             ServerAuthenticationStatus, ServerInitializationCoordinatorError,
             ServerLaunchEnvironment,
         },
-        sync::local_state::read_active_dejavu_binding,
+        sync::local_state::{
+            bind_dejavu_repository, export_dejavu_key, read_active_dejavu_binding,
+            replace_dejavu_key,
+        },
     };
 
     use super::*;
@@ -485,6 +489,84 @@ mod tests {
             restarted_binding.into_parts();
         assert_eq!(restarted_repository, repository_id);
         assert_eq!(restarted_device, device_id);
+    }
+
+    #[tokio::test]
+    async fn server_restarts_with_the_selected_binding_after_an_idempotent_key_replay() {
+        const SELECTED_REPOSITORY_ID: &str = "5223e8c9-1346-4d59-8c22-12d68ce16fcf";
+
+        let temporary = tempdir().unwrap();
+        let first = compose_fixed_server_kernel(
+            KernelConfig::generate().unwrap(),
+            fixture_paths(temporary.path()),
+        )
+        .await
+        .unwrap();
+        let instance = first.runtime().active_instance_authority();
+        let workspace = first
+            .runtime()
+            .active_workspace_authority()
+            .expect("active Server workspace");
+        bind_dejavu_repository(
+            instance.as_ref(),
+            workspace.as_ref(),
+            first.runtime().launch_epoch(),
+            SELECTED_REPOSITORY_ID,
+            "Selected shared notes",
+        )
+        .expect("bind selected Server repository");
+        let target = temporary.path().join("data/state/local-sync.json");
+        let selected_bytes = fs::read(&target).expect("selected binding state");
+        let mut current_key = export_dejavu_key(instance.as_ref(), first.runtime().launch_epoch())
+            .expect("export current key for idempotency test");
+
+        replace_dejavu_key(
+            instance.as_ref(),
+            first.runtime().launch_epoch(),
+            &current_key,
+        )
+        .expect("idempotent key replay");
+        current_key.zeroize();
+
+        assert_eq!(
+            fs::read(&target).expect("binding after key replay"),
+            selected_bytes,
+        );
+        assert_eq!(
+            read_active_dejavu_binding(first.runtime().instance_data_root(), workspace.root())
+                .expect("valid selected binding")
+                .expect("selected binding remains enabled")
+                .repository_id(),
+            SELECTED_REPOSITORY_ID,
+        );
+        drop(workspace);
+        drop(instance);
+        drop(first);
+
+        let restarted = compose_fixed_server_kernel(
+            KernelConfig::generate().unwrap(),
+            fixture_paths(temporary.path()),
+        )
+        .await
+        .expect("restart Server with selected binding");
+        assert_eq!(
+            fs::read(&target).expect("restarted binding bytes"),
+            selected_bytes,
+        );
+        let restarted_workspace = restarted
+            .runtime()
+            .active_workspace_authority()
+            .expect("restarted Server workspace");
+        assert_eq!(
+            read_active_dejavu_binding(
+                restarted.runtime().instance_data_root(),
+                restarted_workspace.root(),
+            )
+            .expect("valid restarted binding")
+            .expect("restarted binding remains enabled")
+            .repository_id(),
+            SELECTED_REPOSITORY_ID,
+        );
     }
 
     #[tokio::test]

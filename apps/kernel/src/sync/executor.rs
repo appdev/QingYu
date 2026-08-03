@@ -1645,7 +1645,7 @@ mod tests {
             ExportDejavuKeyRequest, FileDocumentName, HostProfile, ImportDejavuKeyRequest,
             ListRemoteNotebooksQuery, MoveDocumentRequest, PatchSyncConfigRequest, Revision, RunId,
             SyncCompletionState, SyncConfigChangesDto, SyncProvider, SyncRunCompletionState,
-            TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceGeneration,
+            SyncTrigger, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceGeneration,
             WorkspaceRelativePath,
         },
         events::EventSink,
@@ -1653,7 +1653,7 @@ mod tests {
         ports::system::system_kernel_ports,
         runtime::{DocumentsApiService, KernelRuntime, SyncApiService},
         services::{
-            sync::{SyncExecutor as _, SyncRunContext, SyncService},
+            sync::{KernelSyncTriggerDisposition, SyncExecutor as _, SyncRunContext, SyncService},
             workspace::WorkspaceService,
         },
         settings::{
@@ -2828,6 +2828,240 @@ mod tests {
         assert!(desktop.workspace.join("Web-Seed-Renamed.md").is_file());
         assert!(!desktop.workspace.join("Web-Seed-A.md").exists());
         assert!(!desktop.workspace.join("Endurance-A/Untitled.md").exists());
+    }
+
+    #[tokio::test]
+    async fn server_repository_restore_keeps_the_binding_for_a_saved_note_and_later_sync() {
+        let server = S3Fixture::start();
+        let source = CompleteExecutorFixture::start(
+            HostProfile::Desktop,
+            &server.endpoint(),
+            CompleteBinding::Shared,
+        )
+        .await;
+        source.create_file("", "Mac-Seed.md", "# MAC-SEED\n").await;
+        let uploaded = source.run_manual_sync().await;
+        assert_eq!(uploaded.completion_state, SyncRunCompletionState::Succeeded);
+        let exported = source
+            .sync
+            .export_dejavu_key(ExportDejavuKeyRequest { confirmed: true })
+            .await
+            .expect("export source repository key");
+        source
+            .sync
+            .import_dejavu_key(ImportDejavuKeyRequest {
+                key: exported.key.clone(),
+            })
+            .await
+            .expect("replay the already active Desktop repository key");
+        assert_eq!(
+            source
+                .sync
+                .get_sync_repository_binding()
+                .await
+                .expect("read Desktop binding after an identical key replay")
+                .repository_id
+                .as_ref()
+                .map(String::as_str),
+            Some(SHARED_EXECUTOR_REPOSITORY_ID),
+        );
+        assert_eq!(
+            source.run_manual_sync().await.completion_state,
+            SyncRunCompletionState::Succeeded,
+        );
+
+        let target = CompleteExecutorFixture::start(
+            HostProfile::Server,
+            &server.endpoint(),
+            CompleteBinding::Distinct,
+        )
+        .await;
+        target
+            .sync
+            .import_dejavu_key(ImportDejavuKeyRequest {
+                key: exported.key.clone(),
+            })
+            .await
+            .expect("import the shared repository key");
+        let revision = target.sync_revision().await;
+        let accepted = target
+            .sync
+            .bind_sync_repository(BindSyncRepositoryRequest {
+                expected_revision: revision,
+                display_name: SHARED_EXECUTOR_DISPLAY_NAME.to_owned(),
+                repository_id: SHARED_EXECUTOR_REPOSITORY_ID.to_owned(),
+            })
+            .await
+            .expect("accept exact Server repository recovery");
+        let restored = target.wait_for_job(&accepted.job_id).await;
+        assert_eq!(
+            restored.completion_state,
+            SyncRunCompletionState::Succeeded,
+            "Server restore failed: {:?}; requests: {:?}",
+            restored.error.as_ref().map(|error| (
+                error.code(),
+                error.category(),
+                error.operation()
+            )),
+            server.requests(),
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.workspace.join("Mac-Seed.md"))
+                .expect("restored source note"),
+            "# MAC-SEED\n",
+        );
+        let after_restore = target
+            .sync
+            .get_sync_repository_binding()
+            .await
+            .expect("read authoritative binding after restore");
+        assert_eq!(
+            after_restore.repository_id.as_ref().map(String::as_str),
+            Some(SHARED_EXECUTOR_REPOSITORY_ID),
+        );
+
+        target
+            .sync
+            .import_dejavu_key(ImportDejavuKeyRequest {
+                key: exported.key.clone(),
+            })
+            .await
+            .expect("replay the already accepted repository key");
+        let after_key_replay = target
+            .sync
+            .get_sync_repository_binding()
+            .await
+            .expect("read authoritative binding after an identical key replay");
+
+        target.create_file("", "Web-Gate.md", "# WEB-GATE\n").await;
+        let after_write = target
+            .sync
+            .get_sync_repository_binding()
+            .await
+            .expect("read authoritative binding after document write");
+
+        let propagated = target.run_manual_sync().await;
+        let after_sync = target
+            .sync
+            .get_sync_repository_binding()
+            .await
+            .expect("read authoritative binding after later sync");
+        assert_eq!(
+            (
+                after_key_replay.repository_id.as_ref().map(String::as_str),
+                after_write.repository_id.as_ref().map(String::as_str),
+                propagated.completion_state,
+                propagated.error.as_ref().map(|error| (
+                    error.code(),
+                    error.category(),
+                    error.operation()
+                )),
+                after_sync.repository_id.as_ref().map(String::as_str),
+            ),
+            (
+                Some(SHARED_EXECUTOR_REPOSITORY_ID),
+                Some(SHARED_EXECUTOR_REPOSITORY_ID),
+                SyncRunCompletionState::Succeeded,
+                None,
+                Some(SHARED_EXECUTOR_REPOSITORY_ID),
+            ),
+            "an idempotent key replay must preserve the restored binding and later sync; requests: {:?}",
+            server.requests(),
+        );
+
+        let (interval_disposition, interval_settlement) = target
+            .sync
+            .trigger_kernel_sync(SyncTrigger::Interval)
+            .await
+            .into_parts();
+        let interval_run_id = match interval_disposition {
+            KernelSyncTriggerDisposition::Accepted(accepted) => accepted.run_id,
+            KernelSyncTriggerDisposition::Rejected(rejection) => {
+                panic!("automatic interval run was rejected: {rejection:?}")
+            }
+        };
+        interval_settlement.wait().await;
+        let interval = target
+            .sync
+            .get_sync_run(interval_run_id)
+            .await
+            .expect("read settled automatic interval run");
+        let interval_status = target
+            .sync
+            .get_sync_status()
+            .await
+            .expect("read automatic interval status");
+        let after_interval = target
+            .sync
+            .get_sync_repository_binding()
+            .await
+            .expect("read authoritative binding after automatic interval sync");
+        assert_eq!(interval.completion_state, SyncRunCompletionState::Succeeded);
+        assert_eq!(
+            interval_status.last_trigger.as_ref(),
+            Some(&SyncTrigger::Interval),
+        );
+        assert_eq!(
+            after_interval.repository_id.as_ref().map(String::as_str),
+            Some(SHARED_EXECUTOR_REPOSITORY_ID),
+        );
+
+        let native = CompleteExecutorFixture::start(
+            HostProfile::Mobile,
+            &server.endpoint(),
+            CompleteBinding::Shared,
+        )
+        .await;
+        let converged = native.run_manual_sync().await;
+        assert_eq!(
+            converged.completion_state,
+            SyncRunCompletionState::Succeeded
+        );
+        assert_eq!(
+            std::fs::read_to_string(native.workspace.join("Web-Gate.md"))
+                .expect("native target received the Web note"),
+            "# WEB-GATE\n",
+        );
+        native
+            .sync
+            .import_dejavu_key(ImportDejavuKeyRequest {
+                key: exported.key.clone(),
+            })
+            .await
+            .expect("replay the already active Mobile repository key");
+        assert_eq!(
+            native
+                .sync
+                .get_sync_repository_binding()
+                .await
+                .expect("read Mobile binding after an identical key replay")
+                .repository_id
+                .as_ref()
+                .map(String::as_str),
+            Some(SHARED_EXECUTOR_REPOSITORY_ID),
+        );
+        native
+            .create_file("", "Android-Gate.md", "# ANDROID-GATE\n")
+            .await;
+        let android_upload = native.run_manual_sync().await;
+        assert_eq!(
+            android_upload.completion_state,
+            SyncRunCompletionState::Succeeded,
+            "Mobile sync after an identical key replay failed: {:?}; requests: {:?}",
+            android_upload.error.as_ref().map(|error| (
+                error.code(),
+                error.category(),
+                error.operation(),
+            )),
+            server.requests(),
+        );
+        assert!(
+            android_upload
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.uploaded_files.get() > 0),
+            "Mobile sync must upload the Android note after the binding-preserving key replay",
+        );
     }
 
     struct CompleteExecutorFixture {
