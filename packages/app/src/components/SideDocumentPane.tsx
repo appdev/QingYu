@@ -36,6 +36,7 @@ type SideDocumentPaneProps = {
   revision: number;
   sizeBytes?: number;
   hideHeadingMarkersOnFocus?: boolean;
+  showCodeBlockLineNumbers?: boolean;
   showLineNumbers?: boolean;
   status?: ReactNode;
   tableColumnWidthMode?: TableColumnWidthModePreference;
@@ -79,6 +80,7 @@ export function SideDocumentPane({
   revision,
   sizeBytes,
   hideHeadingMarkersOnFocus = false,
+  showCodeBlockLineNumbers = true,
   showLineNumbers = false,
   status = null,
   tableColumnWidthMode = "auto",
@@ -154,6 +156,7 @@ export function SideDocumentPane({
           resolveImageSrc={resolveImageSrc}
           revision={revision}
           hideHeadingMarkersOnFocus={hideHeadingMarkersOnFocus}
+          showCodeBlockLineNumbers={showCodeBlockLineNumbers}
           tableColumnWidthMode={tableColumnWidthMode}
           topInset="titlebar"
           typewriterModeEnabled={typewriterModeEnabled}

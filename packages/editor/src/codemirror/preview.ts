@@ -30,10 +30,8 @@ import {
 } from "./links.ts";
 import { unescapeMarkdown } from "./syntax.ts";
 import { createTaskDecoration } from "./tasks.ts";
-import {
-  blankLineLayout,
-  isInsidePreformattedBlock,
-} from "./blank-lines.ts";
+import { isInsidePreformattedBlock } from "./blank-lines.ts";
+import { updateOnlyInsertsPlainText } from "./changes.ts";
 
 const HEADING_CLASSES: Readonly<Record<string, string>> = {
   ATXHeading1: "cm-markra-h1",
@@ -766,6 +764,8 @@ function buildDecorations(
         !decoratedEmptyLines.has(line.from) &&
         !isInsidePreformattedBlock(state, line.from)
       ) {
+        // Keep every authored blank as a normal CodeMirror row. Folding one
+        // based on surrounding text makes its height change while typing.
         decoratedEmptyLines.add(line.from);
         ranges.push(
           Decoration.line({
@@ -800,6 +800,32 @@ function previewPlugin(config: LivePreviewConfig): Extension {
     } else {
       delete view.dom.dataset.markraComposing;
     }
+  }
+
+  function cursorInTopLevelParagraph(
+    state: ViewUpdate["state"],
+    position: number,
+  ) {
+    const node = syntaxTree(state).resolveInner(position, -1);
+    return node.parent?.name === "Document" && node.name === "Paragraph";
+  }
+
+  function plainTextInputCanMapDecorations(update: ViewUpdate) {
+    const before = update.startState.selection.main;
+    const after = update.state.selection.main;
+    if (
+      !updateOnlyInsertsPlainText(update) ||
+      update.startState.selection.ranges.length !== 1 ||
+      update.state.selection.ranges.length !== 1 ||
+      !before.empty ||
+      !after.empty ||
+      getMarkraRenderers(update.state, "Paragraph").length > 0
+    ) {
+      return false;
+    }
+
+    return cursorInTopLevelParagraph(update.startState, before.head) &&
+      cursorInTopLevelParagraph(update.state, after.head);
   }
 
   return ViewPlugin.fromClass(
@@ -846,6 +872,14 @@ function previewPlugin(config: LivePreviewConfig): Extension {
         if (this.composing) {
           // Mapping preserves the current DOM while the platform owns the
           // composition range. A full rebuild at this point can cancel IME.
+          this.decorations = this.decorations.map(update.changes);
+          return;
+        }
+
+        if (plainTextInputCanMapDecorations(update)) {
+          // Plain letters and numbers cannot create Markdown structure in a
+          // top-level paragraph. Mapping retains every unchanged preview DOM
+          // instead of walking the full visible syntax tree per keystroke.
           this.decorations = this.decorations.map(update.changes);
           return;
         }
@@ -901,7 +935,6 @@ function previewPlugin(config: LivePreviewConfig): Extension {
 export function livePreview(config: LivePreviewConfig = {}): Extension {
   return [
     sourceDragSelectionExtension,
-    blankLineLayout(),
     previewPlugin(config),
     listMarkerSelectionPlugin,
   ];

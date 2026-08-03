@@ -141,6 +141,7 @@ describe("editor preferences", () => {
         wordCount: "visible"
       },
       hideHeadingMarkersOnFocus: false,
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: false,
       typewriterModeEnabled: false,
@@ -275,7 +276,14 @@ describe("editor preferences", () => {
     expect(normalizeEditorPreferences({ wrapCodeBlocks: "no" }).wrapCodeBlocks).toBe(true);
   });
 
-    it("normalizes extended syntax preferences", () => {
+  it("normalizes the code block line number preference", () => {
+    expect(defaultEditorPreferences.showCodeBlockLineNumbers).toBe(true);
+    expect(normalizeEditorPreferences({}).showCodeBlockLineNumbers).toBe(true);
+    expect(normalizeEditorPreferences({ showCodeBlockLineNumbers: false }).showCodeBlockLineNumbers).toBe(false);
+    expect(normalizeEditorPreferences({ showCodeBlockLineNumbers: "no" }).showCodeBlockLineNumbers).toBe(true);
+  });
+
+  it("normalizes extended syntax preferences", () => {
     expect(normalizeEditorPreferences({}).extendedSyntax).toEqual({
       githubAlerts: true,
       highlight: true
@@ -306,7 +314,7 @@ describe("editor preferences", () => {
     });
   });
 
-   it("moves titlebar actions to the target slot in both directions", () => {
+  it("moves titlebar actions to the target slot in both directions", () => {
     const actions = [
       { id: "viewMode", visible: true },
       { id: "sourceMode", visible: true },
@@ -362,7 +370,7 @@ describe("editor preferences", () => {
     expect(normalizeEditorPreferences({ sidebarLayoutMode: "paged" }).sidebarLayoutMode).toBe("stacked");
   });
 
-   it("migrates previous app shortcut defaults to the current defaults", () => {
+  it("migrates previous app shortcut defaults to the current defaults", () => {
     expect(normalizeEditorPreferences({
       markdownShortcuts: {
         toggleSourceMode: "Mod+Alt+V"
@@ -467,6 +475,7 @@ describe("editor preferences", () => {
         wordCount: "visible"
       },
       hideHeadingMarkersOnFocus: true,
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: false,
       typewriterModeEnabled: false,
@@ -535,6 +544,7 @@ describe("editor preferences", () => {
         wordCount: "visible"
       },
       hideHeadingMarkersOnFocus: true,
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: false,
       typewriterModeEnabled: false,

@@ -964,6 +964,7 @@ function createStoredEditorPreferences(
       { id: "save", visible: true },
       { id: "theme", visible: true }
     ],
+    showCodeBlockLineNumbers: overrides.showCodeBlockLineNumbers ?? true,
     showLineNumbers: overrides.showLineNumbers ?? false,
     showWordCount: true,
     typewriterModeEnabled: overrides.typewriterModeEnabled ?? false,
@@ -5121,6 +5122,7 @@ describe("QingYu workspace", () => {
           viewModeToggle: "visible",
           wordCount: "visible"
         },
+        showCodeBlockLineNumbers: true,
         showLineNumbers: false,
         showWordCount: true,
         typewriterModeEnabled: false,
@@ -5178,6 +5180,7 @@ describe("QingYu workspace", () => {
           viewModeToggle: "visible",
           wordCount: "visible"
         },
+        showCodeBlockLineNumbers: true,
         showLineNumbers: false,
         showWordCount: true,
         typewriterModeEnabled: false,
@@ -6705,6 +6708,7 @@ describe("QingYu workspace", () => {
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: true,
       typewriterModeEnabled: false,
@@ -9553,6 +9557,7 @@ describe("QingYu workspace", () => {
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: true,
       typewriterModeEnabled: false,
@@ -9812,6 +9817,7 @@ Date: 2026-08-02
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: true,
       typewriterModeEnabled: false,
@@ -10912,7 +10918,7 @@ Date: 2026-08-02
   });
 
   it("switches between the visual editor and markdown source mode", async () => {
-    renderApp();
+    const { container } = renderApp();
 
     expect(await screen.findByText("Editor fixture")).toBeInTheDocument();
 
@@ -10931,6 +10937,7 @@ Date: 2026-08-02
     expect(await screen.findByRole("heading", { name: "Source edit" })).toBeInTheDocument();
     expect(screen.getByText("Updated from source mode.")).toBeInTheDocument();
     expect(screen.getByLabelText("Markdown editor")).toHaveAttribute("data-editor-engine", "codemirror");
+    expect(container.querySelectorAll(".cm-markra-empty-line")).toHaveLength(1);
   });
 
   it("commits pending visual IME content before source mode mounts", async () => {

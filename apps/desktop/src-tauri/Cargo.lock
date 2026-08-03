@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "qingyu"
-version = "2.5.1"
+version = "2.5.3"
 dependencies = [
  "arboard",
  "base64 0.22.1",

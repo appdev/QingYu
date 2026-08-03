@@ -602,7 +602,7 @@ describe("editor stylesheet", () => {
     const backdropEnd = styles.indexOf("\n  }", backdropStart);
     const backdropRule = styles.slice(backdropStart, backdropEnd);
     const lineNumberStart = styles.indexOf(
-      ".markdown-paper .cm-line.cm-markra-code-content-line::before {",
+      ".markdown-paper .cm-line.cm-markra-code-content-line[data-code-line-number]::before {",
     );
     const lineNumberEnd = styles.indexOf("\n  }", lineNumberStart);
     const lineNumberRule = styles.slice(lineNumberStart, lineNumberEnd);
@@ -611,19 +611,77 @@ describe("editor stylesheet", () => {
     expect(styles).not.toContain(".markdown-paper .cm-cursorLayer {");
     expect(codeLineRule).toContain("position: relative");
     expect(codeLineRule).toContain("background: transparent !important");
-    expect(codeLineRule).toContain("padding-inline: 59px 16px !important");
+    expect(codeLineRule).toContain("padding-inline: 16px 16px !important");
     expect(codeLineRule).toContain("padding-block: 0 !important");
-    expect(codeLineRule).toContain("text-indent: -59px");
+    expect(codeLineRule).toContain("text-indent: 0");
     expect(codeLineRule).toContain("line-height: 24px !important");
     expect(backdropStart).toBeGreaterThanOrEqual(0);
     expect(backdropRule).toContain("z-index: -2");
-    expect(backdropRule).toContain("background: linear-gradient(");
+    expect(backdropRule).toContain("background: var(--editor-code-bg)");
     expect(lineNumberRule).toContain("position: relative");
     expect(lineNumberRule).toContain("z-index: 1");
     expect(lineNumberRule).toContain("border-left: 1px solid var(--editor-border)");
     expect(lineNumberRule).toContain("background: var(--editor-code-line-bg)");
     expect(lineNumberRule).not.toContain("border-right:");
     expect(lineNumberRule).not.toContain("box-shadow:");
+  });
+
+  it("removes code block gutter geometry when line numbers are hidden", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const ruleFor = (selector: string) => {
+      const start = styles.indexOf(selector);
+      const end = styles.indexOf("\n  }", start);
+
+      expect(start).toBeGreaterThanOrEqual(0);
+      return styles.slice(start, end);
+    };
+    const contentLineRule = ruleFor(
+      ".markdown-paper .cm-line.cm-markra-code-content-line {",
+    );
+    const numberedContentLineRule = ruleFor(
+      '.markdown-paper .cm-line.cm-markra-code-content-line[data-code-line-numbers="true"] {',
+    );
+    const contentBackdropRule = ruleFor(
+      ".markdown-paper .cm-line.cm-markra-code-content-line::after {",
+    );
+    const numberedContentBackdropRule = ruleFor(
+      '.markdown-paper .cm-line.cm-markra-code-content-line[data-code-line-numbers="true"]::after {',
+    );
+    const topGapRule = ruleFor(
+      ".markdown-paper .cm-markra-code-top-gap {",
+    );
+    const numberedTopGapRule = ruleFor(
+      '.markdown-paper .cm-markra-code-top-gap[data-code-line-numbers="true"] {',
+    );
+    const closingLineRule = ruleFor(
+      ".markdown-paper .cm-line.cm-markra-code-closing-line {",
+    );
+    const numberedClosingLineRule = ruleFor(
+      '.markdown-paper .cm-line.cm-markra-code-closing-line[data-code-line-numbers="true"] {',
+    );
+
+    expect(contentLineRule).toContain(
+      "padding-inline: 16px 16px !important",
+    );
+    expect(contentLineRule).toContain("text-indent: 0");
+    expect(numberedContentLineRule).toContain(
+      "padding-inline: 59px 16px !important",
+    );
+    expect(numberedContentLineRule).toContain("text-indent: -59px");
+    expect(contentBackdropRule).toContain(
+      "background: var(--editor-code-bg)",
+    );
+    expect(numberedContentBackdropRule).toContain(
+      "background: linear-gradient(",
+    );
+    expect(topGapRule).toContain("background: var(--editor-code-bg)");
+    expect(numberedTopGapRule).toContain("background: linear-gradient(");
+    expect(closingLineRule).toContain(
+      "background: var(--editor-code-bg) !important",
+    );
+    expect(numberedClosingLineRule).toContain(
+      "background: linear-gradient(",
+    );
   });
 
   it("keeps the typewriter active-line highlight visible inside rich blocks", () => {
@@ -794,7 +852,7 @@ describe("editor stylesheet", () => {
       "border-top: 1px solid var(--editor-border)",
     );
     expect(topGapRule).toContain("border-radius: 4px 4px 0 0");
-    expect(topGapRule).toContain("var(--editor-code-line-bg) 0 43px");
+    expect(topGapRule).toContain("background: var(--editor-code-bg)");
     expect(headerActionsRule).toContain("opacity: 1 !important");
     expect(headerActionsRule).toContain("pointer-events: auto !important");
     expect(headerActionsRule).toContain("transform: none");
@@ -824,7 +882,7 @@ describe("editor stylesheet", () => {
     );
     expect(closingLineRule).toContain("border-radius: 0 0 4px 4px");
     expect(closingLineRule).toContain(
-      "var(--editor-code-line-bg) 0 43px",
+      "background: var(--editor-code-bg) !important",
     );
     expect(styles).not.toContain(
       ".markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {\n" +
@@ -846,19 +904,9 @@ describe("editor stylesheet", () => {
     expect(styles).not.toContain(emptyLineBreakRule);
   });
 
-  it("keeps editable lines full-height and uses a stable structural gap", () => {
+  it("keeps paragraph spacing separate from authored blank lines", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 
-    expect(styles).toContain(
-      ".markdown-paper .cm-line.cm-markra-layout-separator {",
-    );
-    expect(styles).toContain("display: none !important;");
-    expect(styles).toContain(
-      ".markdown-paper .cm-markra-block-gap {",
-    );
-    expect(styles).toContain(
-      "height: var(--editor-paragraph-spacing) !important;",
-    );
     expect(styles).not.toContain(
       ".markdown-paper .cm-line.cm-markra-empty-line {",
     );
@@ -871,9 +919,6 @@ describe("editor stylesheet", () => {
     expect(styles).not.toContain("cm-markra-paragraph-separator");
     expect(styles).not.toContain(
       '.cm-markra-empty-line[data-markra-empty-source="hidden"] {',
-    );
-    expect(styles).not.toMatch(
-      /cm-markra-layout-separator[^}]+(?:height|line-height):/su,
     );
   });
 
@@ -1777,6 +1822,9 @@ describe("editor stylesheet", () => {
     expect(mermaidFoldStyles).toContain("display: none");
     expect(mermaidFoldStyles).toContain("background: transparent");
     expect(mermaidFoldStyles).toContain("border-color: transparent");
+    expect(mermaidFoldStyles).toContain("contain: layout paint style");
+    expect(mermaidFoldStyles).toContain("will-change: transform");
+    expect(mermaidFoldStyles).toContain("transform: translateZ(0)");
     expect(mermaidFoldStyles).toContain(".markra-code-language-control");
     expect(styles).toContain(
       ".markdown-paper .cm-markra-code-top-gap:has(+ .cm-line .markra-code-block[data-mermaid-mode=\"preview\"]) {\n" +

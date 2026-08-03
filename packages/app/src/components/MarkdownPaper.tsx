@@ -60,6 +60,7 @@ type MarkdownPaperProps = {
   revision: number;
   scrollRef?: Ref<HTMLElement>;
   hideHeadingMarkersOnFocus?: CodeMirrorPaperSurfaceProps["hideHeadingMarkersOnFocus"];
+  showCodeBlockLineNumbers?: CodeMirrorPaperSurfaceProps["showCodeBlockLineNumbers"];
   tableColumnWidthMode?: TableColumnWidthModePreference;
   topInset?: "tabs" | "titlebar";
   typewriterModeEnabled?: CodeMirrorPaperSurfaceProps["typewriterModeEnabled"];
@@ -128,6 +129,7 @@ export function MarkdownPaper({
   revision,
   scrollRef,
   hideHeadingMarkersOnFocus = false,
+  showCodeBlockLineNumbers = true,
   tableColumnWidthMode = "auto",
   topInset = "titlebar",
   typewriterModeEnabled = false,
@@ -215,6 +217,7 @@ export function MarkdownPaper({
             onTextSelectionChange={onTextSelectionChange}
             resolveImageSrc={resolveImageSrc}
             hideHeadingMarkersOnFocus={hideHeadingMarkersOnFocus}
+            showCodeBlockLineNumbers={showCodeBlockLineNumbers}
             tableColumnWidthMode={tableColumnWidthMode}
             typewriterModeEnabled={typewriterModeEnabled}
             vimModeEnabled={vimModeEnabled}

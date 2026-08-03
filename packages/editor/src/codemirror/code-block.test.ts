@@ -1,4 +1,4 @@
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeBlockPreviewPlugin, liveMarkdown } from "./index.ts";
@@ -20,7 +20,10 @@ function createView(
     parent,
     state: EditorState.create({
       doc,
-      extensions: [liveMarkdown({ plugins: [plugin] })],
+      extensions: [
+        EditorState.allowMultipleSelections.of(true),
+        liveMarkdown({ plugins: [plugin] }),
+      ],
       selection: { anchor: doc.length },
     }),
   });
@@ -162,6 +165,56 @@ describe("codeBlockPreviewPlugin", () => {
     expect(view.state.selection.main.head).toBe(source.length + 1);
   });
 
+  it("unwraps a fenced block without joining its first code line backward", () => {
+    const view = createView();
+    const codeStart = codeDocument.indexOf("const answer");
+    view.dispatch({ selection: { anchor: codeStart } });
+
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", {
+      bubbles: true,
+      key: "Backspace",
+    }), "editor")).toBe(true);
+    expect(view.state.doc.toString()).toBe(
+      "Before\n\nconst answer = 42;\nreturn answer;\n\nEdit",
+    );
+    expect(view.state.selection.main.head).toBe("Before\n\n".length);
+  });
+
+  it("unwraps multiple fenced blocks when every caret is at the first code line", () => {
+    const source = "```ts\nfirst\n```\n\n```js\nsecond\n```";
+    const view = createView(source);
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.cursor(source.indexOf("first")),
+        EditorSelection.cursor(source.indexOf("second")),
+      ]),
+    });
+
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", {
+      bubbles: true,
+      key: "Backspace",
+    }), "editor")).toBe(true);
+    expect(view.state.doc.toString()).toBe("first\n\nsecond");
+    expect(view.state.selection.ranges.map((range) => range.head)).toEqual([
+      0,
+      "first\n\n".length,
+    ]);
+  });
+
+  it("leaves a selected code range to the standard Backspace behavior", () => {
+    const view = createView();
+    const codeStart = codeDocument.indexOf("const answer");
+    view.dispatch({
+      selection: EditorSelection.range(codeStart, codeStart + "const".length),
+    });
+
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", {
+      bubbles: true,
+      key: "Backspace",
+    }), "editor")).toBe(false);
+    expect(view.state.doc.toString()).toBe(codeDocument);
+  });
+
   it("exits after Enter on the trailing empty code line", () => {
     const source = "```sh\nfirst command\n\n```\nAfter";
     const trailingEmptyLine = source.indexOf("\n\n```") + 1;
@@ -246,7 +299,7 @@ describe("codeBlockPreviewPlugin", () => {
     )).toBe("const answer = 42;\nreturn answer;");
   });
 
-  it("accepts a cached host highlighter without bundling one", () => {
+  it("reuses cached highlighting when editing outside the code block", () => {
     const highlight = vi.fn(({ code, language }) => {
       expect(language).toBe("ts");
       expect(code).toContain("const answer");
@@ -265,6 +318,13 @@ describe("codeBlockPreviewPlugin", () => {
     expect(highlight).toHaveBeenCalledOnce();
 
     view.dispatch({ selection: { anchor: codeDocument.length - 2 } });
+    expect(highlight).toHaveBeenCalledOnce();
+
+    view.dispatch({
+      changes: { from: codeDocument.length, insert: "!" },
+      selection: { anchor: codeDocument.length + 1 },
+      userEvent: "input",
+    });
     expect(highlight).toHaveBeenCalledOnce();
   });
 
@@ -347,6 +407,21 @@ describe("codeBlockPreviewPlugin", () => {
         (line) => line.getAttribute("data-code-line-number"),
       ),
     ).toEqual(["1", "2"]);
+    expect(
+      [...view.dom.querySelectorAll(".cm-markra-code-content-line")].map(
+        (line) => line.getAttribute("data-code-line-numbers"),
+      ),
+    ).toEqual(["true", "true"]);
+    expect(
+      view.dom
+        .querySelector(".cm-markra-code-top-gap")
+        ?.getAttribute("data-code-line-numbers"),
+    ).toBe("true");
+    expect(
+      view.dom
+        .querySelector(".cm-markra-code-closing-line")
+        ?.getAttribute("data-code-line-numbers"),
+    ).toBe("true");
     expect(copy?.textContent).toBe("");
     expect(copy?.querySelector(".markra-code-copy-icon")).not.toBeNull();
     expect(copy?.querySelector(".markra-code-copy-check-icon")).not.toBeNull();
@@ -365,6 +440,34 @@ describe("codeBlockPreviewPlugin", () => {
       expect(copy?.dataset.copied).toBe("true");
       expect(copy?.textContent).toBe("");
     });
+  });
+
+  it("can hide visual code block line numbers", () => {
+    const view = createView(
+      codeDocument,
+      codeBlockPreviewPlugin({ showLineNumbers: false }),
+    );
+
+    const contentLines = [
+      ...view.dom.querySelectorAll(".cm-markra-code-content-line"),
+    ];
+
+    expect(contentLines.map(
+      (line) => line.getAttribute("data-code-line-number"),
+    )).toEqual([null, null]);
+    expect(contentLines.map(
+      (line) => line.getAttribute("data-code-line-numbers"),
+    )).toEqual(["false", "false"]);
+    expect(
+      view.dom
+        .querySelector(".cm-markra-code-top-gap")
+        ?.getAttribute("data-code-line-numbers"),
+    ).toBe("false");
+    expect(
+      view.dom
+        .querySelector(".cm-markra-code-closing-line")
+        ?.getAttribute("data-code-line-numbers"),
+    ).toBe("false");
   });
 
   it("renders Mermaid as a preview and reveals its unchanged source on activation", async () => {
@@ -405,6 +508,91 @@ describe("codeBlockPreviewPlugin", () => {
     expect(view.dom.querySelector(".markra-mermaid-render")).toBeNull();
     expect(renderedLines(view)).toContain("```mermaid");
     expect(view.state.doc.toString()).toBe(source);
+  });
+
+  it("removes empty zero-size Mermaid label nodes", async () => {
+    const source = "```mermaid\nflowchart TD\n  A --> B\n```\n\nEdit";
+    const view = createView(
+      source,
+      codeBlockPreviewPlugin({
+        renderMermaid: async () => [
+          "<svg>",
+          '<g class="label"><foreignObject width="0" height="0"></foreignObject></g>',
+          '<g class="label"><foreignObject width="32" height="24"><div>Visible</div></foreignObject></g>',
+          "</svg>",
+        ].join(""),
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(view.dom.querySelector(".markra-mermaid-render svg")).not.toBeNull();
+    });
+
+    expect(
+      view.dom.querySelector(
+        '.markra-mermaid-render foreignObject[width="0"][height="0"]',
+      ),
+    ).toBeNull();
+    expect(view.dom.querySelector(".markra-mermaid-render")?.textContent)
+      .toContain("Visible");
+  });
+
+  it("keeps an unchanged Mermaid preview mounted when editing after it", async () => {
+    const source = "```mermaid\nflowchart TD\n  A --> B\n```\n\nEdit";
+    const renderMermaid = vi.fn().mockResolvedValue(
+      '<svg aria-label="Synthetic diagram"></svg>',
+    );
+    const view = createView(
+      source,
+      codeBlockPreviewPlugin({ renderMermaid }),
+    );
+
+    await vi.waitFor(() => {
+      expect(view.dom.querySelector(".markra-mermaid-render svg")).not.toBeNull();
+    });
+    const preview = view.dom.querySelector(".markra-mermaid-render");
+    expect(renderMermaid).toHaveBeenCalledOnce();
+
+    view.dispatch({
+      changes: { from: source.length, insert: "!" },
+      selection: { anchor: source.length + 1 },
+      userEvent: "input",
+    });
+
+    await Promise.resolve();
+    expect(renderMermaid).toHaveBeenCalledOnce();
+    expect(view.dom.querySelector(".markra-mermaid-render")).toBe(preview);
+  });
+
+  it("keeps an unchanged Mermaid preview mounted when editing before it", async () => {
+    const source = "Before\n\n```mermaid\nflowchart TD\n  A --> B\n```\n\nAfter";
+    const renderMermaid = vi.fn().mockResolvedValue(
+      '<svg aria-label="Synthetic diagram"></svg>',
+    );
+    const view = createView(
+      source,
+      codeBlockPreviewPlugin({ renderMermaid }),
+    );
+
+    await vi.waitFor(() => {
+      expect(view.dom.querySelector(".markra-mermaid-render svg")).not.toBeNull();
+    });
+    const preview = view.dom.querySelector(".markra-mermaid-render");
+    expect(renderMermaid).toHaveBeenCalledOnce();
+
+    const inserted = "Expanded synthetic prefix. ";
+    view.dispatch({
+      changes: { from: 0, insert: inserted },
+      selection: { anchor: inserted.length },
+      userEvent: "input",
+    });
+
+    await Promise.resolve();
+    expect(renderMermaid).toHaveBeenCalledOnce();
+    expect(view.dom.querySelector(".markra-mermaid-render")).toBe(preview);
+
+    view.dom.querySelector<HTMLElement>(".markra-mermaid-render")?.click();
+    expect(view.dom.querySelector(".markra-mermaid-render")).toBeNull();
   });
 
   it("returns active Mermaid source to preview mode with Escape", async () => {

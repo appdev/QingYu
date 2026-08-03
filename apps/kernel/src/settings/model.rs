@@ -389,6 +389,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "typewriterModeEnabled",
         "viewMode",
         "viewModeCustomizations",
+        "showCodeBlockLineNumbers",
         "showLineNumbers",
         "showWordCount",
         "hideHeadingMarkersOnFocus",
@@ -407,6 +408,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         | "hideHeadingMarkersOnFocus"
         | "openDroppedFilesInTabs"
         | "restoreWorkspaceOnStartup"
+        | "showCodeBlockLineNumbers"
         | "showDocumentTabs"
         | "showLineNumbers"
         | "showWordCount"
@@ -880,6 +882,7 @@ pub(crate) fn default_editor() -> Map<String, Value> {
             "wordCount": "visible"
         },
         "hideHeadingMarkersOnFocus": false,
+        "showCodeBlockLineNumbers": true,
         "showLineNumbers": false,
         "showWordCount": true,
         "vimModeEnabled": false,

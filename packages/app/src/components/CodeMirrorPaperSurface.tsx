@@ -31,6 +31,7 @@ import {
   tablePreviewPlugin,
   trailingSpacePlugin,
   codeMirrorSelectionHoldPlugin,
+  updateCodeMirrorHeadingAnchors,
   type MarkraPlugin,
 } from "@markra/editor/codemirror";
 import type {
@@ -92,6 +93,7 @@ export interface CodeMirrorPaperSurfaceProps {
   readOnly?: boolean;
   resolveImageSrc?: (src: string) => string;
   hideHeadingMarkersOnFocus?: boolean;
+  showCodeBlockLineNumbers?: boolean;
   tableColumnWidthMode?: TableColumnWidthModePreference;
   typewriterModeEnabled?: boolean;
   vimModeEnabled?: boolean;
@@ -121,6 +123,7 @@ interface MarkdownExtensionOptions {
   openLocalAttachment: () => ((src: string) => unknown) | undefined;
   resolveImageSrc: (source: string) => string | undefined;
   hideHeadingMarkersOnFocus: boolean;
+  showCodeBlockLineNumbers: boolean;
   plugins: readonly MarkraPlugin[];
   shortcuts?: MarkdownShortcutMap;
   tableColumnWidthMode: TableColumnWidthModePreference;
@@ -135,6 +138,7 @@ function markdownExtension({
   openLocalAttachment,
   resolveImageSrc,
   hideHeadingMarkersOnFocus,
+  showCodeBlockLineNumbers,
   plugins,
   shortcuts,
   tableColumnWidthMode,
@@ -199,7 +203,7 @@ function markdownExtension({
       calloutPreviewPlugin({
         enabled: extendedSyntax?.githubAlerts ?? true,
       }),
-      codeBlockPreviewPlugin(),
+      codeBlockPreviewPlugin({ showLineNumbers: showCodeBlockLineNumbers }),
       documentLinksPlugin({
         items: ({ query }) =>
           documentLinkCompletionFiles(
@@ -331,6 +335,7 @@ export function CodeMirrorPaperSurface({
   readOnly = false,
   resolveImageSrc,
   hideHeadingMarkersOnFocus = false,
+  showCodeBlockLineNumbers = true,
   tableColumnWidthMode = "auto",
   typewriterModeEnabled = false,
   vimModeEnabled = false,
@@ -421,6 +426,9 @@ export function CodeMirrorPaperSurface({
     const container = containerRef.current;
     if (!container || viewRef.current) return;
 
+    let headingAnchors: ReturnType<typeof readCodeMirrorHeadingAnchors> | null =
+      null;
+
     const view = new EditorView({
       parent: container,
       state: EditorState.create({
@@ -438,6 +446,7 @@ export function CodeMirrorPaperSurface({
               openLocalAttachment: () => openLocalAttachmentRef.current,
               resolveImageSrc: (source) => resolveImageSrcRef.current?.(source),
               hideHeadingMarkersOnFocus,
+              showCodeBlockLineNumbers,
               plugins,
               shortcuts: markdownShortcuts,
               tableColumnWidthMode,
@@ -512,9 +521,18 @@ export function CodeMirrorPaperSurface({
                 );
               }
 
-              const headings = readCodeMirrorHeadingAnchors(update.state);
+              if (headingAnchors === null) {
+                headingAnchors = readCodeMirrorHeadingAnchors(update.state);
+              } else if (update.docChanged) {
+                headingAnchors = updateCodeMirrorHeadingAnchors(
+                  headingAnchors,
+                  update.startState,
+                  update.state,
+                  update.changes,
+                );
+              }
               let activeOutlineIndex: number | null = null;
-              for (const [index, heading] of headings.entries()) {
+              for (const [index, heading] of headingAnchors.entries()) {
                 if (heading.from > selection.head) break;
                 activeOutlineIndex = index;
               }
@@ -566,6 +584,7 @@ export function CodeMirrorPaperSurface({
           openLocalAttachment: () => openLocalAttachmentRef.current,
           resolveImageSrc: (source) => resolveImageSrcRef.current?.(source),
           hideHeadingMarkersOnFocus,
+          showCodeBlockLineNumbers,
           plugins,
           shortcuts: markdownShortcuts,
           tableColumnWidthMode,
@@ -582,6 +601,7 @@ export function CodeMirrorPaperSurface({
     plugins,
     resolveImageSrc,
     hideHeadingMarkersOnFocus,
+    showCodeBlockLineNumbers,
     tableColumnWidthMode,
   ]);
 

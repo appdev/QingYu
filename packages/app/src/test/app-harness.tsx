@@ -345,6 +345,7 @@ vi.mock("../lib/settings/app-settings", () => ({
       titlebarActions: "visible",
       viewModeToggle: "visible"
     },
+    showCodeBlockLineNumbers: true,
     showLineNumbers: false,
     showWordCount: true,
     typewriterModeEnabled: false,
@@ -584,6 +585,8 @@ vi.mock("../lib/settings/app-settings", () => ({
       titlebarActions: "visible",
       viewModeToggle: "visible"
     },
+    showCodeBlockLineNumbers:
+      preferences?.showCodeBlockLineNumbers ?? true,
     showLineNumbers: preferences?.showLineNumbers ?? false,
     showWordCount: true,
     typewriterModeEnabled: preferences?.typewriterModeEnabled ?? false,
@@ -1426,6 +1429,7 @@ export function installAppTestHarness() {
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      showCodeBlockLineNumbers: true,
       showLineNumbers: false,
       showWordCount: true,
       typewriterModeEnabled: false,

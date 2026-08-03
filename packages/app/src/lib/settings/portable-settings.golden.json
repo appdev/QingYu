@@ -85,6 +85,7 @@
         "viewModeToggle": "visible",
         "wordCount": "visible"
       },
+      "showCodeBlockLineNumbers": true,
       "showLineNumbers": false,
       "showWordCount": true,
       "hideHeadingMarkersOnFocus": false,

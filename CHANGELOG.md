@@ -1,3 +1,20 @@
+## 2.5.3 (2026-08-03)
+
+### Bug Fixes
+
+* **app:** keep deferred outline visible while editing
+
+## 2.5.2 (2026-08-03)
+
+### Bug Fixes
+
+* **editor:** preserve authored blank line height
+* **editor:** resolve code block interaction issues
+
+### Performance Improvements
+
+* **editor:** reduce live preview typing latency
+
 ## 2.5.1 (2026-08-02)
 
 ### Bug Fixes

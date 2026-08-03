@@ -1220,6 +1220,7 @@ const EDITOR_STORAGE_FIELDS: &[&str] = &[
     "typewriterModeEnabled",
     "viewMode",
     "viewModeCustomizations",
+    "showCodeBlockLineNumbers",
     "showLineNumbers",
     "showWordCount",
     "hideHeadingMarkersOnFocus",

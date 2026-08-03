@@ -72,6 +72,7 @@ export {
   replaceCodeMirrorSearchMatch,
   serializeCodeMirrorMarkdownImage,
   serializeCodeMirrorMarkdownLink,
+  updateCodeMirrorHeadingAnchors,
 } from "./controller.ts";
 export type {
   DocumentLinksPluginOptions,

@@ -4925,6 +4925,7 @@ function WorkspaceApp() {
               onScroll={tabActive ? handleVisualPaneScroll : undefined}
               scrollRef={tabActive ? visualScrollRef : undefined}
               hideHeadingMarkersOnFocus={editorPreferences.preferences.hideHeadingMarkersOnFocus}
+              showCodeBlockLineNumbers={editorPreferences.preferences.showCodeBlockLineNumbers}
               tableColumnWidthMode={editorPreferences.preferences.tableColumnWidthMode}
               topInset="titlebar"
               typewriterModeEnabled={editorPreferences.preferences.typewriterModeEnabled}
@@ -5593,6 +5594,7 @@ function WorkspaceApp() {
                         revision={sideDocumentTab.revision}
                         sizeBytes={sideDocumentTab.sizeBytes}
                         hideHeadingMarkersOnFocus={editorPreferences.preferences.hideHeadingMarkersOnFocus}
+                        showCodeBlockLineNumbers={editorPreferences.preferences.showCodeBlockLineNumbers}
                         showLineNumbers={editorPreferences.preferences.showLineNumbers}
                         status={viewModeChrome.statusBar ? (
                           <QuietStatus

@@ -173,23 +173,15 @@ export type ActiveDiskFileContentChange = {
 };
 
 type MarkdownDocumentSummary = {
-  key: string;
+  documentKey: string;
   outlineItems: MarkdownOutlineItem[];
   wordCount: number;
 };
 
-const emptyMarkdownDocumentSummary: Omit<MarkdownDocumentSummary, "key"> = {
+const emptyMarkdownDocumentSummary: Omit<MarkdownDocumentSummary, "documentKey"> = {
   outlineItems: [],
   wordCount: 0
 };
-
-function markdownDocumentSummaryKey(document: DocumentState) {
-  return [
-    document.revision,
-    document.content.length,
-    document.sizeBytes ?? "unknown-size"
-  ].join(":");
-}
 
 function isMissingMarkdownFileReadError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -199,7 +191,7 @@ function isMissingMarkdownFileReadError(error: unknown) {
 function calculateMarkdownDocumentSummary(
   content: string,
   detail: Record<string, unknown>
-): Omit<MarkdownDocumentSummary, "key"> {
+): Omit<MarkdownDocumentSummary, "documentKey"> {
   const visibleContent = markdownDocumentBodyContent(content);
   return measureAppPerformance("markdown-summary", () => ({
     outlineItems: getMarkdownOutline(visibleContent),
@@ -474,11 +466,7 @@ export function useMarkdownDocument({
       shouldDeferMarkdownSummary(document.content, { sizeBytes: document.sizeBytes }),
     [document.content, document.sizeBytes, largeDocumentSummariesBlocked]
   );
-  const markdownSummaryKey = useMemo(() => markdownDocumentSummaryKey(document), [
-    document.content.length,
-    document.revision,
-    document.sizeBytes
-  ]);
+  const markdownSummaryDocumentKey = `${activeTabId ?? "no-active-tab"}:${document.revision}`;
   const immediateMarkdownSummary = useMemo(
     () =>
       largeDocumentSummariesBlocked || markdownSummaryDeferred
@@ -499,8 +487,12 @@ export function useMarkdownDocument({
       markdownSummaryDeferred
     ]
   );
+  // Keep the last completed summary visible while the same document refreshes
+  // in the background; clearing it here makes the outline collapse on every edit.
   const currentDeferredMarkdownSummary =
-    deferredMarkdownSummary?.key === markdownSummaryKey ? deferredMarkdownSummary : null;
+    deferredMarkdownSummary?.documentKey === markdownSummaryDocumentKey
+      ? deferredMarkdownSummary
+      : null;
   const outlineItems = markdownSummaryDeferred
     ? currentDeferredMarkdownSummary?.outlineItems ?? emptyMarkdownDocumentSummary.outlineItems
     : immediateMarkdownSummary.outlineItems;
@@ -547,7 +539,7 @@ export function useMarkdownDocument({
 
     let active = true;
     const summaryContent = document.content;
-    const summaryKey = markdownSummaryKey;
+    const summaryDocumentKey = markdownSummaryDocumentKey;
     const cancel = scheduleMarkdownSummaryIdle(() => {
       if (!active) return;
 
@@ -561,7 +553,7 @@ export function useMarkdownDocument({
       if (!active) return;
 
       setDeferredMarkdownSummary({
-        key: summaryKey,
+        documentKey: summaryDocumentKey,
         ...summary
       });
     });
@@ -576,7 +568,7 @@ export function useMarkdownDocument({
     document.path,
     document.sizeBytes,
     markdownSummaryDeferred,
-    markdownSummaryKey
+    markdownSummaryDocumentKey
   ]);
 
   useEffect(() => {
@@ -943,7 +935,9 @@ export function useMarkdownDocument({
       return;
     }
     const canKeepEquivalentMarkdownClean = options.surface !== "source";
-    const editorContentEquivalent = isActiveEditorMarkdownEquivalent(current.content);
+    const editorContentEquivalent = current.dirty
+      ? undefined
+      : isActiveEditorMarkdownEquivalent(current.content);
     if (
       !current.dirty &&
       options.surface === "visual" &&

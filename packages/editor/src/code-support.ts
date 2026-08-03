@@ -105,10 +105,11 @@ function collectHighlightRanges(
 export function highlightMarkraCode(language: string, code: string) {
   if (!code.trim()) return [];
 
+  const normalizedLanguage = normalizeMarkraCodeLanguage(language);
   const ranges: MarkraCodeHighlightSpan[] = [];
   try {
-    const tree = language && lowlight.registered(language)
-      ? lowlight.highlight(language, code)
+    const tree = normalizedLanguage && lowlight.registered(normalizedLanguage)
+      ? lowlight.highlight(normalizedLanguage, code)
       : lowlight.highlightAuto(code);
     collectHighlightRanges(tree as HighlightAstNode, 0, [], ranges);
   } catch {

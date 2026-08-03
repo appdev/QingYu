@@ -1764,6 +1764,45 @@ describe("useMarkdownDocument", () => {
     expect(confirmDiscardUnsavedChanges).toHaveBeenCalledWith(expect.objectContaining({ name: "source.md" }));
   });
 
+  it("skips live editor equivalence checks after the document is already dirty", async () => {
+    const isCurrentMarkdownEquivalent = vi.fn(() => false);
+    mockedReadNativeMarkdownFile.mockResolvedValueOnce({
+      content: "Original clean source.",
+      name: "performance.md",
+      path: "/mock-files/performance.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        isCurrentMarkdownEquivalent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "performance.md",
+        path: "/mock-files/performance.md",
+        relativePath: "performance.md"
+      });
+    });
+
+    act(() => {
+      result.current.handleMarkdownChange("First user edit.", { surface: "source" });
+    });
+    expect(result.current.document.dirty).toBe(true);
+    isCurrentMarkdownEquivalent.mockClear();
+
+    act(() => {
+      result.current.handleMarkdownChange("Second user edit.", { surface: "source" });
+    });
+
+    expect(isCurrentMarkdownEquivalent).not.toHaveBeenCalled();
+  });
+
   it("does not ask to discard a clean file when the visual editor tightens callout list spacing", async () => {
     let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
     let editorMarkdown = [
@@ -2025,6 +2064,109 @@ describe("useMarkdownDocument", () => {
 
     await waitFor(() => expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(malformedContent));
     expect(markdownHelperMocks.getWordCount).toHaveBeenCalledWith(malformedContent);
+  });
+
+  it("keeps the previous deferred summary visible while refreshing an edited document", async () => {
+    const initialBody = "# Synthetic guide\n\nInitial content.";
+    const initialContent = `---\ntitle: Synthetic guide\n---\n\n${initialBody}`;
+    const initialOutlineItems = [{ level: 1, title: "Synthetic guide" }];
+    const editedBody = "# Refreshed guide\n\nInitial content.\n\nEdited content.";
+    const editedContent = `---\ntitle: Refreshed guide\n---\n\n${editedBody}`;
+    const refreshedOutlineItems = [{ level: 1, title: "Refreshed guide" }];
+    mockedReadNativeMarkdownFile.mockResolvedValueOnce({
+      content: initialContent,
+      name: "synthetic-guide.md",
+      path: "/mock-files/synthetic-guide.md",
+      sizeBytes: 300_000
+    } as Awaited<ReturnType<typeof readNativeMarkdownFile>>);
+    markdownHelperMocks.getMarkdownOutline.mockReturnValue(initialOutlineItems);
+    markdownHelperMocks.getWordCount.mockReturnValue(4);
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "synthetic-guide.md",
+        path: "/mock-files/synthetic-guide.md",
+        relativePath: "synthetic-guide.md"
+      });
+    });
+    await waitFor(() => expect(result.current.outlineItems).toEqual(initialOutlineItems));
+
+    markdownHelperMocks.getMarkdownOutline.mockReturnValue(refreshedOutlineItems);
+    markdownHelperMocks.getWordCount.mockReturnValue(6);
+
+    act(() => {
+      result.current.handleMarkdownChange(editedContent);
+    });
+
+    expect(result.current.outlineItems).toEqual(initialOutlineItems);
+    expect(result.current.wordCount).toBe(4);
+
+    await waitFor(() => expect(result.current.outlineItems).toEqual(refreshedOutlineItems));
+    expect(markdownHelperMocks.getMarkdownOutline).toHaveBeenCalledWith(editedBody);
+    expect(result.current.wordCount).toBe(6);
+  });
+
+  it("does not reuse a deferred summary after switching documents", async () => {
+    const firstContent = "# First synthetic guide";
+    const secondContent = "# Second synthetic guide";
+    const firstOutlineItems = [{ level: 1, title: "First synthetic guide" }];
+    const secondOutlineItems = [{ level: 1, title: "Second synthetic guide" }];
+    mockedReadNativeMarkdownFile
+      .mockResolvedValueOnce({
+        content: firstContent,
+        name: "first-synthetic-guide.md",
+        path: "/mock-files/first-synthetic-guide.md",
+        sizeBytes: 300_000
+      } as Awaited<ReturnType<typeof readNativeMarkdownFile>>)
+      .mockResolvedValueOnce({
+        content: secondContent,
+        name: "second-synthetic-guide.md",
+        path: "/mock-files/second-synthetic-guide.md",
+        sizeBytes: 300_000
+      } as Awaited<ReturnType<typeof readNativeMarkdownFile>>);
+    markdownHelperMocks.getMarkdownOutline.mockReturnValue(firstOutlineItems);
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "first-synthetic-guide.md",
+        path: "/mock-files/first-synthetic-guide.md",
+        relativePath: "first-synthetic-guide.md"
+      });
+    });
+    await waitFor(() => expect(result.current.outlineItems).toEqual(firstOutlineItems));
+
+    markdownHelperMocks.getMarkdownOutline.mockReturnValue(secondOutlineItems);
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "second-synthetic-guide.md",
+        path: "/mock-files/second-synthetic-guide.md",
+        relativePath: "second-synthetic-guide.md"
+      });
+    });
+
+    expect(result.current.outlineItems).toEqual([]);
+
+    await waitFor(() => expect(result.current.outlineItems).toEqual(secondOutlineItems));
   });
 
   it("restores historical content into the active document as an unsaved edit", async () => {
