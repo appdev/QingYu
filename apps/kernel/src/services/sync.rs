@@ -37,8 +37,8 @@ use crate::{
     events::{EventPublication, EventSink as _},
     ports::BoxTaskFuture,
     runtime::{
-        ClaimedSyncRun, KernelRuntime, MutationPermit, ServiceFailure, SyncRunClaim,
-        WorkspaceRunLifecycleError,
+        ClaimedSyncRun, KernelRuntime, MutationPermit, QueueSyncRunError, ServiceFailure,
+        SyncRunClaim, WorkspaceRunLifecycleError,
     },
     sync::config::{
         SyncConfig, SyncConfigChangeError, SyncConfigLoad, SyncConfigStore,
@@ -171,7 +171,7 @@ struct FailedSyncRunStart {
 }
 
 enum SyncRunTriggerFailure {
-    ActiveRun,
+    ActiveRun(SyncRunAcceptedDto),
     Closing,
     Disabled,
     Incomplete,
@@ -724,7 +724,10 @@ impl SyncService {
                 trigger,
                 mutation,
             )
-            .map_err(|_| SyncRunTriggerFailure::ActiveRun)?;
+            .map_err(|error| match error {
+                QueueSyncRunError::Active(run) => SyncRunTriggerFailure::ActiveRun(run),
+                QueueSyncRunError::Unavailable => SyncRunTriggerFailure::Unavailable,
+            })?;
         publish_status(
             runtime.as_ref(),
             queued.attempting,
@@ -1071,15 +1074,17 @@ impl SyncApiService for SyncService {
         runtime
             .verify_instance_lock()
             .map_err(|_| failure(ErrorCode::SyncNotReady))?;
-        self.start_sync_run(
+        match self.start_sync_run(
             &runtime,
             SyncTrigger::Manual,
             Some(request.expected_config_revision),
             SyncRunAdmission::Standard,
             mutation,
-        )
-        .map(|run| run.accepted)
-        .map_err(api_trigger_failure)
+        ) {
+            Ok(run) => Ok(run.accepted),
+            Err(SyncRunTriggerFailure::ActiveRun(run)) => Ok(run),
+            Err(error) => Err(api_trigger_failure(error)),
+        }
     }
 
     async fn list_remote_notebooks(
@@ -1301,7 +1306,7 @@ const fn sync_mode_allows_trigger(mode: SyncMode, trigger: SyncTrigger) -> bool 
 
 fn kernel_trigger_rejection(error: SyncRunTriggerFailure) -> KernelSyncTriggerRejection {
     match error {
-        SyncRunTriggerFailure::ActiveRun => KernelSyncTriggerRejection::ActiveRun,
+        SyncRunTriggerFailure::ActiveRun(_) => KernelSyncTriggerRejection::ActiveRun,
         SyncRunTriggerFailure::Closing => KernelSyncTriggerRejection::Closing,
         SyncRunTriggerFailure::Disabled => KernelSyncTriggerRejection::Disabled,
         SyncRunTriggerFailure::Incomplete => KernelSyncTriggerRejection::Incomplete,
@@ -1320,7 +1325,7 @@ fn api_trigger_failure(error: SyncRunTriggerFailure) -> ServiceFailure {
         SyncRunTriggerFailure::Disabled
         | SyncRunTriggerFailure::Incomplete
         | SyncRunTriggerFailure::NotReady => failure(ErrorCode::SyncNotReady),
-        SyncRunTriggerFailure::ActiveRun
+        SyncRunTriggerFailure::ActiveRun(_)
         | SyncRunTriggerFailure::Closing
         | SyncRunTriggerFailure::ModeDisallowed
         | SyncRunTriggerFailure::Unavailable => failure(ErrorCode::SyncRunUnavailable),

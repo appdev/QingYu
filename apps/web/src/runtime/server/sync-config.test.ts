@@ -135,11 +135,10 @@ describe("server sync config facade", () => {
 
   it("correlates an attempting run by run id before accepting its terminal status", async () => {
     const kernel = kernelPort();
-    vi.mocked(kernel.sync.readStatus).mockResolvedValueOnce({
-      ...successfulStatus(),
-      activeRunId: "run-1",
+    vi.mocked(kernel.sync.readRun).mockResolvedValueOnce({
+      ...successfulRun(),
       completionState: "attempting",
-      lastSuccessfulSyncAt: null,
+      finishedAt: null,
       summary: null,
     });
     const delay = vi.fn(async () => undefined);
@@ -153,23 +152,22 @@ describe("server sync config facade", () => {
     })).resolves.toMatchObject({ status: "completed" });
 
     expect(delay).toHaveBeenCalledWith(250);
-    expect(kernel.sync.readStatus).toHaveBeenCalledTimes(2);
+    expect(kernel.sync.readRun).toHaveBeenCalledTimes(2);
   });
 
   it("does not impose the container drain window as a production sync timeout", async () => {
     const kernel = kernelPort();
     let reads = 0;
-    vi.mocked(kernel.sync.readStatus).mockImplementation(async () => {
+    vi.mocked(kernel.sync.readRun).mockImplementation(async () => {
       reads += 1;
       return reads <= 121
         ? {
-            ...successfulStatus(),
-            activeRunId: "run-1",
+            ...successfulRun(),
             completionState: "attempting",
-            lastSuccessfulSyncAt: null,
+            finishedAt: null,
             summary: null,
           }
-        : successfulStatus();
+        : successfulRun();
     });
     const syncConfig = createServerSyncConfigRuntime(kernel, {
       delay: async () => undefined,
@@ -275,6 +273,7 @@ function kernelPort() {
     sync: {
       patchConfig: vi.fn(async (input) => config(input.changes.enabled ?? true)),
       readConfig,
+      readRun: vi.fn(async () => successfulRun()),
       readStatus: vi.fn(async () => successfulStatus()),
       testConnection: vi.fn(async () => ({
         checkedTarget: "bucket/notes",
@@ -310,5 +309,18 @@ function successfulStatus() {
       skippedFiles: 0,
       uploadedFiles: 1,
     },
+  };
+}
+
+function successfulRun() {
+  return {
+    acceptedAt: "2026-07-30T00:00:00Z",
+    completionState: "succeeded" as const,
+    configRevision: revision,
+    error: null,
+    finishedAt: "2026-07-30T00:00:01Z",
+    provider: "s3" as const,
+    runId: "run-1",
+    summary: successfulStatus().summary,
   };
 }

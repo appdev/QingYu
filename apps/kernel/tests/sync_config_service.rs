@@ -2599,7 +2599,7 @@ fn assert_status_publication(
 }
 
 #[tokio::test]
-async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor() {
+async fn active_manual_run_coalesces_duplicate_without_spawning_a_second_executor() {
     let temporary = tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     let app_data = temporary.path().join("app-data");
@@ -2635,15 +2635,15 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
         expected_config_revision: revision,
     };
 
-    let _accepted = SyncApiService::trigger_sync_run(&service, request.clone())
+    let accepted = SyncApiService::trigger_sync_run(&service, request.clone())
         .await
         .unwrap();
     executor.started.notified().await;
     let duplicate = SyncApiService::trigger_sync_run(&service, request)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(duplicate.code(), ErrorCode::SyncRunUnavailable);
+    assert_eq!(duplicate, accepted);
     assert_eq!(executor.runs.load(Ordering::Relaxed), 1);
     assert_eq!(
         SyncApiService::get_sync_status(&service)
@@ -2668,7 +2668,7 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
 }
 
 #[tokio::test]
-async fn second_sync_service_observes_attempting_and_cannot_patch_or_run() {
+async fn second_sync_service_observes_attempting_and_coalesces_without_spawning() {
     let temporary = tempdir().unwrap();
     let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
     let store = Arc::new(SyncConfigStore::new(durable).unwrap());
@@ -2678,7 +2678,7 @@ async fn second_sync_service_observes_attempting_and_cannot_patch_or_run() {
     let second = SyncService::new(runtime.clone(), store, second_executor.clone());
     let config = SyncApiService::get_sync_config(&first).await.unwrap();
 
-    SyncApiService::trigger_sync_run(
+    let first_accepted = SyncApiService::trigger_sync_run(
         &first,
         TriggerSyncRunRequest {
             expected_config_revision: config.revision.clone(),
@@ -2701,18 +2701,18 @@ async fn second_sync_service_observes_attempting_and_cannot_patch_or_run() {
     )
     .await
     .unwrap_err();
-    let run_error = SyncApiService::trigger_sync_run(
+    let second_accepted = SyncApiService::trigger_sync_run(
         &second,
         TriggerSyncRunRequest {
             expected_config_revision: config.revision,
         },
     )
     .await
-    .unwrap_err();
+    .unwrap();
 
     assert_eq!(observed.completion_state, SyncCompletionState::Attempting);
     assert_eq!(patch_error.code(), ErrorCode::SyncNotReady);
-    assert_eq!(run_error.code(), ErrorCode::SyncRunUnavailable);
+    assert_eq!(second_accepted, first_accepted);
     assert_eq!(second_executor.runs.load(Ordering::SeqCst), 0);
 
     first_executor.release.notify_one();
@@ -4905,16 +4905,16 @@ async fn sync_shutdown_waits_for_a_queued_background_task_to_settle() {
     let request = TriggerSyncRunRequest {
         expected_config_revision: config.revision,
     };
-    SyncApiService::trigger_sync_run(service.as_ref(), request.clone())
+    let accepted = SyncApiService::trigger_sync_run(service.as_ref(), request.clone())
         .await
         .unwrap();
 
     let shutdown_service = service.clone();
     let mut shutdown = tokio::spawn(async move { shutdown_service.shutdown().await });
-    let rejected = SyncApiService::trigger_sync_run(service.as_ref(), request)
-        .await
-        .unwrap_err();
-    assert_eq!(rejected.code(), ErrorCode::SyncRunUnavailable);
+    match SyncApiService::trigger_sync_run(service.as_ref(), request).await {
+        Ok(coalesced) => assert_eq!(coalesced, accepted),
+        Err(rejected) => assert_eq!(rejected.code(), ErrorCode::SyncRunUnavailable),
+    }
     assert!(
         tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
             .await
@@ -5311,7 +5311,7 @@ async fn running_connection_test_is_not_cancelled_by_workspace_transition() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn successful_switch_admits_only_one_concurrent_run_bound_to_new_workspace() {
+async fn successful_switch_coalesces_concurrent_runs_bound_to_new_workspace() {
     let temporary = tempdir().unwrap();
     let spawner = Arc::new(CollectingDeferredTaskSpawner::default());
     let (runtime, workspace, durable) = active_sync_runtime(
@@ -5356,14 +5356,16 @@ async fn successful_switch_admits_only_one_concurrent_run_bound_to_new_workspace
 
     let first = first.await.unwrap();
     let second = second.await.unwrap();
-    let (_accepted, rejected) = match (first, second) {
-        (Ok(accepted), Err(rejected)) | (Err(rejected), Ok(accepted)) => (accepted, rejected),
-        (Ok(_), Ok(_)) => panic!("both concurrent sync runs were accepted"),
+    let (first_accepted, second_accepted) = match (first, second) {
+        (Ok(first), Ok(second)) => (first, second),
+        (Ok(_), Err(rejected)) | (Err(rejected), Ok(_)) => {
+            panic!("one concurrent sync run was rejected: {rejected:?}")
+        }
         (Err(first), Err(second)) => {
             panic!("both concurrent sync runs were rejected: {first:?}, {second:?}")
         }
     };
-    assert_eq!(rejected.code(), ErrorCode::SyncRunUnavailable);
+    assert_eq!(first_accepted, second_accepted);
 
     assert_eq!(spawner.spawned.load(Ordering::SeqCst), 1);
     let mut background = tokio::spawn(spawner.take_only_task());

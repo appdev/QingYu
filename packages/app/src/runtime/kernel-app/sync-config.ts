@@ -233,22 +233,17 @@ async function waitForTerminalRun(
   }
 
   for (let attempt = 0; maxStatusReads === undefined || attempt < maxStatusReads; attempt += 1) {
-    const status = await kernel.sync.readStatus();
+    const status = await kernel.sync.readRun(run.runId);
     if (
+      status.runId !== run.runId ||
       status.configRevision !== run.configRevision ||
-      status.lastAttemptAt !== run.acceptedAt
+      status.acceptedAt !== run.acceptedAt
     ) {
       throw new KernelSyncRunError("protocol-mismatch");
     }
     if (status.completionState === "attempting") {
-      if (status.activeRunId !== run.runId) {
-        throw new KernelSyncRunError("protocol-mismatch");
-      }
       await delay(options.statusPollMilliseconds ?? 250);
       continue;
-    }
-    if (status.activeRunId !== null || status.completionState === "idle") {
-      throw new KernelSyncRunError("protocol-mismatch");
     }
     if (
       status.completionState === "failed" &&
