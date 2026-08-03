@@ -915,6 +915,72 @@ describe("useMarkdownDocument", () => {
     }));
   });
 
+  it("keeps a renamed Kernel tab distinct when its released path is reused", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const creationDirectory = `${workspaceRoot}/nested-cycle-4`;
+    const untitledPath = `${creationDirectory}/Untitled.md`;
+    const renamedPath = `${creationDirectory}/Web-Endurance-C5-A.md`;
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "Untitled.md",
+      path: untitledPath
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    act(() => {
+      result.current.clearOpenDocument({ persistWorkspace: false });
+    });
+    await act(async () => {
+      await result.current.createBlankDocument({
+        content: "# Web cycle 5 A\nMarker: WEB-C5-A",
+        creationDirectory
+      });
+    });
+    const renamedTabId = result.current.activeTabId;
+
+    act(() => {
+      expect(result.current.replaceOpenDocumentFile(untitledPath, {
+        name: "Web-Endurance-C5-A.md",
+        path: renamedPath,
+        relativePath: "nested-cycle-4/Web-Endurance-C5-A.md"
+      })).toBe(true);
+    });
+
+    await act(async () => {
+      await result.current.createBlankDocument({ creationDirectory });
+    });
+
+    expect(result.current.tabs).toHaveLength(2);
+    expect(new Set(result.current.tabs.map((tab) => tab.id)).size).toBe(2);
+    expect(result.current.activeTabId).not.toBe(renamedTabId);
+    expect(result.current.document).toMatchObject({
+      name: "Untitled.md",
+      path: untitledPath
+    });
+
+    await act(async () => {
+      await result.current.closeMarkdownTab(result.current.activeTabId!);
+    });
+
+    expect(result.current.tabs).toEqual([
+      expect.objectContaining({
+        content: expect.stringContaining("Marker: WEB-C5-A"),
+        id: renamedTabId,
+        name: "Web-Endurance-C5-A.md",
+        path: renamedPath
+      })
+    ]);
+  });
+
   it("uses the planned directory when allocating a Kernel filename", async () => {
     const workspaceRoot = "kernel-workspace://primary";
     const creationDirectory = `${workspaceRoot}/abc`;
@@ -4695,6 +4761,74 @@ describe("useMarkdownDocument", () => {
       })
     ]);
     expect(result.current.activeTabId).toBe("untitled:1");
+  });
+
+  it("restores a renamed dirty tab without consuming a file that reused its old path", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const reusedPath = `${workspaceRoot}/nested-cycle-4/Untitled.md`;
+    const renamedPath = `${workspaceRoot}/nested-cycle-4/Web-Endurance-C5-A.md`;
+    const staleRenamedTabId = `file:${reusedPath}`;
+    const renamedDraftContent = "# Web cycle 5 A\nMarker: WEB-C5-A\nUnsaved after rename.";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      activeDraftId: staleRenamedTabId,
+      draftTabs: [{
+        content: renamedDraftContent,
+        id: staleRenamedTabId,
+        name: "Web-Endurance-C5-A.md",
+        path: renamedPath
+      }],
+      filePath: renamedPath,
+      fileTreeOpen: true,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [renamedPath, reusedPath]
+    });
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === renamedPath
+      ? {
+        content: "# Web cycle 5 A\nMarker: WEB-C5-A",
+        name: "Web-Endurance-C5-A.md",
+        path
+      }
+      : {
+        content: "---\ntitle: Untitled\n---\n\n",
+        name: "Untitled.md",
+        path
+      });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true,
+        restoreWorkspaceRoot: workspaceRoot
+      })
+    );
+
+    await waitFor(() => expect(result.current.document.content).toBe(renamedDraftContent));
+
+    expect(result.current.tabs).toEqual([
+      expect.objectContaining({
+        dirty: false,
+        id: `file:${reusedPath}`,
+        name: "Untitled.md",
+        path: reusedPath
+      }),
+      expect.objectContaining({
+        content: renamedDraftContent,
+        dirty: true,
+        id: `file:${renamedPath}`,
+        name: "Web-Endurance-C5-A.md",
+        path: renamedPath
+      })
+    ]);
+    expect(result.current.activeTabId).toBe(`file:${renamedPath}`);
+    expect(new Set(result.current.tabs.map((tab) => tab.id)).size).toBe(2);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenLastCalledWith(expect.objectContaining({
+      activeDraftId: `file:${renamedPath}`,
+      openFilePaths: [reusedPath, renamedPath]
+    }));
   });
 
   it("restores a typed draft creation directory for its first content save", async () => {
