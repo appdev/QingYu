@@ -1124,7 +1124,6 @@ async fn sync_repository_routes_preflight_only_their_exact_methods() {
     let api = TestApi::new();
     for (path, accepted_method, rejected_method) in [
         ("/api/v1/sync/repositories", "GET", "POST"),
-        ("/api/v1/sync/repository-binding", "POST", "GET"),
         ("/api/v1/sync/dejavu/key", "GET", "POST"),
         ("/api/v1/sync/dejavu/key/import", "POST", "GET"),
         ("/api/v1/sync/dejavu/key/export", "POST", "GET"),
@@ -1168,6 +1167,56 @@ async fn sync_repository_routes_preflight_only_their_exact_methods() {
             "{path}"
         );
     }
+
+    for accepted_method in ["GET", "POST"] {
+        let accepted = Request::builder()
+            .method("OPTIONS")
+            .uri("/api/v1/sync/repository-binding")
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, accepted_method)
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization, content-type, x-csrf-token",
+            )
+            .body(Body::empty())
+            .unwrap();
+        let accepted = api.router.clone().oneshot(accepted).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            accepted.headers()[header::ACCESS_CONTROL_ALLOW_METHODS],
+            accepted_method
+        );
+    }
+
+    let rejected = Request::builder()
+        .method("OPTIONS")
+        .uri("/api/v1/sync/repository-binding")
+        .header(header::HOST, HOST)
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PATCH")
+        .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+        .body(Body::empty())
+        .unwrap();
+    let rejected = api.router.clone().oneshot(rejected).await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert!(rejected
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .is_none());
+}
+
+#[tokio::test]
+async fn sync_repository_binding_view_requires_authentication() {
+    let api = TestApi::new();
+    let response = api
+        .router
+        .clone()
+        .oneshot(api.request("GET", "/api/v1/sync/repository-binding"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

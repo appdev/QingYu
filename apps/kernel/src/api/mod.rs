@@ -50,9 +50,10 @@ use crate::{
         ResourceKind, ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
         SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto,
         SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto,
-        SyncRepositoryBindingDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto,
-        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
+        SyncRepositoryBindingDto, SyncRepositoryBindingViewDto, SyncRunAcceptedDto,
+        SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse,
+        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
+        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -602,14 +603,13 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         | "/api/v1/sync/status"
         | "/api/v1/events" => &[Method::GET],
         "/api/v1/auth/initialize" | "/api/v1/auth/logout" => &[Method::POST],
-        "/api/v1/auth/session" => &[Method::GET, Method::POST],
+        "/api/v1/auth/session" | "/api/v1/sync/repository-binding" => &[Method::GET, Method::POST],
         "/api/v1/auth/password" => &[Method::PATCH],
         "/api/v1/documents" => &[Method::GET, Method::POST],
         "/api/v1/settings" | "/api/v1/sync/config" => &[Method::GET, Method::PATCH],
         "/api/v1/app-config/state" => &[Method::PATCH],
         "/api/v1/sync/connection-test"
         | "/api/v1/sync/runs"
-        | "/api/v1/sync/repository-binding"
         | "/api/v1/sync/dejavu/key/import"
         | "/api/v1/sync/dejavu/key/export" => &[Method::POST],
         _ => match path.split('/').collect::<Vec<_>>().as_slice() {
@@ -828,6 +828,7 @@ impl std::error::Error for OpenApiExportError {}
         RemoteNotebookCatalogDto,
         BindSyncRepositoryRequest,
         SyncRepositoryBindingDto,
+        SyncRepositoryBindingViewDto,
         DejavuKeyStateDto,
         ImportDejavuKeyRequest,
         ExportDejavuKeyRequest,
@@ -1398,6 +1399,14 @@ fn install_paths(document: &mut serde_json::Value) {
             "listRemoteNotebooks",
             "200",
             "RemoteNotebookCatalogDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/sync/repository-binding",
+            "getSyncRepositoryBinding",
+            "200",
+            "SyncRepositoryBindingViewDto",
             true,
         ),
         (
@@ -2198,7 +2207,7 @@ fn install_operation_errors(document: &mut serde_json::Value) {
         "/api/v1/sync/status",
         "get",
         TRANSPORT,
-        &["sync_not_ready"],
+        &["invalid_request", "sync_not_ready"],
     );
     add_errors_with(
         document,
@@ -2230,6 +2239,13 @@ fn install_operation_errors(document: &mut serde_json::Value) {
             "sync_config_revision_conflict",
             "sync_not_ready",
         ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/sync/repository-binding",
+        "get",
+        TRANSPORT,
+        &["invalid_request", "sync_not_ready"],
     );
     add_errors_with(
         document,

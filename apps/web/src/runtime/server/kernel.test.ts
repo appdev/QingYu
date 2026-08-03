@@ -257,6 +257,22 @@ describe("Server Kernel domain adapter", () => {
     );
   });
 
+  it("reads the repository binding through the authenticated fixed-workspace adapter", async () => {
+    const client = kernelClient();
+    vi.mocked(client.sync.getRepositoryBinding).mockResolvedValue({
+      repositoryId: "5223e8c9-1346-4d59-8c22-12d68ce16fcf",
+    });
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    await expect(adapter.port.sync.readRepositoryBinding()).resolves.toEqual({
+      repositoryId: "5223e8c9-1346-4d59-8c22-12d68ce16fcf",
+    });
+    expect(client.sync.getRepositoryBinding).toHaveBeenCalledWith({
+      signal: expect.any(AbortSignal),
+    });
+    expect(client.workspace.get).toHaveBeenCalled();
+  });
+
   it("rejects a caller generation mismatch before issuing a document request", async () => {
     const client = kernelClient();
     const adapter = await createServerKernelDomainAdapter(client, options());
@@ -841,6 +857,7 @@ function kernelClient(overrides: {
     },
     settings: { get: vi.fn(), patch: vi.fn() },
     sync: {
+      getRepositoryBinding: vi.fn(),
       getRun: vi.fn(),
       getConfig: vi.fn(),
       getStatus: vi.fn(),

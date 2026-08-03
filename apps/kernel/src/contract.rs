@@ -2191,6 +2191,13 @@ pub struct SyncRepositoryBindingDto {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SyncRepositoryBindingViewDto {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub repository_id: Nullable<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DejavuKeyStateDto {
     pub configured: bool,
 }

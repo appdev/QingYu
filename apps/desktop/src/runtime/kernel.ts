@@ -610,6 +610,13 @@ export async function createDesktopKernelDomainAdapter(
           await confirmWorkspaceIdentity();
           return mapSyncRunStatus(run);
         },
+        readRepositoryBinding: async () => {
+          await prepareInstanceOperation();
+          const binding = await client.sync.getRepositoryBinding({ signal: requests.signal });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return binding;
+        },
         readStatus: async () => {
           await prepareInstanceOperation();
           const status = await client.sync.getStatus({ signal: requests.signal });

@@ -593,6 +593,10 @@ export type KernelSyncRepositoryBindingSnapshot = {
   repositoryId: string;
 };
 
+export type KernelSyncRepositoryBindingViewSnapshot = {
+  repositoryId: string | null;
+};
+
 export type KernelDomainPort = {
   appConfig: {
     readonly bootstrap: KernelAppConfigSnapshot;
@@ -637,6 +641,7 @@ export type KernelDomainPort = {
     exportKey: () => Promise<string>;
     importKey: (key: string) => Promise<{ configured: boolean }>;
     listNotebooks: (expectedRevision: KernelRevision) => Promise<KernelRemoteNotebookSnapshot[]>;
+    readRepositoryBinding: () => Promise<KernelSyncRepositoryBindingViewSnapshot>;
     readKeyState: () => Promise<{ configured: boolean }>;
     patchConfig: (input: KernelPatchSyncConfigInput) => Promise<KernelSyncConfigSnapshot>;
     readConfig: () => Promise<KernelSyncConfigSnapshot>;
@@ -710,6 +715,7 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       importKey: rejectUnavailable,
       listNotebooks: rejectUnavailable,
       patchConfig: rejectUnavailable,
+      readRepositoryBinding: rejectUnavailable,
       readKeyState: rejectUnavailable,
       readConfig: rejectUnavailable,
       readRun: rejectUnavailable,

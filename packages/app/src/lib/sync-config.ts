@@ -397,6 +397,7 @@ export type AppSyncConfigRuntime = {
   listNotebooks(input: { revision: string }): Promise<RemoteNotebookCatalogEntry[]>;
   listDejavuConflictHistory(input: { repositoryId: string }): Promise<SyncConflictRecord[]>;
   loadEditing(): Promise<SyncEditingSnapshot>;
+  loadRepositoryBinding(input: { notesRoot: string }): Promise<{ repositoryId: string } | null>;
   loadRepositoryStatus(input: { notesRoot: string }): Promise<DejavuRepositoryStatus | null>;
   loadStatus(): Promise<SyncStatus | null>;
   patch(input: {

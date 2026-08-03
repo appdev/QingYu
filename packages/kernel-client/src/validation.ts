@@ -340,6 +340,14 @@ export function isSyncRepositoryBinding(
     exact(value, ["jobId", "repositoryId"]);
 }
 
+export function isSyncRepositoryBindingView(
+  value: unknown,
+): value is Schemas["SyncRepositoryBindingViewDto"] {
+  return isRecord(value) &&
+    (value.repositoryId === null || isCanonicalUuid(value.repositoryId)) &&
+    exact(value, ["repositoryId"]);
+}
+
 export function isDejavuKeyState(value: unknown): value is Schemas["DejavuKeyStateDto"] {
   return isRecord(value) &&
     typeof value.configured === "boolean" &&

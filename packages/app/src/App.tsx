@@ -162,6 +162,7 @@ import {
   listenPrimaryCloudNotebookRestoreRequested,
   type PrimaryCloudNotebookRestoreRequest
 } from "./lib/cloud-notebook-restore-events";
+import { emitDejavuRepositoryBindingChanged } from "./lib/sync-config-events";
 import { isPandocSetupError, runPandocSetupAction } from "./app/pandoc-setup";
 import type { WorkspaceSearchResult } from "./lib/workspace-search";
 import type {
@@ -269,6 +270,8 @@ const sideDocumentMainPanePercentMin = 35;
 const sideDocumentMainPanePercentMax = 70;
 const defaultSideDocumentMainPanePercent = 50;
 const quietStatusOverlayInset = 56;
+const settingsRepositoryRecoveryMaxStatusReads = 7_200;
+const settingsRepositoryRecoveryPollMilliseconds = 250;
 
 function nativeChildPath(parentPath: string, name: string) {
   const separator = parentPath.includes("\\") && !parentPath.includes("/") ? "\\" : "/";
@@ -1175,22 +1178,60 @@ function WorkspaceApp() {
     if (
       compactMode.trueMobile ||
       !primaryWindowOwner ||
-      remoteNotebookDialogOpen ||
-      syncConfig.appliedDocument?.revision !== request.revision
+      remoteNotebookDialogOpen
     ) return false;
+    const exactConfig = await getAppRuntime().syncConfig.load();
+    if (exactConfig.status !== "loaded" || exactConfig.revision !== request.revision) {
+      return false;
+    }
 
     if (request.provider === "s3") {
       if (!appFeatures.dejavuSync) return false;
       if (primaryWorkspace.status !== "ready" || primaryWorkspace.root !== request.notesRoot) {
         return false;
       }
-      await getAppRuntime().syncConfig.bindRepository({
+      const accepted = await getAppRuntime().syncConfig.bindRepository({
         displayName: request.displayName,
         notesRoot: request.notesRoot,
         repositoryId: request.repositoryId,
         revision: request.revision
       });
-      return true;
+      if (
+        accepted.notesRoot !== request.notesRoot ||
+        accepted.repositoryId !== request.repositoryId
+      ) return false;
+      try {
+        await emitDejavuRepositoryBindingChanged({
+          notesRoot: accepted.notesRoot,
+          repositoryId: accepted.repositoryId
+        });
+      } catch {
+        // The committed binding and exact job result remain authoritative if UI notification fails.
+      }
+      if (request.notesRoot !== kernelWorkspaceRoot) return true;
+      for (
+        let attempt = 0;
+        attempt < settingsRepositoryRecoveryMaxStatusReads;
+        attempt += 1
+      ) {
+        const job = await getAppRuntime().syncConfig.loadJob({ jobId: accepted.jobId });
+        if (
+          job.jobId !== accepted.jobId ||
+          job.provider !== "s3" ||
+          job.revision !== request.revision
+        ) return false;
+        if (job.completionState === "attempting") {
+          await new Promise<undefined>((resolve) => {
+            globalThis.setTimeout(
+              () => resolve(undefined),
+              settingsRepositoryRecoveryPollMilliseconds
+            );
+          });
+          continue;
+        }
+        return job.completionState === "succeeded";
+      }
+      return false;
     }
 
     if (request.remoteName === currentDesktopNotebookName) {

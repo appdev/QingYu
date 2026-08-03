@@ -63,6 +63,7 @@ enum ServiceOperation {
     GetSyncRun,
     TriggerSyncRun,
     ListRemoteNotebooks,
+    GetSyncRepositoryBinding,
     BindSyncRepository,
     GetDejavuKeyState,
     ImportDejavuKey,
@@ -129,7 +130,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/api/v1/sync/repositories", get(list_remote_notebooks))
         .route(
             "/api/v1/sync/repository-binding",
-            post(bind_sync_repository),
+            get(get_sync_repository_binding).post(bind_sync_repository),
         )
         .route("/api/v1/sync/dejavu/key", get(get_dejavu_key_state))
         .route("/api/v1/sync/dejavu/key/import", post(import_dejavu_key))
@@ -663,6 +664,17 @@ async fn bind_sync_repository(State(state): State<ApiState>, request: Request<Bo
     )
 }
 
+async fn get_sync_repository_binding(State(state): State<ApiState>) -> Response {
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::GetSyncRepositoryBinding);
+    };
+    service_response(
+        service.get_sync_repository_binding().await,
+        StatusCode::OK,
+        ServiceOperation::GetSyncRepositoryBinding,
+    )
+}
+
 async fn get_dejavu_key_state(State(state): State<ApiState>) -> Response {
     let Some(service) = runtime(&state).sync_api_service() else {
         return unavailable(ServiceOperation::GetDejavuKeyState);
@@ -1139,6 +1151,7 @@ impl ServiceOperation {
                 E::SyncConfigRevisionConflict,
                 E::SyncNotReady,
             ],
+            Self::GetSyncRepositoryBinding => &[E::InvalidRequest, E::SyncNotReady],
             Self::BindSyncRepository => &[
                 E::InvalidRequest,
                 E::SyncConfigAbsent,
@@ -1181,6 +1194,7 @@ impl ServiceOperation {
             | Self::GetSyncRun
             | Self::TriggerSyncRun
             | Self::ListRemoteNotebooks
+            | Self::GetSyncRepositoryBinding
             | Self::BindSyncRepository
             | Self::GetDejavuKeyState
             | Self::ImportDejavuKey

@@ -61,6 +61,13 @@ export function createKernelSyncConfigRuntime(
     loadKeyState: () => kernel.sync.readKeyState(),
     listDejavuConflictHistory: async () => [],
     listNotebooks: (input) => kernel.sync.listNotebooks(input.revision as KernelRevision),
+    loadRepositoryBinding: async ({ notesRoot }) => {
+      if (notesRoot !== kernelWorkspaceRoot) {
+        throw new Error("The repository binding does not address the active Kernel workspace.");
+      }
+      const binding = await kernel.sync.readRepositoryBinding();
+      return binding.repositoryId === null ? null : { repositoryId: binding.repositoryId };
+    },
     loadRepositoryStatus: async () => null,
     loadStatus: async () => mapStatus(await kernel.sync.readStatus()),
     patch: async ({ expectedRevision, patch }) => mapConfig(

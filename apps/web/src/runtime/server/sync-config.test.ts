@@ -117,6 +117,22 @@ describe("server sync config facade", () => {
     });
   });
 
+  it("reads the persisted active-workspace repository binding through the production facade", async () => {
+    const kernel = kernelPort();
+    const readRepositoryBinding = vi.fn(async () => ({
+      repositoryId: "5223e8c9-1346-4d59-8c22-12d68ce16fcf",
+    }));
+    Object.assign(kernel.sync, { readRepositoryBinding });
+    const syncConfig = createServerSyncConfigRuntime(kernel);
+
+    await expect(syncConfig.loadRepositoryBinding({
+      notesRoot: "kernel-workspace://primary",
+    })).resolves.toEqual({
+      repositoryId: "5223e8c9-1346-4d59-8c22-12d68ce16fcf",
+    });
+    expect(readRepositoryBinding).toHaveBeenCalledOnce();
+  });
+
   it("correlates an attempting run by run id before accepting its terminal status", async () => {
     const kernel = kernelPort();
     vi.mocked(kernel.sync.readStatus).mockResolvedValueOnce({

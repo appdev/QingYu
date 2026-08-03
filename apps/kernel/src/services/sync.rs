@@ -29,9 +29,10 @@ use crate::{
         ListRemoteNotebooksQuery, Nullable, PatchSyncConfigRequest, RemoteNotebookCatalogDto,
         RemoteNotebookCatalogEntryDto, ResourceRefDto, Revision, RunId, SyncConfigReadiness,
         SyncConfigViewDto, SyncConnectionTestDto, SyncMode, SyncProvider, SyncRepositoryBindingDto,
-        SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorCategory, SyncSafeErrorCode,
-        SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeProviderErrorCode, SyncStatusDto,
-        SyncSummaryDto, SyncTrigger, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        SyncRepositoryBindingViewDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorCategory,
+        SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeProviderErrorCode,
+        SyncStatusDto, SyncSummaryDto, SyncTrigger, TestSyncConnectionRequest,
+        TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
     ports::BoxTaskFuture,
@@ -48,8 +49,8 @@ use crate::{
     sync::{
         catalog::KernelS3RepositoryCatalog,
         local_state::{
-            bind_dejavu_repository, dejavu_key_configured, export_dejavu_key, replace_dejavu_key,
-            DejavuLocalStateError,
+            bind_dejavu_repository, dejavu_key_configured, export_dejavu_key,
+            read_active_dejavu_binding, replace_dejavu_key, DejavuLocalStateError,
         },
     },
 };
@@ -1169,6 +1170,33 @@ impl SyncApiService for SyncService {
         Ok(SyncRepositoryBindingDto {
             job_id: started.accepted.run_id.as_uuid().to_string(),
             repository_id: metadata.repository_id,
+        })
+    }
+
+    async fn get_sync_repository_binding(
+        &self,
+    ) -> Result<SyncRepositoryBindingViewDto, ServiceFailure> {
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let _mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        let workspace = runtime
+            .active_workspace_authority()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        let binding = read_active_dejavu_binding(runtime.instance_data_root(), workspace.root())
+            .map_err(local_state_failure)?;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        workspace
+            .verify_held_directory()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
+        Ok(SyncRepositoryBindingViewDto {
+            repository_id: match binding {
+                Some(binding) => Nullable::value(binding.repository_id().to_owned()),
+                None => Nullable::null(),
+            },
         })
     }
 

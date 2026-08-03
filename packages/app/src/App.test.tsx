@@ -1384,15 +1384,40 @@ describe("QingYu workspace", () => {
     coordinatorSpy.mockRestore();
   });
 
-  it("accepts a settings-owned S3 repository binding without waiting for sync completion", async () => {
+  it("waits for the exact accepted S3 recovery job before completing a settings restore", async () => {
     const runtime = createDefaultAppRuntime();
     const load = vi.fn(async () => readySyncConfigResult("established-catalog-revision"));
+    let resolveJob!: () => undefined;
+    const terminalJob = new Promise<Awaited<ReturnType<AppSyncConfigRuntime["loadJob"]>>>((resolve) => {
+      resolveJob = () => {
+        resolve({
+          acceptedAt: "2026-08-03T01:00:00Z",
+          completionState: "succeeded",
+          error: null,
+          finishedAt: "2026-08-03T01:00:01Z",
+          jobId: "00000000-0000-4000-8000-000000000052",
+          provider: "s3",
+          revision: "established-catalog-revision",
+          summary: {
+            bytesDownloaded: 1,
+            bytesUploaded: 0,
+            conflictFiles: 0,
+            downloadedFiles: 1,
+            scannedFiles: 1,
+            skippedFiles: 0,
+            uploadedFiles: 0
+          }
+        });
+        return undefined;
+      };
+    });
+    const loadJob = vi.fn(async () => terminalJob);
     const bindRepository = vi.fn(async () => ({
       jobId: "00000000-0000-4000-8000-000000000052",
-      notesRoot: "/Workspace/A",
+      notesRoot: kernelWorkspaceRoot,
       repositoryId: "00000000-0000-4000-8000-000000000051"
     }));
-    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    mockDesktopPrimaryWorkspace({ root: kernelWorkspaceRoot, status: "ready" });
     mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
     configureAppRuntime({
       ...runtime,
@@ -1400,6 +1425,7 @@ describe("QingYu workspace", () => {
       syncConfig: {
         ...runtime.syncConfig,
         bindRepository,
+        loadJob,
         load
       }
     });
@@ -1412,23 +1438,152 @@ describe("QingYu workspace", () => {
       expect.any(Function)
     ));
 
-    await expect(requestPrimaryCloudNotebookRestore({
+    const restoring = requestPrimaryCloudNotebookRestore({
       displayName: "Shared notes",
-      notesRoot: "/Workspace/A",
+      notesRoot: kernelWorkspaceRoot,
       provider: "s3",
       repositoryId: "00000000-0000-4000-8000-000000000051",
       revision: "established-catalog-revision",
       timeoutMs: 1_000
-    })).resolves.toBe(true);
+    });
+
+    let completed = false;
+    restoring.then(() => {
+      completed = true;
+    }).catch(() => {});
+    await waitFor(() => expect(bindRepository).toHaveBeenCalledOnce());
+    await act(async () => Promise.resolve());
+    expect(completed).toBe(false);
+    expect(loadJob).toHaveBeenCalledWith({
+      jobId: "00000000-0000-4000-8000-000000000052"
+    });
+
+    await act(async () => resolveJob());
+    await expect(restoring).resolves.toBe(true);
 
     expect(bindRepository).toHaveBeenCalledWith({
       displayName: "Shared notes",
-      notesRoot: "/Workspace/A",
+      notesRoot: kernelWorkspaceRoot,
       repositoryId: "00000000-0000-4000-8000-000000000051",
       revision: "established-catalog-revision"
     });
     expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
       .not.toBeInTheDocument();
+  });
+
+  it("returns a safe failure when an accepted S3 recovery job reaches terminal failure", async () => {
+    const runtime = createDefaultAppRuntime();
+    const loadJob = vi.fn(async () => ({
+      acceptedAt: "2026-08-03T01:00:00Z",
+      completionState: "failed" as const,
+      error: {
+        category: "authentication" as const,
+        code: "repository_auth_failed",
+        httpStatus: null,
+        method: null,
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3" as const,
+        providerErrorCode: null,
+        relativePath: null,
+        requestId: null,
+        runId: "00000000-0000-4000-8000-000000000052"
+      },
+      finishedAt: "2026-08-03T01:00:01Z",
+      jobId: "00000000-0000-4000-8000-000000000052",
+      provider: "s3" as const,
+      revision: "established-catalog-revision",
+      summary: null
+    }));
+    const bindRepository = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-000000000052",
+      notesRoot: kernelWorkspaceRoot,
+      repositoryId: "00000000-0000-4000-8000-000000000051"
+    }));
+    mockDesktopPrimaryWorkspace({ root: kernelWorkspaceRoot, status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true },
+      syncConfig: {
+        ...runtime.syncConfig,
+        bindRepository,
+        load: async () => readySyncConfigResult("established-catalog-revision"),
+        loadJob
+      }
+    });
+    configureNotebookSwitchEventBus();
+    renderApp();
+    await waitFor(() => expect(bindRepository).not.toHaveBeenCalled());
+
+    await expect(requestPrimaryCloudNotebookRestore({
+      displayName: "Shared notes",
+      notesRoot: kernelWorkspaceRoot,
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "established-catalog-revision",
+      timeoutMs: 1_000
+    })).resolves.toBe(false);
+
+    expect(bindRepository).toHaveBeenCalledOnce();
+    expect(loadJob).toHaveBeenCalledWith({
+      jobId: "00000000-0000-4000-8000-000000000052"
+    });
+    expect(screen.queryByText(/authorization|bearer|secret/iu)).not.toBeInTheDocument();
+  });
+
+  it("uses a freshly loaded exact catalog revision when the observed Web revision is stale", async () => {
+    const runtime = createDefaultAppRuntime();
+    const load = vi.fn()
+      .mockResolvedValueOnce(readySyncConfigResult("observed-stale-revision", "s3"))
+      .mockResolvedValue(readySyncConfigResult("exact-catalog-revision", "s3"));
+    const bindRepository = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-000000000052",
+      notesRoot: kernelWorkspaceRoot,
+      repositoryId: "00000000-0000-4000-8000-000000000051"
+    }));
+    const loadJob = vi.fn(async () => ({
+      acceptedAt: "2026-08-03T01:00:00Z",
+      completionState: "succeeded" as const,
+      error: null,
+      finishedAt: "2026-08-03T01:00:01Z",
+      jobId: "00000000-0000-4000-8000-000000000052",
+      provider: "s3" as const,
+      revision: "exact-catalog-revision",
+      summary: null
+    }));
+    mockDesktopPrimaryWorkspace({ root: kernelWorkspaceRoot, status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true },
+      syncConfig: {
+        ...runtime.syncConfig,
+        bindRepository,
+        load,
+        loadJob
+      }
+    });
+    configureNotebookSwitchEventBus();
+    renderApp();
+    await waitFor(() => expect(load).toHaveBeenCalledOnce());
+
+    await expect(requestPrimaryCloudNotebookRestore({
+      displayName: "Shared notes",
+      notesRoot: kernelWorkspaceRoot,
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "exact-catalog-revision",
+      timeoutMs: 1_000
+    })).resolves.toBe(true);
+
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(bindRepository).toHaveBeenCalledWith({
+      displayName: "Shared notes",
+      notesRoot: kernelWorkspaceRoot,
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "exact-catalog-revision"
+    });
   });
 
   it("runs current-notebook synchronization for a same-name settings selection", async () => {

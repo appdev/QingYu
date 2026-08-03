@@ -1236,6 +1236,7 @@ function kernelPort(): ServerKernelDomainPort {
       listNotebooks: unavailable(), readKeyState: unavailable(),
       patchConfig: unavailable(),
       readConfig: unavailable(),
+      readRepositoryBinding: unavailable(),
       readRun: unavailable(),
       readStatus: unavailable(),
       testConnection: unavailable(),

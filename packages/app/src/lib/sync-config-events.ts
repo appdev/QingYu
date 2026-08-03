@@ -18,6 +18,7 @@ export const syncRunRequestedEvent = "qingyu://sync-run-requested";
 export const syncRunCompletedEvent = "qingyu://sync-run-completed";
 export const syncStatusChangedEvent = "qingyu://sync-status-changed";
 export const dejavuSyncStatusChangedEvent = "qingyu://dejavu-sync-status-changed";
+export const dejavuRepositoryBindingChangedEvent = "qingyu://dejavu-repository-binding-changed";
 
 export type SyncConfigChangedPayload = { revision: string };
 export type SyncEditingPayload = SyncEditingEvent;
@@ -46,6 +47,10 @@ export type SyncStatusChangedPayload = {
   notesRoot: string;
   revision: string;
   status: SyncStatus;
+};
+export type DejavuRepositoryBindingChangedPayload = {
+  notesRoot: string;
+  repositoryId: string;
 };
 
 function emitEvent<TPayload>(event: string, payload: TPayload): Promise<unknown> {
@@ -117,4 +122,16 @@ export function listenDejavuSyncStatusChanged(
   handler: (payload: DejavuRepositoryStatus) => unknown
 ) {
   return listenEvent(dejavuSyncStatusChangedEvent, handler);
+}
+
+export function emitDejavuRepositoryBindingChanged(
+  payload: DejavuRepositoryBindingChangedPayload
+) {
+  return emitEvent(dejavuRepositoryBindingChangedEvent, payload);
+}
+
+export function listenDejavuRepositoryBindingChanged(
+  handler: (payload: DejavuRepositoryBindingChangedPayload) => unknown
+) {
+  return listenEvent(dejavuRepositoryBindingChangedEvent, handler);
 }

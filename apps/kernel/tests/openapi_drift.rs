@@ -81,6 +81,11 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
     ("post", "/api/v1/sync/connection-test", "testSyncConnection"),
     ("get", "/api/v1/sync/repositories", "listRemoteNotebooks"),
     (
+        "get",
+        "/api/v1/sync/repository-binding",
+        "getSyncRepositoryBinding",
+    ),
+    (
         "post",
         "/api/v1/sync/repository-binding",
         "bindSyncRepository",
@@ -271,7 +276,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_forty_http_operations() {
+fn openapi_has_exactly_the_frozen_forty_one_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -283,7 +288,7 @@ fn openapi_has_exactly_the_frozen_forty_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 40);
+    assert_eq!(expected.len(), 41);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -800,6 +805,20 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
             "resource_too_large",
             "unauthorized",
             "workspace_generation_stale",
+        ])
+    );
+    assert_eq!(
+        operation_error_codes(
+            &document["paths"]["/api/v1/sync/repository-binding"]["get"]["responses"],
+        ),
+        BTreeSet::from([
+            "authentication_unavailable",
+            "host_not_allowed",
+            "internal_error",
+            "invalid_request",
+            "origin_not_allowed",
+            "sync_not_ready",
+            "unauthorized",
         ])
     );
 }

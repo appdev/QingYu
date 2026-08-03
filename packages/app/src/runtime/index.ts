@@ -743,6 +743,7 @@ export function createDefaultAppRuntime(): AppRuntime {
         pendingApply: syncPendingApply,
         state: syncEditingState
       }),
+      loadRepositoryBinding: async () => null,
       loadRepositoryStatus: async () => null,
       loadStatus: () => unsupportedFeature("loadSyncStatus"),
       patch: () => unsupportedFeature("patchSyncConfig"),

@@ -249,6 +249,7 @@ export function createDesktopRuntime({
     listNotebooks: syncConfig.listNativeNotebooks,
     listDejavuConflictHistory: syncConfig.listNativeDejavuConflictHistory,
     loadEditing: syncConfig.loadNativeSyncConfigEditing,
+    loadRepositoryBinding: syncConfig.loadNativeDejavuRepositoryBinding,
     loadRepositoryStatus: syncConfig.loadNativeDejavuRepositoryStatus,
     loadStatus: syncConfig.loadNativeSyncStatus,
     patch: syncConfig.patchNativeSyncConfig,

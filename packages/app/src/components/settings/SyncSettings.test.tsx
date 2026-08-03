@@ -1027,6 +1027,97 @@ describe("SyncSettings application scope", () => {
     expect(summary).not.toHaveTextContent("stale-older-binding");
   });
 
+  it("shows an authoritative Kernel binding when native repository status is unavailable", async () => {
+    const runtime = createDefaultAppRuntime();
+    const loadRepositoryBinding = vi.fn(async () => ({ repositoryId }));
+    Object.assign(runtime.syncConfig, { loadRepositoryBinding });
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => null);
+    configureAppRuntime(runtime);
+
+    renderS3Settings();
+
+    expect(await screen.findByText(repositoryId)).toBeVisible();
+    expect(loadRepositoryBinding).toHaveBeenCalledWith({ notesRoot: "/Notes" });
+    expect(screen.queryByText("The current notebook is not bound to a Dejavu repository."))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Dejavu background sync" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("re-reads persisted binding authority after a repository binding notification", async () => {
+    const events = createEventBus();
+    const oldRepositoryId = "00000000-0000-4000-8000-0000000000aa";
+    const newRepositoryId = "00000000-0000-4000-8000-0000000000bb";
+    let currentRepositoryId = oldRepositoryId;
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryBinding = vi.fn(async () => ({
+      repositoryId: currentRepositoryId
+    }));
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => null);
+    configureAppRuntime(runtime);
+
+    renderS3Settings();
+
+    expect(await screen.findByText(oldRepositoryId)).toBeVisible();
+    expect(events.listenerCount("qingyu://dejavu-repository-binding-changed")).toBe(1);
+    await act(async () => {
+      await events.emit("qingyu://dejavu-repository-binding-changed", {
+        notesRoot: "/Notes",
+        repositoryId: newRepositoryId
+      });
+    });
+    expect(screen.getByText(oldRepositoryId)).toBeVisible();
+
+    currentRepositoryId = newRepositoryId;
+    await act(async () => {
+      await events.emit("qingyu://dejavu-repository-binding-changed", {
+        notesRoot: "/Notes",
+        repositoryId: newRepositoryId
+      });
+    });
+    expect(await screen.findByText(newRepositoryId)).toBeVisible();
+    expect(screen.queryByText(oldRepositoryId)).not.toBeInTheDocument();
+  });
+
+  it("does not let a stale initial binding read overwrite a newer persisted binding event", async () => {
+    const events = createEventBus();
+    const initialBinding = deferred<{ repositoryId: string } | null>();
+    const staleRepositoryId = "00000000-0000-4000-8000-0000000000aa";
+    const currentRepositoryId = "00000000-0000-4000-8000-0000000000bb";
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryBinding = vi.fn()
+      .mockImplementationOnce(async () => initialBinding.promise)
+      .mockResolvedValue({ repositoryId: currentRepositoryId });
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => null);
+    configureAppRuntime(runtime);
+
+    renderS3Settings();
+    await waitFor(() => expect(
+      events.listenerCount("qingyu://dejavu-repository-binding-changed")
+    ).toBe(1));
+    await act(async () => {
+      await events.emit("qingyu://dejavu-repository-binding-changed", {
+        notesRoot: "/Notes",
+        repositoryId: currentRepositoryId
+      });
+    });
+    expect(await screen.findByText(currentRepositoryId)).toBeVisible();
+
+    await act(async () => initialBinding.resolve({ repositoryId: staleRepositoryId }));
+    expect(screen.getByText(currentRepositoryId)).toBeVisible();
+    expect(screen.queryByText(staleRepositoryId)).not.toBeInTheDocument();
+
+    await act(async () => {
+      await events.emit(
+        "qingyu://dejavu-sync-status-changed",
+        repositoryStatus({ repositoryId: currentRepositoryId })
+      );
+    });
+    expect(await screen.findByRole("status", { name: "Dejavu background sync" })).toBeVisible();
+  });
+
   it("adopts a new repository binding for the same current root", async () => {
     const events = createEventBus();
     const oldStatus = repositoryStatus({

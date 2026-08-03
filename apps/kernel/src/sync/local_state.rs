@@ -95,6 +95,10 @@ pub(crate) struct DejavuLocalRepositoryBinding {
 }
 
 impl DejavuLocalRepositoryBinding {
+    pub(crate) fn repository_id(&self) -> &str {
+        &self.repository_id
+    }
+
     pub(crate) fn into_parts(self) -> (String, String, String, DejavuRepositoryKey) {
         (
             self.repository_id,

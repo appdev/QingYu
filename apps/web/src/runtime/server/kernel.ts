@@ -631,6 +631,14 @@ export async function createServerKernelDomainAdapter(
         await confirmWorkspaceIdentity();
         return mapSyncRunStatus(run);
       },
+      readRepositoryBinding: async () => {
+        await prepareInstanceOperation();
+        const binding = await request(() => client.sync.getRepositoryBinding({
+          signal: requests.signal,
+        }));
+        await confirmWorkspaceIdentity();
+        return binding;
+      },
       readStatus: async () => {
         await prepareInstanceOperation();
         const status = await request(() => client.sync.getStatus({ signal: requests.signal }));

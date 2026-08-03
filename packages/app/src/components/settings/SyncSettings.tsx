@@ -15,6 +15,7 @@ import {
   type SyncTrigger
 } from "../../lib/sync-config";
 import { getAppRuntime } from "../../runtime";
+import { listenDejavuRepositoryBindingChanged } from "../../lib/sync-config-events";
 import {
   SettingsButton,
   SettingsCallout,
@@ -324,10 +325,12 @@ export function SyncSettings({
     loadedConfig && loadedRevision ? draftState(loadedConfig, loadedRevision) : null
   );
   const nextOperationIdRef = useRef(0);
+  const bindingAuthorityProbeRef = useRef(0);
   const currentLoadedRevisionRef = useRef(loadedRevision);
   currentLoadedRevisionRef.current = loadedRevision;
   const [connectionTesting, setConnectionTesting] = useState(false);
   const [dejavuKeyState, setDejavuKeyState] = useState<DejavuKeyState | null>(null);
+  const [dejavuRepositoryBindingId, setDejavuRepositoryBindingId] = useState<string | null>(null);
   const [dejavuRepositoryStatus, setDejavuRepositoryStatus] = useState<DejavuRepositoryStatus | null>(null);
   const [keyInput, setKeyInput] = useState("");
   const [keyFeedback, setKeyFeedback] = useState<string | null>(null);
@@ -377,6 +380,7 @@ export function SyncSettings({
     let nextOwnershipProbe = 0;
     let adoptedOwnershipEvent = 0;
     const pendingEvents = new Map<string, DejavuRepositoryStatus>();
+    setDejavuRepositoryBindingId(null);
     setDejavuRepositoryStatus(null);
     if (!dejavuSyncAvailable || !primaryRoot) {
       return;
@@ -384,16 +388,26 @@ export function SyncSettings({
     const runtime = getAppRuntime();
     const adoptStatusForCurrentRoot = async (payload: DejavuRepositoryStatus) => {
       const ownershipEvent = ++nextOwnershipProbe;
+      const bindingProbe = bindingAuthorityProbeRef.current + 1;
+      bindingAuthorityProbeRef.current = bindingProbe;
       try {
-        const current = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
+        const [binding, current] = await Promise.all([
+          runtime.syncConfig.loadRepositoryBinding({ notesRoot: primaryRoot }),
+          runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot })
+        ]);
+        const currentRepositoryId = binding?.repositoryId ?? current?.repositoryId ?? null;
         if (
           !active
-          || current?.repositoryId !== payload.repositoryId
+          || currentRepositoryId !== payload.repositoryId
           || ownershipEvent < adoptedOwnershipEvent
+          || bindingProbe !== bindingAuthorityProbeRef.current
         ) return;
         adoptedOwnershipEvent = ownershipEvent;
-        repositoryId = current.repositoryId;
-        setDejavuRepositoryStatus(current);
+        repositoryId = currentRepositoryId;
+        setDejavuRepositoryBindingId(currentRepositoryId);
+        setDejavuRepositoryStatus(
+          current?.repositoryId === currentRepositoryId ? current : payload
+        );
       } catch {
         // An event never bypasses current-root ownership when the binding cannot be reloaded.
       }
@@ -406,6 +420,14 @@ export function SyncSettings({
       }
       if (repositoryId === payload.repositoryId) setDejavuRepositoryStatus(payload);
       else adoptStatusForCurrentRoot(payload).catch(() => {});
+    };
+    const completeSupersededInitialization = () => {
+      initialLoadComplete = true;
+      const pending = [...pendingEvents.values()];
+      pendingEvents.clear();
+      for (const payload of pending) {
+        adoptStatusForCurrentRoot(payload).catch(() => {});
+      }
     };
     const initializeStatus = async () => {
       if (runtime.events.isAvailable()) {
@@ -421,21 +443,36 @@ export function SyncSettings({
         }
       }
       if (!active) return;
+      const bindingProbe = bindingAuthorityProbeRef.current + 1;
+      bindingAuthorityProbeRef.current = bindingProbe;
       try {
+        const binding = await runtime.syncConfig.loadRepositoryBinding({ notesRoot: primaryRoot });
         let next = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
         if (next === null && pendingEvents.size > 0) {
           next = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
         }
         if (!active) return;
-        repositoryId = next?.repositoryId ?? null;
+        if (bindingProbe !== bindingAuthorityProbeRef.current) {
+          completeSupersededInitialization();
+          return;
+        }
+        repositoryId = binding?.repositoryId ?? next?.repositoryId ?? null;
         initialLoadComplete = true;
         const pending = repositoryId ? pendingEvents.get(repositoryId) : null;
         pendingEvents.clear();
-        setDejavuRepositoryStatus(pending ?? next);
+        setDejavuRepositoryBindingId(repositoryId);
+        setDejavuRepositoryStatus(
+          pending ?? (next?.repositoryId === repositoryId ? next : null)
+        );
       } catch {
         if (!active) return;
+        if (bindingProbe !== bindingAuthorityProbeRef.current) {
+          completeSupersededInitialization();
+          return;
+        }
         initialLoadComplete = true;
         pendingEvents.clear();
+        setDejavuRepositoryBindingId(null);
         setDejavuRepositoryStatus(null);
       }
     };
@@ -448,13 +485,50 @@ export function SyncSettings({
   }, [dejavuSyncAvailable, primaryRoot]);
 
   useEffect(() => {
+    if (!dejavuSyncAvailable || !primaryRoot) return;
+    let active = true;
+    let cleanup: (() => unknown) | null = null;
+    listenDejavuRepositoryBindingChanged(async (payload) => {
+      if (!active || payload.notesRoot !== primaryRoot) return;
+      const bindingProbe = bindingAuthorityProbeRef.current + 1;
+      bindingAuthorityProbeRef.current = bindingProbe;
+      try {
+        const binding = await getAppRuntime().syncConfig.loadRepositoryBinding({
+          notesRoot: primaryRoot
+        });
+        if (
+          !active
+          || binding?.repositoryId !== payload.repositoryId
+          || bindingProbe !== bindingAuthorityProbeRef.current
+        ) return;
+        setDejavuRepositoryBindingId(binding.repositoryId);
+        setDejavuRepositoryStatus((current) => (
+          current?.repositoryId === binding.repositoryId ? current : null
+        ));
+      } catch {
+        // A notification never bypasses the active workspace's persisted binding authority.
+      }
+    }).then((stop) => {
+      if (!active) {
+        stop();
+        return;
+      }
+      cleanup = stop;
+    }).catch(() => {});
+    return () => {
+      active = false;
+      cleanup?.();
+    };
+  }, [dejavuSyncAvailable, primaryRoot]);
+
+  useEffect(() => {
     onRepositoryIdentityChange?.({
       notesRoot: primaryRoot,
       repositoryId: dejavuSyncAvailable
-        ? dejavuRepositoryStatus?.repositoryId ?? null
+        ? dejavuRepositoryBindingId
         : null
     });
-  }, [dejavuRepositoryStatus?.repositoryId, dejavuSyncAvailable, onRepositoryIdentityChange, primaryRoot]);
+  }, [dejavuRepositoryBindingId, dejavuSyncAvailable, onRepositoryIdentityChange, primaryRoot]);
 
   useEffect(() => {
     setDraft((current) => {
@@ -591,7 +665,7 @@ export function SyncSettings({
       setConnectionTesting(false);
     }
   };
-  const repositoryId = dejavuRepositoryStatus?.repositoryId ?? null;
+  const repositoryId = dejavuRepositoryBindingId;
   const runRepositoryOperation = async (
     operation: string,
     confirmation: string,

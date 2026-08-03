@@ -28,6 +28,7 @@ import {
   isSyncConnection,
   isSyncRun,
   isSyncRepositoryBinding,
+  isSyncRepositoryBindingView,
   isSyncRunStatus,
   isSyncStatus,
   isVersion,
@@ -220,6 +221,9 @@ export interface KernelSyncClient {
     request: Schemas["BindSyncRepositoryRequest"],
     options?: KernelRequestOptions,
   ): Promise<Schemas["SyncRepositoryBindingDto"]>;
+  getRepositoryBinding(
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["SyncRepositoryBindingViewDto"]>;
   getKeyState(options?: KernelRequestOptions): Promise<Schemas["DejavuKeyStateDto"]>;
   importKey(
     request: Schemas["ImportDejavuKeyRequest"],
@@ -539,6 +543,12 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           body: request,
           signal: requestOptions?.signal,
         }, { status: 202, validate: isSyncRepositoryBinding }),
+      getRepositoryBinding: (requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/sync/repository-binding",
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isSyncRepositoryBindingView }),
       getKeyState: (requestOptions) =>
         transport.request({
           method: "GET",

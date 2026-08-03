@@ -1802,6 +1802,74 @@ async fn stale_repository_bind_revision_mutates_neither_local_state_nor_run_stat
 }
 
 #[tokio::test]
+async fn current_repository_binding_reports_only_the_exact_active_workspace_repository() {
+    const REPOSITORY_ID: &str = "5223e8c9-1346-4d59-8c22-12d68ce16fcf";
+    const DISPLAY_NAME: &str = "Server notes";
+
+    let temporary = tempdir().unwrap();
+    let fixture = RepositoryCatalogFixture::start(REPOSITORY_ID, DISPLAY_NAME).await;
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    replace_fixture_s3_endpoint(temporary.path(), &fixture.endpoint);
+    let service = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        Arc::new(CountingExecutor::default()),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    let config = SyncApiService::patch_sync_config(
+        &service,
+        PatchSyncConfigRequest {
+            expected_revision: config.revision,
+            changes: SyncConfigChangesDto {
+                enabled: Some(false),
+                ..SyncConfigChangesDto::default()
+            },
+        },
+    )
+    .await
+    .expect("disable automatic sync while preserving one-shot recovery");
+    assert_eq!(config.readiness, SyncConfigReadiness::Disabled);
+    let unbound = SyncApiService::get_sync_repository_binding(&service)
+        .await
+        .expect("read unbound active workspace");
+    assert!(unbound.repository_id.as_ref().is_none());
+    seed_local_sync_binding(temporary.path());
+
+    let before = SyncApiService::get_sync_repository_binding(&service)
+        .await
+        .expect("read original active binding");
+    assert_eq!(
+        before.repository_id.as_ref().map(String::as_str),
+        Some("f56c9192-414e-436b-bf3e-74648a434c54")
+    );
+
+    SyncApiService::bind_sync_repository(
+        &service,
+        BindSyncRepositoryRequest {
+            display_name: DISPLAY_NAME.to_string(),
+            expected_revision: config.revision,
+            repository_id: REPOSITORY_ID.to_string(),
+        },
+    )
+    .await
+    .expect("accepted exact repository recovery");
+    fixture.finish().await;
+
+    let after = SyncApiService::get_sync_repository_binding(&service)
+        .await
+        .expect("read rebound active binding");
+    assert_eq!(
+        after.repository_id.as_ref().map(String::as_str),
+        Some(REPOSITORY_ID)
+    );
+    assert_eq!(
+        serde_json::to_value(&after).unwrap(),
+        serde_json::json!({ "repositoryId": REPOSITORY_ID })
+    );
+    assert!(!format!("{after:?}").contains("BwcHBwcH"));
+}
+
+#[tokio::test]
 async fn closed_recovery_admission_rejects_repository_bind_before_local_state_mutation() {
     const REPOSITORY_ID: &str = "5223e8c9-1346-4d59-8c22-12d68ce16fcf";
     const DISPLAY_NAME: &str = "Server notes";

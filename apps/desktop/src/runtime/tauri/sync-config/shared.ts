@@ -68,6 +68,13 @@ export function loadNativeDejavuRepositoryStatus(
   return invokeNative("load_dejavu_repository_status", { notesRoot: input.notesRoot });
 }
 
+export async function loadNativeDejavuRepositoryBinding(
+  input: Parameters<AppSyncConfigRuntime["loadRepositoryBinding"]>[0]
+): ReturnType<AppSyncConfigRuntime["loadRepositoryBinding"]> {
+  const status = await loadNativeDejavuRepositoryStatus(input);
+  return status === null ? null : { repositoryId: status.repositoryId };
+}
+
 export function listNativeDejavuConflictHistory(
   input: Parameters<AppSyncConfigRuntime["listDejavuConflictHistory"]>[0]
 ): Promise<SyncConflictRecord[]> {

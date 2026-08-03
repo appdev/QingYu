@@ -171,6 +171,34 @@ describe("Kernel sync apply settlement", () => {
     expect(bindRepository).not.toHaveBeenCalled();
   });
 
+  it("loads only the active Kernel workspace repository binding", async () => {
+    const kernel = createKernel("succeeded");
+    const readRepositoryBinding = vi.fn(async () => ({
+      repositoryId: "5223e8c9-1346-4d59-8c22-12d68ce16fcf",
+    }));
+    Object.assign(kernel.sync, { readRepositoryBinding });
+    const shared = createDefaultAppRuntime().syncConfig;
+    const runtime = createKernelSyncConfigRuntime(kernel, {
+      local: {
+        cancelApply: shared.cancelApply,
+        loadEditing: shared.loadEditing,
+        requestApply: shared.requestApply,
+        setEditing: shared.setEditing,
+        settleApply: shared.settleApply,
+      },
+    });
+
+    await expect(runtime.loadRepositoryBinding({
+      notesRoot: "kernel-workspace://primary",
+    })).resolves.toEqual({
+      repositoryId: "5223e8c9-1346-4d59-8c22-12d68ce16fcf",
+    });
+    await expect(runtime.loadRepositoryBinding({
+      notesRoot: "/tmp/not-the-active-kernel-workspace",
+    })).rejects.toThrow("does not address the active Kernel workspace");
+    expect(readRepositoryBinding).toHaveBeenCalledOnce();
+  });
+
   it("settles an exact settings apply after Kernel success", async () => {
     const { runtime, settleApply } = createRuntime("succeeded");
 

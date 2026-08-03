@@ -2731,6 +2731,11 @@ pub trait SyncApiService: Send + Sync {
         let _request = request;
         Err(sync_repository_capability_unavailable())
     }
+    async fn get_sync_repository_binding(
+        &self,
+    ) -> Result<crate::contract::SyncRepositoryBindingViewDto, ServiceFailure> {
+        Err(sync_repository_capability_unavailable())
+    }
     async fn get_dejavu_key_state(
         &self,
     ) -> Result<crate::contract::DejavuKeyStateDto, ServiceFailure> {

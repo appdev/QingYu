@@ -1349,6 +1349,12 @@ describe("desktop Kernel domain adapter", () => {
           }],
         });
       }
+      if (pathname === "/api/v1/sync/repository-binding") {
+        requests.push({ body: undefined, method: String(init.method), pathname });
+        return jsonResponse({
+          repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+        });
+      }
       if (pathname === "/api/v1/sync/status") {
         requests.push({ body: undefined, method: String(init.method), pathname });
         return jsonResponse({
@@ -1433,6 +1439,9 @@ describe("desktop Kernel domain adapter", () => {
       provider: "s3",
       repositoryId: "323df833-764a-44b3-a534-492640c258f2",
     }]);
+    await expect(adapter.port.sync.readRepositoryBinding()).resolves.toEqual({
+      repositoryId: "323df833-764a-44b3-a534-492640c258f2",
+    });
     await expect(adapter.port.sync.readStatus()).resolves.toMatchObject({
       completionState: "idle",
       configRevision: "sync-2",
@@ -1477,6 +1486,7 @@ describe("desktop Kernel domain adapter", () => {
         method: "GET",
         pathname: "/api/v1/sync/repositories?expectedRevision=sync-2",
       },
+      { body: undefined, method: "GET", pathname: "/api/v1/sync/repository-binding" },
       { body: undefined, method: "GET", pathname: "/api/v1/sync/status" },
       {
         body: { expectedConfigRevision: "sync-2" },
