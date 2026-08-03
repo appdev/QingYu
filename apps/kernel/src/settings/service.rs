@@ -497,6 +497,7 @@ impl SettingsService {
 
         let editor = merge_defaults(default_editor(), self.store.get("editorPreferences")?);
         for (field, key) in [
+            ("editor.autoSaveEnabled", "autoSaveEnabled"),
             ("editor.bodyFontSize", "bodyFontSize"),
             ("editor.contentWidth", "contentWidth"),
             ("editor.contentWidthPx", "contentWidthPx"),
@@ -1195,7 +1196,6 @@ fn valid_single_portable_value(key: &str, value: &Value) -> bool {
 const EDITOR_STORAGE_FIELDS: &[&str] = &[
     "autoRevealActiveFile",
     "autoSaveEnabled",
-    "autoSaveIntervalMinutes",
     "autoUpdateEnabled",
     "bodyFontSize",
     "clipboardImageFolder",

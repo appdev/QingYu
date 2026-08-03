@@ -68,7 +68,6 @@ export function generateDiagnosticsReport({
     "### Editor",
     line("Restore workspace on startup", editorPreferences.restoreWorkspaceOnStartup),
     line("Auto-save enabled", editorPreferences.autoSaveEnabled),
-    line("Auto-save interval", minuteBucket(editorPreferences.autoSaveIntervalMinutes)),
     line("View mode", editorPreferences.viewMode),
     line("Document tabs enabled", editorPreferences.showDocumentTabs),
     "",
@@ -159,15 +158,4 @@ function normalizeCrashError(error: unknown) {
 
 function line(label: string, value: boolean | number | string) {
   return `- ${label}: ${String(value)}`;
-}
-
-function minuteBucket(minutes: number) {
-  if (!Number.isFinite(minutes) || minutes <= 0) return "disabled";
-  if (minutes <= 1) return "1m";
-  if (minutes <= 5) return "1-5m";
-  if (minutes <= 15) return "5-15m";
-  if (minutes <= 60) return "15-60m";
-  if (minutes <= 240) return "1-4h";
-
-  return ">4h";
 }

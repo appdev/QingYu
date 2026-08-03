@@ -112,6 +112,7 @@ function mapGroup(snapshot: KernelSettingsSnapshot, group: AppSettingsGroup): un
     case "language": return values.get("language");
     case "editorPreferences":
       return compactRecord({
+        autoSaveEnabled: values.get("editor.autoSaveEnabled"),
         bodyFontSize: values.get("editor.bodyFontSize"),
         contentWidth: values.get("editor.contentWidth"),
         contentWidthPx: values.get("editor.contentWidthPx"),
@@ -162,6 +163,7 @@ function groupEntries(
       ];
     case "editorPreferences":
       return compactEntries([
+        optionalEntry("editor.autoSaveEnabled", record.autoSaveEnabled, booleanValue),
         optionalEntry("editor.bodyFontSize", record.bodyFontSize, integerValue),
         optionalEntry("editor.contentWidth", record.contentWidth, stringValue),
         optionalEntry("editor.contentWidthPx", record.contentWidthPx, nullableIntegerValue),

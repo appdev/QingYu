@@ -928,9 +928,16 @@ function WorkspaceApp() {
         : translate("settings.sync.status.succeeded");
     return `${translate("settings.sync.lastSync")} ${completionLabel}`;
   }, [appSync.status, translate]);
+  const handleMarkdownAutoSaveFailure = useCallback(() => {
+    showAppToast({
+      id: "markdown-auto-save-error",
+      message: translate("compact.error.save"),
+      status: "error",
+      surface: "notice"
+    });
+  }, [translate]);
   const markdownDocument = useMarkdownDocument({
     autoSaveEnabled: !compactMode.compact && editorPreferences.preferences.autoSaveEnabled,
-    autoSaveIntervalMinutes: editorPreferences.preferences.autoSaveIntervalMinutes,
     confirmDiscardUnsavedChanges,
     defaultSaveDirectory: defaultMarkdownSaveDirectory,
     documentTabsEnabled: editorPreferences.preferences.showDocumentTabs,
@@ -949,6 +956,7 @@ function WorkspaceApp() {
         ? "spawn-external"
         : "editor",
     onActiveDiskFileContentChange: handleActiveDiskFileContentChange,
+    onAutoSaveFailure: handleMarkdownAutoSaveFailure,
     onMarkdownTreeChange: refreshMarkdownFileTree,
     onTreeRootFromFolderPath: openFolderPath,
     onTreeRootFromFilePath: setRootFromMarkdownFilePath,

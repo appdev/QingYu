@@ -318,6 +318,7 @@ export type KernelSettingKey =
   | "theme.customCss.light"
   | "theme.customCss.dark"
   | "language"
+  | "editor.autoSaveEnabled"
   | "editor.bodyFontSize"
   | "editor.contentWidth"
   | "editor.contentWidthPx"

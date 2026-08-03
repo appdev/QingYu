@@ -732,6 +732,8 @@ function isSettingValueForKey(key: string, value: Schemas["SettingValueDto"]) {
         "it",
         "ru",
       ]);
+    case "editor.autoSaveEnabled":
+      return value.type === "boolean";
     case "editor.bodyFontSize":
       return isIntegerValueIn(value, [14, 15, 16, 17, 18, 20]);
     case "editor.contentWidth":
@@ -1212,6 +1214,7 @@ const SETTING_KEYS = new Set([
   "theme.customCss.light",
   "theme.customCss.dark",
   "language",
+  "editor.autoSaveEnabled",
   "editor.bodyFontSize",
   "editor.contentWidth",
   "editor.contentWidthPx",

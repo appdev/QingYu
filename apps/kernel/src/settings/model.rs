@@ -126,6 +126,7 @@ fn validate_setting_value(key: SettingKey, value: &Value) -> Result<(), ModelErr
                 "en", "zh-CN", "zh-TW", "ja", "ko", "fr", "de", "es", "pt-BR", "it", "ru",
             ],
         ),
+        SettingKey::EditorAutoSaveEnabled => value.is_boolean(),
         SettingKey::EditorBodyFontSize => integer_in(value, &[14, 15, 16, 17, 18, 20]),
         SettingKey::EditorContentWidth => string_in(value, &["narrow", "default", "wide"]),
         SettingKey::EditorContentWidthPx => value.is_null() || integer_between(value, 640, 1_920),
@@ -165,6 +166,7 @@ pub(crate) fn storage_target(key: SettingKey) -> (&'static str, Option<&'static 
         SettingKey::ThemeCustomCssLight => ("lightCustomThemeCss", None),
         SettingKey::ThemeCustomCssDark => ("darkCustomThemeCss", None),
         SettingKey::Language => ("language", None),
+        SettingKey::EditorAutoSaveEnabled => ("editorPreferences", Some("autoSaveEnabled")),
         SettingKey::EditorBodyFontSize => ("editorPreferences", Some("bodyFontSize")),
         SettingKey::EditorContentWidth => ("editorPreferences", Some("contentWidth")),
         SettingKey::EditorContentWidthPx => ("editorPreferences", Some("contentWidthPx")),
@@ -305,6 +307,14 @@ pub fn sanitize_legacy_remote_portable_settings(
             changed = true;
         }
     }
+    if let Some(editor) = object
+        .get_mut("editorPreferences")
+        .and_then(Value::as_object_mut)
+    {
+        if editor.remove("autoSaveIntervalMinutes").is_some() {
+            changed = true;
+        }
+    }
     if !changed {
         return Ok(None);
     }
@@ -355,7 +365,6 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
     const KEYS: &[&str] = &[
         "autoRevealActiveFile",
         "autoSaveEnabled",
-        "autoSaveIntervalMinutes",
         "autoUpdateEnabled",
         "bodyFontSize",
         "clipboardImageFolder",
@@ -404,7 +413,6 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         | "typewriterModeEnabled"
         | "vimModeEnabled"
         | "wrapCodeBlocks" => value.is_boolean(),
-        "autoSaveIntervalMinutes" => integer_between(value, 1, 120),
         "bodyFontSize" => integer_in(value, &[14, 15, 16, 17, 18, 20]),
         "clipboardImageFolder" => valid_portable_relative_folder(value),
         "contentWidth" => string_in(value, &["narrow", "default", "wide"]),
@@ -797,7 +805,6 @@ pub(crate) fn default_editor() -> Map<String, Value> {
     json!({
         "autoRevealActiveFile": false,
         "autoSaveEnabled": true,
-        "autoSaveIntervalMinutes": 10,
         "autoUpdateEnabled": true,
         "bodyFontSize": 16,
         "clipboardImageFolder": "assets",
@@ -980,6 +987,10 @@ pub(crate) fn snapshot_from_values(
                 string("theme.customCss.dark")?,
             ),
             string_entry(SettingKey::Language, string("language")?),
+            boolean_entry(
+                SettingKey::EditorAutoSaveEnabled,
+                boolean("editor.autoSaveEnabled")?,
+            ),
             integer_entry(
                 SettingKey::EditorBodyFontSize,
                 integer("editor.bodyFontSize")?,

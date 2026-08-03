@@ -236,7 +236,6 @@ describe("settings events", () => {
     const preferences: EditorPreferences = {
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 18,
       clipboardImageFolder: "images",

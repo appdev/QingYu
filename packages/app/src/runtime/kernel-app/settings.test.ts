@@ -31,7 +31,7 @@ describe("Kernel settings runtime", () => {
       { appearanceMode: "dark", darkTheme: "night", lightTheme: "minimal" },
       { dark: "dark css", light: "light css" },
       "zh-CN",
-      { bodyFontSize: 17, showWordCount: true },
+      { autoSaveEnabled: false, bodyFontSize: 17, showWordCount: true },
       { rules: "node_modules" },
       { pdfAuthor: "Markra" },
     ]);
@@ -74,6 +74,25 @@ describe("Kernel settings runtime", () => {
       });
     });
     expect(harness.read).toHaveBeenCalledOnce();
+  });
+
+  it("persists the real-time auto-save opt-out through typed Kernel settings", async () => {
+    const harness = settingsHarness();
+    const runtime = createKernelSettingsRuntime(
+      harness.kernel,
+      settingsSnapshot("settings-1"),
+      { local: {} },
+    );
+
+    await runtime.writeGroup?.("editorPreferences", { autoSaveEnabled: true });
+
+    expect(harness.patch).toHaveBeenCalledWith({
+      expectedRevision: "settings-1",
+      values: [{
+        key: "editor.autoSaveEnabled",
+        value: { type: "boolean", value: true },
+      }],
+    });
   });
 
   it("does not expose renderer local-state storage on a Kernel-backed settings runtime", async () => {
@@ -131,6 +150,7 @@ function settingsSnapshot(
       { key: "theme.customCss.light", value: { type: "string", value: "light css" } },
       { key: "theme.customCss.dark", value: { type: "string", value: "dark css" } },
       { key: "language", value: { type: "string", value: "zh-CN" } },
+      { key: "editor.autoSaveEnabled", value: { type: "boolean", value: false } },
       { key: "editor.bodyFontSize", value: { type: "integer", value: 17 } },
       { key: "editor.showWordCount", value: { type: "boolean", value: true } },
       { key: "files.ignoreRules", value: { type: "string", value: "node_modules" } },

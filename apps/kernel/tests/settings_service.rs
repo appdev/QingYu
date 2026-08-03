@@ -329,10 +329,10 @@ fn default_read_is_complete_ordered_and_safe() {
 
     let snapshot = service.read_exposed().expect("read settings");
 
-    assert_eq!(snapshot.values.len(), 26);
+    assert_eq!(snapshot.values.len(), 27);
     assert_eq!(snapshot.values[0].key, SettingKey::AppearanceMode);
     assert_eq!(snapshot.values[3].key, SettingKey::ThemeCustomCssLight);
-    assert_eq!(snapshot.values[25].key, SettingKey::ExportPdfPageSize);
+    assert_eq!(snapshot.values[26].key, SettingKey::ExportPdfPageSize);
     let serialized = serde_json::to_string(&snapshot).unwrap();
     assert!(!serialized.contains("/private"));
     assert!(!serialized.contains("workspace"));
@@ -367,6 +367,44 @@ fn default_read_uses_the_frontend_owned_default_theme_ids() {
         &SettingValueDto::String {
             value: "dark".to_string(),
         }
+    );
+}
+
+#[test]
+fn auto_save_enabled_is_exposed_and_persisted_through_typed_settings() {
+    let store = Arc::new(MemorySettingsStore::with([(
+        "editorPreferences",
+        serde_json::json!({ "autoSaveEnabled": false }),
+    )]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+    let before = service.read_exposed().expect("read settings");
+    let auto_save = before
+        .values
+        .iter()
+        .find(|entry| entry.key == SettingKey::EditorAutoSaveEnabled)
+        .expect("auto-save setting is exposed");
+    assert_eq!(
+        auto_save.value,
+        SettingValueDto::Boolean { value: false }
+    );
+    let patch = serde_json::from_value(serde_json::json!({
+        "expectedRevision": before.revision.as_str(),
+        "values": [{
+            "key": "editor.autoSaveEnabled",
+            "value": { "type": "boolean", "value": true }
+        }]
+    }))
+    .unwrap();
+
+    let after = service.patch_exposed(patch).expect("patch auto-save setting");
+
+    assert!(after.values.iter().any(|entry| {
+        entry.key == SettingKey::EditorAutoSaveEnabled
+            && entry.value == SettingValueDto::Boolean { value: true }
+    }));
+    assert_eq!(
+        store.values.lock().unwrap()["editorPreferences"]["autoSaveEnabled"],
+        serde_json::json!(true)
     );
 }
 
@@ -469,6 +507,25 @@ fn portable_snapshot_projects_supported_editor_fields_without_rewriting_local_va
         store.values.lock().unwrap()["editorPreferences"]["aiQuickActionPrompts"],
         serde_json::json!({ "continue": "local prompt" })
     );
+}
+
+#[test]
+fn portable_snapshot_drops_legacy_auto_save_interval_without_rewriting_storage() {
+    let mut editor = portable_golden_store()["editorPreferences"].clone();
+    editor["autoSaveIntervalMinutes"] = serde_json::json!(30);
+    let preserved = editor.clone();
+    let store = Arc::new(MemorySettingsStore::with([("editorPreferences", editor)]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let snapshot = service.portable_snapshot().expect("portable snapshot");
+    let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+
+    assert!(portable["editorPreferences"]
+        .get("autoSaveIntervalMinutes")
+        .is_none());
+    assert_eq!(store.values.lock().unwrap()["editorPreferences"], preserved);
+    assert_eq!(store.saves.load(Ordering::Relaxed), 0);
+    assert_eq!(store.replaces.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -1951,6 +2008,22 @@ fn remote_portable_settings_without_font_family_are_sanitized() {
     let upgraded: Value = serde_json::from_slice(&sanitized).unwrap();
 
     assert!(upgraded["exportSettings"]["fontFamily"].is_null());
+    validate_portable_settings_bytes(&sanitized).unwrap();
+}
+
+#[test]
+fn remote_portable_settings_with_legacy_auto_save_interval_are_sanitized() {
+    let mut remote = portable_golden_store();
+    remote["editorPreferences"]["autoSaveIntervalMinutes"] = serde_json::json!(30);
+
+    let sanitized = sanitize_legacy_remote_portable_settings(&serde_json::to_vec(&remote).unwrap())
+        .expect("valid remote payload")
+        .expect("remote payload changed");
+    let upgraded: Value = serde_json::from_slice(&sanitized).unwrap();
+
+    assert!(upgraded["editorPreferences"]
+        .get("autoSaveIntervalMinutes")
+        .is_none());
     validate_portable_settings_bytes(&sanitized).unwrap();
 }
 

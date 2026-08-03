@@ -50,7 +50,6 @@ describe("editor preferences", () => {
     store.get.mockResolvedValue({
       autoUpdateEnabled: true,
       autoSaveEnabled: false,
-      autoSaveIntervalMinutes: 30,
       bodyFontSize: 99,
       clipboardImageFolder: "media/screenshots",
       contentWidth: "page",
@@ -84,7 +83,6 @@ describe("editor preferences", () => {
     await expect(getStoredEditorPreferences()).resolves.toEqual({
       autoRevealActiveFile: false,
       autoSaveEnabled: false,
-      autoSaveIntervalMinutes: 30,
       autoUpdateEnabled: true,
       bodyFontSize: 16,
       clipboardImageFolder: "media/screenshots",
@@ -237,14 +235,18 @@ describe("editor preferences", () => {
     expect(normalizeEditorPreferences({ autoUpdateEnabled: "no" }).autoUpdateEnabled).toBe(true);
   });
 
-   it("normalizes the automatic save preferences", () => {
+  it("normalizes the automatic save preference", () => {
     expect(normalizeEditorPreferences({}).autoSaveEnabled).toBe(true);
     expect(normalizeEditorPreferences({ autoSaveEnabled: false }).autoSaveEnabled).toBe(false);
     expect(normalizeEditorPreferences({ autoSaveEnabled: "no" }).autoSaveEnabled).toBe(true);
-    expect(normalizeEditorPreferences({ autoSaveIntervalMinutes: 30 }).autoSaveIntervalMinutes).toBe(30);
-    expect(normalizeEditorPreferences({ autoSaveIntervalMinutes: 0 }).autoSaveIntervalMinutes).toBe(1);
-    expect(normalizeEditorPreferences({ autoSaveIntervalMinutes: 240 }).autoSaveIntervalMinutes).toBe(120);
-    expect(normalizeEditorPreferences({ autoSaveIntervalMinutes: "often" }).autoSaveIntervalMinutes).toBe(10);
+  });
+
+  it("accepts and drops the legacy automatic save interval without rewriting settings", async () => {
+    store.get.mockResolvedValue({ autoSaveEnabled: true, autoSaveIntervalMinutes: 30 });
+
+    await expect(getStoredEditorPreferences()).resolves.toEqual(defaultEditorPreferences);
+    expect(store.set).not.toHaveBeenCalled();
+    expect(store.save).not.toHaveBeenCalled();
   });
 
   it("normalizes the editor font family preference", () => {
@@ -407,7 +409,6 @@ describe("editor preferences", () => {
     await saveStoredEditorPreferences({
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 18,
       clipboardImageFolder: "images",
@@ -476,7 +477,6 @@ describe("editor preferences", () => {
     expect(store.set).toHaveBeenCalledWith("editorPreferences", {
       autoRevealActiveFile: true,
       autoSaveEnabled: true,
-      autoSaveIntervalMinutes: 10,
       autoUpdateEnabled: true,
       bodyFontSize: 18,
       clipboardImageFolder: "images",
