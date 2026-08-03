@@ -1405,16 +1405,23 @@ describe("MarkdownFileTreeDrawer", () => {
 
   it("supports modifier-based multi-selection in the visible file tree", () => {
     const openFile = vi.fn();
+    const deleteFile = vi.fn();
+    const architectureFile = {
+      name: "Architecture.md",
+      path: "/vault/Architecture.md",
+      relativePath: "Architecture.md"
+    };
     const { container } = render(
       <MarkdownFileTreeDrawer
         currentPath="/vault/Untitled.md"
         files={[
           ...markdownFiles,
-          { name: "Architecture.md", path: "/vault/Architecture.md", relativePath: "Architecture.md" }
+          architectureFile
         ]}
         open
         outlineItems={[]}
         rootName="Obsidian Vault"
+        onDeleteFile={deleteFile}
         onOpenFile={openFile}
         onSelectOutlineItem={() => {}}
       />
@@ -1430,6 +1437,7 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(openFile).not.toHaveBeenCalled();
     expect(aws).toHaveAttribute("aria-selected", "true");
     expect(architecture).not.toHaveAttribute("aria-selected");
+    expect(untitled).not.toHaveAttribute("aria-selected");
 
     fireEvent.click(architecture, { ctrlKey: true });
 
@@ -1456,9 +1464,23 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.mouseDown(container.querySelector(".file-tree-scroll") as HTMLElement);
 
     expect(architecture).not.toHaveAttribute("aria-selected");
-    expect(untitled).not.toHaveAttribute("aria-selected");
+    expect(untitled).toHaveAttribute("aria-selected", "true");
 
     fireEvent.click(architecture, { metaKey: true });
+    fireEvent.click(untitled, { metaKey: true });
+
+    expect(architecture).toHaveAttribute("aria-selected", "true");
+    expect(untitled).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.click(untitled, { metaKey: true });
+
+    expect(architecture).toHaveAttribute("aria-selected", "true");
+    expect(untitled).not.toHaveAttribute("aria-selected");
+
+    fireEvent.keyDown(architecture, { key: "Delete" });
+
+    expect(deleteFile).toHaveBeenCalledWith(architectureFile);
+
     fireEvent.click(untitled, { metaKey: true });
 
     expect(architecture).toHaveAttribute("aria-selected", "true");
@@ -1468,7 +1490,7 @@ describe("MarkdownFileTreeDrawer", () => {
 
     expect(openFile).toHaveBeenCalledWith(markdownFiles[0]);
     expect(architecture).not.toHaveAttribute("aria-selected");
-    expect(untitled).not.toHaveAttribute("aria-selected");
+    expect(untitled).toHaveAttribute("aria-selected", "true");
   });
 
   it("clears file multi-selection when clicking outside file rows", () => {

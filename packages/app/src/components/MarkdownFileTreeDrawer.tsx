@@ -2103,6 +2103,7 @@ export function MarkdownFileTreeDrawer({
   const renderFileRowContent = (node: FileNode, depth: number, mode: FileTreeRowRenderMode) => {
     const active = sameNativePath(node.file.path, currentPath);
     const selected = fileTreePathSelected(node.file.path);
+    const presentedSelected = selected || (selectedFileTreePaths.size === 0 && active);
     const renaming = renamingPath === node.file.path;
     const asset = node.file.kind === "asset";
     const FileIcon = asset ? ImageIcon : FileText;
@@ -2122,7 +2123,7 @@ export function MarkdownFileTreeDrawer({
             style={rowIndentStyle}
             type="button"
             aria-current={active ? "page" : undefined}
-            aria-selected={selected ? "true" : undefined}
+            aria-selected={presentedSelected ? "true" : undefined}
             aria-label={node.relativePath}
             data-active-file-tree-row={active ? "true" : undefined}
             data-file-tree-path={node.file.path}
