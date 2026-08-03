@@ -264,6 +264,39 @@ describe("CompactRepositoryAccess", () => {
     expect(await screen.findByRole("radio", { name: "Shared notes" })).not.toBeChecked();
   });
 
+  it("prevents overlapping configured-key changes while confirmation is pending", async () => {
+    const pendingConfirmation = deferred<boolean>();
+    const pendingChange = deferred<AcceptedMaintenanceJob>();
+    const syncConfig = installRuntime({
+      changeGlobalKey: vi.fn(() => pendingChange.promise)
+    });
+    const confirm = vi.fn(() => pendingConfirmation.promise);
+    Object.assign(getAppRuntime().dialog, { confirm });
+    renderAccess();
+
+    const input = await screen.findByLabelText("Repository key or passphrase");
+    fireEvent.change(input, { target: { value: "replacement-key" } });
+    const changeKey = screen.getByRole("button", { name: "Change key" });
+    fireEvent.click(changeKey);
+    fireEvent.click(changeKey);
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(syncConfig.changeGlobalKey).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingConfirmation.resolve(true);
+    });
+
+    await waitFor(() => expect(syncConfig.changeGlobalKey).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      pendingChange.resolve({
+        jobId: "kernel-key-import-completed",
+        operation: "change-global-key",
+        repositoryId: null
+      });
+    });
+  });
+
   it.each([
     ["malformed", new Error("malformed catalog with secret backend detail")],
     ["transport", new Error("Authorization: Bearer must-not-render")]

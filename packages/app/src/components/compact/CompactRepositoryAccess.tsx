@@ -101,6 +101,7 @@ export function CompactRepositoryAccess({
   const [bindState, setBindState] = useState<BindState>(null);
   const [bindErrorCode, setBindErrorCode] = useState<string | null>(null);
   const keyGenerationRef = useRef(0);
+  const keyRequestRef = useRef(false);
   const catalogGenerationRef = useRef(0);
   const bindGenerationRef = useRef(0);
   const bindRequestRef = useRef(false);
@@ -166,40 +167,48 @@ export function CompactRepositoryAccess({
 
   const saveKey = useCallback(async () => {
     const nextKey = keyInput.trim();
-    if (!available || !nextKey || keySaving || recoveryLocked || bindRequestRef.current) return;
     if (
-      keyState?.configured &&
-      !(await runtime.dialog.confirm(t(language, "settings.sync.key.changeConfirm")))
+      !available || !nextKey || keySaving || recoveryLocked ||
+      bindRequestRef.current || keyRequestRef.current
     ) return;
-
-    const generation = keyGenerationRef.current + 1;
-    keyGenerationRef.current = generation;
-    catalogGenerationRef.current += 1;
-    bindGenerationRef.current += 1;
-    setKeySaving(true);
-    setKeyFeedback(null);
-    setKeyError(false);
-    setEntries([]);
-    setSelectedEntryKey(null);
-    setCatalogRevision(null);
-    setCatalogState("idle");
-    setBindState(null);
-    setBindErrorCode(null);
+    keyRequestRef.current = true;
     try {
-      const nextState = keyState?.configured
-        ? await runtime.syncConfig.changeGlobalKey({ confirmed: true, newKey: nextKey }).then(() => ({ configured: true }))
-        : await runtime.syncConfig.initializeGlobalKey({ key: nextKey });
-      if (!mountedRef.current || keyGenerationRef.current !== generation) return;
-      setKeyState(nextState);
-      setKeyInput("");
-      setKeyFeedback(t(language, "settings.sync.key.saved"));
-      setCatalogReload((current) => current + 1);
-    } catch {
-      if (!mountedRef.current || keyGenerationRef.current !== generation) return;
-      setKeyInput("");
-      setKeyError(true);
+      if (
+        keyState?.configured &&
+        !(await runtime.dialog.confirm(t(language, "settings.sync.key.changeConfirm")))
+      ) return;
+
+      const generation = keyGenerationRef.current + 1;
+      keyGenerationRef.current = generation;
+      catalogGenerationRef.current += 1;
+      bindGenerationRef.current += 1;
+      setKeySaving(true);
+      setKeyFeedback(null);
+      setKeyError(false);
+      setEntries([]);
+      setSelectedEntryKey(null);
+      setCatalogRevision(null);
+      setCatalogState("idle");
+      setBindState(null);
+      setBindErrorCode(null);
+      try {
+        const nextState = keyState?.configured
+          ? await runtime.syncConfig.changeGlobalKey({ confirmed: true, newKey: nextKey }).then(() => ({ configured: true }))
+          : await runtime.syncConfig.initializeGlobalKey({ key: nextKey });
+        if (!mountedRef.current || keyGenerationRef.current !== generation) return;
+        setKeyState(nextState);
+        setKeyInput("");
+        setKeyFeedback(t(language, "settings.sync.key.saved"));
+        setCatalogReload((current) => current + 1);
+      } catch {
+        if (!mountedRef.current || keyGenerationRef.current !== generation) return;
+        setKeyInput("");
+        setKeyError(true);
+      } finally {
+        if (mountedRef.current && keyGenerationRef.current === generation) setKeySaving(false);
+      }
     } finally {
-      if (mountedRef.current && keyGenerationRef.current === generation) setKeySaving(false);
+      keyRequestRef.current = false;
     }
   }, [available, keyInput, keySaving, keyState?.configured, language, recoveryLocked, runtime.dialog, runtime.syncConfig]);
 
