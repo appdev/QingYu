@@ -4,6 +4,12 @@ use tauri::Manager as _;
 
 use crate::{mobile_back::MobileBackState, mobile_kernel_runtime::MobileKernelRuntimeState};
 
+// Tao 0.35 can leave Android Activity results queued until a later IPC wakes
+// the looper. Keep this command argument-free and state-free; remove it after
+// the stable Tauri runtime carries Tao 0.36's ordered event-loop wakeup.
+#[tauri::command]
+fn wake_mobile_picker_event_loop() {}
+
 pub(crate) fn run() {
     tauri::Builder::default()
         .manage(MobileBackState::default())
@@ -26,6 +32,7 @@ pub(crate) fn run() {
             crate::themes::delete_theme,
             crate::mobile_back::begin_mobile_back,
             crate::mobile_back::complete_mobile_back,
+            wake_mobile_picker_event_loop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building QingYu mobile")

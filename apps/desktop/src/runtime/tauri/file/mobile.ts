@@ -1,3 +1,4 @@
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { open, type OpenDialogOptions } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import type {
@@ -24,6 +25,9 @@ const mobileImageFilters = [{
 
 type MobileDialogOpen = (options: OpenDialogOptions) => Promise<string | string[] | null>;
 type MobileReadFile = (uri: string) => Promise<Uint8Array>;
+type MobileEventLoopWake = () => Promise<unknown>;
+
+const mobilePickerEventLoopWakeIntervalMs = 250;
 
 function selectedUris(selection: string | string[] | null) {
   if (!selection) return [];
@@ -32,20 +36,36 @@ function selectedUris(selection: string | string[] | null) {
 
 export function createMobileLocalImagePicker({
   open: openDialog,
-  readFile: readSelectedFile
+  readFile: readSelectedFile,
+  wakeEventLoop
 }: {
   open: MobileDialogOpen;
   readFile: MobileReadFile;
+  wakeEventLoop?: MobileEventLoopWake;
 }) {
   return async (labels?: NativeMarkdownPickerLabels) => {
     const title = labels?.title.trim();
-    const selection = await openDialog({
-      fileAccessMode: "scoped",
-      filters: mobileImageFilters,
-      multiple: true,
-      pickerMode: "image",
-      ...(title ? { title } : {})
-    });
+    const wakeTimer = wakeEventLoop
+      ? setInterval(() => {
+          try {
+            wakeEventLoop().catch(() => undefined);
+          } catch {
+            // A best-effort wakeup must not replace the picker result or error.
+          }
+        }, mobilePickerEventLoopWakeIntervalMs)
+      : undefined;
+    let selection: string | string[] | null;
+    try {
+      selection = await openDialog({
+        fileAccessMode: "scoped",
+        filters: mobileImageFilters,
+        multiple: true,
+        pickerMode: "image",
+        ...(title ? { title } : {})
+      });
+    } finally {
+      if (wakeTimer !== undefined) clearInterval(wakeTimer);
+    }
     const images: File[] = [];
     for (const uri of selectedUris(selection)) {
       let bytes: Uint8Array;
@@ -60,7 +80,11 @@ export function createMobileLocalImagePicker({
   };
 }
 
-export const openMobileLocalImages = createMobileLocalImagePicker({ open, readFile });
+export const openMobileLocalImages = createMobileLocalImagePicker({
+  open,
+  readFile,
+  wakeEventLoop: () => tauriInvoke("wake_mobile_picker_event_loop")
+});
 
 function imageAltFromFileName(fileName: string) {
   const trimmedName = fileName.trim();

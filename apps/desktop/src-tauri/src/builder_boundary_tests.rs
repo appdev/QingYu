@@ -24,6 +24,7 @@ const MOBILE_COMMANDS: &[&str] = &[
     "delete_theme",
     "begin_mobile_back",
     "complete_mobile_back",
+    "wake_mobile_picker_event_loop",
 ];
 
 const DESKTOP_COMMANDS: &[&str] = &[

@@ -136,6 +136,42 @@ describe("mobile image picker", () => {
     expect(files.map(({ type }) => type)).toEqual(["image/png", "image/jpeg"]);
   });
 
+  it("wakes the mobile event loop until the Android picker result is delivered", async () => {
+    vi.useFakeTimers();
+    const uri = "content://media/images/42?displayName=blocked-activity-result.png";
+    let resolveOpen: (selection: string | string[] | null) => unknown = () => undefined;
+    const open = vi.fn(() => new Promise<string | string[] | null>((resolve) => {
+      resolveOpen = resolve;
+    }));
+    const readFile = vi.fn().mockResolvedValue(signatures.png);
+    const wakeEventLoop = vi.fn(() => {
+      resolveOpen(uri);
+      return Promise.reject(new Error("the wake response may trail the picker result"));
+    });
+    const dependencies = { open, readFile, wakeEventLoop };
+    const pickImages = createMobileLocalImagePicker(dependencies);
+    const pendingSelection = pickImages();
+
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(wakeEventLoop).toHaveBeenCalled();
+      const files = await pendingSelection;
+      expect(files.map(({ name, type }) => ({ name, type }))).toEqual([{
+        name: "blocked-activity-result.png",
+        type: "image/png"
+      }]);
+
+      const settledWakeCount = wakeEventLoop.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(wakeEventLoop).toHaveBeenCalledTimes(settledWakeCount);
+    } finally {
+      resolveOpen(null);
+      await pendingSelection.catch(() => []);
+      vi.useRealTimers();
+    }
+  });
+
   it("returns an empty list when the user cancels", async () => {
     const open = vi.fn().mockResolvedValue(null);
     const readFile = vi.fn();
