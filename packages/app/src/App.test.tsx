@@ -8142,6 +8142,56 @@ describe("QingYu workspace", () => {
     expect(screen.getByRole("tab", { name: /guide\.md/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  it("keeps the active file-tree row selected when switching titlebar tabs", async () => {
+    const guidePath = "/mock-files/vault/docs/guide.md";
+    const notesPath = "/mock-files/vault/docs/notes.md";
+    mockOpenMarkdownTarget({
+      kind: "folder",
+      folder: {
+        path: mockFolderPath,
+        name: "vault"
+      }
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([
+      { name: "guide.md", path: guidePath, relativePath: "docs/guide.md" },
+      { name: "notes.md", path: notesPath, relativePath: "docs/notes.md" }
+    ]);
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === guidePath
+      ? {
+          content: "# Guide",
+          name: "guide.md",
+          path: guidePath
+        }
+      : {
+          content: "# Notes",
+          name: "notes.md",
+          path: notesPath
+        });
+
+    const { container } = renderApp();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "docs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "docs/guide.md" }));
+    await expectVisibleMarkdownText("Guide");
+
+    fireEvent.click(await screen.findByRole("button", { name: "docs/notes.md" }));
+    await expectVisibleMarkdownText("Notes");
+
+    fireEvent.click(screen.getByRole("tab", { name: /guide\.md/ }));
+    await expectVisibleMarkdownText("Guide");
+
+    const guideTreeRow = screen.getByRole("button", { name: "docs/guide.md" });
+    const notesTreeRow = screen.getByRole("button", { name: "docs/notes.md" });
+    expect(container.querySelectorAll('[data-file-tree-path][aria-current="page"]')).toHaveLength(1);
+    expect(guideTreeRow).toHaveAttribute("aria-current", "page");
+    expect(guideTreeRow).toHaveAttribute("aria-selected", "true");
+    expect(notesTreeRow).not.toHaveAttribute("aria-current");
+    expect(notesTreeRow).not.toHaveAttribute("aria-selected");
+  });
+
   it("keeps visual undo history after switching document tabs", async () => {
     const guidePath = "/mock-files/vault/docs/guide.md";
     const notesPath = "/mock-files/vault/docs/notes.md";
