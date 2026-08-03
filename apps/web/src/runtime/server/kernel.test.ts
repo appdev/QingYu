@@ -669,7 +669,7 @@ describe("Server Kernel domain adapter", () => {
       [
         { status: { completionState: "succeeded" }, type: "sync-status-changed" },
         {
-          documentChange: "tree",
+          documentChange: "snapshot",
           scopes: ["sync-status", "documents", "resources"],
         },
       ],
