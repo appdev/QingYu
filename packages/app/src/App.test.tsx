@@ -120,7 +120,12 @@ import { createShardedTest } from "./test/shard";
 import type { PrimaryWorkspaceState } from "./lib/settings/primary-workspace-state";
 import type { AppSyncConfigRuntime } from "./lib/sync-config";
 import { notebookNameFromRoot } from "./lib/sync-config";
-import type { AppFormFactor, AppWorkspaceRuntime, RemoteNotebookCatalogEntry } from "./runtime";
+import type {
+  AppFormFactor,
+  AppWorkspaceRuntime,
+  KernelInvalidationNotice,
+  RemoteNotebookCatalogEntry
+} from "./runtime";
 import * as appSyncCoordinatorModule from "./hooks/useAppSyncCoordinator";
 import * as notebookSwitchCoordinatorModule from "./hooks/useNotebookSwitchCoordinator";
 import {
@@ -370,6 +375,7 @@ const mockedIsDocumentInRoot = vi.fn<NonNullable<AppWorkspaceRuntime["isDocument
 function configureSyncRuntimeWithConfigEvents(
   projectSyncFeature = false,
   options: {
+    kernelInvalidations?: boolean;
     listManagedNotebookNames?: () => Promise<string[]>;
     listNotebooks?: AppSyncConfigRuntime["listNotebooks"];
     resolveFormFactor?: () => AppFormFactor;
@@ -377,6 +383,7 @@ function configureSyncRuntimeWithConfigEvents(
 ) {
   const runtime = createDefaultAppRuntime();
   let configChangedHandler: ((event: { payload: SyncConfigChangedTestPayload }) => unknown) | null = null;
+  const invalidationListeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
   const listen = vi.fn(async (
     event: string,
     handler: (event: { payload: SyncConfigChangedTestPayload }) => unknown
@@ -402,6 +409,19 @@ function configureSyncRuntimeWithConfigEvents(
       dejavuSync: projectSyncFeature,
       projectSync: projectSyncFeature
     },
+    kernel: options.kernelInvalidations
+      ? {
+          ...runtime.kernel,
+          availability: "available",
+          invalidations: {
+            available: true,
+            subscribe: (listener) => {
+              invalidationListeners.add(listener);
+              return () => invalidationListeners.delete(listener);
+            }
+          }
+        }
+      : runtime.kernel,
     platform: {
       ...runtime.platform,
       resolveFormFactor: options.resolveFormFactor ?? runtime.platform.resolveFormFactor
@@ -424,6 +444,9 @@ function configureSyncRuntimeWithConfigEvents(
   return {
     emit(payload: SyncConfigChangedTestPayload) {
       configChangedHandler?.({ payload });
+    },
+    invalidateSyncConfig() {
+      for (const listener of invalidationListeners) listener({ scopes: ["sync-config"] });
     },
     hasListener() {
       return configChangedHandler !== null;
@@ -558,6 +581,40 @@ function readySyncConfigResult(
     readiness: "ready" as const,
     revision,
     status: "loaded" as const
+  };
+}
+
+function redactedReadyS3SyncConfigResult(revision: string) {
+  const result = readySyncConfigResult(revision, "s3");
+  return {
+    ...result,
+    config: {
+      ...result.config,
+      s3: {
+        ...result.config.s3,
+        accessKeyId: "",
+        secretAccessKey: ""
+      }
+    }
+  };
+}
+
+function staleIncompleteS3SyncConfigResult(revision: string) {
+  const result = redactedReadyS3SyncConfigResult(revision);
+  return {
+    ...result,
+    config: {
+      ...result.config,
+      remoteRoot: "",
+      s3: {
+        ...result.config.s3,
+        bucket: "",
+        endpointUrl: ""
+      }
+    },
+    configured: false,
+    issues: [{ code: "required", field: "s3.endpointUrl", message: "Required" }],
+    readiness: "incomplete" as const
   };
 }
 
@@ -12704,6 +12761,50 @@ Date: 2026-08-02
       revision: "rev-app-ready",
       trigger: "manual"
     });
+  });
+
+  it("refreshes the sidebar sync authority after a Kernel config invalidation", async () => {
+    const invalidations = configureSyncRuntimeWithConfigEvents(true, {
+      kernelInvalidations: true
+    });
+    mockedLoadSyncConfig
+      .mockResolvedValueOnce(staleIncompleteS3SyncConfigResult("rev-stale-incomplete"))
+      .mockResolvedValue(redactedReadyS3SyncConfigResult("rev-kernel-ready"));
+    mockedSyncApplication.mockImplementation(successfulApplicationSync);
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: null,
+      fileTreeOpen: true,
+      folderName: "vault",
+      folderPath: mockFolderPath,
+      openFilePaths: []
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Sync now · Disabled" }))
+      .toHaveAttribute("data-sync-state", "unavailable");
+    expect(mockedSyncApplication).not.toHaveBeenCalled();
+
+    act(() => invalidations.invalidateSyncConfig());
+
+    await waitFor(() => expect(mockedLoadSyncConfig).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedSyncApplication).toHaveBeenCalledWith({
+      notebookName: mockFolderPath.split("/").at(-1) ?? "",
+      notesRoot: mockFolderPath,
+      revision: "rev-kernel-ready",
+      trigger: "app-launch"
+    }));
+    const syncButton = await screen.findByRole("button", { name: "Sync now" });
+    mockedSyncApplication.mockClear();
+    fireEvent.click(syncButton);
+
+    await waitFor(() => expect(mockedSyncApplication).toHaveBeenCalledWith({
+      notebookName: mockFolderPath.split("/").at(-1) ?? "",
+      notesRoot: mockFolderPath,
+      revision: "rev-kernel-ready",
+      trigger: "manual"
+    }));
   });
 
   it("omits the sidebar sync control in an external standalone window", async () => {

@@ -69,6 +69,13 @@ export function useSyncConfig({ active = true }: { active?: boolean } = {}): Syn
     const start = () => {
       if (alive) reload().catch(() => {});
     };
+    const invalidations = getAppRuntime().kernel.invalidations;
+    const stopInvalidations = invalidations.available
+      ? invalidations.subscribe((notice) => {
+          if (!alive || !notice.scopes.includes("sync-config")) return;
+          reload().catch(() => {});
+        })
+      : null;
     listenSyncConfigChanged(({ revision }) => {
       if (!alive || revision === revisionRef.current || revision === pendingRevisionRef.current) return;
       pendingRevisionRef.current = revision;
@@ -81,6 +88,7 @@ export function useSyncConfig({ active = true }: { active?: boolean } = {}): Syn
     return () => {
       alive = false;
       generationRef.current += 1;
+      stopInvalidations?.();
       cleanup?.();
     };
   }, [active, reload]);

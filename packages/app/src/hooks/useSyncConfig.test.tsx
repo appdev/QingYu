@@ -1,7 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { AppSyncConfigRuntime, SyncConfigLoadResult } from "../lib/sync-config";
 import { emitSyncConfigChanged } from "../lib/sync-config-events";
-import { configureAppRuntime, createDefaultAppRuntime, resetAppRuntimeForTests } from "../runtime";
+import {
+  configureAppRuntime,
+  createDefaultAppRuntime,
+  resetAppRuntimeForTests,
+  type KernelInvalidationNotice
+} from "../runtime";
 import { useSyncConfig } from "./useSyncConfig";
 
 function loaded(revision: string, password: string): SyncConfigLoadResult {
@@ -51,9 +56,11 @@ function deferred<T>() {
 
 describe("useSyncConfig", () => {
   const load = vi.fn<AppSyncConfigRuntime["load"]>();
+  const invalidationListeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
 
   beforeEach(() => {
     load.mockReset();
+    invalidationListeners.clear();
     const runtime = createDefaultAppRuntime();
     const listeners = new Map<string, Set<(event: { payload: unknown }) => unknown>>();
     configureAppRuntime({
@@ -68,6 +75,17 @@ describe("useSyncConfig", () => {
           registered.add(listener as (event: { payload: unknown }) => unknown);
           listeners.set(event, registered);
           return () => registered.delete(listener as (event: { payload: unknown }) => unknown);
+        }
+      },
+      kernel: {
+        ...runtime.kernel,
+        availability: "available",
+        invalidations: {
+          available: true,
+          subscribe: (listener) => {
+            invalidationListeners.add(listener);
+            return () => invalidationListeners.delete(listener);
+          }
         }
       },
       syncConfig: { ...runtime.syncConfig, load }
@@ -109,6 +127,21 @@ describe("useSyncConfig", () => {
     });
 
     expect(result.current.appliedDocument?.revision).toBe("rev-2");
+  });
+
+  it("reloads the authoritative config after a Kernel sync-config invalidation", async () => {
+    load
+      .mockResolvedValueOnce(loaded("rev-stale", ""))
+      .mockResolvedValueOnce(loaded("rev-kernel", ""));
+    const { result } = renderHook(() => useSyncConfig());
+
+    await waitFor(() => expect(result.current.appliedDocument?.revision).toBe("rev-stale"));
+    act(() => {
+      for (const listener of invalidationListeners) listener({ scopes: ["sync-config"] });
+    });
+
+    await waitFor(() => expect(result.current.appliedDocument?.revision).toBe("rev-kernel"));
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it("stays idle without loading application config while the window is inactive", async () => {
