@@ -1,3 +1,14 @@
+## [2.5.2](https://github.com/markrahq/markra/compare/v2.5.1...v2.5.2) (2026-08-03)
+
+### Bug Fixes
+
+* **editor:** preserve authored blank line height ([#637](https://github.com/markrahq/markra/issues/637)) ([9d905cd](https://github.com/markrahq/markra/commit/9d905cd738b8e362db1f53786757a6dc58ae1011))
+* **editor:** resolve code block interaction issues ([#635](https://github.com/markrahq/markra/issues/635)) ([015b5ee](https://github.com/markrahq/markra/commit/015b5ee221c899a4beb2e03d4fa009f12ec4a238)), closes [#631](https://github.com/markrahq/markra/issues/631)
+
+### Performance Improvements
+
+* **editor:** reduce live preview typing latency ([#638](https://github.com/markrahq/markra/issues/638)) ([5ec7d7b](https://github.com/markrahq/markra/commit/5ec7d7b644b76c2ca7654f74e87c883c68bbff76)), closes [#636](https://github.com/markrahq/markra/issues/636)
+
 ## [2.5.1](https://github.com/markrahq/markra/compare/v2.5.0...v2.5.1) (2026-08-02)
 
 ### Bug Fixes
