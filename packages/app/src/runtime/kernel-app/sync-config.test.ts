@@ -49,6 +49,35 @@ function createKernel(completionState: "failed" | "succeeded"): KernelDomainPort
           uploadedFiles: 2,
         } : null,
       })),
+      readRun: vi.fn(async () => ({
+        acceptedAt: "2026-07-31T00:00:00Z",
+        completionState,
+        configRevision: revision,
+        error: completionState === "failed" ? {
+          category: "configuration",
+          code: "configuration_invalid",
+          httpStatus: 400,
+          method: "PUT",
+          operation: "sync_run",
+          provider: "s3" as const,
+          providerErrorCode: "InvalidRequest",
+          relativePath: "notes/note.md" as KernelWorkspaceRelativePath,
+          requestId: "request-1",
+          runId: "run-1",
+        } : null,
+        finishedAt: "2026-07-31T00:00:01Z",
+        provider: "s3" as const,
+        runId: "run-1",
+        summary: completionState === "succeeded" ? {
+          bytesDownloaded: 1,
+          bytesUploaded: 2,
+          conflictFiles: 0,
+          downloadedFiles: 1,
+          scannedFiles: 3,
+          skippedFiles: 0,
+          uploadedFiles: 2,
+        } : null,
+      })),
       trigger: vi.fn(async () => ({
         acceptedAt: "2026-07-31T00:00:00Z",
         configRevision: revision,
@@ -224,6 +253,62 @@ describe("Kernel sync apply settlement", () => {
 
   it("preserves the complete safe Kernel failure on a failed run", async () => {
     const { runtime } = createRuntime("failed");
+
+    const error = await runtime.sync(request).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "run-failed",
+      runError: {
+        category: "configuration",
+        code: "configuration_invalid",
+        httpStatus: 400,
+        method: "PUT",
+        objectId: null,
+        operation: "sync_run",
+        provider: "s3",
+        providerErrorCode: "InvalidRequest",
+        relativePath: "notes/note.md",
+        requestId: "request-1",
+        runId: "run-1",
+      },
+    });
+  });
+
+  it("preserves an exact failed run after global status advances to a newer success", async () => {
+    const kernel = createKernel("failed");
+    Object.assign(kernel.sync, {
+      readStatus: vi.fn(async () => ({
+        activeRunId: null,
+        completionState: "succeeded" as const,
+        configRevision: revision,
+        error: null,
+        lastAttemptAt: "2026-07-31T00:00:02Z",
+        lastSuccessfulSyncAt: "2026-07-31T00:00:03Z",
+        lastTrigger: "interval" as const,
+        provider: "s3" as const,
+        summary: {
+          bytesDownloaded: 0,
+          bytesUploaded: 0,
+          conflictFiles: 0,
+          downloadedFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          uploadedFiles: 0,
+        },
+      })),
+    });
+    const shared = createDefaultAppRuntime().syncConfig;
+    const runtime = createKernelSyncConfigRuntime(kernel, {
+      local: {
+        cancelApply: shared.cancelApply,
+        loadEditing: shared.loadEditing,
+        requestApply: shared.requestApply,
+        setEditing: shared.setEditing,
+        settleApply: vi.fn(async () => undefined),
+      },
+      delay: async () => undefined,
+      maxStatusReads: 1,
+    });
 
     const error = await runtime.sync(request).catch((caught: unknown) => caught);
 

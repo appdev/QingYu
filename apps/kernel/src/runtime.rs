@@ -442,26 +442,36 @@ impl KernelRuntime {
         accepted_at: Rfc3339Utc,
         trigger: SyncTrigger,
         mutation: &MutationPermit<'_>,
-    ) -> Result<QueuedSyncRun, WorkspaceRunLifecycleError> {
+    ) -> Result<QueuedSyncRun, QueueSyncRunError> {
         if !self.mutation_coordinator.recognizes(mutation) {
-            return Err(WorkspaceRunLifecycleError);
+            return Err(QueueSyncRunError::Unavailable);
         }
         let current = self
             .owner
             .active_snapshot()
-            .map_err(|_| WorkspaceRunLifecycleError)?;
+            .map_err(|_| QueueSyncRunError::Unavailable)?;
         if !Arc::ptr_eq(&current, &snapshot) {
-            return Err(WorkspaceRunLifecycleError);
+            return Err(QueueSyncRunError::Unavailable);
         }
         let mut lifecycle = self
             .workspace_run_lifecycle
             .state
             .lock()
-            .map_err(|_| WorkspaceRunLifecycleError)?;
-        if !matches!(lifecycle.admission, SyncRunAdmission::Open)
-            || !matches!(lifecycle.run, RegisteredSyncRun::Empty)
-        {
-            return Err(WorkspaceRunLifecycleError);
+            .map_err(|_| QueueSyncRunError::Unavailable)?;
+        if !matches!(lifecycle.admission, SyncRunAdmission::Open) {
+            return Err(QueueSyncRunError::Unavailable);
+        }
+        match &lifecycle.run {
+            RegisteredSyncRun::Queued(run)
+            | RegisteredSyncRun::Running(run)
+            | RegisteredSyncRun::Finalizing(run) => {
+                return Err(QueueSyncRunError::Active(SyncRunAcceptedDto {
+                    run_id: run.run_id,
+                    accepted_at: run.fallback_completed_at.clone(),
+                    config_revision: run.config_revision.clone(),
+                }));
+            }
+            RegisteredSyncRun::Empty => {}
         }
         lifecycle.run = RegisteredSyncRun::Queued(SyncRunRegistration {
             run_id,
@@ -479,7 +489,7 @@ impl KernelRuntime {
             Err(_) => {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                 lifecycle.run = RegisteredSyncRun::Empty;
-                return Err(WorkspaceRunLifecycleError);
+                return Err(QueueSyncRunError::Unavailable);
             }
         };
         Ok(QueuedSyncRun { attempting })
@@ -1994,6 +2004,11 @@ struct SyncRunRegistration {
 
 pub(crate) struct QueuedSyncRun {
     pub(crate) attempting: SyncStatusDto,
+}
+
+pub(crate) enum QueueSyncRunError {
+    Active(SyncRunAcceptedDto),
+    Unavailable,
 }
 
 pub(crate) struct ClaimedSyncRun {
