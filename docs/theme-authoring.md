@@ -226,6 +226,16 @@ Sidebar typography and outline rhythm are also optional. They are consumed by ap
 
 Each per-level outline prefix supports `font-size`, `font-weight`, `text`, and `space-before`, for example `--sidebar-outline-h2-font-weight` and `--sidebar-outline-h2-space-before`. The first visible outline row never receives extra leading space. `--sidebar-outline-max-lines` controls APP-owned line clamping; use a small positive integer such as `1` or `2`.
 
+Document tabs expose a small presentation-only contract. Short tabs remain content-sized; the maximum values only affect titles long enough to reach them. Themes may override these variables on `:root` without targeting the tab component's internal selectors.
+
+| Variable | Default |
+| --- | --- |
+| `--document-tab-min-width` | `88px` |
+| `--document-tab-max-width` | `192px` |
+| `--document-tab-active-max-width` | `min(336px, 45vw)` |
+
+The single-row layout, hidden scrollbar, horizontal wheel handling, active-tab visibility, fixed controls, focus behavior, and all-tabs menu are application-owned behavior. Themes must not override those structural rules.
+
 Application variables:
 
 - backgrounds: `--bg-primary`, `--bg-secondary`, `--bg-chrome`, `--bg-code`, `--bg-hover`, `--bg-active`;

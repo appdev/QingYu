@@ -1108,6 +1108,35 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("background-clip: content-box");
   });
 
+  it("keeps document tabs single-row and scrollable without visible scrollbars", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const tabScrollRuleStart = styles.indexOf("  .document-tabs-scroll {");
+    const tabScrollRuleEnd = styles.indexOf(
+      '  html[data-webkit-scroll-workaround="macos-27"] .document-tabs-scroll {',
+      tabScrollRuleStart
+    );
+    const tabScrollRule = styles.slice(tabScrollRuleStart, tabScrollRuleEnd);
+    const tabRuleStart = styles.indexOf("  .document-tab {");
+    const tabRuleEnd = styles.indexOf('  .document-tab[data-document-tab-active="true"]', tabRuleStart);
+    const tabRule = styles.slice(tabRuleStart, tabRuleEnd);
+
+    expect(tabScrollRuleStart).toBeGreaterThanOrEqual(0);
+    expect(tabScrollRuleEnd).toBeGreaterThan(tabScrollRuleStart);
+    expect(tabScrollRule).toContain("overflow-x: auto;");
+    expect(tabScrollRule).toContain("overflow-y: hidden;");
+    expect(tabScrollRule).toContain("scrollbar-width: none;");
+    expect(styles).toContain('html[data-webkit-scroll-workaround="macos-27"] .document-tabs-scroll::-webkit-scrollbar');
+    expect(styles).toContain("display: none;");
+    expect(tabRuleStart).toBeGreaterThanOrEqual(0);
+    expect(tabRuleEnd).toBeGreaterThan(tabRuleStart);
+    expect(tabRule).toContain("inline-size: max-content;");
+    expect(tabRule).toContain("min-inline-size: var(--document-tab-min-width, 88px);");
+    expect(tabRule).toContain("max-inline-size: var(--document-tab-max-width, 192px);");
+    expect(tabRule).toContain("transition-property: background-color, border-color, color, opacity;");
+    expect(tabRule).not.toContain("transition-property: max-inline-size");
+    expect(styles).toContain("max-inline-size: var(--document-tab-active-max-width, min(336px, 45vw));");
+  });
+
   it("keeps editor scrollbars below the titlebar tab area", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
     const scrollRuleStart = styles.indexOf(".editor-content-slot .paper-scroll {");

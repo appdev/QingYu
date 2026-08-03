@@ -3,12 +3,13 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent
 } from "react";
-import { Columns2, FileText, ImageIcon, LocateFixed, Pencil, Plus, X } from "lucide-react";
-import { IconButton, Tooltip } from "@markra/ui";
+import { Check, ChevronDown, Columns2, FileText, ImageIcon, LocateFixed, Pencil, Plus, X } from "lucide-react";
+import { IconButton, PopoverSurface, Tooltip } from "@markra/ui";
 import { t, type AppLanguage } from "@markra/shared";
 import type { MarkdownDocumentTab } from "../hooks/useMarkdownDocument";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
@@ -89,6 +90,7 @@ export function MarkdownTabsBar({
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const renameCancelledRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<TabContextMenuState | null>(null);
+  const [allTabsMenuOpen, setAllTabsMenuOpen] = useState(false);
   const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
   const [pointerTabDropTarget, setPointerTabDropTarget] = useState<PointerTabDropTarget | null>(null);
   const [pointerTabDragPreview, setPointerTabDragPreview] = useState<PointerTabDragPreview | null>(null);
@@ -97,6 +99,8 @@ export function MarkdownTabsBar({
   const pointerEditorDropTargetRef = useRef<HTMLElement | null>(null);
   const suppressClickTabIdRef = useRef<string | null>(null);
   const tabListRef = useRef<HTMLDivElement | null>(null);
+  const allTabsMenuRootRef = useRef<HTMLDivElement | null>(null);
+  const allTabsMenuRef = useRef<HTMLDivElement | null>(null);
 
   const setPageDocumentTabDragging = () => {
     document.documentElement.setAttribute("data-document-tab-dragging", "true");
@@ -120,24 +124,73 @@ export function MarkdownTabsBar({
 
   const tabItemGroups = items.map((item) => Array.isArray(item) ? item : [item]);
   const documentItems = tabItemGroups.flatMap((item) => item);
+  const allTabsMenuItems = tabItemGroups.flatMap((group) => {
+    const selectTabId = group[0]?.id;
+    if (!selectTabId) return [];
+
+    return group.map((tab) => ({ selectTabId, tab }));
+  });
   const documentTabIdsKey = documentItems.map((tab) => tab.id).join("\n");
   const paneFocusedTabId = focusedTabId ?? activeTabId;
   const sideGroupedTabIds = new Set(
     items.flatMap((item) => Array.isArray(item) ? item.slice(1).map((tab) => tab.id) : [])
   );
 
-  useEffect(() => {
-    if (!activeTabId) return;
+  const scrollDocumentTabIntoView = (tabId: string | null) => {
+    if (!tabId) return;
 
-    const activeTabElement = Array.from(
+    const tabElement = Array.from(
       tabListRef.current?.querySelectorAll<HTMLElement>("[data-document-tab-id]") ?? []
-    ).find((element) => element.dataset.documentTabId === activeTabId);
+    ).find((element) => element.dataset.documentTabId === tabId);
 
-    activeTabElement?.scrollIntoView?.({
+    tabElement?.scrollIntoView?.({
       block: "nearest",
       inline: "nearest"
     });
-  }, [activeTabId, documentTabIdsKey]);
+  };
+
+  useEffect(() => {
+    scrollDocumentTabIntoView(paneFocusedTabId);
+  }, [documentTabIdsKey, paneFocusedTabId]);
+
+  useEffect(() => {
+    if (!allTabsMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Node ? event.target : null;
+      if (target && allTabsMenuRootRef.current?.contains(target)) return;
+
+      setAllTabsMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+
+      event.preventDefault();
+      setAllTabsMenuOpen(false);
+      allTabsMenuRootRef.current?.querySelector<HTMLButtonElement>("[aria-haspopup='menu']")?.focus();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [allTabsMenuOpen]);
+
+  useEffect(() => {
+    if (!allTabsMenuOpen) return;
+
+    const activeMenuItem = allTabsMenuRef.current?.querySelector<HTMLButtonElement>(
+      "[data-document-tabs-menu-active='true']"
+    );
+    const firstMenuItem = allTabsMenuRef.current?.querySelector<HTMLButtonElement>(
+      "[data-document-tabs-menu-select]"
+    );
+
+    (activeMenuItem ?? firstMenuItem)?.focus();
+  }, [allTabsMenuOpen, documentTabIdsKey, paneFocusedTabId]);
 
   if (documentItems.length === 0) return null;
 
@@ -461,6 +514,26 @@ export function MarkdownTabsBar({
     tabList.scrollLeft = nextScrollLeft;
     event.preventDefault();
   };
+  const handleAllTabsMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowDown", "ArrowUp", "End", "Home"].includes(event.key)) return;
+
+    const menuItems = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>("[role^='menuitem']:not(:disabled)")
+    );
+    if (menuItems.length === 0) return;
+
+    const currentIndex = menuItems.indexOf(document.activeElement as HTMLButtonElement);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? menuItems.length - 1
+        : event.key === "ArrowUp"
+          ? (currentIndex <= 0 ? menuItems.length - 1 : currentIndex - 1)
+          : (currentIndex + 1) % menuItems.length;
+
+    event.preventDefault();
+    menuItems[nextIndex]?.focus();
+  };
   const handleSelectTabClick = (tab: MarkdownTabsBarDocumentItem, selectTabId: string) => {
     if (suppressClickTabIdRef.current === tab.id) {
       suppressClickTabIdRef.current = null;
@@ -567,7 +640,7 @@ export function MarkdownTabsBar({
 
     return (
       <div
-        className={`group/tab relative grid h-7 max-w-52 min-w-28 grid-cols-[minmax(0,1fr)_auto] items-center rounded-md border transition-colors duration-150 ease-out ${
+        className={`document-tab group/tab relative grid h-7 grid-cols-[minmax(0,1fr)_auto] items-center rounded-md border ${
           titlebarPlacement ? "" : "mb-1"
         } ${
           sideDropTarget
@@ -577,6 +650,7 @@ export function MarkdownTabsBar({
             : "border-transparent bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading)"
         } ${dragged ? "opacity-60" : ""}`}
         data-document-tab-id={tab.id}
+        data-document-tab-active={active ? "true" : undefined}
         data-document-tab-pane-focus={paneFocused ? "true" : undefined}
         data-document-tab-drop-position={dropPosition ?? undefined}
         draggable={false}
@@ -657,6 +731,73 @@ export function MarkdownTabsBar({
           {items.map((item, index) => Array.isArray(item) ? renderDocumentTabGroup(item, index) : renderDocumentTab(item))}
         </div>
         <div className="document-tabs-controls flex h-full shrink-0 items-center">
+          <div ref={allTabsMenuRootRef} className="relative flex h-full items-center">
+            <IconButton
+              aria-expanded={allTabsMenuOpen}
+              aria-haspopup="menu"
+              className={`${titlebarPlacement ? "" : "mb-1"} rounded-md opacity-70 hover:opacity-100 active:bg-(--bg-active) focus-visible:opacity-100`}
+              label={label("app.documentTabs")}
+              pressed={allTabsMenuOpen}
+              size="icon-xs"
+              onClick={() => setAllTabsMenuOpen((open) => !open)}
+            >
+              <ChevronDown aria-hidden="true" size={13} />
+            </IconButton>
+            {allTabsMenuOpen ? (
+              <PopoverSurface
+                ref={allTabsMenuRef}
+                className="absolute top-[calc(100%+4px)] right-0 z-40 max-h-[min(20rem,calc(100vh-3rem))] w-72 max-w-[calc(100vw-16px)] overflow-y-auto rounded-md p-1 select-none"
+                open
+                role="menu"
+                aria-label={label("app.documentTabs")}
+                onKeyDown={handleAllTabsMenuKeyDown}
+              >
+                {allTabsMenuItems.map(({ selectTabId, tab }) => {
+                  const active = tab.id === paneFocusedTabId;
+                  const TabIcon = tab.displayKind === "image" ? ImageIcon : FileText;
+
+                  return (
+                    <div className="group/tab-menu flex min-w-0 items-center gap-0.5" key={tab.id} role="none">
+                      <button
+                        aria-checked={active}
+                        className={`grid h-7 min-w-0 flex-1 grid-cols-[14px_14px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-sm px-1.5 text-left text-[12px] leading-5 font-[520] outline-none transition-colors duration-150 ease-out hover:bg-(--bg-hover) active:bg-(--bg-active) focus-visible:bg-(--bg-hover) focus-visible:ring-2 focus-visible:ring-(--accent) disabled:cursor-default disabled:opacity-50 ${
+                          active ? "bg-(--bg-active) text-(--text-heading)" : "text-(--text-primary)"
+                        }`}
+                        data-document-tabs-menu-active={active ? "true" : undefined}
+                        data-document-tabs-menu-select={tab.id}
+                        role="menuitemradio"
+                        type="button"
+                        onClick={() => {
+                          setAllTabsMenuOpen(false);
+                          handleSelectTabClick(tab, selectTabId);
+                        }}
+                      >
+                        <span className="flex size-3.5 items-center justify-center">
+                          {active ? <Check aria-hidden="true" size={12} /> : null}
+                        </span>
+                        <TabIcon aria-hidden="true" className="text-(--text-secondary)" size={13} />
+                        <span className={`min-w-0 truncate ${tab.deleted ? "line-through decoration-(--text-tertiary) decoration-1" : ""}`}>
+                          {tab.name || "Untitled.md"}
+                        </span>
+                        {tab.dirty ? (
+                          <span className="size-1.25 shrink-0 rounded-full bg-(--accent)" aria-label={label("app.unsavedChanges")} />
+                        ) : null}
+                      </button>
+                      <button
+                        className="flex size-7 shrink-0 items-center justify-center rounded-sm text-(--text-secondary) opacity-0 outline-none transition-[opacity,background-color,color] duration-150 ease-out hover:bg-(--bg-hover) hover:text-(--text-heading) active:bg-(--bg-active) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-(--accent) disabled:cursor-default disabled:opacity-50 group-hover/tab-menu:opacity-100"
+                        role="menuitem"
+                        type="button"
+                        aria-label={`${label("app.closeDocumentTab")} ${tab.name || "Untitled.md"}`}
+                        onClick={() => closeTabs([tab.id])}
+                      >
+                        <X aria-hidden="true" size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </PopoverSurface>
+            ) : null}
+          </div>
           <IconButton
             className={`${titlebarPlacement ? "" : "mb-1"} rounded-md opacity-70 hover:opacity-100 focus-visible:opacity-100`}
             label={label("app.newDocumentTab")}
@@ -677,7 +818,7 @@ export function MarkdownTabsBar({
       {pointerTabDragPreview && pointerTabDragPreviewTab ? (
         <div
           aria-hidden="true"
-          className="document-tab-drag-preview pointer-events-none fixed top-0 left-0 z-50 flex h-7 max-w-52 min-w-28 items-center gap-1.5 rounded-md border border-(--border-default) bg-(--bg-primary)/96 px-2 text-[12px] leading-5 font-[560] text-(--text-heading) shadow-[0_12px_28px_color-mix(in_srgb,var(--text-heading)_18%,transparent)] backdrop-blur-[2px] will-change-transform"
+          className="document-tab-drag-preview pointer-events-none fixed top-0 left-0 z-50 flex h-7 items-center gap-1.5 rounded-md border border-(--border-default) bg-(--bg-primary)/96 px-2 text-[12px] leading-5 font-[560] text-(--text-heading) shadow-[0_12px_28px_color-mix(in_srgb,var(--text-heading)_18%,transparent)] backdrop-blur-[2px] will-change-transform"
           style={{
             transform: `translate3d(${pointerTabDragPreview.x + pointerTabDragPreviewOffsetPx}px, ${pointerTabDragPreview.y + pointerTabDragPreviewOffsetPx}px, 0)`
           }}

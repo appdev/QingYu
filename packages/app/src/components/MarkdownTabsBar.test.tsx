@@ -89,6 +89,72 @@ describe("MarkdownTabsBar", () => {
     expect(newTabButton.closest(".document-tabs-controls")).toBeInTheDocument();
   });
 
+  it("keeps an all-tabs menu fixed outside the scroller and preserves grouped tab focus", async () => {
+    const onCloseTab = vi.fn();
+    const onFocusTab = vi.fn();
+    const onSelectTab = vi.fn();
+
+    render(
+      <MarkdownTabsBar
+        activeTabId="tab-a"
+        focusedTabId="tab-b"
+        items={[
+          [
+            {
+              dirty: false,
+              id: "tab-a",
+              name: "Alpha.md",
+              path: "/synthetic/alpha.md"
+            },
+            {
+              dirty: true,
+              id: "tab-b",
+              name: "Beta.md",
+              path: "/synthetic/beta.md"
+            }
+          ],
+          {
+            dirty: false,
+            id: "tab-c",
+            name: "Gamma.md",
+            path: "/synthetic/gamma.md"
+          }
+        ]}
+        placement="titlebar"
+        onCloseTab={onCloseTab}
+        onFocusTab={onFocusTab}
+        onNewTab={() => {}}
+        onSelectTab={onSelectTab}
+      />
+    );
+
+    const tablist = screen.getByRole("tablist", { name: "Open documents" });
+    const menuTrigger = screen.getByRole("button", { name: "Open documents" });
+
+    expect(tablist).not.toContainElement(menuTrigger);
+    expect(menuTrigger.closest(".document-tabs-controls")).toBeInTheDocument();
+
+    fireEvent.click(menuTrigger);
+
+    const menu = screen.getByRole("menu", { name: "Open documents" });
+    const betaMenuItem = within(menu).getByRole("menuitemradio", { name: /Beta\.md/ });
+
+    expect(betaMenuItem).toHaveAttribute("aria-checked", "true");
+    expect(betaMenuItem).toHaveFocus();
+
+    fireEvent.click(betaMenuItem);
+
+    expect(onSelectTab).toHaveBeenCalledWith("tab-a");
+    expect(onFocusTab).toHaveBeenCalledWith("tab-b");
+    expect(screen.queryByRole("menu", { name: "Open documents" })).not.toBeInTheDocument();
+
+    fireEvent.click(menuTrigger);
+    const reopenedMenu = screen.getByRole("menu", { name: "Open documents" });
+    fireEvent.click(within(reopenedMenu).getByRole("menuitem", { name: "Close tab Beta.md" }));
+
+    await waitFor(() => expect(onCloseTab).toHaveBeenCalledWith("tab-b"));
+  });
+
   it("renders deleted document tab labels with a strikethrough", () => {
     render(
       <MarkdownTabsBar
@@ -201,6 +267,45 @@ describe("MarkdownTabsBar", () => {
     rerender(
       <MarkdownTabsBar
         activeTabId="tab-8"
+        items={overflowItems}
+        placement="titlebar"
+        onCloseTab={() => {}}
+        onNewTab={() => {}}
+        onSelectTab={() => {}}
+      />
+    );
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: "nearest",
+      inline: "nearest"
+    });
+  });
+
+  it("keeps the focused pane tab visible when pane focus changes", () => {
+    const { rerender } = render(
+      <MarkdownTabsBar
+        activeTabId="tab-1"
+        focusedTabId="tab-1"
+        items={overflowItems}
+        placement="titlebar"
+        onCloseTab={() => {}}
+        onNewTab={() => {}}
+        onSelectTab={() => {}}
+      />
+    );
+
+    const targetTab = document.querySelector<HTMLElement>(
+      ".document-tab[data-document-tab-id='tab-8']"
+    );
+    const scrollIntoView = vi.fn();
+    expect(targetTab).not.toBeNull();
+    if (!targetTab) return;
+    targetTab.scrollIntoView = scrollIntoView;
+
+    rerender(
+      <MarkdownTabsBar
+        activeTabId="tab-1"
+        focusedTabId="tab-8"
         items={overflowItems}
         placement="titlebar"
         onCloseTab={() => {}}

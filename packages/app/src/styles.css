@@ -324,29 +324,42 @@
   }
 
   .document-tabs-scroll {
-    scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
-    scrollbar-width: thin;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-color: transparent transparent;
+    scrollbar-width: none;
   }
 
-  .document-tabs-scroll::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
+  html[data-webkit-scroll-workaround="macos-27"] .document-tabs-scroll {
+    scrollbar-color: transparent transparent;
+    scrollbar-width: none;
   }
 
-  .document-tabs-scroll::-webkit-scrollbar-thumb {
-    min-width: 48px;
-    min-height: 0;
-    border: 0;
-    border-radius: 999px;
-    background-color: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+  .document-tabs-scroll::-webkit-scrollbar,
+  html[data-webkit-scroll-workaround="macos-27"] .document-tabs-scroll::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
 
-  .document-tabs-scroll::-webkit-scrollbar-thumb:hover {
-    background-color: color-mix(in srgb, var(--text-secondary) 54%, transparent);
+  .document-tab {
+    flex: 0 0 auto;
+    inline-size: max-content;
+    min-inline-size: var(--document-tab-min-width, 88px);
+    max-inline-size: var(--document-tab-max-width, 192px);
+    transition-duration: 150ms;
+    transition-property: background-color, border-color, color, opacity;
+    transition-timing-function: ease-out;
   }
 
-  .document-tabs-scroll::-webkit-scrollbar-thumb:active {
-    background-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  .document-tab[data-document-tab-active="true"] {
+    max-inline-size: var(--document-tab-active-max-width, min(336px, 45vw));
+  }
+
+  .document-tab-drag-preview {
+    min-inline-size: var(--document-tab-min-width, 88px);
+    max-inline-size: var(--document-tab-max-width, 192px);
   }
 
   .editor-content-slot .paper-scroll {
