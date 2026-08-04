@@ -1,3 +1,9 @@
+## [2.5.4](https://github.com/markrahq/markra/compare/v2.5.3...v2.5.4) (2026-08-04)
+
+### Bug Fixes
+
+* **editor:** refresh deferred Markdown rendering ([#641](https://github.com/markrahq/markra/issues/641)) ([c642fe0](https://github.com/markrahq/markra/commit/c642fe0cb10029eb89237054414dde801d534e59))
+
 ## [2.5.3](https://github.com/markrahq/markra/compare/v2.5.2...v2.5.3) (2026-08-03)
 
 ### Bug Fixes
