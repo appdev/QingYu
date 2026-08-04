@@ -372,6 +372,24 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
 }
 
 #[test]
+fn builder_boundary_android_picker_settles_on_synchronous_mobile_plugin_response() {
+    let picker = source("src/mobile_image_picker.rs");
+
+    assert!(
+        picker.contains(".run_mobile_plugin(\"pickImages\""),
+        "Android image picker must return on Tauri's synchronous mobile-plugin path so the JS callback is enqueued after the Activity result"
+    );
+    assert!(
+        !picker.contains("run_mobile_plugin_async"),
+        "Android image picker must not strand JS settlement behind an async plugin continuation"
+    );
+    assert!(
+        !picker.contains("async fn pick_mobile_images"),
+        "Android image picker command must not await the ActivityResult across Tauri/Tao's Android event-loop boundary"
+    );
+}
+
+#[test]
 fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned() {
     let desktop = source("src/desktop_runtime.rs");
     let host = source("src/desktop_kernel_runtime.rs");

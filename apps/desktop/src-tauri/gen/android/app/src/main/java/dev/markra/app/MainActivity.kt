@@ -54,11 +54,7 @@ class MainActivity : TauriActivity() {
   }
 
   fun launchImagePicker(invoke: Invoke, title: String?) {
-    val settlingInvoke = QingyuImagePickerSettlingInvoke(
-      TauriImagePickerInvoke(invoke),
-      { wakeCurrentMobilePickerEventLoop() }
-    )
-    if (!imagePickerSession.begin(settlingInvoke)) {
+    if (!imagePickerSession.begin(TauriImagePickerInvoke(invoke))) {
       return
     }
 
@@ -111,16 +107,6 @@ class MainActivity : TauriActivity() {
     return uris
   }
 
-  private fun wakeMobilePickerEventLoop() {
-    val webView = appWebView ?: return
-    webView.post {
-      try {
-        webView.evaluateJavascript(MOBILE_PICKER_EVENT_LOOP_WAKE_SCRIPT, null)
-      } catch (_: Exception) {
-      }
-    }
-  }
-
   private class TauriImagePickerInvoke(private val invoke: Invoke) : QingyuImagePickerInvoke {
     override fun resolveImagePickerUris(uris: List<String>) {
       invoke.resolve(imagePickerResponse(uris))
@@ -150,17 +136,7 @@ class MainActivity : TauriActivity() {
       activity.launchImagePicker(invoke, title)
     }
 
-    private fun wakeCurrentMobilePickerEventLoop() {
-      currentActivity?.get()?.wakeMobilePickerEventLoop()
-    }
-
     private const val MOBILE_BACK_SCRIPT =
       "window.dispatchEvent(new Event('qingyu://mobile-back-requested'))"
-    private const val MOBILE_PICKER_EVENT_LOOP_WAKE_SCRIPT =
-      "(function(){var tauri=window.__TAURI_INTERNALS__;" +
-        "if(tauri&&typeof tauri.invoke==='function'){" +
-        "try{Promise.resolve(tauri.invoke('wake_mobile_picker_event_loop')).catch(function(){});}" +
-        "catch(_error){}" +
-        "}})()"
   }
 }

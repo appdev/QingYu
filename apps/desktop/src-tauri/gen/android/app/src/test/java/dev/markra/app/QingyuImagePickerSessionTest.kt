@@ -40,66 +40,15 @@ class QingyuImagePickerSessionTest {
   }
 
   @Test
-  fun successfulResultWakesEventLoopAfterResolvingInvoke() {
-    val events = mutableListOf<String>()
+  fun nonOkNonCancelledResultRejectsAndClearsPendingInvoke() {
     val session = QingyuImagePickerSession()
-    val invoke = QingyuImagePickerSettlingInvoke(
-      RecordingImagePickerInvoke(events),
-      { events.add("wake") }
-    )
-
-    assertTrue(session.begin(invoke))
-    assertTrue(session.complete(RESULT_OK, listOf("content://media/picker/image/1")))
-
-    assertEquals(listOf("resolve:content://media/picker/image/1", "wake"), events)
-    assertFalse(session.hasPendingInvoke())
-  }
-
-  @Test
-  fun cancelledResultWakesEventLoopAfterResolvingEmptySelection() {
-    val events = mutableListOf<String>()
-    val session = QingyuImagePickerSession()
-    val invoke = QingyuImagePickerSettlingInvoke(
-      RecordingImagePickerInvoke(events),
-      { events.add("wake") }
-    )
-
-    assertTrue(session.begin(invoke))
-    assertTrue(session.complete(RESULT_CANCELED, listOf("content://media/picker/image/1")))
-
-    assertEquals(listOf("resolve:", "wake"), events)
-    assertFalse(session.hasPendingInvoke())
-  }
-
-  @Test
-  fun rejectedResultWakesEventLoopAfterRejectingInvoke() {
-    val events = mutableListOf<String>()
-    val session = QingyuImagePickerSession()
-    val invoke = QingyuImagePickerSettlingInvoke(
-      RecordingImagePickerInvoke(events),
-      { events.add("wake") }
-    )
+    val invoke = RecordingImagePickerInvoke()
 
     assertTrue(session.begin(invoke))
     assertTrue(session.complete(RESULT_DENIED, listOf("content://media/picker/image/1")))
 
-    assertEquals(listOf("reject:Failed to pick files", "wake"), events)
-    assertFalse(session.hasPendingInvoke())
-  }
-
-  @Test
-  fun eventLoopWakeFailureDoesNotReplacePickerResult() {
-    val events = mutableListOf<String>()
-    val session = QingyuImagePickerSession()
-    val invoke = QingyuImagePickerSettlingInvoke(
-      RecordingImagePickerInvoke(events),
-      { throw IllegalStateException("wake failed") }
-    )
-
-    assertTrue(session.begin(invoke))
-    assertTrue(session.complete(RESULT_OK, listOf("content://media/picker/image/1")))
-
-    assertEquals(listOf("resolve:content://media/picker/image/1"), events)
+    assertEquals(listOf("Failed to pick files"), invoke.rejected)
+    assertEquals(emptyList<List<String>>(), invoke.resolved)
     assertFalse(session.hasPendingInvoke())
   }
 
@@ -118,27 +67,34 @@ class QingyuImagePickerSessionTest {
   }
 
   @Test
-  fun rejectedSecondPickerWakesWithoutDisturbingFirstPendingInvoke() {
+  fun rejectedSecondPickerDoesNotDisturbFirstPendingInvoke() {
     val firstEvents = mutableListOf<String>()
     val secondEvents = mutableListOf<String>()
     val session = QingyuImagePickerSession()
-    val first = QingyuImagePickerSettlingInvoke(
-      RecordingImagePickerInvoke(firstEvents),
-      { firstEvents.add("wake") }
-    )
-    val second = QingyuImagePickerSettlingInvoke(
-      RecordingImagePickerInvoke(secondEvents),
-      { secondEvents.add("wake") }
-    )
+    val first = RecordingImagePickerInvoke(firstEvents)
+    val second = RecordingImagePickerInvoke(secondEvents)
 
     assertTrue(session.begin(first))
     assertFalse(session.begin(second))
 
     assertEquals(emptyList<String>(), firstEvents)
-    assertEquals(listOf("reject:Image picker already running", "wake"), secondEvents)
+    assertEquals(listOf("reject:Image picker already running"), secondEvents)
 
     assertTrue(session.complete(RESULT_OK, listOf("content://media/picker/image/1")))
-    assertEquals(listOf("resolve:content://media/picker/image/1", "wake"), firstEvents)
+    assertEquals(listOf("resolve:content://media/picker/image/1"), firstEvents)
+  }
+
+  @Test
+  fun explicitRejectionClearsPendingInvoke() {
+    val session = QingyuImagePickerSession()
+    val invoke = RecordingImagePickerInvoke()
+
+    assertTrue(session.begin(invoke))
+    assertTrue(session.reject("Image picker cancelled"))
+
+    assertEquals(listOf("Image picker cancelled"), invoke.rejected)
+    assertEquals(emptyList<List<String>>(), invoke.resolved)
+    assertFalse(session.hasPendingInvoke())
   }
 
   private class RecordingImagePickerInvoke(

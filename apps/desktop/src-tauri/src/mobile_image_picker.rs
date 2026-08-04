@@ -27,13 +27,12 @@ pub(crate) fn init() -> TauriPlugin<tauri::Wry> {
 }
 
 #[tauri::command]
-pub(crate) async fn pick_mobile_images(
+pub(crate) fn pick_mobile_images(
     picker: State<'_, MobileImagePickerPlugin>,
     title: Option<String>,
 ) -> Result<PickMobileImagesResponse, String> {
     picker
         .0
-        .run_mobile_plugin_async("pickImages", serde_json::json!({ "title": title }))
-        .await
+        .run_mobile_plugin("pickImages", serde_json::json!({ "title": title }))
         .map_err(|error| error.to_string())
 }
