@@ -3,7 +3,7 @@ import { CircleAlert, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 
 export const syncErrorToastHostClassName =
-  "app-toast-sync-error min-h-12! w-[min(20rem,calc(100vw-1.5rem))]! max-w-[min(20rem,calc(100vw-1.5rem))]! items-stretch! gap-0! border-0! bg-transparent! p-0! text-[13px]! shadow-none!";
+  "app-toast-sync-error min-h-12! w-[min(20rem,calc(100vw-1.5rem))]! max-w-[min(20rem,calc(100vw-1.5rem))]! items-stretch! gap-0! border-0! bg-transparent! p-0! text-[13px]! shadow-none! max-[600px]:left-0! max-[600px]:translate-x-0!";
 export const syncErrorToastClassNames = {
   content: "contents!",
   title: "contents!"

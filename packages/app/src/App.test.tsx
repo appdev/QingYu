@@ -6911,6 +6911,8 @@ describe("QingYu workspace", () => {
 
     expect(toast).toHaveClass(
       "app-toast-sync-error",
+      "max-[600px]:left-0!",
+      "max-[600px]:translate-x-0!",
       "w-[min(20rem,calc(100vw-1.5rem))]!",
       "min-h-12!"
     );

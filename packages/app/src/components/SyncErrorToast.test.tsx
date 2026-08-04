@@ -1,12 +1,29 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { toast } from "sonner";
-import { SyncErrorToast } from "./SyncErrorToast";
+import { SyncErrorToast, syncErrorToastHostClassName } from "./SyncErrorToast";
 
 vi.mock("sonner", () => ({
   toast: { dismiss: vi.fn() }
 }));
 
 const mockedDismiss = vi.mocked(toast.dismiss);
+const mobileToastViewportWidth = 412;
+const mobileToastOffset = 16;
+const desktopSyncErrorToastWidth = 320;
+
+function syncErrorMobileRect(className: string) {
+  const width = className.includes("w-[min(20rem,calc(100vw-1.5rem))]!")
+    ? Math.min(desktopSyncErrorToastWidth, mobileToastViewportWidth - 24)
+    : mobileToastViewportWidth - mobileToastOffset * 2;
+  const left = mobileToastOffset;
+  const translateX = className.includes("max-[600px]:translate-x-0!") ? 0 : -width / 2;
+
+  return {
+    left: left + translateX,
+    right: left + translateX + width,
+    width
+  };
+}
 
 function renderSyncErrorToast(status: "error" | "loading" = "error") {
   return render(
@@ -96,5 +113,20 @@ describe("SyncErrorToast", () => {
     expect(screen.getByRole("status").querySelector(".lucide-circle-alert")).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(10_000));
     expect(mockedDismiss).not.toHaveBeenCalled();
+  });
+
+  it("keeps the sync error toast inside a 412px mobile viewport while preserving desktop width", () => {
+    expect(syncErrorToastHostClassName).toContain("max-[600px]:left-0!");
+    expect(syncErrorToastHostClassName).toContain("max-[600px]:translate-x-0!");
+    expect(syncErrorToastHostClassName).not.toContain(" left-0!");
+    expect(syncErrorToastHostClassName).not.toContain(" translate-x-0!");
+    expect(syncErrorToastHostClassName).toContain("w-[min(20rem,calc(100vw-1.5rem))]!");
+    expect(syncErrorToastHostClassName).toContain("max-w-[min(20rem,calc(100vw-1.5rem))]!");
+
+    const rect = syncErrorMobileRect(syncErrorToastHostClassName);
+
+    expect(rect.width).toBe(desktopSyncErrorToastWidth);
+    expect(rect.left).toBeGreaterThanOrEqual(mobileToastOffset);
+    expect(rect.right).toBeLessThanOrEqual(mobileToastViewportWidth - mobileToastOffset);
   });
 });
