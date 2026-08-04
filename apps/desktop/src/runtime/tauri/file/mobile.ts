@@ -1,6 +1,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { open, type OpenDialogOptions } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
+import { platform as readNativePlatform } from "@tauri-apps/plugin-os";
 import type {
   NativeMarkdownPickerLabels,
   SavedNativeClipboardImage,
@@ -26,6 +27,7 @@ const mobileImageFilters = [{
 type MobileDialogOpen = (options: OpenDialogOptions) => Promise<string | string[] | null>;
 type MobileReadFile = (uri: string) => Promise<Uint8Array>;
 type MobileEventLoopWake = () => Promise<unknown>;
+type MobilePlatform = string;
 
 const mobilePickerEventLoopWakeIntervalMs = 250;
 
@@ -80,11 +82,50 @@ export function createMobileLocalImagePicker({
   };
 }
 
-export const openMobileLocalImages = createMobileLocalImagePicker({
+export function createAndroidMobileLocalImagePicker({
+  pickUris,
+  readFile: readSelectedFile
+}: {
+  pickUris: (labels?: NativeMarkdownPickerLabels) => Promise<string[]>;
+  readFile: MobileReadFile;
+}) {
+  return async (labels?: NativeMarkdownPickerLabels) => {
+    const images: File[] = [];
+    for (const uri of await pickUris(labels)) {
+      let bytes: Uint8Array;
+      try {
+        bytes = await readSelectedFile(uri);
+      } catch {
+        throw new Error("Could not read selected image. Check photo access and try again.");
+      }
+      images.push(mobileImageFileFromBytes({ bytes, uri }));
+    }
+    return images;
+  };
+}
+
+const openDialogMobileLocalImages = createMobileLocalImagePicker({
   open,
   readFile,
   wakeEventLoop: () => tauriInvoke("wake_mobile_picker_event_loop")
 });
+
+const openAndroidMobileLocalImages = createAndroidMobileLocalImagePicker({
+  pickUris: async (labels) => {
+    const title = labels?.title.trim();
+    const response = await invokeNative<{ uris: string[] }>("pick_mobile_images", title ? { title } : {});
+    return response.uris;
+  },
+  readFile
+});
+
+export function createPlatformMobileLocalImagePicker(readPlatform: () => MobilePlatform) {
+  return (labels?: NativeMarkdownPickerLabels) => readPlatform() === "android"
+    ? openAndroidMobileLocalImages(labels)
+    : openDialogMobileLocalImages(labels);
+}
+
+export const openMobileLocalImages = createPlatformMobileLocalImagePicker(readNativePlatform);
 
 function imageAltFromFileName(fileName: string) {
   const trimmedName = fileName.trim();

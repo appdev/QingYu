@@ -24,6 +24,7 @@ const MOBILE_COMMANDS: &[&str] = &[
     "delete_theme",
     "begin_mobile_back",
     "complete_mobile_back",
+    "pick_mobile_images",
     "wake_mobile_picker_event_loop",
 ];
 
@@ -665,6 +666,7 @@ fn builder_boundary_mobile_excludes_desktop_modules_state_plugins_and_initializa
         "tauri_plugin_log",
         "tauri_plugin_os",
         "tauri_plugin_opener",
+        "mobile_image_picker::init",
     ] {
         assert!(runtime.contains(plugin), "mobile runtime omitted {plugin}");
     }

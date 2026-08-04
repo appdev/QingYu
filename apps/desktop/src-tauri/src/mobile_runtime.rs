@@ -14,6 +14,7 @@ pub(crate) fn run() {
     tauri::Builder::default()
         .manage(MobileBackState::default())
         .manage(crate::themes::ThemeActivationState::default())
+        .plugin(crate::mobile_image_picker::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_log::Builder::new().build())
@@ -32,6 +33,7 @@ pub(crate) fn run() {
             crate::themes::delete_theme,
             crate::mobile_back::begin_mobile_back,
             crate::mobile_back::complete_mobile_back,
+            crate::mobile_image_picker::pick_mobile_images,
             wake_mobile_picker_event_loop,
         ])
         .build(tauri::generate_context!())

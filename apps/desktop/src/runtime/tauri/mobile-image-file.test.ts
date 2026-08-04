@@ -1,11 +1,27 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { readFile } from "@tauri-apps/plugin-fs";
 import { vi } from "vitest";
 
-import { createMobileLocalImagePicker, saveMobileClipboardImage } from "./file/mobile";
+import {
+  createAndroidMobileLocalImagePicker,
+  createMobileLocalImagePicker,
+  createPlatformMobileLocalImagePicker,
+  saveMobileClipboardImage
+} from "./file/mobile";
 import { mobileImageFileFromBytes } from "./mobile-image-file";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn()
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn()
+}));
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  readFile: vi.fn()
+}));
+vi.mock("@tauri-apps/plugin-os", () => ({
+  platform: vi.fn(() => "ios")
 }));
 
 const signatures = {
@@ -94,9 +110,13 @@ describe("mobile image files", () => {
 
 describe("mobile image picker", () => {
   const mockedInvoke = vi.mocked(invoke);
+  const mockedOpen = vi.mocked(open);
+  const mockedReadFile = vi.mocked(readFile);
 
   beforeEach(() => {
     mockedInvoke.mockReset();
+    mockedOpen.mockReset();
+    mockedReadFile.mockReset();
   });
 
   it("uses the scoped system image picker and reads returned URIs directly", async () => {
@@ -170,6 +190,117 @@ describe("mobile image picker", () => {
       await pendingSelection.catch(() => []);
       vi.useRealTimers();
     }
+  });
+
+  it("uses the dedicated Android picker command so dialog callback loss cannot strand the selection", async () => {
+    const uri = "content://media/images/42?displayName=dedicated-picker.png";
+    const pickUris = vi.fn().mockResolvedValue([uri]);
+    const readFile = vi.fn().mockResolvedValue(signatures.png);
+    const pickImages = createAndroidMobileLocalImagePicker({ pickUris, readFile });
+
+    const files = await pickImages({ title: "Import images" });
+
+    expect(pickUris).toHaveBeenCalledWith({ title: "Import images" });
+    expect(readFile).toHaveBeenCalledWith(uri);
+    expect(files.map(({ name, type }) => ({ name, type }))).toEqual([{
+      name: "dedicated-picker.png",
+      type: "image/png"
+    }]);
+  });
+
+  it("routes Android platform image imports away from the shared dialog ActivityResult callback", async () => {
+    const uri = "content://media/images/42?displayName=android-platform-route.png";
+    mockedInvoke.mockResolvedValue({ uris: [uri] });
+    mockedReadFile.mockResolvedValue(signatures.png);
+
+    const files = await createPlatformMobileLocalImagePicker(() => "android")({ title: "Import images" });
+
+    expect(mockedInvoke).toHaveBeenCalledWith("pick_mobile_images", { title: "Import images" });
+    expect(mockedOpen).not.toHaveBeenCalled();
+    expect(mockedReadFile).toHaveBeenCalledWith(uri);
+    expect(files.map(({ name, type }) => ({ name, type }))).toEqual([{
+      name: "android-platform-route.png",
+      type: "image/png"
+    }]);
+  });
+
+  it("keeps non-Android platform image imports on the dialog picker path", async () => {
+    const uri = "content://media/images/42?displayName=ios-dialog-route.png";
+    mockedOpen.mockResolvedValue(uri);
+    mockedReadFile.mockResolvedValue(signatures.png);
+
+    const files = await createPlatformMobileLocalImagePicker(() => "ios")({ title: "Import images" });
+
+    expect(mockedOpen).toHaveBeenCalledWith(expect.objectContaining({
+      fileAccessMode: "scoped",
+      multiple: true,
+      pickerMode: "image",
+      title: "Import images"
+    }));
+    expect(mockedInvoke).not.toHaveBeenCalledWith("pick_mobile_images", expect.anything());
+    expect(mockedReadFile).toHaveBeenCalledWith(uri);
+    expect(files.map(({ name, type }) => ({ name, type }))).toEqual([{
+      name: "ios-dialog-route.png",
+      type: "image/png"
+    }]);
+  });
+
+  it("completes repeated Android picker selections without sharing the previous callback slot", async () => {
+    const uris = [
+      "content://media/images/1?displayName=first-repeat.png",
+      "content://media/images/2?displayName=second-repeat.webp"
+    ];
+    const pickUris = vi.fn()
+      .mockResolvedValueOnce([uris[0]])
+      .mockResolvedValueOnce([uris[1]]);
+    const readFile = vi.fn()
+      .mockResolvedValueOnce(signatures.png)
+      .mockResolvedValueOnce(signatures.webp);
+    const pickImages = createAndroidMobileLocalImagePicker({ pickUris, readFile });
+
+    await expect(pickImages()).resolves.toMatchObject([{ name: "first-repeat.png", type: "image/png" }]);
+    await expect(pickImages()).resolves.toMatchObject([{ name: "second-repeat.webp", type: "image/webp" }]);
+
+    expect(pickUris).toHaveBeenCalledTimes(2);
+    expect(readFile).toHaveBeenNthCalledWith(1, uris[0]);
+    expect(readFile).toHaveBeenNthCalledWith(2, uris[1]);
+  });
+
+  it("models why Tauri's shared ActivityResult slot can leave the original dialog promise pending", () => {
+    let callback: ((value: string) => unknown) | null = null;
+    const first = vi.fn();
+    const second = vi.fn();
+    const launch = (next: (value: string) => unknown) => {
+      callback = next;
+    };
+    const deliver = (value: string) => {
+      const current = callback;
+      if (current) current(value);
+    };
+
+    launch(first);
+    launch(second);
+    deliver("picked-uri");
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledWith("picked-uri");
+  });
+
+  it("keeps Android picker cancellation distinct from selected unreadable content", async () => {
+    const pickUris = vi.fn().mockResolvedValue([]);
+    const readFile = vi.fn();
+
+    await expect(createAndroidMobileLocalImagePicker({ pickUris, readFile })()).resolves.toEqual([]);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("reports unreadable Android picker content without treating it as cancellation", async () => {
+    const pickUris = vi.fn().mockResolvedValue(["content://media/images/unreadable"]);
+    const readFile = vi.fn().mockRejectedValue(new Error("permission denied"));
+
+    await expect(createAndroidMobileLocalImagePicker({ pickUris, readFile })())
+      .rejects.toThrow(/read selected image/i);
+    expect(readFile).toHaveBeenCalledWith("content://media/images/unreadable");
   });
 
   it("returns an empty list when the user cancels", async () => {
