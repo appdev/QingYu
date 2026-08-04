@@ -6,6 +6,30 @@ interface QingyuImagePickerInvoke {
   fun rejectImagePicker(message: String)
 }
 
+class QingyuImagePickerSettlingInvoke(
+  private val delegate: QingyuImagePickerInvoke,
+  private val wakeEventLoop: () -> Unit
+) : QingyuImagePickerInvoke {
+  override fun resolveImagePickerUris(uris: List<String>) {
+    settle { delegate.resolveImagePickerUris(uris) }
+  }
+
+  override fun rejectImagePicker(message: String) {
+    settle { delegate.rejectImagePicker(message) }
+  }
+
+  private fun settle(action: () -> Unit) {
+    try {
+      action()
+    } finally {
+      try {
+        wakeEventLoop()
+      } catch (_: Exception) {
+      }
+    }
+  }
+}
+
 class QingyuImagePickerSession {
   private var pendingInvoke: QingyuImagePickerInvoke? = null
 
