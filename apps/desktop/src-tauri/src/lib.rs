@@ -33,6 +33,8 @@ mod mobile_back;
 #[cfg(any(mobile, test))]
 mod mobile_kernel_runtime;
 #[cfg(mobile)]
+mod mobile_image_picker;
+#[cfg(mobile)]
 mod mobile_runtime;
 mod notebook_scope;
 #[cfg(desktop)]
