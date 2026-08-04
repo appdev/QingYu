@@ -3,6 +3,8 @@ pub mod config;
 pub mod confirmation;
 pub mod error;
 pub mod handles;
+pub mod headless;
+pub mod http;
 pub mod kernel_port;
 pub mod local_settings;
 pub mod policy;
@@ -12,7 +14,7 @@ pub mod workspaces;
 pub use audit::{AuditEntry, AuditEvent, AuditOutcome, AuditSink};
 pub use config::{
     AuditPolicy, ConfirmationPolicy, DeletionPolicy, DryRunPolicy, McpConfig,
-    McpConfigDocument, McpConfigError, McpConfigManager, McpPermissions,
+    McpClientConnection, McpConfigDocument, McpConfigError, McpHttpTransportConfig, McpLocalIpcTransportConfig, McpTransportConfig, McpConfigManager, McpPermissions,
     SyncAfterWritePolicy, SyncExecutionPolicy, ToolCapability,
 };
 pub use confirmation::{
@@ -21,6 +23,7 @@ pub use confirmation::{
 pub use error::McpToolFailure;
 pub use handles::HandleSigner;
 pub use kernel_port::{McpKernelFailure, McpKernelFuture, McpKernelPort};
+pub use kernel_port::DirectKernelMcpPort;
 pub use local_settings::{McpLocalSettingsService, McpPolicyEventSink, NoopMcpPolicyEventSink, MCP_POLICY_CHANGED_EVENT};
 pub use policy::PolicyEngine;
 pub use tools::{McpServices, QingYuMcpHandler};

@@ -154,6 +154,67 @@ pub enum ToolCapability {
     SyncRun,
 }
 
+// --- Transport configuration ---
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpTransportConfig {
+    pub local_ipc: McpLocalIpcTransportConfig,
+    pub http: McpHttpTransportConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpLocalIpcTransportConfig {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpHttpTransportConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub path: String,
+    pub require_bearer_token: bool,
+}
+
+impl Default for McpTransportConfig {
+    fn default() -> Self {
+        Self {
+            local_ipc: McpLocalIpcTransportConfig::default(),
+            http: McpHttpTransportConfig::default(),
+        }
+    }
+}
+
+impl Default for McpLocalIpcTransportConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl Default for McpHttpTransportConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: "127.0.0.1".to_owned(),
+            port: 0,
+            path: "/mcp".to_owned(),
+            require_bearer_token: true,
+        }
+    }
+}
+
+// --- Client connection DTOs ---
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpClientConnection {
+    Stdio { command: String },
+    Http { url: String, token_configured: bool },
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct McpConfig {
@@ -173,6 +234,7 @@ pub struct McpConfig {
     pub concurrent_calls: usize,
     pub tool_timeout_secs: u64,
     pub audit: AuditPolicy,
+    pub transports: McpTransportConfig,
 }
 
 impl McpConfig {
@@ -214,6 +276,7 @@ impl Default for McpConfig {
             concurrent_calls: 8,
             tool_timeout_secs: 60,
             audit: AuditPolicy::default(),
+            transports: McpTransportConfig::default(),
         }
     }
 }
@@ -315,6 +378,18 @@ impl McpConfigManager {
         let document = settings.load()?;
         Ok(Self {
             settings,
+            state: Mutex::new(McpConfigState { document }),
+            generation: AtomicU64::new(1),
+        })
+    }
+
+
+    pub fn from_static_config(config: McpConfig) -> Result<Self, McpConfigError> {
+        let document = McpConfigDocument::from_config(config)?;
+        Ok(Self {
+            settings: super::local_settings::McpLocalSettingsService::at_config_root(std::path::PathBuf::from(
+                "/data/mcp-config",
+            )),
             state: Mutex::new(McpConfigState { document }),
             generation: AtomicU64::new(1),
         })

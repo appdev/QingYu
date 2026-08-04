@@ -10,7 +10,7 @@ mod initialization;
 mod initialization_coordinator;
 mod launch_environment;
 mod rate_limit;
-mod runtime_composition;
+pub(crate) mod runtime_composition;
 mod secret;
 mod security;
 mod session;

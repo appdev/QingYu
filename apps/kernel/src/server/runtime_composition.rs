@@ -93,8 +93,7 @@ impl ServerRuntimeComposition {
         self.lifecycle.clone()
     }
 
-    #[cfg(test)]
-    fn runtime(&self) -> &Arc<KernelRuntime> {
+    pub(crate) fn runtime(&self) -> &Arc<KernelRuntime> {
         &self.runtime
     }
 

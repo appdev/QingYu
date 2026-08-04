@@ -64,6 +64,7 @@ enum ServerStartupStage {
     StaticRouter,
     Listener,
     Serve,
+    McpHttp,
     KernelDrain,
     ShutdownDeadline,
 }
@@ -81,6 +82,7 @@ impl ServerStartupStage {
             Self::Listener => "QK-SRV-LISTENER",
             Self::Serve => "QK-SRV-SERVE",
             Self::KernelDrain => "QK-SRV-KERNEL-DRAIN",
+            Self::McpHttp => "QK-SRV-MCP-HTTP",
             Self::ShutdownDeadline => "QK-SRV-SHUTDOWN-DEADLINE",
         }
     }
@@ -247,6 +249,32 @@ async fn run_fixed_server(
     let composition = compose_fixed_server_kernel(config, paths)
         .await
         .map_err(ServerStartupStage::Composition)?;
+    let composition_arc = std::sync::Arc::new(composition);
+    if let Some(mcp_config) = qingyu_kernel::mcp::headless::load_headless_mcp_config_from_env()
+        .map_err(|_| ServerStartupStage::McpHttp)?
+    {
+        let mcp_handler = qingyu_kernel::mcp::headless::build_headless_handler(
+            std::sync::Arc::clone(&composition_arc),
+            &mcp_config,
+        )
+        .map_err(|_| ServerStartupStage::McpHttp)?;
+        let _mcp_http = qingyu_kernel::mcp::http::serve_http_mcp(
+            qingyu_kernel::mcp::http::HttpMcpServerConfig {
+                bind: mcp_config.bind,
+                path: mcp_config.path,
+                bearer_token: mcp_config.token,
+                allowed_hosts: mcp_config.allowed_hosts,
+                handler: mcp_handler,
+                shutdown: tokio_util::sync::CancellationToken::new(),
+            },
+        )
+        .await
+        .map_err(|_| ServerStartupStage::McpHttp)?;
+    }
+    let composition = match std::sync::Arc::try_unwrap(composition_arc) {
+        Ok(composition) => composition,
+        Err(_) => return Err(ServerStartupStage::McpHttp),
+    };
     let activation = composition
         .activate_api(environment)
         .map_err(|_| ServerStartupStage::AuthenticationApi)?;
