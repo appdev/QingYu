@@ -14,12 +14,12 @@ class QingyuImagePickerOptions {
 }
 
 @TauriPlugin
-class QingyuImagePickerPlugin(private val activity: Activity) : Plugin(activity) {
+class QingyuImagePickerPlugin(activity: Activity) : Plugin(activity) {
   @Command
   fun pickImages(invoke: Invoke) {
     try {
       val args = invoke.parseArgs(QingyuImagePickerOptions::class.java)
-      (activity as MainActivity).launchImagePicker(invoke, args.title)
+      MainActivity.launchImagePickerFromCurrentActivity(invoke, args.title)
     } catch (error: Exception) {
       val message = error.message ?: "Failed to pick files"
       Logger.error(message)

@@ -14,10 +14,10 @@ import app.tauri.Logger
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
 import app.tauri.plugin.JSObject
+import java.lang.ref.WeakReference
 
 class MainActivity : TauriActivity() {
   private var appWebView: WebView? = null
-  private var pendingImagePickerInvoke: Invoke? = null
   private lateinit var imagePickerLauncher: ActivityResultLauncher<Intent>
   private val systemBackCallback = object : OnBackPressedCallback(true) {
     override fun handleOnBackPressed() {
@@ -27,6 +27,7 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
+    currentActivity = WeakReference(this)
     imagePickerLauncher = registerForActivityResult(
       ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -43,14 +44,17 @@ class MainActivity : TauriActivity() {
 
   override fun onDestroy() {
     appWebView = null
-    pendingImagePickerInvoke?.reject("Image picker cancelled")
-    pendingImagePickerInvoke = null
+    if (currentActivity?.get() === this) {
+      currentActivity = null
+    }
+    if (isFinishing) {
+      imagePickerSession.reject("Image picker cancelled")
+    }
     super.onDestroy()
   }
 
   fun launchImagePicker(invoke: Invoke, title: String?) {
-    if (pendingImagePickerInvoke != null) {
-      invoke.reject("Image picker already running")
+    if (!imagePickerSession.begin(TauriImagePickerInvoke(invoke))) {
       return
     }
 
@@ -63,34 +67,34 @@ class MainActivity : TauriActivity() {
     }
 
     try {
-      pendingImagePickerInvoke = invoke
       imagePickerLauncher.launch(intent)
     } catch (error: Exception) {
-      pendingImagePickerInvoke = null
       val message = error.message ?: "Failed to pick files"
       Logger.error(message)
-      invoke.reject(message)
+      imagePickerSession.reject(message)
     }
   }
 
   private fun completeImagePicker(result: ActivityResult) {
-    val invoke = pendingImagePickerInvoke ?: return
-    pendingImagePickerInvoke = null
-
     try {
-      when (result.resultCode) {
-        Activity.RESULT_OK -> invoke.resolve(imagePickerResponse(result.data))
-        Activity.RESULT_CANCELED -> invoke.resolve(imagePickerResponse(null))
-        else -> invoke.reject("Failed to pick files")
+      val uris = when (result.resultCode) {
+        Activity.RESULT_OK -> imagePickerUris(result.data)
+        Activity.RESULT_CANCELED -> emptyList()
+        else -> emptyList()
+      }
+      if (!imagePickerSession.complete(result.resultCode, uris)) {
+        Logger.error("Image picker result arrived without a pending invoke")
       }
     } catch (error: Exception) {
       val message = error.message ?: "Failed to read image pick result"
       Logger.error(message)
-      invoke.reject(message)
+      if (!imagePickerSession.reject(message)) {
+        Logger.error("Image picker error arrived without a pending invoke")
+      }
     }
   }
 
-  private fun imagePickerResponse(data: Intent?): JSObject {
+  private fun imagePickerUris(data: Intent?): List<String> {
     val uris = mutableListOf<String>()
     val clipData = data?.clipData
     if (clipData != null) {
@@ -100,14 +104,39 @@ class MainActivity : TauriActivity() {
     } else {
       data?.data?.let { uris.add(it.toString()) }
     }
-
-    val response = JSObject()
-    response.put("uris", JSArray.from(uris.toTypedArray()))
-    return response
+    return uris
   }
 
-  private companion object {
-    const val MOBILE_BACK_SCRIPT =
+  private class TauriImagePickerInvoke(private val invoke: Invoke) : QingyuImagePickerInvoke {
+    override fun resolveImagePickerUris(uris: List<String>) {
+      invoke.resolve(imagePickerResponse(uris))
+    }
+
+    override fun rejectImagePicker(message: String) {
+      invoke.reject(message)
+    }
+
+    private fun imagePickerResponse(uris: List<String>): JSObject {
+      val response = JSObject()
+      response.put("uris", JSArray.from(uris.toTypedArray()))
+      return response
+    }
+  }
+
+  companion object {
+    private val imagePickerSession = QingyuImagePickerSession()
+    private var currentActivity: WeakReference<MainActivity>? = null
+
+    fun launchImagePickerFromCurrentActivity(invoke: Invoke, title: String?) {
+      val activity = currentActivity?.get()
+      if (activity == null || activity.isFinishing || activity.isDestroyed) {
+        invoke.reject("Image picker unavailable")
+        return
+      }
+      activity.launchImagePicker(invoke, title)
+    }
+
+    private const val MOBILE_BACK_SCRIPT =
       "window.dispatchEvent(new Event('qingyu://mobile-back-requested'))"
   }
 }
