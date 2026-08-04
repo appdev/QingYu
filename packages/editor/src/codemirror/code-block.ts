@@ -28,6 +28,7 @@ import {
   mermaidThemeFromElement,
   renderMermaidToSvg,
 } from "../mermaid.ts";
+import { syntaxTreeChanged } from "./changes.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
 import {
   createMediaViewerEnlargeIcon,
@@ -343,7 +344,13 @@ function createCodeBlockTopGapField(showLineNumbers: boolean) {
   return StateField.define<DecorationSet>({
     create: (state) => codeBlockTopGapDecorations(state, showLineNumbers),
     update(gaps, transaction) {
-      return transaction.docChanged
+      // Background parsing commits a new tree without changing Markdown.
+      // Re-scan so blocks discovered after initial load receive their chrome.
+      const treeChanged = syntaxTreeChanged(
+        transaction.startState,
+        transaction.state,
+      );
+      return transaction.docChanged || treeChanged
         ? codeBlockTopGapDecorations(transaction.state, showLineNumbers)
         : gaps;
     },
@@ -906,11 +913,25 @@ function createMermaidPreviewField(
       );
     },
     update(previous, transaction) {
+      // A long document can finish parsing in a later, document-neutral
+      // transaction. Rebuild so newly discovered Mermaid fences get previews.
+      const treeChanged = syntaxTreeChanged(
+        transaction.startState,
+        transaction.state,
+      );
       const focusEffect = transaction.effects.find((effect) =>
         effect.is(setMermaidPreviewFocusedEffect)
       );
       const focused = focusEffect?.value ?? previous.focused;
       if (!transaction.docChanged) {
+        if (treeChanged) {
+          return createMermaidPreviewState(
+            transaction.state,
+            focused,
+            labels,
+            renderMermaid,
+          );
+        }
         const revealChanged =
           revealedMermaidBlocksKey(
             transaction.startState,
@@ -937,6 +958,7 @@ function createMermaidPreviewField(
       }
 
       if (
+        treeChanged ||
         changesTouchMermaidBlocks(transaction, previous.blocks) ||
         changesMayAffectMermaidFences(transaction)
       ) {
@@ -972,9 +994,11 @@ function createMermaidPreviewField(
         focused,
       };
     },
-    provide: (mermaidField) => EditorView.decorations.from(
-      mermaidField,
-      (value) => value.decorations,
+    provide: (mermaidField) => Prec.highest(
+      EditorView.decorations.from(
+        mermaidField,
+        (value) => value.decorations,
+      ),
     ),
   });
   const mountedViews = new WeakSet<CodeMirrorView>();
@@ -1001,7 +1025,7 @@ function createMermaidPreviewField(
   };
 
   return [
-    Prec.highest(field),
+    field,
     lifecycle,
     EditorView.domEventHandlers({
       blur(_event, view) {
