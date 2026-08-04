@@ -17,7 +17,7 @@ use rmcp::{
 };
 
 use super::ipc::{application_data_dir, bounded_transport, LocalIpcEndpoint};
-use super::local_settings::McpLocalSettingsService;
+use qingyu_kernel::mcp::McpLocalSettingsService;
 
 const MAXIMUM_BRIDGE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 

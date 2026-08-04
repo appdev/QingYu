@@ -309,6 +309,7 @@ mod tests {
     fn rejects_non_loopback_http_without_token() {
         let mut config = McpConfig::default();
         config.enabled = true;
+        config.confirmation = ConfirmationPolicy::Never;
         config.transports.http.enabled = true;
         config.transports.http.host = "0.0.0.0".to_owned();
         let env = HeadlessMcpEnvironment {
@@ -323,6 +324,7 @@ mod tests {
     fn rejects_ui_confirmation_policy() {
         let mut config = McpConfig::default();
         config.enabled = true;
+        config.confirmation = ConfirmationPolicy::Never;
         config.confirmation = ConfirmationPolicy::AllWrites;
         let env = HeadlessMcpEnvironment {
             workspace: Some("/data/workspace".into()),

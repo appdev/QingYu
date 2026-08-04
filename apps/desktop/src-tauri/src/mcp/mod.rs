@@ -44,6 +44,8 @@ use std::{
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 use tauri::{Emitter, Manager};
 
+use crate::mcp::local_settings::mcp_local_settings_service_from_app;
+
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 use self::{
     audit::{AuditEntry, AuditSink},
@@ -52,7 +54,7 @@ use self::{
     handles::HandleSigner,
     ipc::LocalIpcEndpoint,
     kernel_adapter::McpKernelClient,
-    local_settings::McpLocalSettingsService,
+    
     policy::PolicyEngine,
     server::{McpServerController, McpServerOptions, McpServerState},
     tools::{McpServices, QingYuMcpHandler},

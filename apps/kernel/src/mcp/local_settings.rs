@@ -185,7 +185,6 @@ impl McpLocalSettingsService {
 
 
 
-    #[cfg(test)]
     pub fn new_for_test(
         backend: Arc<dyn McpSettingsBackend>,
         events: Option<Arc<dyn McpPolicyEventSink>>,
@@ -197,7 +196,6 @@ impl McpLocalSettingsService {
         }
     }
 
-    #[cfg(test)]
     pub fn memory_for_test() -> Self {
         Self::new_for_test(Arc::new(MemoryMcpSettingsBackend::default()), None)
     }
@@ -256,14 +254,12 @@ fn default_document() -> McpConfigDocument {
         .expect("the default MCP configuration must be valid")
 }
 
-#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryMcpSettingsBackend {
     fail_writes: AtomicUsize,
     value: Mutex<Option<Value>>,
 }
 
-#[cfg(test)]
 impl MemoryMcpSettingsBackend {
     fn fail_next_write(&self) {
         self.fail_writes.fetch_add(1, Ordering::Relaxed);
@@ -274,7 +270,6 @@ impl MemoryMcpSettingsBackend {
     }
 }
 
-#[cfg(test)]
 impl McpSettingsBackend for MemoryMcpSettingsBackend {
     fn read(&self) -> Result<Option<Value>, McpConfigError> {
         Ok(self.value())

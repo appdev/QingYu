@@ -156,7 +156,7 @@ const fn error_code(code: ErrorCode) -> &'static str {
         ErrorCode::SyncConfigInvalid => "sync_config_invalid",
         ErrorCode::SyncNotReady => "sync_not_ready",
         ErrorCode::SyncRunUnavailable => "sync_run_unavailable",
-        ErrorCode::RevisionConflict => "revision_conflict",
+        ErrorCode::RevisionConflict | ErrorCode::SyncConfigRevisionConflict => "revision_conflict",
         _ => "kernel_error",
     }
 }
