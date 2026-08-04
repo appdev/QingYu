@@ -17,6 +17,9 @@ name = "qingyu_kernel"
 path = "src/lib.rs"
 
 [dependencies]
+rmcp = { version = "2.2.0", default-features = false, features = ["base64", "macros", "server", "transport-streamable-http-server"] }
+schemars = "1.2.1"
+tokio-util = "0.7.18"
 async-trait = "0.1"
 argon2 = { version = "0.5", features = ["std"] }
 axum = { version = "0.8.9", features = ["http1", "json", "tokio", "ws"] }

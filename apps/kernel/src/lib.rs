@@ -21,4 +21,5 @@ pub mod services;
 pub mod settings;
 pub mod storage;
 pub mod sync;
+pub mod mcp;
 pub mod workspace;
