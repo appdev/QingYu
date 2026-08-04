@@ -338,6 +338,27 @@ function workspaceHasCurrentWindowRestoreState(workspace: StoredWorkspaceState) 
   );
 }
 
+function releaseDeletedTabsForReusedPath(
+  tabs: readonly MarkdownDocumentTab[],
+  path: string | null | undefined
+): MarkdownDocumentTab[] {
+  if (!path) return [...tabs];
+
+  const nextTabs = tabs.map((tab) => {
+    if (!tab.deleted || tab.path === null || !sameNativePath(tab.path, path)) return tab;
+
+    return {
+      ...tab,
+      creationDirectory: parentPathFromPath(tab.path),
+      deleted: false,
+      dirty: tab.dirty || tab.content.trim().length > 0,
+      path: null
+    };
+  });
+
+  return nextTabs;
+}
+
 function additionalEditorWindowsForRestore(
   restoreWindows: readonly StoredWorkspaceWindow[],
   currentWindowHasRestoreState: boolean
@@ -1093,11 +1114,16 @@ export function useMarkdownDocument({
 
     if (documentTabsEnabled) {
       syncActiveDocumentFromEditor();
+      const currentTabsWithReleasedDeletedConflicts = releaseDeletedTabsForReusedPath(tabsRef.current, savedFile?.path);
       const existingSavedTab = savedFile
-        ? tabsRef.current.find((tab) => tab.path && sameNativePath(tab.path, savedFile.path))
+        ? currentTabsWithReleasedDeletedConflicts.find((tab) => (
+          tab.path &&
+          !tab.deleted &&
+          sameNativePath(tab.path, savedFile.path)
+        ))
         : undefined;
       if (existingSavedTab && savedFile) {
-        const nextTabs = tabsRef.current.map((tab) => tab.id === existingSavedTab.id
+        const nextTabs = currentTabsWithReleasedDeletedConflicts.map((tab) => tab.id === existingSavedTab.id
           ? { ...tab, deleted: false }
           : tab);
         setActiveTabState(nextTabs, existingSavedTab.id);
@@ -1115,7 +1141,7 @@ export function useMarkdownDocument({
         nextDocument,
         createAvailableTabId(savedFile ? fileTabId(savedFile.path) : undefined)
       );
-      const nextTabs = [...tabsRef.current, tab];
+      const nextTabs = [...currentTabsWithReleasedDeletedConflicts, tab];
       setActiveTabState(nextTabs, tab.id);
       const nextActiveFilePath = activeFilePathFromTabs(nextTabs, tab.id);
       const nextOpenFilePaths = openFilePathsFromTabs(nextTabs);
@@ -1192,8 +1218,9 @@ export function useMarkdownDocument({
           savedFile.name,
           requestedContent
         );
-        const existingSavedTab = tabsRef.current.find((tab) =>
-          tab.path !== null && sameNativePath(tab.path, savedFile.path)
+        const tabsWithReleasedDeletedConflicts = releaseDeletedTabsForReusedPath(tabsRef.current, savedFile.path);
+        const existingSavedTab = tabsWithReleasedDeletedConflicts.find((tab) =>
+          tab.path !== null && !tab.deleted && sameNativePath(tab.path, savedFile.path)
         );
         if (existingSavedTab) return false;
         let authoritativeContentPersisted = true;
@@ -1298,7 +1325,11 @@ export function useMarkdownDocument({
     expectedTab?: { content: string; id: string; revision: number }
   ) => {
     const currentTabs = tabsRef.current;
-    const targetTab = currentTabs.find((tab) => tab.path !== null && sameNativePath(tab.path, file.path));
+    const targetTab = currentTabs.find((tab) => (
+      tab.path !== null &&
+      !tab.deleted &&
+      sameNativePath(tab.path, file.path)
+    ));
     // Tab-selection refreshes are async; ignore disk reads if the tab changed while the read was in flight.
     const staleRequest =
       expectedTab &&
@@ -1372,7 +1403,11 @@ export function useMarkdownDocument({
   }, [editorSyncState, onActiveDiskFileContentChange]);
 
   const refreshCleanOpenTabFromDisk = useCallback((path: string, reason: string) => {
-    const currentTab = tabsRef.current.find((tab) => tab.path !== null && sameNativePath(tab.path, path));
+    const currentTab = tabsRef.current.find((tab) => (
+      tab.path !== null &&
+      !tab.deleted &&
+      sameNativePath(tab.path, path)
+    ));
     if (!currentTab || currentTab.dirty) return;
 
     const expectedTab = {
@@ -1406,8 +1441,12 @@ export function useMarkdownDocument({
 
         if (documentTabsEnabled) {
           syncActiveDocumentFromEditor();
-          const currentTabs = tabsRef.current;
-          const existingTab = currentTabs.find((tab) => sameNativePath(tab.path, file.path));
+          const currentTabs = releaseDeletedTabsForReusedPath(tabsRef.current, file.path);
+          const existingTab = currentTabs.find((tab) => (
+            tab.path !== null &&
+            !tab.deleted &&
+            sameNativePath(tab.path, file.path)
+          ));
           let nextTabs: MarkdownDocumentTab[];
           let nextActiveTabId: string;
 
@@ -1418,7 +1457,9 @@ export function useMarkdownDocument({
             const activeTabIsEmptyUntitled = currentTabs.some((tab) =>
               tab.id === activeTabIdRef.current && isEmptyUntitledDocument(documentFromTab(tab))
             );
-            const nextTabId = activeTabIsEmptyUntitled && activeTabIdRef.current ? activeTabIdRef.current : fileTabId(file.path);
+            const nextTabId = activeTabIsEmptyUntitled && activeTabIdRef.current
+              ? activeTabIdRef.current
+              : createAvailableTabId(fileTabId(file.path));
             const nextTab = createDocumentTab(nextDocument, nextTabId);
             nextTabs = activeTabIsEmptyUntitled
               ? currentTabs.map((tab) => tab.id === activeTabIdRef.current ? nextTab : tab)
@@ -1462,7 +1503,7 @@ export function useMarkdownDocument({
         updateTreeRoot
       });
     },
-    [documentTabsEnabled, managedWorkspace, onTreeRootFromFilePath, persistWorkspaceState, registerWindowRestoreState, rememberRecentMarkdownFile, setActiveDocument, setActiveTabState, syncActiveDocumentFromEditor]
+    [createAvailableTabId, documentTabsEnabled, managedWorkspace, onTreeRootFromFilePath, persistWorkspaceState, registerWindowRestoreState, rememberRecentMarkdownFile, setActiveDocument, setActiveTabState, syncActiveDocumentFromEditor]
   );
 
   const loadNativeMarkdownPath = useCallback(
@@ -1697,11 +1738,15 @@ export function useMarkdownDocument({
 
         syncActiveDocumentFromEditor();
 
-        const currentTabs = tabsRef.current;
-        const existingTab = currentTabs.find((tab) => sameNativePath(tab.path, nativeFile.path));
+        const currentTabs = releaseDeletedTabsForReusedPath(tabsRef.current, nativeFile.path);
+        const existingTab = currentTabs.find((tab) => (
+          tab.path !== null &&
+          !tab.deleted &&
+          sameNativePath(tab.path, nativeFile.path)
+        ));
         if (existingTab) return existingTab.id;
 
-        const nextTab = createDocumentTab(nextDocument, fileTabId(nativeFile.path));
+        const nextTab = createDocumentTab(nextDocument, createAvailableTabId(fileTabId(nativeFile.path)));
         const nextTabs = [...currentTabs, nextTab];
 
         tabsRef.current = nextTabs;
@@ -1718,15 +1763,17 @@ export function useMarkdownDocument({
         return null;
       }
     },
-    [readMarkdownFileWithPerformance, registerWindowRestoreState, syncActiveDocumentFromEditor]
+    [createAvailableTabId, readMarkdownFileWithPerformance, registerWindowRestoreState, syncActiveDocumentFromEditor]
   );
 
   const replaceOpenDocumentFile = useCallback((previousPath: string, file: NativeMarkdownFolderFile) => {
-    const affected = tabsRef.current.some((tab) => tab.path === previousPath) || documentRef.current.path === previousPath;
+    const affected =
+      tabsRef.current.some((tab) => !tab.deleted && tab.path === previousPath) ||
+      (!documentRef.current.deleted && documentRef.current.path === previousPath);
     if (!affected) return false;
 
     const current = documentRef.current;
-    if (current.path === previousPath) {
+    if (!current.deleted && current.path === previousPath) {
       setActiveDocument({
         ...current,
         deleted: false,
@@ -1736,7 +1783,7 @@ export function useMarkdownDocument({
     }
 
     const nextTabs = tabsRef.current.map((tab) => {
-      if (tab.path !== previousPath) return tab;
+      if (tab.deleted || tab.path !== previousPath) return tab;
 
       return {
         ...tab,
@@ -1763,12 +1810,14 @@ export function useMarkdownDocument({
   ) => {
     const movedPathFor = (path: string | null) => (path ? replaceMovedPath(path, previousPath, file.path) : path);
     const affected =
-      tabsRef.current.some((tab) => tab.path !== null && movedPathFor(tab.path) !== tab.path) ||
-      (documentRef.current.path !== null && movedPathFor(documentRef.current.path) !== documentRef.current.path);
+      tabsRef.current.some((tab) => !tab.deleted && tab.path !== null && movedPathFor(tab.path) !== tab.path) ||
+      (!documentRef.current.deleted &&
+        documentRef.current.path !== null &&
+        movedPathFor(documentRef.current.path) !== documentRef.current.path);
     if (!affected) return false;
 
     const current = documentRef.current;
-    if (current.path !== null) {
+    if (!current.deleted && current.path !== null) {
       const nextPath = movedPathFor(current.path);
       if (nextPath !== current.path) {
         const contentRebased = documentUpdate !== undefined && sameNativePath(current.path, previousPath);
@@ -1789,6 +1838,8 @@ export function useMarkdownDocument({
     }
 
     const nextTabs = tabsRef.current.map((tab) => {
+      if (tab.deleted) return tab;
+
       const nextPath = movedPathFor(tab.path);
       if (nextPath === tab.path) return tab;
 
@@ -1899,7 +1950,7 @@ export function useMarkdownDocument({
     contents: string,
     options: ApplySavedCurrentDocumentOptions = {}
   ) => {
-    const currentTabs = tabsRef.current;
+    const currentTabs = releaseDeletedTabsForReusedPath(tabsRef.current, savedFile.path);
     const targetTabId = options.targetTabId ?? activeTabIdRef.current;
     const targetTab = targetTabId
       ? currentTabs.find((tab) => tab.id === targetTabId)

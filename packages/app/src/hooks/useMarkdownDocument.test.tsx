@@ -1074,6 +1074,168 @@ describe("useMarkdownDocument", () => {
     expect(new Set(result.current.tabs.map((tab) => tab.id)).size).toBe(result.current.tabs.length);
   });
 
+  it("isolates a remotely deleted tab before reusing its released Kernel path", async () => {
+    const workspaceRoot = "kernel-workspace://primary";
+    const creationDirectory = `${workspaceRoot}/run30`;
+    const reusedPath = `${creationDirectory}/Untitled 4.md`;
+    const renamedPath = `${creationDirectory}/Run30-Web-Temp-Delete.md`;
+    const remoteBody = "# Android A\n\nRemote original.";
+    const temporaryBody = "# Temporary Delete\n\nMarker: RUN30-WEB-DELETE-1420";
+    const createdTemporarySource = "---\ntitle: Untitled 4\n---\n\n# Temporary Delete\n\nMarker: RUN30-WEB-DELETE-1420";
+    const renamedTemporarySource = "---\ntitle: Run30-Web-Temp-Delete\n---\n\n# Temporary Delete\n\nMarker: RUN30-WEB-DELETE-1420";
+    let emitExternalChange: (path: string) => unknown | Promise<unknown> = () => {};
+    mockedWatchNativeMarkdownFile.mockImplementation(async (_path, onChange) => {
+      emitExternalChange = onChange;
+      return () => {};
+    });
+    mockedReadNativeMarkdownFile
+      .mockResolvedValueOnce({
+        content: remoteBody,
+        name: "Untitled 4.md",
+        path: reusedPath
+      })
+      .mockRejectedValueOnce(new Error("No such file"));
+    mockedSaveNativeMarkdownFile
+      .mockResolvedValueOnce({ name: "Untitled 4.md", path: reusedPath })
+      .mockResolvedValueOnce({ name: "Run30-Web-Temp-Delete.md", path: renamedPath });
+    const confirmDiscardUnsavedChanges = vi.fn(() => true);
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        confirmDiscardUnsavedChanges,
+        defaultSaveDirectory: workspaceRoot,
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "Untitled 4.md",
+        path: reusedPath,
+        relativePath: "run30/Untitled 4.md"
+      });
+    });
+    await waitFor(() => expect(mockedWatchNativeMarkdownFile).toHaveBeenCalledWith(
+      reusedPath,
+      expect.any(Function),
+      expect.any(Function),
+      expect.any(Object)
+    ));
+    const remoteTabId = result.current.activeTabId;
+
+    await act(async () => {
+      await emitExternalChange(reusedPath);
+    });
+    expect(result.current.tabs.find((tab) => tab.id === remoteTabId)).toMatchObject({
+      deleted: true,
+      path: reusedPath
+    });
+
+    await act(async () => {
+      expect(await result.current.createBlankDocument({
+        content: temporaryBody,
+        creationDirectory,
+        name: "Untitled 4.md"
+      })).toBe(true);
+    });
+    const reusedTabId = result.current.activeTabId;
+
+    expect(reusedTabId).not.toBe(remoteTabId);
+    expect(result.current.document).toMatchObject({
+      content: createdTemporarySource,
+      dirty: false,
+      name: "Untitled 4.md",
+      path: reusedPath
+    });
+    expect(result.current.tabs.find((tab) => tab.id === remoteTabId)).toMatchObject({
+      content: remoteBody,
+      dirty: true,
+      name: "Untitled 4.md",
+      path: null
+    });
+    expect(result.current.tabs.filter((tab) => tab.path === reusedPath)).toEqual([
+      expect.objectContaining({
+        content: createdTemporarySource,
+        id: reusedTabId,
+        name: "Untitled 4.md"
+      })
+    ]);
+
+    act(() => {
+      expect(result.current.replaceOpenDocumentFile(reusedPath, {
+        name: "Run30-Web-Temp-Delete.md",
+        path: renamedPath,
+        relativePath: "run30/Run30-Web-Temp-Delete.md"
+      })).toBe(true);
+    });
+
+    expect(result.current.document).toMatchObject({
+      content: createdTemporarySource,
+      name: "Run30-Web-Temp-Delete.md",
+      path: renamedPath
+    });
+    act(() => {
+      result.current.handleMarkdownChange(renamedTemporarySource, { surface: "source" });
+    });
+    expect(result.current.document).toMatchObject({
+      content: renamedTemporarySource,
+      dirty: true,
+      name: "Run30-Web-Temp-Delete.md",
+      path: renamedPath
+    });
+    expect(result.current.tabs.find((tab) => tab.id === remoteTabId)).toMatchObject({
+      content: remoteBody,
+      dirty: true,
+      name: "Untitled 4.md",
+      path: null
+    });
+    expect(result.current.tabs.filter((tab) => tab.path === renamedPath)).toEqual([
+      expect.objectContaining({
+        content: renamedTemporarySource,
+        id: reusedTabId
+      })
+    ]);
+
+    await act(async () => {
+      await result.current.saveCurrentDocumentContent(renamedTemporarySource);
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith({
+      contents: renamedTemporarySource,
+      path: renamedPath,
+      skipHistorySnapshot: undefined,
+      suggestedName: "Run30-Web-Temp-Delete.md"
+    });
+
+    await act(async () => {
+      expect(await result.current.closeMarkdownTab(reusedTabId!)).toBe(true);
+    });
+    expect(result.current.tabs).toEqual([
+      expect.objectContaining({
+        content: remoteBody,
+        dirty: true,
+        id: remoteTabId,
+        path: null
+      })
+    ]);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenLastCalledWith(expect.objectContaining({
+      activeDraftId: remoteTabId,
+      draftTabs: [
+        expect.objectContaining({
+          content: remoteBody,
+          id: remoteTabId,
+          name: "Untitled 4.md",
+          path: null
+        })
+      ],
+      filePath: null,
+      openFilePaths: []
+    }));
+  });
+
   it("immediately persists the authoritative collision name as the Front Matter title", async () => {
     const workspaceRoot = "kernel-workspace://primary";
     const documentPath = `${workspaceRoot}/%E6%9C%AA%E5%91%BD%E5%90%8D%201.md`;
