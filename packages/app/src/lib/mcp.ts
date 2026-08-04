@@ -56,10 +56,16 @@ export type McpServerHealth = {
   errorCode: string | null;
 };
 
+
+export type McpClientConnection =
+  | { transport: "stdio"; command: string }
+  | { transport: "http"; url: string; tokenConfigured: boolean };
+
 export type McpSettingsSnapshot = {
   revision: string;
   config: McpConfig;
   clientCommand: string | null;
+  clientConnections: McpClientConnection[];
   endpoint: string | null;
   health: McpServerHealth;
   workspace: McpCurrentWorkspace | null;

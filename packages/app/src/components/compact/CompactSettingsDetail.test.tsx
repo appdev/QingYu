@@ -30,6 +30,7 @@ function navigation(category: CompactSettingsCategory, onBack: () => unknown = (
 function mcpSnapshot(): McpSettingsSnapshot {
   return {
     clientCommand: null,
+    clientConnections: [],
     config: defaultMcpConfig(),
     endpoint: null,
     health: { state: "stopped", endpoint: null, errorCode: null },

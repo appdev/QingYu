@@ -16,6 +16,7 @@ const mockedListenMcpRuntimeChanged = vi.mocked(listenMcpRuntimeChanged);
 function snapshot(): McpSettingsSnapshot {
   return {
     clientCommand: "/Applications/QingYu.app/Contents/MacOS/qingyu-mcp",
+    clientConnections: [],
     config: defaultMcpConfig(),
     endpoint: "local-ipc",
     health: { state: "disabled", endpoint: null, errorCode: null },
@@ -175,6 +176,7 @@ describe("McpSettings", () => {
     const enabled = {
       ...snapshot(),
       clientCommand: null,
+    clientConnections: [],
       config: { ...defaultMcpConfig(), enabled: true }
     };
     const mcp = runtime({
@@ -192,6 +194,7 @@ describe("McpSettings", () => {
     const enabled = {
       ...snapshot(),
       clientCommand: null,
+    clientConnections: [],
       config: { ...defaultMcpConfig(), enabled: true }
     };
     const mcp = runtime({ getSettings: vi.fn(async () => enabled) });

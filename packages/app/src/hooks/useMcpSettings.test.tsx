@@ -23,6 +23,7 @@ function deferred<TValue>() {
 function snapshot(revision = "revision-1"): McpSettingsSnapshot {
   return {
     clientCommand: "/Applications/QingYu.app/Contents/MacOS/qingyu-mcp",
+    clientConnections: [],
     config: defaultMcpConfig(),
     endpoint: "local-ipc",
     health: { state: "disabled", endpoint: null, errorCode: null },

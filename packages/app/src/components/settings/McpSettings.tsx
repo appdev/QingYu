@@ -136,9 +136,11 @@ export function McpSettings({
       </SettingsSection>
 
       {snapshot.config.enabled && runtime.localServiceAvailable ? (
-        snapshot.clientCommand ? (
+        snapshot.clientConnections.length > 0 || snapshot.clientCommand ? (
           <McpClientConfiguration
-            command={snapshot.clientCommand}
+            connections={snapshot.clientConnections.length > 0
+              ? snapshot.clientConnections
+              : snapshot.clientCommand ? [{ transport: "stdio", command: snapshot.clientCommand }] : []}
             translate={translate}
             writeClipboard={writeClipboard}
           />

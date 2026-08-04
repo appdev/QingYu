@@ -103,6 +103,8 @@ const messages: LocaleMessages = {
   "settings.mcp.client.transportValue": "stdio + 本機私有 IPC",
   "settings.mcp.client.authentication": "身分驗證",
   "settings.mcp.client.authenticationValue": "不需要 Token",
+  "settings.mcp.client.transportHttpValue": "Streamable HTTP",
+  "settings.mcp.client.bearerTokenConfigured": "已設定 Bearer Token",
   "settings.mcp.client.format": "設定格式",
   "settings.mcp.client.format.codex": "Codex",
   "settings.mcp.client.format.json": "通用 JSON",

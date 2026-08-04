@@ -130,6 +130,7 @@ function createApplicationMcpRuntime(): AppMcpRuntime {
   let revision = 1;
   let snapshot: McpSettingsSnapshot = {
     clientCommand: "/Applications/QingYu.app/Contents/MacOS/qingyu-mcp",
+    clientConnections: [],
     config: defaultMcpConfig(),
     endpoint: "local-ipc",
     health: { state: "disabled", endpoint: null, errorCode: null },
