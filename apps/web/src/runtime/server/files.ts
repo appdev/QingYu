@@ -11,10 +11,14 @@ import { KernelApiError } from "@markra/kernel-client";
 import {
   ServerKernelDomainAdapterError,
 } from "./kernel";
+import {
+  createBrowserSettingsFileShell,
+  type BrowserSettingsFileShellOptions,
+} from "../web/settings-file";
 
 export const serverWorkspaceRoot = kernelWorkspaceRoot;
 
-export interface ServerFileRuntimeOptions {
+export interface ServerFileRuntimeOptions extends BrowserSettingsFileShellOptions {
   /** Security sentinels accepted by tests but deliberately never consulted. */
   readonly indexedDB?: unknown;
   readonly showDirectoryPicker?: unknown;
@@ -47,6 +51,7 @@ export function createServerFileRuntimeOwner(
     isTerminalError: (error) => error instanceof ServerKernelDomainAdapterError &&
       (error.code === "authentication-required" || error.code === "released"),
     nativeShell: {
+      ...createBrowserSettingsFileShell(options),
       confirmMarkdownFileDelete: async (_fileName, labels) => confirmInBrowser(labels.message),
       confirmUnsavedMarkdownDocumentDiscard: async (_fileName, labels) =>
         confirmInBrowser(labels.message),

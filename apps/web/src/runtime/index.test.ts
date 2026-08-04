@@ -1,4 +1,4 @@
-import { FakeIndexedDbFactory } from "../test/web-runtime-fakes";
+import { FakeFileHandle, FakeIndexedDbFactory } from "../test/web-runtime-fakes";
 import {
   kernelWorkspaceRoot,
   type KernelDomainPort,
@@ -15,25 +15,8 @@ describe("web runtime", () => {
     const indexedDbOpen = vi.fn(() => {
       throw new Error("IndexedDB owner must be unreachable");
     });
-    const bootstrap = appConfigSnapshot();
     const committed = appConfigSnapshot({ fileTreeOpen: true, revision: "local-2" });
-    const kernel = {
-      appConfig: {
-        bootstrap,
-        patchState: vi.fn(async () => committed),
-        read: vi.fn(async () => bootstrap),
-      },
-      documents: {
-        list: vi.fn(async () => ({ items: [], nextCursor: null, workspaceGeneration: "generation-1" })),
-      },
-      invalidations: {
-        available: false,
-        subscribe: () => () => undefined,
-      },
-      workspace: {
-        read: vi.fn(async () => ({ displayName: "Notes", generation: "generation-1" })),
-      },
-    } as unknown as KernelDomainPort;
+    const kernel = serverKernelPort({ committed });
 
     const owner = createServerWebRuntime(kernel, {
       eventTarget: new EventTarget(),
@@ -86,6 +69,209 @@ describe("web runtime", () => {
     expect(indexedDbOpen).not.toHaveBeenCalled();
     owner.release();
     owner.release();
+  });
+
+  it("composes browser settings import and export pickers into the Server runtime", async () => {
+    const contents = '{"format":"markra-settings","version":3,"settings":{"language":"zh-CN"}}';
+    const importedHandle = new FakeFileHandle("qingyu-settings.json", contents, "application/json");
+    const savedHandle = new FakeFileHandle("qingyu-settings.json", "", "application/json");
+    const showOpenFilePicker = vi.fn(async () => [importedHandle]);
+    const showSaveFilePicker = vi.fn(async () => savedHandle);
+    const owner = createServerWebRuntime(serverKernelPort(), {
+      showOpenFilePicker,
+      showSaveFilePicker,
+    });
+
+    await expect(owner.runtime.files.openSettingsFile({ title: "Import QingYu settings" }))
+      .resolves.toEqual({
+        content: contents,
+        name: "qingyu-settings.json",
+        path: expect.stringMatching(/^web-file:\/\//u),
+      });
+    await expect(owner.runtime.files.saveSettingsFile({
+      contents,
+      suggestedName: "qingyu-settings.json",
+    })).resolves.toEqual({
+      name: "qingyu-settings.json",
+      path: expect.stringMatching(/^web-file:\/\//u),
+    });
+
+    expect(showOpenFilePicker).toHaveBeenCalledWith({
+      multiple: false,
+      types: [{
+        accept: { "application/json": [".json"] },
+        description: "QingYu settings",
+      }],
+    });
+    expect(showSaveFilePicker).toHaveBeenCalledWith({
+      suggestedName: "qingyu-settings.json",
+      types: [{
+        accept: { "application/json": [".json"] },
+        description: "QingYu settings",
+      }],
+    });
+    expect(savedHandle.writes).toEqual([contents]);
+    owner.release();
+  });
+
+  it("falls back to file input and browser download for Server settings transfer without pickers", async () => {
+    const contents = '{"format":"markra-settings","version":3,"settings":{"language":"en"}}';
+    const importedFile = new File([contents], "imported-settings.json", { type: "application/json" });
+    const downloads: Array<{ contents: BlobPart; name: string; type: string }> = [];
+    const click = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(function (
+      this: HTMLInputElement
+    ) {
+      Object.defineProperty(this, "files", {
+        configurable: true,
+        value: [importedFile],
+      });
+      this.dispatchEvent(new Event("change"));
+    });
+    const owner = createServerWebRuntime(serverKernelPort(), {
+      document,
+      downloadFile: (download) => {
+        downloads.push(download);
+      },
+    });
+
+    await expect(owner.runtime.files.openSettingsFile()).resolves.toEqual({
+      content: contents,
+      name: "imported-settings.json",
+      path: expect.stringMatching(/^web-upload:\/\//u),
+    });
+    await expect(owner.runtime.files.saveSettingsFile({
+      contents,
+      suggestedName: "exported-settings.json",
+    })).resolves.toEqual({
+      name: "exported-settings.json",
+      path: "web-download://exported-settings.json",
+    });
+
+    expect(click).toHaveBeenCalledOnce();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
+    expect(downloads).toEqual([{
+      contents,
+      name: "exported-settings.json",
+      type: "application/json;charset=utf-8",
+    }]);
+    owner.release();
+    click.mockRestore();
+  });
+
+  it("uses file input and browser download for Server settings transfer on non-secure HTTP", async () => {
+    const originalSecureContext = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext");
+    Object.defineProperty(globalThis, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
+    const contents = '{"format":"markra-settings","version":3,"settings":{"language":"ja"}}';
+    const importedFile = new File([contents], "lan-settings.json", { type: "application/json" });
+    const showOpenFilePicker = vi.fn(async () => {
+      throw new Error("non-secure HTTP must not use showOpenFilePicker");
+    });
+    const showSaveFilePicker = vi.fn(async () => {
+      throw new Error("non-secure HTTP must not use showSaveFilePicker");
+    });
+    const downloads: Array<{ contents: BlobPart; name: string; type: string }> = [];
+    const click = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(function (
+      this: HTMLInputElement
+    ) {
+      Object.defineProperty(this, "files", {
+        configurable: true,
+        value: [importedFile],
+      });
+      this.dispatchEvent(new Event("change"));
+    });
+    const owner = createServerWebRuntime(serverKernelPort(), {
+      document,
+      downloadFile: (download) => {
+        downloads.push(download);
+      },
+      showOpenFilePicker,
+      showSaveFilePicker,
+    });
+
+    try {
+      await expect(owner.runtime.files.openSettingsFile()).resolves.toMatchObject({
+        content: contents,
+        name: "lan-settings.json",
+      });
+      await expect(owner.runtime.files.saveSettingsFile({
+        contents,
+        suggestedName: "lan-export.json",
+      })).resolves.toEqual({
+        name: "lan-export.json",
+        path: "web-download://lan-export.json",
+      });
+    } finally {
+      owner.release();
+      click.mockRestore();
+      if (originalSecureContext) {
+        Object.defineProperty(globalThis, "isSecureContext", originalSecureContext);
+      } else {
+        delete (globalThis as { isSecureContext?: boolean }).isSecureContext;
+      }
+    }
+
+    expect(showOpenFilePicker).not.toHaveBeenCalled();
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(downloads).toEqual([{
+      contents,
+      name: "lan-export.json",
+      type: "application/json;charset=utf-8",
+    }]);
+  });
+
+  it("distinguishes browser settings transfer cancellation from operational errors", async () => {
+    const canceled = new DOMException("The user canceled the picker.", "AbortError");
+    const canceledOwner = createServerWebRuntime(serverKernelPort(), {
+      showOpenFilePicker: async () => Promise.reject(canceled),
+      showSaveFilePicker: async () => Promise.reject(canceled),
+    });
+
+    await expect(canceledOwner.runtime.files.openSettingsFile()).resolves.toBeNull();
+    await expect(canceledOwner.runtime.files.saveSettingsFile({
+      contents: '{"format":"markra-settings","version":3,"settings":{}}',
+      suggestedName: "qingyu-settings.json",
+    })).resolves.toBeNull();
+    canceledOwner.release();
+
+    const failure = new Error("browser picker failed");
+    const failedOwner = createServerWebRuntime(serverKernelPort(), {
+      showOpenFilePicker: async () => Promise.reject(failure),
+      showSaveFilePicker: async () => Promise.reject(failure),
+    });
+
+    await expect(failedOwner.runtime.files.openSettingsFile()).rejects.toBe(failure);
+    await expect(failedOwner.runtime.files.saveSettingsFile({
+      contents: '{"format":"markra-settings","version":3,"settings":{}}',
+      suggestedName: "qingyu-settings.json",
+    })).rejects.toBe(failure);
+    failedOwner.release();
+
+    const readFailure = new DOMException("Reading failed after a file was selected.", "AbortError");
+    const writeFailure = new DOMException("Writing failed after a file was selected.", "AbortError");
+    const readFailedOwner = createServerWebRuntime(serverKernelPort(), {
+      showOpenFilePicker: async () => [{
+        getFile: async () => Promise.reject(readFailure),
+        name: "qingyu-settings.json",
+      }],
+      showSaveFilePicker: async () => ({
+        createWritable: async () => ({
+          close: async () => undefined,
+          write: async () => Promise.reject(writeFailure),
+        }),
+        getFile: async () => new File([], "qingyu-settings.json", { type: "application/json" }),
+        name: "qingyu-settings.json",
+      }),
+    });
+
+    await expect(readFailedOwner.runtime.files.openSettingsFile()).rejects.toBe(readFailure);
+    await expect(readFailedOwner.runtime.files.saveSettingsFile({
+      contents: '{"format":"markra-settings","version":3,"settings":{}}',
+      suggestedName: "qingyu-settings.json",
+    })).rejects.toBe(writeFailure);
+    readFailedOwner.release();
   });
 
   it("creates a browser runtime with IndexedDB settings", async () => {
@@ -212,4 +398,30 @@ function appConfigSnapshot({
       id: "workspace-1",
     },
   };
+}
+
+function serverKernelPort({
+  committed = appConfigSnapshot(),
+}: {
+  committed?: ReturnType<typeof appConfigSnapshot>;
+} = {}) {
+  const bootstrap = appConfigSnapshot();
+
+  return {
+    appConfig: {
+      bootstrap,
+      patchState: vi.fn(async () => committed),
+      read: vi.fn(async () => bootstrap),
+    },
+    documents: {
+      list: vi.fn(async () => ({ items: [], nextCursor: null, workspaceGeneration: "generation-1" })),
+    },
+    invalidations: {
+      available: false,
+      subscribe: () => () => undefined,
+    },
+    workspace: {
+      read: vi.fn(async () => ({ displayName: "Notes", generation: "generation-1" })),
+    },
+  } as unknown as KernelDomainPort;
 }
