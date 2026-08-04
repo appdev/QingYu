@@ -943,6 +943,7 @@ export {
   type AcceptedSyncJob,
   type AcceptedMaintenanceJob,
   type AppSyncConfigRuntime,
+  type ConflictCopyStatus,
   type ConflictResolutionKind,
   type ConflictVersion,
   type ConflictVersions,

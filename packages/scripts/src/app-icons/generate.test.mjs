@@ -278,6 +278,36 @@ describe("repairAndroidHdpiIcons", () => {
   });
 });
 
+describe("syncPackagedAndroidResources", () => {
+  test("copies the canonical Android launcher resources into the packaged project", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "markra-android-sync-"));
+    const sourceDirectory = join(directory, "source");
+    const packagedDirectory = join(directory, "packaged");
+    const expectedFiles = [
+      "mipmap-anydpi-v26/ic_launcher.xml",
+      "values/ic_launcher_background.xml",
+      ...["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"].flatMap((density) => [
+        `mipmap-${density}/ic_launcher.png`,
+        `mipmap-${density}/ic_launcher_foreground.png`,
+        `mipmap-${density}/ic_launcher_round.png`
+      ])
+    ];
+
+    for (const fileName of expectedFiles) {
+      const path = join(sourceDirectory, fileName);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, `canonical:${fileName}`);
+    }
+
+    await generator.syncPackagedAndroidResources(sourceDirectory, packagedDirectory);
+
+    for (const fileName of expectedFiles) {
+      await expect(readFile(join(packagedDirectory, fileName), "utf8"))
+        .resolves.toBe(`canonical:${fileName}`);
+    }
+  });
+});
+
 describe("buildIosMaster", () => {
   test("extends the plate treatment to every corner instead of baking in a rounded enclosure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "markra-ios-icon-"));

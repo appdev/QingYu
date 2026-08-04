@@ -18,7 +18,9 @@ use qingyu_dejavu::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::conflicts::{create_conflict_document, ConflictResolutionKind, SyncConflictRecord};
+use super::conflicts::{
+    create_conflict_document, ConflictCopyStatus, ConflictResolutionKind, SyncConflictRecord,
+};
 use super::local_state::LocalSyncStateService;
 use super::maintenance::LocalPurgeRepositoryOps;
 use super::service::{
@@ -504,7 +506,7 @@ impl DejavuRepositoryRunner {
         }
         let occurred_at = timestamp(merge.time);
         let data_changed = merge.data_changed();
-        let conflicts = merge
+        let mut conflicts = merge
             .conflicts
             .into_iter()
             .filter(|file| file.path != "/.qingyu/syncignore")
@@ -522,18 +524,22 @@ impl DejavuRepositoryRunner {
                     relative_path,
                     occurred_at: occurred_at.clone(),
                     resolution: Some(ConflictResolutionKind::KeepLocal),
+                    copy_status: ConflictCopyStatus::NotRequested,
+                    copy_path: None,
+                    copy_error: None,
                 })
             })
             .collect::<Result<Vec<_>, RepositoryJobError>>()?;
         if generate_conflict_document {
-            for conflict in &conflicts {
-                let _conflict_document_result = create_conflict_document(
+            for conflict in &mut conflicts {
+                let outcome = create_conflict_document(
                     &self.app_data,
                     &request.notes_root,
                     conflict,
                     Arc::clone(&coordinator),
                 )
                 .await;
+                conflict.apply_copy_outcome(outcome);
             }
         }
         Ok(RepositorySyncResult {
@@ -1315,7 +1321,7 @@ mod tests {
         WorkingTreeCoordinatorFactory, REPOSITORY_RELOCATION_BACKUP, REPOSITORY_RELOCATION_JOURNAL,
     };
     use crate::dejavu_sync::conflicts::{
-        create_conflict_document, ConflictResolutionKind, ConflictStore,
+        create_conflict_document, ConflictCopyStatus, ConflictResolutionKind, ConflictStore,
     };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::maintenance::LocalPurgeRepositoryOps;
@@ -2658,14 +2664,14 @@ mod tests {
             b"local"
         );
 
-        create_conflict_document(
+        let outcome = create_conflict_document(
             &target.app_data,
             &target.notes_root,
             &result.conflicts[0],
             Arc::new(FakeCoordinator),
         )
-        .await
-        .unwrap();
+        .await;
+        assert_eq!(outcome.status, ConflictCopyStatus::Generated);
         let mut copy_names = std::fs::read_dir(target.notes_root.join("notes"))
             .unwrap()
             .filter_map(Result::ok)

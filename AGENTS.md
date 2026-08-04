@@ -43,6 +43,11 @@ This document only defines engineering conventions for this repository.
 - Do not use the TypeScript `void` keyword or operator. Use `unknown`, omit explicit callback return annotations when practical, or call promises directly with their own error handling.
 - Do not revert user changes unless explicitly requested.
 
+## Critical Bug Fix References
+
+- When investigating or fixing a potentially catastrophic bug, consult the local SiYuan source before changing QingYu behavior. Prefer `/Volumes/extendData/Data/IdeaProjects/siyuan-official` for upstream desktop/kernel behavior, and use the local platform-specific SiYuan checkout when the bug is Android or iOS specific.
+- Use SiYuan's approach as the primary reference for the repair strategy, adapting it to QingYu's architecture and preserving local product capabilities.
+
 ## CodeMirror Editor Invariants
 
 - Treat the Markdown document, `EditorState`, and explicit editor configuration as the source of truth. Do not use DOM shape, focus state, selection state, component lifetime, or session-local maps to decide persistent document semantics or steady-state layout.

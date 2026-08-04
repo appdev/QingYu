@@ -28,7 +28,50 @@ pub(crate) enum ConflictResolutionKind {
     KeepLocal,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ConflictCopyStatus {
+    #[default]
+    NotRequested,
+    Generated,
+    Skipped,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConflictCopyOutcome {
+    pub(crate) status: ConflictCopyStatus,
+    pub(crate) relative_path: Option<String>,
+    pub(crate) error: Option<String>,
+}
+
+impl ConflictCopyOutcome {
+    fn generated(relative_path: String) -> Self {
+        Self {
+            status: ConflictCopyStatus::Generated,
+            relative_path: Some(relative_path),
+            error: None,
+        }
+    }
+
+    fn skipped() -> Self {
+        Self {
+            status: ConflictCopyStatus::Skipped,
+            relative_path: None,
+            error: None,
+        }
+    }
+
+    fn failed(error: RepositoryJobError) -> Self {
+        Self {
+            status: ConflictCopyStatus::Failed,
+            relative_path: None,
+            error: Some(error.safe_code().to_owned()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SyncConflictRecord {
     pub(crate) conflict_id: String,
@@ -36,6 +79,20 @@ pub(crate) struct SyncConflictRecord {
     pub(crate) relative_path: String,
     pub(crate) occurred_at: String,
     pub(crate) resolution: Option<ConflictResolutionKind>,
+    #[serde(default)]
+    pub(crate) copy_status: ConflictCopyStatus,
+    #[serde(default)]
+    pub(crate) copy_path: Option<String>,
+    #[serde(default)]
+    pub(crate) copy_error: Option<String>,
+}
+
+impl SyncConflictRecord {
+    pub(crate) fn apply_copy_outcome(&mut self, outcome: ConflictCopyOutcome) {
+        self.copy_status = outcome.status;
+        self.copy_path = outcome.relative_path;
+        self.copy_error = outcome.error;
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -179,15 +236,39 @@ pub(crate) async fn create_conflict_document(
     notes_root: &Path,
     conflict: &SyncConflictRecord,
     coordinator: Arc<dyn WorkingTreeCoordinator>,
-) -> Result<(), RepositoryJobError> {
-    let source_relative = validated_relative_path(&conflict.relative_path)?;
+) -> ConflictCopyOutcome {
+    let source_relative = match validated_relative_path(&conflict.relative_path) {
+        Ok(relative) => relative,
+        Err(error) => return ConflictCopyOutcome::failed(error),
+    };
     if source_relative
         .extension()
         .and_then(OsStr::to_str)
         .is_none_or(|extension| !extension.eq_ignore_ascii_case("md"))
     {
-        return Ok(());
+        return ConflictCopyOutcome::skipped();
     }
+    match try_create_conflict_document(
+        app_data,
+        notes_root,
+        conflict,
+        &source_relative,
+        coordinator,
+    )
+    .await
+    {
+        Ok(relative_path) => ConflictCopyOutcome::generated(relative_path),
+        Err(error) => ConflictCopyOutcome::failed(error),
+    }
+}
+
+async fn try_create_conflict_document(
+    app_data: &Path,
+    notes_root: &Path,
+    conflict: &SyncConflictRecord,
+    source_relative: &Path,
+    coordinator: Arc<dyn WorkingTreeCoordinator>,
+) -> Result<String, RepositoryJobError> {
     let occurred = OffsetDateTime::parse(&conflict.occurred_at, &Rfc3339)
         .map_err(|_| RepositoryJobError::ConflictUnavailable)?;
     let history_root = conflict_history_root(app_data, conflict)?;
@@ -245,7 +326,13 @@ pub(crate) async fn create_conflict_document(
         })();
         coordinator.release(permit).await;
         match operation {
-            Ok(true) => return Ok(()),
+            Ok(true) => {
+                let destination_string = destination
+                    .to_str()
+                    .ok_or(RepositoryJobError::ConflictUnavailable)?
+                    .replace('\\', "/");
+                return Ok(destination_string);
+            }
             Ok(false) => ordinal = next_conflict_document_ordinal(ordinal)?,
             Err(error) => return Err(error),
         }
@@ -518,8 +605,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        create_conflict_document, ConflictResolutionKind, ConflictStore, SyncConflictRecord,
-        MAX_CONFLICT_TEXT_BYTES,
+        create_conflict_document, ConflictCopyStatus, ConflictResolutionKind, ConflictStore,
+        SyncConflictRecord, MAX_CONFLICT_TEXT_BYTES,
     };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::service::{
@@ -538,6 +625,8 @@ mod tests {
 
     struct NoopEmitter;
 
+    struct AllowCoordinator;
+
     struct CollisionOnPrepareCoordinator {
         notes_root: PathBuf,
         prepares: AtomicUsize,
@@ -549,6 +638,31 @@ mod tests {
         replaced_root: PathBuf,
         replaced: AtomicBool,
         releases: AtomicUsize,
+    }
+
+    impl WorkingTreeCoordinator for AllowCoordinator {
+        fn prepare<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _changes: &'life1 [WorkingTreeChange],
+        ) -> Pin<Box<dyn Future<Output = Result<WorkingTreePermit, RepoError>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(WorkingTreePermit::new(())) })
+        }
+
+        fn release<'life0, 'async_trait>(
+            &'life0 self,
+            _permit: WorkingTreePermit,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async {})
+        }
     }
 
     impl WorkingTreeCoordinator for CollisionOnPrepareCoordinator {
@@ -684,6 +798,7 @@ mod tests {
                         relative_path: "document.md".to_owned(),
                         occurred_at: OCCURRED_AT.to_owned(),
                         resolution: Some(ConflictResolutionKind::KeepLocal),
+                        ..Default::default()
                     }],
                 },
             );
@@ -785,14 +900,14 @@ mod tests {
             .unwrap()
             .remove(0);
 
-        create_conflict_document(
+        let outcome = create_conflict_document(
             &fixture.app_data,
             &fixture.notes_root,
             &conflict,
             coordinator.clone(),
         )
-        .await
-        .unwrap();
+        .await;
+        assert_eq!(outcome.status, ConflictCopyStatus::Generated);
 
         let base = fixture
             .notes_root
@@ -821,7 +936,7 @@ mod tests {
             .unwrap()
             .remove(0);
 
-        let result = create_conflict_document(
+        let outcome = create_conflict_document(
             &fixture.app_data,
             &fixture.notes_root,
             &conflict,
@@ -829,7 +944,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result, Err(RepositoryJobError::WorkingTreeChanged));
+        assert_eq!(outcome.status, ConflictCopyStatus::Failed);
+        assert_eq!(
+            outcome.error.as_deref(),
+            Some(RepositoryJobError::WorkingTreeChanged.safe_code())
+        );
         assert!(std::fs::read_dir(&fixture.notes_root)
             .unwrap()
             .next()
@@ -839,5 +958,83 @@ mod tests {
             b"local text"
         );
         assert_eq!(coordinator.releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn markdown_conflict_document_reports_generated_relative_path() {
+        let fixture = Fixture::new(b"remote text").await;
+        let conflict = ConflictStore::new(&fixture.app_data)
+            .list_history(REPOSITORY_ID)
+            .unwrap()
+            .remove(0);
+
+        let outcome = create_conflict_document(
+            &fixture.app_data,
+            &fixture.notes_root,
+            &conflict,
+            Arc::new(AllowCoordinator),
+        )
+        .await;
+
+        assert_eq!(outcome.status, ConflictCopyStatus::Generated);
+        assert_eq!(
+            outcome.relative_path.as_deref(),
+            Some("document-Conflicted-20260725-142233.md")
+        );
+        assert_eq!(outcome.error, None);
+        assert_eq!(
+            std::fs::read(
+                fixture
+                    .notes_root
+                    .join("document-Conflicted-20260725-142233.md")
+            )
+            .unwrap(),
+            b"remote text"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_markdown_conflict_document_reports_skipped_without_writing() {
+        let fixture = Fixture::new(b"remote text").await;
+        let mut conflict = ConflictStore::new(&fixture.app_data)
+            .list_history(REPOSITORY_ID)
+            .unwrap()
+            .remove(0);
+        conflict.relative_path = "document.txt".to_owned();
+        let history_txt = fixture.history_file.with_file_name("document.txt");
+        std::fs::write(&history_txt, b"remote text").unwrap();
+
+        let outcome = create_conflict_document(
+            &fixture.app_data,
+            &fixture.notes_root,
+            &conflict,
+            Arc::new(AllowCoordinator),
+        )
+        .await;
+
+        assert_eq!(outcome.status, ConflictCopyStatus::Skipped);
+        assert_eq!(outcome.relative_path, None);
+        assert_eq!(outcome.error, None);
+        assert!(!fixture
+            .notes_root
+            .join("document-Conflicted-20260725-142233.txt")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn conflict_record_serialization_defaults_copy_status_for_old_state() {
+        let json = serde_json::json!({
+            "conflictId": CONFLICT_ID,
+            "repositoryId": REPOSITORY_ID,
+            "relativePath": "document.md",
+            "occurredAt": OCCURRED_AT,
+            "resolution": "keep-local"
+        });
+
+        let record: SyncConflictRecord = serde_json::from_value(json).unwrap();
+
+        assert_eq!(record.copy_status, ConflictCopyStatus::NotRequested);
+        assert_eq!(record.copy_path, None);
+        assert_eq!(record.copy_error, None);
     }
 }

@@ -1713,6 +1713,7 @@ mod tests {
                     relative_path: "conflicted.md".to_owned(),
                     occurred_at: "2026-07-26T10:00:00Z".to_owned(),
                     resolution: None,
+                    ..Default::default()
                 }],
             },
         ));

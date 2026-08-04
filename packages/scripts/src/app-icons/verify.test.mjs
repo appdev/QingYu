@@ -14,6 +14,23 @@ import {
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDirectory, "../../../..");
 
+async function copyVerifiableIconFixture(fixtureRoot) {
+  await mkdir(join(fixtureRoot, "apps/desktop/src-tauri"), { recursive: true });
+  await mkdir(join(fixtureRoot, "apps/desktop/src-tauri/gen/android/app/src"), { recursive: true });
+  await mkdir(join(fixtureRoot, "apps/desktop/public"), { recursive: true });
+  await mkdir(join(fixtureRoot, "apps/web/public"), { recursive: true });
+  await mkdir(join(fixtureRoot, "assets/branding"), { recursive: true });
+  await cp(join(repoRoot, "apps/desktop/src-tauri/icons"), join(fixtureRoot, "apps/desktop/src-tauri/icons"), { recursive: true });
+  await cp(
+    join(repoRoot, "apps/desktop/src-tauri/gen/android/app/src/main"),
+    join(fixtureRoot, "apps/desktop/src-tauri/gen/android/app/src/main"),
+    { recursive: true }
+  );
+  await cp(join(repoRoot, "assets/branding/app-icon"), join(fixtureRoot, "assets/branding/app-icon"), { recursive: true });
+  await cp(join(repoRoot, "apps/desktop/public/favicon.png"), join(fixtureRoot, "apps/desktop/public/favicon.png"));
+  await cp(join(repoRoot, "apps/web/public/favicon.png"), join(fixtureRoot, "apps/web/public/favicon.png"));
+}
+
 function makeIcoDirectory(sizes) {
   const directoryLength = 6 + sizes.length * 16;
   const payloadLength = 8;
@@ -163,14 +180,7 @@ describe("assertValidIcns", () => {
 
 test("rejects an hdpi foreground pixel below the rounded-up safe-area boundary", async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), "markra-icon-safe-region-"));
-  await mkdir(join(fixtureRoot, "apps/desktop/src-tauri"), { recursive: true });
-  await mkdir(join(fixtureRoot, "apps/desktop/public"), { recursive: true });
-  await mkdir(join(fixtureRoot, "apps/web/public"), { recursive: true });
-  await mkdir(join(fixtureRoot, "assets/branding"), { recursive: true });
-  await cp(join(repoRoot, "apps/desktop/src-tauri/icons"), join(fixtureRoot, "apps/desktop/src-tauri/icons"), { recursive: true });
-  await cp(join(repoRoot, "assets/branding/app-icon"), join(fixtureRoot, "assets/branding/app-icon"), { recursive: true });
-  await cp(join(repoRoot, "apps/desktop/public/favicon.png"), join(fixtureRoot, "apps/desktop/public/favicon.png"));
-  await cp(join(repoRoot, "apps/web/public/favicon.png"), join(fixtureRoot, "apps/web/public/favicon.png"));
+  await copyVerifiableIconFixture(fixtureRoot);
 
   const hdpiForeground = Buffer.alloc(162 * 162 * 4);
   hdpiForeground[(32 * 162 + 31) * 4 + 3] = 255;
@@ -183,14 +193,7 @@ test("rejects an hdpi foreground pixel below the rounded-up safe-area boundary",
 
 test("rejects an iOS icon that is not rendered from the full-bleed master", async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), "markra-icon-ios-master-"));
-  await mkdir(join(fixtureRoot, "apps/desktop/src-tauri"), { recursive: true });
-  await mkdir(join(fixtureRoot, "apps/desktop/public"), { recursive: true });
-  await mkdir(join(fixtureRoot, "apps/web/public"), { recursive: true });
-  await mkdir(join(fixtureRoot, "assets/branding"), { recursive: true });
-  await cp(join(repoRoot, "apps/desktop/src-tauri/icons"), join(fixtureRoot, "apps/desktop/src-tauri/icons"), { recursive: true });
-  await cp(join(repoRoot, "assets/branding/app-icon"), join(fixtureRoot, "assets/branding/app-icon"), { recursive: true });
-  await cp(join(repoRoot, "apps/desktop/public/favicon.png"), join(fixtureRoot, "apps/desktop/public/favicon.png"));
-  await cp(join(repoRoot, "apps/web/public/favicon.png"), join(fixtureRoot, "apps/web/public/favicon.png"));
+  await copyVerifiableIconFixture(fixtureRoot);
 
   await sharp({ create: { width: 20, height: 20, channels: 3, background: "#F9B52B" } })
     .png()

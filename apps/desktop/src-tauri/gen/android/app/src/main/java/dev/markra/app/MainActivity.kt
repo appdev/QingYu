@@ -26,6 +26,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    setTheme(R.style.Theme_markra)
     enableEdgeToEdge()
     currentActivity = WeakReference(this)
     imagePickerLauncher = registerForActivityResult(

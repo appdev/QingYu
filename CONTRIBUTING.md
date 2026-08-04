@@ -1,10 +1,10 @@
 # Contributing
 
-Thanks for helping improve QingYu. Contributions can be product polish, Markdown editing fixes, file reliability, cross-platform desktop fixes, documentation, tests, or issue triage.
+Thanks for helping improve QingYu. Contributions can be product polish, Markdown editing fixes, file reliability, desktop/mobile/runtime integration fixes, documentation, tests, or issue triage.
 
 ## Development Setup
 
-Use `pnpm` for all JavaScript workflows.
+Use `pnpm` for all JavaScript workflows. The repository is a pnpm workspace; the desktop app lives in `apps/desktop`, the Server Web application and browser runtimes live in `apps/web`, the public site lives in `apps/site`, and shared TypeScript packages live in `packages/`.
 
 ```bash
 pnpm install
@@ -15,14 +15,18 @@ Common commands:
 
 - `pnpm dev` starts only the frontend Vite development server.
 - `pnpm tauri dev` launches the real desktop app development workflow.
+- `pnpm --filter @markra/web dev` starts the Server Web development server.
 - `pnpm test` runs package tests.
+- `pnpm typecheck:test` runs package type checks for test builds.
 - `pnpm build` builds all packages that define a build script.
+- `pnpm brand:verify` checks brand and product copy rules.
 - `pnpm tauri ...` forwards Tauri commands to the desktop app.
 
 ## Project Layout
 
 - `apps/desktop` contains the Tauri desktop shell.
-- `apps/web` contains the browser-hosted editor.
+- `apps/web` contains the Server Web application plus browser runtime adapters.
+- `apps/site` contains the public site, download surface, and product-facing web pages.
 - `packages/app` contains the shared React app surface and product UI.
 - `packages/editor` contains Milkdown editor integrations.
 - `packages/markdown` contains Markdown parsing and asset/path helpers.
@@ -42,8 +46,11 @@ Before opening a pull request, run the smallest useful verification for your cha
 
 ```bash
 pnpm test
+pnpm typecheck:test
 pnpm build
 ```
+
+Documentation-only, copy-only, and static text changes do not require unit tests, but still review links, headings, and command snippets before submitting.
 
 ## Code Style
 
@@ -65,7 +72,7 @@ Good pull requests usually include:
 - Screenshots or video for visible UI changes.
 - Any follow-up work or known limitations.
 
-If your change touches both desktop and web behavior, call out the difference explicitly.
+If your change touches desktop, web, mobile, Docker, or MCP behavior, call out the runtime difference explicitly.
 
 ## Releases And Changelog
 

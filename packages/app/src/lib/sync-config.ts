@@ -327,8 +327,13 @@ export type DejavuKeyState = { configured: boolean };
 
 export type ConflictResolutionKind = "keep-local";
 
+export type ConflictCopyStatus = "not-requested" | "generated" | "skipped" | "failed";
+
 export type SyncConflictRecord = {
   conflictId: string;
+  copyError: string | null;
+  copyPath: string | null;
+  copyStatus: ConflictCopyStatus;
   occurredAt: string;
   relativePath: string;
   repositoryId: string;

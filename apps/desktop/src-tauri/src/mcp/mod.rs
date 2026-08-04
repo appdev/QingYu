@@ -130,7 +130,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<Arc<McpState>, String
         .map_err(|error| error.to_string())?;
     let runtime_root = app_data_dir.join("mcp-runtime");
     std::fs::create_dir_all(&runtime_root).map_err(|error| error.to_string())?;
-    let mcp_settings = McpLocalSettingsService::from_app(app).map_err(|error| error.to_string())?;
+    let mcp_settings = mcp_local_settings_service_from_app(app).map_err(|error| error.to_string())?;
     let config = Arc::new(McpConfigManager::load(mcp_settings).map_err(|error| error.to_string())?);
     let snapshot = config.snapshot().map_err(|error| error.to_string())?;
     let workspaces = Arc::new(WorkspaceRegistry::for_application_data(

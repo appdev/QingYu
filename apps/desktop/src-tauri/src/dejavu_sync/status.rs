@@ -716,6 +716,7 @@ mod tests {
                 relative_path: "notes/conflict.md".to_owned(),
                 occurred_at: "2026-07-25T08:00:00Z".to_owned(),
                 resolution: None,
+                ..Default::default()
             };
             let history = app_data.path().join(format!(
                 "sync/repositories/{repository_id}/history/2026-07-25-080000-sync/notes/conflict.md"
@@ -774,6 +775,7 @@ mod tests {
             relative_path: "conflict.md".to_owned(),
             occurred_at: "2026-07-25T08:00:00Z".to_owned(),
             resolution: None,
+            ..Default::default()
         }];
         store.publish(status).await.unwrap();
         std::fs::remove_file(history).unwrap();
@@ -1123,6 +1125,7 @@ mod tests {
             relative_path: "notes/conflict.md".to_owned(),
             occurred_at: "2026-07-25T08:00:00Z".to_owned(),
             resolution: None,
+            ..Default::default()
         }];
         let history = app_data.path().join(format!(
             "sync/repositories/{repository_id}/history/2026-07-25-080000-sync/notes/conflict.md"

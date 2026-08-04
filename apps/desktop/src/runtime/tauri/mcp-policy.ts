@@ -11,6 +11,7 @@ function policySettingsSnapshot(document: NativeMcpPolicyDocument): McpSettingsS
   return {
     ...document,
     clientCommand: null,
+    clientConnections: [],
     endpoint: null,
     health: { state: "stopped", endpoint: null, errorCode: null },
     workspace: null

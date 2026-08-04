@@ -268,6 +268,81 @@ async function assertAndroidMetadata(repoRoot, androidDirectory) {
   }
 }
 
+async function assertFileMatches(sourcePath, packagedPath, repoRoot) {
+  const [source, packaged] = await Promise.all([
+    readFile(sourcePath),
+    readFile(packagedPath)
+  ]);
+  if (!source.equals(packaged)) {
+    throw new Error(`${displayPath(packagedPath, repoRoot)} must match ${displayPath(sourcePath, repoRoot)}`);
+  }
+}
+
+async function assertPackagedAndroidResources(repoRoot, sourceAndroidDirectory) {
+  const packagedAndroidDirectory = join(repoRoot, "apps/desktop/src-tauri/gen/android/app/src/main/res");
+
+  for (const [density] of androidDensities) {
+    for (const iconName of ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]) {
+      await assertFileMatches(
+        join(sourceAndroidDirectory, `mipmap-${density}`, iconName),
+        join(packagedAndroidDirectory, `mipmap-${density}`, iconName),
+        repoRoot
+      );
+    }
+  }
+
+  await assertFileMatches(
+    join(sourceAndroidDirectory, "mipmap-anydpi-v26/ic_launcher.xml"),
+    join(packagedAndroidDirectory, "mipmap-anydpi-v26/ic_launcher.xml"),
+    repoRoot
+  );
+  await assertFileMatches(
+    join(sourceAndroidDirectory, "values/ic_launcher_background.xml"),
+    join(packagedAndroidDirectory, "values/ic_launcher_background.xml"),
+    repoRoot
+  );
+
+  const manifest = await readFile(
+    join(repoRoot, "apps/desktop/src-tauri/gen/android/app/src/main/AndroidManifest.xml"),
+    "utf8"
+  );
+  if (!/android:icon="@mipmap\/ic_launcher"/.test(manifest)) {
+    throw new Error("Android manifest must use the packaged QingYu launcher icon");
+  }
+  if (!/android:roundIcon="@mipmap\/ic_launcher_round"/.test(manifest)) {
+    throw new Error("Android manifest must use the packaged QingYu round launcher icon");
+  }
+  if (!/android:theme="@style\/Theme\.markra\.Starting"/.test(manifest)) {
+    throw new Error("Android MainActivity must use the QingYu starting theme");
+  }
+
+  const startingTheme = await readFile(
+    join(packagedAndroidDirectory, "values-v31/themes.xml"),
+    "utf8"
+  );
+  if (!/android:windowSplashScreenBackground">\s*@color\/ic_launcher_background\s*<\/item>/.test(startingTheme)) {
+    throw new Error("Android 12 splash theme must use the QingYu launcher background color");
+  }
+  if (!/android:windowSplashScreenAnimatedIcon">\s*@drawable\/qingyu_splash_icon\s*<\/item>/.test(startingTheme)) {
+    throw new Error("Android 12 splash theme must use the QingYu splash icon");
+  }
+  const legacyTheme = await readFile(
+    join(packagedAndroidDirectory, "values/themes.xml"),
+    "utf8"
+  );
+  if (!/android:windowBackground">\s*@drawable\/qingyu_splash_screen\s*<\/item>/.test(legacyTheme)) {
+    throw new Error("Legacy Android starting theme must use the QingYu splash screen drawable");
+  }
+
+  const mainActivity = await readFile(
+    join(repoRoot, "apps/desktop/src-tauri/gen/android/app/src/main/java/dev/markra/app/MainActivity.kt"),
+    "utf8"
+  );
+  if (!/setTheme\(R\.style\.Theme_markra\)/.test(mainActivity)) {
+    throw new Error("Android MainActivity must restore Theme.markra after the starting splash theme");
+  }
+}
+
 export async function verifyIconAssets(repoRoot) {
   const root = resolve(repoRoot);
   const iconDirectory = join(root, "apps/desktop/src-tauri/icons");
@@ -303,6 +378,7 @@ export async function verifyIconAssets(repoRoot) {
     await assertAlphaInsideSafeRegion(join(densityDirectory, "ic_launcher_foreground.png"), scale, root);
   }
   await assertAndroidMetadata(root, androidDirectory);
+  await assertPackagedAndroidResources(root, androidDirectory);
 
   const iosDirectory = join(iconDirectory, "ios");
   const iosMasterPath = join(root, "assets/branding/app-icon/ios-master.png");

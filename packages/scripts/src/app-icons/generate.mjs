@@ -413,6 +413,29 @@ export async function repairAndroidHdpiIcons(androidDirectory) {
   }
 }
 
+export async function syncPackagedAndroidResources(sourceAndroidDirectory, packagedAndroidDirectory) {
+  for (const density of ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]) {
+    const sourceDirectory = join(sourceAndroidDirectory, `mipmap-${density}`);
+    const outputDirectory = join(packagedAndroidDirectory, `mipmap-${density}`);
+    await mkdir(outputDirectory, { recursive: true });
+    for (const iconName of ["ic_launcher.png", "ic_launcher_foreground.png", "ic_launcher_round.png"]) {
+      await copyFile(join(sourceDirectory, iconName), join(outputDirectory, iconName));
+    }
+  }
+
+  await mkdir(join(packagedAndroidDirectory, "mipmap-anydpi-v26"), { recursive: true });
+  await copyFile(
+    join(sourceAndroidDirectory, "mipmap-anydpi-v26/ic_launcher.xml"),
+    join(packagedAndroidDirectory, "mipmap-anydpi-v26/ic_launcher.xml")
+  );
+
+  await mkdir(join(packagedAndroidDirectory, "values"), { recursive: true });
+  await copyFile(
+    join(sourceAndroidDirectory, "values/ic_launcher_background.xml"),
+    join(packagedAndroidDirectory, "values/ic_launcher_background.xml")
+  );
+}
+
 function largestCenteredOpaqueSquare(data, info) {
   const stride = info.width + 1;
   const transparentPrefix = new Uint32Array((info.width + 1) * (info.height + 1));
@@ -516,6 +539,10 @@ async function main() {
   const result = spawnSync("pnpm", ["--filter", "@markra/desktop", "tauri", "icon", manifestPath], { cwd: repoRoot, stdio: "inherit" });
   if (result.status !== 0) process.exit(result.status ?? 1);
   await repairAndroidHdpiIcons(join(repoRoot, "apps/desktop/src-tauri/icons/android"));
+  await syncPackagedAndroidResources(
+    join(repoRoot, "apps/desktop/src-tauri/icons/android"),
+    join(repoRoot, "apps/desktop/src-tauri/gen/android/app/src/main/res")
+  );
   await canonicalizeIcns(join(repoRoot, "apps/desktop/src-tauri/icons/icon.icns"));
   await renderIosPngs(join(repoRoot, "apps/desktop/src-tauri/icons/ios"), iosMasterPath);
   await restoreCanonicalMacIcon(

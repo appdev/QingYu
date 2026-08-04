@@ -2,7 +2,16 @@ import { History, LoaderCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { t, type AppLanguage } from "@markra/shared";
 import { Button } from "@markra/ui";
-import type { ConflictVersion, ConflictVersions, SyncConflictRecord } from "../../lib/sync-config";
+import type { ConflictCopyStatus, ConflictVersion, ConflictVersions, SyncConflictRecord } from "../../lib/sync-config";
+
+function copyStatusKey(status: ConflictCopyStatus) {
+  switch (status) {
+    case "generated": return "sync.conflict.copyGenerated";
+    case "skipped": return "sync.conflict.copySkipped";
+    case "failed": return "sync.conflict.copyFailed";
+    case "not-requested": return "sync.conflict.copyNotRequested";
+  }
+}
 
 function VersionPane({
   emptyLabel,
@@ -96,6 +105,20 @@ export function SyncConflictHistoryDialog({
             {label("sync.conflict.unavailable")}
           </p>
         ) : versions ? (
+          <>
+            <div className="mb-3 rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-[12px] text-(--text-secondary)">
+              <p className="m-0 font-[650] text-(--text-heading)">
+                {label(copyStatusKey(
+                  versions ? versions.conflict.copyStatus : conflict.copyStatus
+                ))}
+              </p>
+              {(versions ? versions.conflict.copyPath : conflict.copyPath)
+                ? <p className="m-0 mt-1 break-all">{(versions ? versions.conflict.copyPath : conflict.copyPath)}</p>
+                : null}
+              {(versions ? versions.conflict.copyError : conflict.copyError)
+                ? <p className="m-0 mt-1 break-all text-(--danger)">{(versions ? versions.conflict.copyError : conflict.copyError)}</p>
+                : null}
+            </div>
           <div className="grid min-h-full gap-3 md:grid-cols-2">
             <VersionPane
               emptyLabel={label("sync.conflict.binaryOrLarge")}
@@ -110,6 +133,7 @@ export function SyncConflictHistoryDialog({
               version={versions.remote}
             />
           </div>
+          </>
         ) : null}
       </div>
     </section>
