@@ -249,12 +249,12 @@ async fn run_fixed_server(
     let composition = compose_fixed_server_kernel(config, paths)
         .await
         .map_err(ServerStartupStage::Composition)?;
-    let composition_arc = std::sync::Arc::new(composition);
+    let runtime = std::sync::Arc::clone(composition.runtime());
     if let Some(mcp_config) = qingyu_kernel::mcp::headless::load_headless_mcp_config_from_env()
         .map_err(|_| ServerStartupStage::McpHttp)?
     {
-        let mcp_handler = qingyu_kernel::mcp::headless::build_headless_handler(
-            std::sync::Arc::clone(&composition_arc),
+        let mcp_handler = qingyu_kernel::mcp::headless::build_headless_handler_from_runtime(
+            runtime,
             &mcp_config,
         )
         .map_err(|_| ServerStartupStage::McpHttp)?;
@@ -271,10 +271,6 @@ async fn run_fixed_server(
         .await
         .map_err(|_| ServerStartupStage::McpHttp)?;
     }
-    let composition = match std::sync::Arc::try_unwrap(composition_arc) {
-        Ok(composition) => composition,
-        Err(_) => return Err(ServerStartupStage::McpHttp),
-    };
     let activation = composition
         .activate_api(environment)
         .map_err(|_| ServerStartupStage::AuthenticationApi)?;

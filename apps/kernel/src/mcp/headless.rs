@@ -144,6 +144,162 @@ pub fn build_headless_handler(
     ))
 }
 
+/// Build a headless MCP handler directly from a Kernel runtime (for use
+/// before the server composition is consumed by activate_api).
+pub fn build_headless_handler_from_runtime(
+    runtime: std::sync::Arc<crate::runtime::KernelRuntime>,
+    config: &HeadlessMcpRuntimeConfig,
+) -> Result<crate::mcp::QingYuMcpHandler, HeadlessMcpError> {
+    struct RuntimeMcpPort {
+        runtime: std::sync::Arc<crate::runtime::KernelRuntime>,
+    }
+    impl crate::mcp::McpKernelPort for RuntimeMcpPort {
+        fn get_workspace<'a>(&'a self, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::WorkspaceDto> {
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.workspace_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .get_workspace().await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn list_documents<'a>(&'a self, query: &'a crate::contract::ListDocumentsQuery, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::DocumentPageDto> {
+            let query = query.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.documents_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .list_documents(query).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn get_document<'a>(&'a self, document_id: &'a crate::contract::DocumentId, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::DocumentContentDto> {
+            let document_id = document_id.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.documents_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .get_document(document_id).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn create_document<'a>(&'a self, request: &'a crate::contract::CreateDocumentRequest, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::CreatedDocumentDto> {
+            let request = request.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.documents_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .create_document(request).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn update_document<'a>(&'a self, document_id: &'a crate::contract::DocumentId, request: &'a crate::contract::UpdateDocumentRequest, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::DocumentContentDto> {
+            let document_id = document_id.clone(); let request = request.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.documents_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .update_document(document_id, request).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn get_settings<'a>(&'a self, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SettingsSnapshotDto> {
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.settings_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .get_settings().await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn patch_settings<'a>(&'a self, request: &'a crate::contract::PatchSettingsRequest, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SettingsSnapshotDto> {
+            let request = request.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.settings_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .patch_settings(request).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn get_sync_config<'a>(&'a self, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SyncConfigViewDto> {
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.sync_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .get_sync_config().await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn patch_sync_config<'a>(&'a self, request: &'a crate::contract::PatchSyncConfigRequest, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SyncConfigViewDto> {
+            let request = request.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.sync_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .patch_sync_config(request).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn test_sync_connection<'a>(&'a self, request: &'a crate::contract::TestSyncConnectionRequest, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SyncConnectionTestDto> {
+            let request = request.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.sync_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .test_sync_connection(request).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn get_sync_status<'a>(&'a self, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SyncStatusDto> {
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.sync_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .get_sync_status().await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn trigger_sync_run<'a>(&'a self, request: &'a crate::contract::TriggerSyncRunRequest, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SyncRunAcceptedDto> {
+            let request = request.clone();
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.sync_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .trigger_sync_run(request).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn get_sync_run<'a>(&'a self, run_id: crate::contract::RunId, cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SyncRunStatusDto> {
+            Box::pin(async move {
+                if cancellation.is_cancelled() { return Err(crate::mcp::McpKernelFailure::RequestCancelled); }
+                self.runtime.sync_api_service().ok_or(crate::mcp::McpKernelFailure::EndpointUnavailable)?
+                    .get_sync_run(run_id).await.map_err(|error| crate::mcp::McpKernelFailure::Api(error.code()))
+            })
+        }
+        fn search_documents<'a>(&'a self, _query: &'a crate::contract::SearchWorkspaceQuery, _cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::SearchPageDto> {
+            Box::pin(async { Err(crate::mcp::McpKernelFailure::EndpointUnavailable) })
+        }
+        fn move_document<'a>(&'a self, _document_id: &'a crate::contract::DocumentId, _request: &'a crate::contract::MoveDocumentRequest, _cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, crate::contract::DocumentEntryDto> {
+            Box::pin(async { Err(crate::mcp::McpKernelFailure::EndpointUnavailable) })
+        }
+        fn delete_document<'a>(&'a self, _document_id: &'a crate::contract::DocumentId, _request: &'a crate::contract::DeleteDocumentRequest, _cancellation: &'a tokio_util::sync::CancellationToken) -> crate::mcp::McpKernelFuture<'a, ()> {
+            Box::pin(async { Err(crate::mcp::McpKernelFailure::EndpointUnavailable) })
+        }
+    }
+
+    let mut signing_key = [0_u8; 32];
+    getrandom::fill(&mut signing_key).map_err(|_| HeadlessMcpError {
+        code: "signing_key_unavailable",
+        message: "QingYu MCP could not generate a signing key.",
+    })?;
+    let signer = crate::mcp::HandleSigner::new(signing_key);
+    let handles = std::sync::Arc::new(signer.clone());
+    let policy = std::sync::Arc::new(crate::mcp::PolicyEngine::new(
+        signer.derive_key(b"QingYu MCP operation previews v1"),
+    ));
+    let config_manager = std::sync::Arc::new(
+        crate::mcp::McpConfigManager::from_static_config(config.mcp.clone()).map_err(|_| {
+            HeadlessMcpError {
+                code: "headless_config_invalid",
+                message: "QingYu MCP headless configuration is invalid.",
+            }
+        })?,
+    );
+    let audit = std::sync::Arc::new(crate::mcp::AuditSink::new(
+        &config.runtime_root,
+        config.mcp.audit.clone(),
+    ));
+    let services = crate::mcp::McpServices {
+        config: config_manager,
+        workspaces: std::sync::Arc::new(crate::mcp::WorkspaceRegistry::new(Vec::new())),
+        handles,
+        kernel: std::sync::Arc::new(RuntimeMcpPort { runtime }),
+        policy,
+        audit,
+    };
+    Ok(crate::mcp::QingYuMcpHandler::new(
+        services,
+        std::sync::Arc::new(crate::mcp::NoUiConfirmationPresenter),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{validate_headless_mcp, HeadlessMcpEnvironment};
