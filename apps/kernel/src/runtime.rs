@@ -1299,7 +1299,10 @@ impl KernelRuntime {
             .state
             .lock()
             .map_err(|_| WorkspaceRunLifecycleError)?;
-        if matches!(lifecycle.run, RegisteredSyncRun::Empty) {
+        if matches!(
+            lifecycle.run,
+            RegisteredSyncRun::Empty | RegisteredSyncRun::Finalizing(_)
+        ) {
             Ok(())
         } else {
             Err(WorkspaceRunLifecycleError)
@@ -2880,6 +2883,49 @@ mod tests {
         assert!(runtime
             .verify_document_mutation_admission(&mutation)
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn resource_batch_admission_allows_a_finalizing_sync_terminal() {
+        let temporary = tempdir().unwrap();
+        let workspace_root = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace_root, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        let paths = KernelPaths::desktop(&workspace_root, &app_data, &cache).unwrap();
+        let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().unwrap(),
+            paths,
+            KernelPorts::unavailable(),
+        )
+        .unwrap();
+        let _workspace = WorkspaceService::new(
+            &runtime,
+            Arc::new(MemoryWorkspaceStore::default()),
+            managed,
+            runtime.event_broker().clone(),
+            "resource batch admission",
+        )
+        .await
+        .unwrap();
+        let snapshot = runtime.active_workspace_snapshot().unwrap();
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime.workspace_run_lifecycle.state.lock().unwrap().run =
+            RegisteredSyncRun::Finalizing(SyncRunRegistration {
+                run_id: RunId::new(Uuid::from_u128(0x72)),
+                trigger: SyncTrigger::Interval,
+                config_revision: Revision::parse("sync-revision").unwrap(),
+                fallback_completed_at: Rfc3339Utc::parse("2026-08-01T00:00:00Z").unwrap(),
+                snapshot,
+                cancellation: SyncCancellation::new(),
+            });
+
+        runtime
+            .verify_resource_batch_mutation_admission(&mutation)
+            .unwrap();
     }
 
     #[test]
