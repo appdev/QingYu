@@ -828,6 +828,90 @@ describe("CodeMirrorPaperSurface", () => {
     expect(resolveImageSrc).toHaveBeenCalledWith("./mock.png");
   });
 
+  it("preserves image attribute width and resolved source across surface recreation", () => {
+    const doc = "![diagram](assets/diagram.png){width=240px}";
+    const resolvedSource = "/api/v1/resources/assets/diagram.png";
+    const resolveImageSrc = vi.fn((source: string) =>
+      source === "assets/diagram.png" ? resolvedSource : source,
+    );
+    const firstReady = vi.fn();
+    const firstRender = render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={doc}
+        onEditorReady={firstReady}
+        onMarkdownChange={() => {}}
+        resolveImageSrc={resolveImageSrc}
+      />,
+    );
+    const firstView = firstReady.mock.calls[0]?.[0] as EditorView;
+    const firstImage = firstRender.container.querySelector<HTMLImageElement>(
+      ".cm-markra-image",
+    );
+    const firstFrame = firstRender.container.querySelector<HTMLElement>(
+      ".markra-image-frame",
+    );
+
+    expect(firstImage?.getAttribute("src")).toBe(resolvedSource);
+    expect(firstFrame?.style.width).toBe("240px");
+    fireEvent.click(firstImage!);
+    expect(
+      firstView.dom.querySelector<HTMLInputElement>(
+        ".markra-image-node-source",
+      )?.value,
+    ).toBe(doc);
+
+    firstRender.unmount();
+    const recreatedReady = vi.fn();
+    const recreated = render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={doc}
+        onEditorReady={recreatedReady}
+        onMarkdownChange={() => {}}
+        resolveImageSrc={resolveImageSrc}
+      />,
+    );
+    const recreatedView = recreatedReady.mock.calls[0]?.[0] as EditorView;
+
+    expect(recreatedView.state.doc.toString()).toBe(doc);
+    expect(
+      recreated.container.querySelector<HTMLElement>(
+        ".markra-image-frame",
+      )?.style.width,
+    ).toBe(firstFrame?.style.width);
+  });
+
+  it("renders image width in read-only mode without a resize target", () => {
+    const doc = "![diagram](assets/diagram.png){width=240px}";
+    const resolvedSource = "/api/v1/resources/assets/diagram.png";
+    const resolveImageSrc = vi.fn((source: string) =>
+      source === "assets/diagram.png" ? resolvedSource : source,
+    );
+    const { container } = render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={doc}
+        onEditorReady={() => {}}
+        onMarkdownChange={() => {}}
+        readOnly
+        resolveImageSrc={resolveImageSrc}
+      />,
+    );
+
+    expect(
+      container.querySelector<HTMLImageElement>(".cm-markra-image")
+        ?.getAttribute("src"),
+    ).toBe(resolvedSource);
+    expect(
+      container.querySelector<HTMLElement>(".markra-image-frame")?.style
+        .width,
+    ).toBe("240px");
+    expect(
+      container.querySelector(".markra-image-resize-hit-target"),
+    ).toBeNull();
+  });
+
   it("hot-reconfigures rendered images when the resolver generation changes", async () => {
     const initialResolver = (source: string) => source;
     const readyResolver = (source: string) =>
