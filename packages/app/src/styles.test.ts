@@ -1374,17 +1374,16 @@ describe("editor stylesheet", () => {
       ".markdown-paper .markra-image-node.markra-image-node-selected .markra-image-frame > img"
     );
     const selectedImageEnd = styles.indexOf(".markdown-paper .markra-image-viewer-button", selectedImageStart);
-    const imageNodeStart = styles.indexOf(".markdown-paper .markra-image-node {");
-    const imageNodeStyles = styles.slice(
-      imageNodeStart,
-      styles.indexOf(".markdown-paper .markra-image-node-source-row", imageNodeStart),
-    );
+    const selectedNodeRules = [...styles.matchAll(
+      /\.markdown-paper \.markra-image-node\.markra-image-node-selected\s*\{([^}]*)\}/g,
+    )];
     const selectedImageStyles = styles.slice(selectedImageStart, selectedImageEnd);
 
-    expect(imageNodeStyles).not.toContain(
-      ".markdown-paper .markra-image-node.markra-image-node-selected {\n    outline:",
-    );
-    expect(imageNodeStart).toBeGreaterThanOrEqual(0);
+    for (const [, selectedNodeStyles] of selectedNodeRules) {
+      const outlineValues = [...selectedNodeStyles.matchAll(/outline\s*:\s*([^;]+)/g)]
+        .map(([, value]) => value.trim());
+      expect(outlineValues.every((value) => value.startsWith("none"))).toBe(true);
+    }
     expect(selectedImageStart).toBeGreaterThanOrEqual(0);
     expect(selectedImageEnd).toBeGreaterThan(selectedImageStart);
     expect(selectedImageStyles).not.toContain("outline:");
