@@ -2729,11 +2729,6 @@
     user-select: text;
   }
 
-  .markdown-paper .markra-image-node.markra-image-node-selected {
-    outline: 2px solid #8cf;
-    outline-offset: 3px;
-  }
-
   .markdown-paper .markra-image-node-source-row {
     @apply m-0 flex w-full min-w-0 items-center gap-1.5 p-0 text-(--text-primary);
   }
@@ -2766,6 +2761,44 @@
     display: block;
     -webkit-user-drag: none;
     user-select: none;
+  }
+
+  .markdown-paper .markra-image-node.markra-image-node-selected .markra-image-frame > img {
+    filter: brightness(.68);
+  }
+
+  .markdown-paper .markra-image-resize-hit-target {
+    position: absolute;
+    z-index: 4;
+    top: 0;
+    right: -8px;
+    bottom: 0;
+    width: 20px;
+    cursor: col-resize;
+    opacity: 0;
+    pointer-events: none;
+    touch-action: none;
+    transition: opacity 150ms ease-out;
+  }
+
+  .markdown-paper .markra-image-resize-handle {
+    position: absolute;
+    top: 35%;
+    right: 8px;
+    width: 4px;
+    height: 30%;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--editor-text-primary) 52%, transparent);
+  }
+
+  .markdown-paper .markra-image-frame:hover .markra-image-resize-hit-target,
+  .markdown-paper .markra-image-node.markra-image-node-selected .markra-image-resize-hit-target {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .markdown-paper .cm-content[contenteditable="false"] .markra-image-resize-hit-target {
+    display: none;
   }
 
   .markdown-paper .markra-image-viewer-button {

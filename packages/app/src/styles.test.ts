@@ -1368,21 +1368,56 @@ describe("editor stylesheet", () => {
     expect(tableControlStyles).toContain("--accent");
   });
 
-  it("draws finalized image selection with the editor default selected-node color", () => {
+  it("dims only the selected image instead of outlining its editor row", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
-    const imageSelectionStart = styles.indexOf(
-      ".markdown-paper .markra-image-node.markra-image-node-selected"
+    const selectedImageStart = styles.indexOf(
+      ".markdown-paper .markra-image-node.markra-image-node-selected .markra-image-frame > img"
     );
-    const imageSelectionEnd = styles.indexOf(".markdown-paper .markra-image-node-source-row");
-    const imageSelectionStyles = styles.slice(imageSelectionStart, imageSelectionEnd);
+    const selectedImageEnd = styles.indexOf(".markdown-paper .markra-image-viewer-button", selectedImageStart);
+    const imageNodeStart = styles.indexOf(".markdown-paper .markra-image-node {");
+    const imageNodeStyles = styles.slice(
+      imageNodeStart,
+      styles.indexOf(".markdown-paper .markra-image-node-source-row", imageNodeStart),
+    );
+    const selectedImageStyles = styles.slice(selectedImageStart, selectedImageEnd);
 
-    expect(imageSelectionStart).toBeGreaterThanOrEqual(0);
-    expect(imageSelectionEnd).toBeGreaterThan(imageSelectionStart);
-    expect(imageSelectionStyles).toContain("outline:");
-    expect(imageSelectionStyles).toContain("#8cf");
-    expect(imageSelectionStyles).not.toContain("var(--accent)");
-    expect(imageSelectionStyles).toContain("outline-offset");
-    expect(imageSelectionStyles).not.toContain("outline-none");
+    expect(imageNodeStyles).not.toContain(
+      ".markdown-paper .markra-image-node.markra-image-node-selected {\n    outline:",
+    );
+    expect(imageNodeStart).toBeGreaterThanOrEqual(0);
+    expect(selectedImageStart).toBeGreaterThanOrEqual(0);
+    expect(selectedImageEnd).toBeGreaterThan(selectedImageStart);
+    expect(selectedImageStyles).not.toContain("outline:");
+    expect(selectedImageStyles).toContain("filter: brightness(.68)");
+  });
+
+  it("keeps the image resize handle narrow, touchable, and editable-only", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const hitTargetStart = styles.indexOf(
+      ".markdown-paper .markra-image-resize-hit-target {",
+    );
+    const handleStart = styles.indexOf(
+      ".markdown-paper .markra-image-resize-handle {",
+      hitTargetStart,
+    );
+    const visibilityStart = styles.indexOf(
+      ".markdown-paper .markra-image-frame:hover .markra-image-resize-hit-target",
+      handleStart,
+    );
+    const hitTargetStyles = styles.slice(hitTargetStart, handleStart);
+    const handleStyles = styles.slice(handleStart, visibilityStart);
+    const handleVisibilityStyles = styles.slice(visibilityStart);
+
+    expect(hitTargetStart).toBeGreaterThanOrEqual(0);
+    expect(handleStart).toBeGreaterThan(hitTargetStart);
+    expect(visibilityStart).toBeGreaterThan(handleStart);
+    expect(handleStyles).toContain("width: 4px");
+    expect(handleStyles).toContain("height: 30%");
+    expect(handleStyles).toContain("top: 35%");
+    expect(hitTargetStyles).toContain("touch-action: none");
+    expect(handleVisibilityStyles).toContain(".markra-image-frame:hover");
+    expect(handleVisibilityStyles).toContain(".markra-image-node-selected");
+    expect(handleVisibilityStyles).toContain("[contenteditable=\"false\"]");
   });
 
   it("keeps image Markdown source compact instead of inheriting heading typography", () => {
