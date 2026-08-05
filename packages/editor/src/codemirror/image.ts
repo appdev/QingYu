@@ -267,6 +267,14 @@ function cancelImageResize(
   if (releaseCapture) releaseImageResizeCapture(state, drag.pointerId);
 }
 
+function clearImageSelection(root: HTMLElement, state: ImageWidgetDomState) {
+  cancelImageResize(state);
+  hideImageSource(root, state);
+  const { view } = state.widget;
+  const imageEnd = Math.min(state.widget.to, view.state.doc.length);
+  view.dispatch({ selection: EditorSelection.cursor(imageEnd) });
+}
+
 function imageWidgetDomKey(widget: ImageWidget) {
   return [
     widget.className,
@@ -518,7 +526,7 @@ class ImageWidget extends WidgetType {
 
         if (event.key === "Escape") {
           event.preventDefault();
-          hideImageSource(root, current);
+          clearImageSelection(root, current);
           return;
         }
 
@@ -608,7 +616,7 @@ class ImageWidget extends WidgetType {
     const handleSourceKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        hideImageSource(root, state);
+        clearImageSelection(root, state);
         view.focus();
         return;
       }

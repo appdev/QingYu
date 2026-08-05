@@ -972,6 +972,53 @@ describe("imagePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("cancels an active resize when Escape comes from editor focus", () => {
+    const doc = "![a](x.png){width=100px}";
+    const transactions = observeDocumentTransactions();
+    const view = createView(
+      doc,
+      imagePreviewPlugin(),
+      false,
+      transactions.extension,
+    );
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+    expect(resize.frame.style.width).toBe("180px");
+
+    const event = pressSelectedKey(view, "Escape");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(resize.frame.style.width).toBe("100px");
+    expect(resize.releasePointerCapture).toHaveBeenCalledWith(7);
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(transactions.count).toBe(0);
+    dispatchPointerEvent(resize.handle, "pointerup", { clientX: 180 });
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(transactions.count).toBe(0);
+  });
+
+  it("moves Escape selection outside image ownership across unrelated updates", () => {
+    const image = "![a](x.png){width=100px}";
+    const doc = `${image}\nFollowing`;
+    const view = createView(doc);
+    clickImage(view);
+    expect(view.state.selection.main.head).toBeGreaterThan(0);
+    expect(view.state.selection.main.head).toBeLessThan(image.length);
+
+    pressSelectedKey(view, "Escape");
+
+    expect(view.state.selection.main.head).toBe(image.length);
+    expect(view.dom.querySelector(".markra-image-node-selected")).toBeNull();
+    view.dispatch({
+      changes: { from: doc.length, insert: "!" },
+      userEvent: "input",
+    });
+    expect(view.state.selection.main.head).toBe(image.length);
+    expect(view.dom.querySelector(".markra-image-node-selected")).toBeNull();
+    expect(sourceInput(view)).toBeNull();
+  });
+
   it("opens an image in the shared media viewer from the enlarge button or a double click", () => {
     const doc =
       '![Synthetic detail](https://example.test/detail.png "Detailed preview")\n\nEdit';
