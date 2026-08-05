@@ -74,7 +74,7 @@ describe("SyncConflictHistoryDialog", () => {
           ...versions,
           conflict: {
             ...conflict,
-            copyStatus: "generated",
+            copyStatus: "generated" as const,
             copyPath: "folder/note-Conflicted-20260804-153000.md",
             copyError: null
           }
@@ -95,7 +95,12 @@ describe("SyncConflictHistoryDialog", () => {
         onClose={vi.fn()}
         onRead={vi.fn(async () => ({
           ...versions,
-          conflict: { ...conflict, copyStatus: "skipped", copyPath: null, copyError: null }
+          conflict: {
+            ...conflict,
+            copyStatus: "skipped" as const,
+            copyPath: null,
+            copyError: null
+          }
         }))}
       />
     );
@@ -117,7 +122,7 @@ describe("SyncConflictHistoryDialog", () => {
           ...versions,
           conflict: {
             ...conflict,
-            copyStatus: "failed",
+            copyStatus: "failed" as const,
             copyPath: null,
             copyError: "dejavu-working-tree-changed"
           }

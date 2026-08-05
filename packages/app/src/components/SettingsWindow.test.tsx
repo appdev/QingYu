@@ -253,6 +253,9 @@ describe("SettingsWindow notes workspace", () => {
     };
     const conflict = {
       conflictId: "00000000-0000-4000-8000-0000000000c2",
+      copyError: null,
+      copyPath: null,
+      copyStatus: "not-requested" as const,
       occurredAt: "2026-07-29T02:42:00Z",
       relativePath: "notes/conflicted.md",
       repositoryId: "00000000-0000-4000-8000-0000000000c1",

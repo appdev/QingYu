@@ -89,6 +89,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "save_clipboard_attachment",
     "save_clipboard_image",
     "canonical_local_file_path",
+    "read_clipboard_content",
     "read_clipboard_text",
     "minimize_current_window",
     "open_blank_editor_window",

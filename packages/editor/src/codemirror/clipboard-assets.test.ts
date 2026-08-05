@@ -302,6 +302,208 @@ describe("codeMirrorClipboardAssetsPlugin", () => {
     expect(view.state.doc.toString()).toContain("Outro");
   });
 
+  it("prefers structured rich HTML over Markdown-looking fallback text", () => {
+    const view = createView("");
+
+    const event = paste(view, {
+      html: [
+        "<p>Mock summary</p>",
+        "<ol><li>First <code>choice</code></li><li>Second choice</li></ol>",
+        '<p>See <a href="https://example.test/mock-docs">mock docs</a>.</p>',
+      ].join(""),
+      text: [
+        "Mock summary",
+        "First choice",
+        "Second choice",
+        "See [mock docs](https://example.test/mock-docs).",
+      ].join("\n"),
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe([
+      "Mock summary",
+      "",
+      "1.  First `choice`",
+      "2.  Second choice",
+      "",
+      "See [mock docs](https://example.test/mock-docs).",
+    ].join("\n"));
+  });
+
+  it("keeps styled file badges as inline links", () => {
+    const view = createView("");
+    const expected = [
+      "Mock changes: ",
+      "[example-a.ts (line 108)](/mock-project/src/example-a.ts:108), ",
+      "[example-b.ts (line 438)](C:/mock-project/src/example-b.ts:438), ",
+      "[example-c.ts (line 7)](https://example.test/mock-file#L7).",
+    ].join("");
+
+    const event = paste(view, {
+      html: [
+        "<p>Mock changes: ",
+        '<a href="/mock-project/src/example-a.ts:108">',
+        '<div style="font-family: Menlo, monospace; white-space: pre-wrap">',
+        "example-a.ts (line 108)",
+        "</div>",
+        "</a>, ",
+        '<a href="C:/mock-project/src/example-b.ts:438" ',
+        'style="font-family: Menlo, monospace; white-space: pre-wrap">',
+        "<div>example-b.ts</div>",
+        "<div>(line 438)</div>",
+        "</a>, ",
+        '<a href="https://example.test/mock-file#L7">',
+        '<p style="font-family: Menlo, monospace">example-c.ts (line 7)</p>',
+        "</a>.</p>",
+      ].join(""),
+      text: expected,
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe(expected);
+  });
+
+  it("does not merge ordinary linked card blocks", () => {
+    const view = createView("");
+    const href = "https://example.test/mock-card";
+
+    paste(view, {
+      html: [
+        '<p>See <a href="https://example.test/mock-card">',
+        "<div>Mock title</div>",
+        "<div>Mock subtitle</div>",
+        "</a>.</p>",
+      ].join(""),
+      text: "See Mock title Mock subtitle.",
+    });
+
+    const markdown = view.state.doc.toString();
+    expect(markdown).toContain(`[Mock title](${href})`);
+    expect(markdown).toContain(`[Mock subtitle](${href})`);
+    expect(markdown).not.toContain("Mock titleMock subtitle");
+  });
+
+  it("does not flatten semantic or multiline linked code", () => {
+    const semanticView = createView("");
+    const multilineView = createView("");
+
+    paste(semanticView, {
+      html: [
+        '<p>See <a href="https://example.test/mock-code">',
+        '<pre style="font-family: Menlo, monospace"><code>const mock = 1;</code></pre>',
+        "</a>.</p>",
+      ].join(""),
+      text: "See const mock = 1;.",
+    });
+    paste(multilineView, {
+      html: [
+        '<p>See <a href="https://example.test/mock-lines">',
+        '<div style="font-family: Menlo, monospace; white-space: pre-wrap">',
+        "Mock line one<br>Mock line two",
+        "</div></a>.</p>",
+      ].join(""),
+      text: "See Mock line one\nMock line two.",
+    });
+
+    expect(semanticView.state.doc.toString()).toContain("```\nconst mock = 1;\n```");
+    expect(multilineView.state.doc.toString()).toContain("```\nMock line one\nMock line two\n```");
+  });
+
+  it("preserves Markdown-looking lines inside a styled mixed-content code block", () => {
+    const view = createView("");
+    const code = [
+      "# Mock score",
+      "=",
+      "+ reward × 100",
+      "",
+      "- resource cost",
+    ].join("\n");
+
+    const event = paste(view, {
+      html: [
+        "<h2>Mock formula</h2>",
+        "<ul><li>First constraint</li><li>Second constraint</li></ul>",
+        "<p>Use this synthetic model:</p>",
+        '<div style="font-family: Menlo, monospace; white-space: pre-wrap">',
+        "<div># Mock score</div>",
+        "<div>=</div>",
+        "<div>+ reward × 100</div>",
+        "<div><br></div>",
+        "<div>- resource cost</div>",
+        "</div>",
+      ].join(""),
+      text: [
+        "Mock formula",
+        "First constraint",
+        "Second constraint",
+        "Use this synthetic model:",
+        code,
+      ].join("\n"),
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe([
+      "## Mock formula",
+      "",
+      "-   First constraint",
+      "-   Second constraint",
+      "",
+      "Use this synthetic model:",
+      "",
+      "```",
+      code,
+      "```",
+    ].join("\n"));
+  });
+
+  it("preserves language metadata from a styled mixed-content code block", () => {
+    const code = "print('mock value')";
+    const view = createView("");
+
+    paste(view, {
+      html: [
+        "<p>Mock introduction</p>",
+        '<div style="font-family: Menlo, monospace; white-space: pre-wrap">',
+        `<code class="language-python">${code}</code>`,
+        "</div>",
+        "<p>Mock conclusion</p>",
+      ].join(""),
+      text: ["Mock introduction", code, "Mock conclusion"].join("\n"),
+    });
+
+    expect(view.state.doc.toString()).toBe([
+      "Mock introduction",
+      "",
+      "```python",
+      code,
+      "```",
+      "",
+      "Mock conclusion",
+    ].join("\n"));
+  });
+
+  it("keeps Markdown source from a non-semantic editor clipboard", () => {
+    const source = [
+      "# Mock heading",
+      "",
+      "- First item",
+      "- Second item",
+    ].join("\n");
+    const view = createView("");
+
+    paste(view, {
+      html: [
+        '<div class="mock-editor-line"><span># Mock heading</span></div>',
+        '<div class="mock-editor-line"><br></div>',
+        '<div class="mock-editor-line"><span>- First item</span></div>',
+        '<div class="mock-editor-line"><span>- Second item</span></div>',
+      ].join(""),
+      text: source,
+    });
+
+    expect(view.state.doc.toString()).toBe(source);
+  });
+
   it("wraps code copied with syntax-highlighted HTML in a fenced block", () => {
     const code = [
       "const mock_value = items[0];",

@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "qingyu"
 default-run = "qingyu"
-version = "2.5.4"
+version = "2.5.5"
 description = "Practical Markdown note-taking editor"
 authors = ["QingYu contributors"]
 license = "AGPL-3.0-only"
@@ -49,7 +49,7 @@ rustls = { version = "0.23.40", default-features = false, features = ["ring", "s
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
-tauri = { version = "2.11.0", features = ["macos-private-api", "protocol-asset"] }
+tauri = { version = "2.11.0", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-fs = "2.5.1"
 tauri-plugin-log = "2.8.0"

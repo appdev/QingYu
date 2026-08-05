@@ -12,12 +12,12 @@ use super::{
     handles::HandleSigner,
     ipc::LocalIpcEndpoint,
     kernel_adapter::{McpKernelFailure, McpKernelFuture, McpKernelPort},
-    local_settings::McpLocalSettingsService,
     policy::{OperationDescriptor, OperationRisk, PolicyEngine},
     server::{McpServerController, McpServerOptions, McpServerState, MAX_ACTIVE_SESSIONS},
     tools::{McpServices, QingYuMcpHandler},
     workspaces::{AuthorizedWorkspaceConfig, WorkspaceRegistry},
 };
+use qingyu_kernel::mcp::McpLocalSettingsService;
 
 #[test]
 fn sidecar_command_is_resolved_beside_the_application_executable() {
@@ -284,7 +284,7 @@ fn application_mcp_runtime_material_is_scoped_below_mcp_runtime() {
 }
 
 #[test]
-fn config_manager_persists_complete_policy_without_runtime_material() {
+fn config_manager_persists_complete_policy_without_runtime_secrets() {
     let settings = McpLocalSettingsService::memory_for_test();
     let manager = McpConfigManager::load(settings.clone()).expect("load app policy manager");
     let initial = manager.snapshot().expect("initial policy");
@@ -303,7 +303,7 @@ fn config_manager_persists_complete_policy_without_runtime_material() {
     assert!(loaded.config.enabled);
     assert!(!json.contains("bearer-token"));
     assert!(!json.contains("handle-signing-key"));
-    assert!(!json.contains("\"port\""));
+    assert!(json.contains("\"port\":0"));
     assert!(!json.contains("\"workspaces\""));
 }
 

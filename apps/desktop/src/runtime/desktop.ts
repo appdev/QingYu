@@ -206,6 +206,7 @@ export function createDesktopRuntime({
     installApplicationMenu: menu.installNativeApplicationMenu,
     installEditorContextMenu: menu.installNativeEditorContextMenu,
     listenApplicationMenuCommands: menu.listenNativeApplicationMenuCommands,
+    readClipboardContent: menu.readNativeClipboardContent,
     readClipboardText: menu.readNativeClipboardText,
     showMarkdownFileTreeContextMenu: menu.showNativeMarkdownFileTreeContextMenu
   },
