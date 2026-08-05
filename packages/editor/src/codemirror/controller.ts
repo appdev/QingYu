@@ -480,6 +480,86 @@ export function serializeCodeMirrorMarkdownLink(reference: CodeMirrorMarkdownLin
   return `[${escapeMarkdownLabel(reference.label || reference.href)}](${reference.href})`;
 }
 
+function markdownImageTarget(view: EditorView) {
+  const selection = view.state.selection.main;
+  const source = view.state.doc.toString();
+  const frontmatter = readMarkdownFrontmatter(source);
+  if (frontmatter.status !== "valid") {
+    return {
+      from: selection.from,
+      protectedFrontmatter: false,
+      selectedFrom: selection.from,
+      selectedTo: selection.to,
+      source,
+      to: selection.to,
+    };
+  }
+
+  let contentFrom = frontmatter.range.to;
+  while (
+    contentFrom < source.length &&
+    (source[contentFrom] === "\r" || source[contentFrom] === "\n")
+  ) {
+    contentFrom += 1;
+  }
+  if (selection.from >= contentFrom) {
+    return {
+      from: selection.from,
+      protectedFrontmatter: false,
+      selectedFrom: selection.from,
+      selectedTo: selection.to,
+      source,
+      to: selection.to,
+    };
+  }
+
+  const from = contentFrom;
+  const to = Math.max(selection.to, contentFrom);
+  return {
+    from,
+    protectedFrontmatter: true,
+    selectedFrom: from,
+    selectedTo: to,
+    source,
+    to,
+  };
+}
+
+function markdownImageInsertion(
+  target: ReturnType<typeof markdownImageTarget>,
+  markdown: string,
+) {
+  if (!target.protectedFrontmatter) {
+    return {
+      from: target.from,
+      insert: markdown,
+      markdownFrom: target.from,
+      to: target.to,
+    };
+  }
+
+  const before = target.source.slice(0, target.from);
+  const after = target.source.slice(target.to);
+  const newline = "\n";
+  const prefix = before.endsWith(newline.repeat(2))
+    ? ""
+    : before.endsWith(newline)
+      ? newline
+      : newline.repeat(2);
+  const suffix = after.length === 0 || after.startsWith(newline.repeat(2))
+    ? ""
+    : after.startsWith(newline)
+      ? newline
+      : newline.repeat(2);
+
+  return {
+    from: target.from,
+    insert: `${prefix}${markdown}${suffix}`,
+    markdownFrom: target.from + prefix.length,
+    to: target.to,
+  };
+}
+
 function enclosingLink(state: EditorState, from: number, to: number) {
   let node: ReturnType<typeof syntaxTree>["topNode"] | null =
     syntaxTree(state).resolveInner(from, 1);
@@ -543,17 +623,22 @@ export function insertCodeMirrorMarkdownLink(view: EditorView) {
 export function insertCodeMirrorMarkdownImage(view: EditorView) {
   if (view.state.facet(EditorState.readOnly)) return false;
 
-  const { from, to } = view.state.selection.main;
-  const selectedText = view.state.sliceDoc(from, to).replace(/\n/gu, " ");
+  const target = markdownImageTarget(view);
+  const selectedText = view.state.sliceDoc(target.selectedFrom, target.selectedTo).replace(/\n/gu, " ");
   const src = "assets/image.png";
   const insertedText = serializeCodeMirrorMarkdownImage({
     alt: selectedText || "alt",
     src,
   });
-  const sourceFrom = from + insertedText.lastIndexOf("(") + 1;
+  const insertion = markdownImageInsertion(target, insertedText);
+  const sourceFrom = insertion.markdownFrom + insertedText.lastIndexOf("(") + 1;
 
   view.dispatch({
-    changes: { from, insert: insertedText, to },
+    changes: {
+      from: insertion.from,
+      insert: insertion.insert,
+      to: insertion.to,
+    },
     scrollIntoView: true,
     selection: EditorSelection.range(sourceFrom, sourceFrom + src.length),
   });
@@ -572,12 +657,18 @@ export function insertCodeMirrorMarkdownImages(
     return false;
   }
 
-  const { from, to } = view.state.selection.main;
   const insertedText = images.map(serializeCodeMirrorMarkdownImage).join("");
+  const insertion = markdownImageInsertion(markdownImageTarget(view), insertedText);
   view.dispatch({
-    changes: { from, insert: insertedText, to },
+    changes: {
+      from: insertion.from,
+      insert: insertion.insert,
+      to: insertion.to,
+    },
     scrollIntoView: true,
-    selection: EditorSelection.cursor(from + insertedText.length),
+    selection: EditorSelection.cursor(
+      insertion.markdownFrom + insertedText.length,
+    ),
   });
   view.focus();
   return true;

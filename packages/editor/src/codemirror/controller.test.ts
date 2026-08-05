@@ -369,6 +369,119 @@ describe("CodeMirror editor controller", () => {
     expect(links.state.doc.toString()).toBe("[One](./one.md) [Two](./two.md)");
   });
 
+  it("keeps hidden Front Matter first when inserting host-provided images at offset zero", () => {
+    const doc = "---\ntitle: Native\n---\n\nBody";
+    const view = createView(doc, EditorSelection.cursor(0));
+
+    expect(
+      insertCodeMirrorMarkdownImages(view, [
+        { alt: "One", src: "./assets/one.png" },
+      ]),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe(
+      "---\ntitle: Native\n---\n\n![One](./assets/one.png)\n\nBody",
+    );
+  });
+
+  it.each([
+    {
+      doc: "---\ntitle: Native\n---",
+      expected: "---\ntitle: Native\n---\n\n![One](./assets/one.png)",
+      name: "no newline after the closing delimiter",
+    },
+    {
+      doc: "---\ntitle: Native\n---\nBody",
+      expected: "---\ntitle: Native\n---\n\n![One](./assets/one.png)\n\nBody",
+      name: "one newline after the closing delimiter",
+    },
+    {
+      doc: "---\ntitle: Native\n---\n\n\nBody",
+      expected: "---\ntitle: Native\n---\n\n\n![One](./assets/one.png)\n\nBody",
+      name: "multiple newlines after the closing delimiter",
+    },
+    {
+      doc: "---\r\ntitle: Native\r\n---\r\n\r\nBody",
+      expected: "---\ntitle: Native\n---\n\n![One](./assets/one.png)\n\nBody",
+      name: "CodeMirror-normalized CRLF frontmatter and body",
+    },
+  ])("inserts after hidden Front Matter with $name", ({ doc, expected }) => {
+    const view = createView(doc, EditorSelection.cursor(0));
+    const inserted = "![One](./assets/one.png)";
+
+    expect(
+      insertCodeMirrorMarkdownImages(view, [
+        { alt: "One", src: "./assets/one.png" },
+      ]),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe(expected);
+    expect(view.state.selection.main.from).toBe(
+      expected.indexOf(inserted) + inserted.length,
+    );
+    expect(view.state.selection.main.to).toBe(
+      expected.indexOf(inserted) + inserted.length,
+    );
+  });
+
+  it.each([
+    {
+      expected: "---\ntitle: Native\n---\n\n![alt](assets/image.png)\n\nBody",
+      name: "inside hidden metadata",
+      selection: (doc: string) => {
+        const from = doc.indexOf("Native");
+        return EditorSelection.range(from, from + "Native".length);
+      },
+    },
+    {
+      expected: "---\ntitle: Native\n---\n\n![Bo](assets/image.png)\n\ndy",
+      name: "from hidden metadata into the body",
+      selection: (doc: string) => EditorSelection.range(
+        doc.indexOf("Native"),
+        doc.indexOf("Body") + 2,
+      ),
+    },
+    {
+      expected: "---\ntitle: Native\n---\n\nB![od](assets/image.png)y",
+      name: "wholly in the body",
+      selection: (doc: string) => {
+        const from = doc.indexOf("Body") + 1;
+        return EditorSelection.range(from, from + 2);
+      },
+    },
+  ])("preserves image insertion semantics for a selection $name", ({
+    expected,
+    selection,
+  }) => {
+    const doc = "---\ntitle: Native\n---\n\nBody";
+    const view = createView(doc, selection(doc));
+
+    expect(insertCodeMirrorMarkdownImage(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(expected);
+    expect(view.state.sliceDoc(
+      view.state.selection.main.from,
+      view.state.selection.main.to,
+    )).toBe("assets/image.png");
+  });
+
+  it("does not change a read-only document or selection through either image API", () => {
+    const doc = "---\ntitle: Native\n---\n\nBody";
+    const selectionFrom = doc.indexOf("Body");
+    const selection = EditorSelection.cursor(selectionFrom);
+    const single = createView(doc, selection, true);
+    const multiple = createView(doc, selection, true);
+
+    expect(insertCodeMirrorMarkdownImage(single)).toBe(false);
+    expect(
+      insertCodeMirrorMarkdownImages(multiple, [
+        { alt: "One", src: "./assets/one.png" },
+      ]),
+    ).toBe(false);
+    for (const view of [single, multiple]) {
+      expect(view.state.doc.toString()).toBe(doc);
+      expect(view.state.selection.main.from).toBe(selectionFrom);
+      expect(view.state.selection.main.to).toBe(selectionFrom);
+    }
+  });
+
   it("inserts the default Markdown table and places the caret in its first cell", () => {
     const view = createView("", EditorSelection.cursor(0));
 
