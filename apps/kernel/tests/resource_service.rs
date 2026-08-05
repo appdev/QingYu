@@ -888,6 +888,239 @@ async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
 }
 
 #[tokio::test]
+async fn media_image_http_adapter_allows_native_without_bearer_and_marks_the_response_inline() {
+    let fixture = Fixture::new().await;
+    let bytes = image_fixture("png");
+    fs::write(fixture.root.join("image.png"), &bytes).unwrap();
+    fs::write(fixture.root.join("manual.pdf"), b"attachment bytes").unwrap();
+    fs::write(
+        fixture.root.join("vector.svg"),
+        br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#123456"/></svg>"##,
+    )
+    .unwrap();
+    let resource = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) if entry.kind == ResourceKind::Image => {
+                Some(entry)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let svg_resource = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) if entry.media_type == "image/svg+xml" => {
+                Some(entry)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let attachment = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) if entry.kind == ResourceKind::Attachment => {
+                Some(entry)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/media/v1/images/{}?revision={}",
+            resource.id.as_str(),
+            resource.revision.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::ORIGIN, "http://127.0.0.1:43123")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(
+        response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+        "nosniff"
+    );
+    assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "inline");
+    assert_eq!(
+        response.headers()[header::CONTENT_LENGTH],
+        bytes.len().to_string()
+    );
+    assert_eq!(
+        response.headers()["x-resource-revision"],
+        resource.revision.as_str()
+    );
+    assert_eq!(
+        response.headers()["cross-origin-resource-policy"],
+        "cross-origin"
+    );
+    assert_eq!(
+        to_bytes(response.into_body(), 1024 * 1024).await.unwrap(),
+        bytes.as_slice()
+    );
+
+    let svg_request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/media/v1/images/{}?revision={}",
+            svg_resource.id.as_str(),
+            svg_resource.revision.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::ORIGIN, "http://127.0.0.1:43123")
+        .body(Body::empty())
+        .unwrap();
+    let svg_response = router.clone().oneshot(svg_request).await.unwrap();
+    assert_eq!(svg_response.status(), StatusCode::OK);
+    assert_eq!(
+        svg_response.headers()[header::CONTENT_TYPE],
+        "image/svg+xml"
+    );
+    assert_eq!(
+        svg_response.headers()["cross-origin-resource-policy"],
+        "cross-origin"
+    );
+    assert_eq!(
+        svg_response.headers()[header::CONTENT_SECURITY_POLICY],
+        "sandbox; default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    );
+    let svg_bytes = to_bytes(svg_response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    assert!(svg_bytes.starts_with(b"<svg"));
+
+    for revision in [
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256:not-a-digest",
+        "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ] {
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/media/v1/images/{}?revision={revision}",
+                resource.id.as_str()
+            ))
+            .header(header::HOST, "127.0.0.1:43123")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{revision}");
+    }
+
+    for suffix in [
+        "",
+        "?revision=sha256%3A0000000000000000000000000000000000000000000000000000000000000000&revision=sha256%3A0000000000000000000000000000000000000000000000000000000000000000",
+        "?revision=sha256%3A0000000000000000000000000000000000000000000000000000000000000000&extra=1",
+    ] {
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/media/v1/images/{}{suffix}",
+                resource.id.as_str()
+            ))
+            .header(header::HOST, "127.0.0.1:43123")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
+    }
+
+    let wrong_kind = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/media/v1/images/{}?revision={}",
+            attachment.id.as_str(),
+            attachment.revision.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .body(Body::empty())
+        .unwrap();
+    let wrong_kind = router.clone().oneshot(wrong_kind).await.unwrap();
+    assert_eq!(wrong_kind.status(), StatusCode::NOT_FOUND);
+
+    let wrong_origin = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/media/v1/images/{}?revision={}",
+            resource.id.as_str(),
+            resource.revision.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::ORIGIN, "https://attacker.invalid")
+        .body(Body::empty())
+        .unwrap();
+    let wrong_origin = router.clone().oneshot(wrong_origin).await.unwrap();
+    assert_eq!(wrong_origin.status(), StatusCode::FORBIDDEN);
+
+    let invalid_capability = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/media/v1/images/not-a-capability?revision={}",
+            resource.revision.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .body(Body::empty())
+        .unwrap();
+    let invalid_capability = router.clone().oneshot(invalid_capability).await.unwrap();
+    assert_eq!(invalid_capability.status(), StatusCode::NOT_FOUND);
+
+    for method in ["POST", "HEAD"] {
+        let non_get = Request::builder()
+            .method(method)
+            .uri(format!(
+                "/media/v1/images/{}?revision={}",
+                resource.id.as_str(),
+                resource.revision.as_str()
+            ))
+            .header(header::HOST, "127.0.0.1:43123")
+            .body(Body::empty())
+            .unwrap();
+        let non_get = router.clone().oneshot(non_get).await.unwrap();
+        assert_eq!(non_get.status(), StatusCode::BAD_REQUEST, "{method}");
+    }
+
+    let options = Request::builder()
+        .method("OPTIONS")
+        .uri(format!(
+            "/media/v1/images/{}?revision={}",
+            resource.id.as_str(),
+            resource.revision.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::ORIGIN, "http://127.0.0.1:43123")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .body(Body::empty())
+        .unwrap();
+    let options = router.oneshot(options).await.unwrap();
+    assert_eq!(options.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn resource_http_writer_accepts_a_bounded_raw_body_and_returns_an_openable_resource() {
     let fixture = Fixture::new().await;
     fs::write(fixture.root.join("note.md"), b"# Note").unwrap();

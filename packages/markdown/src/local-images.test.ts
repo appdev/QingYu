@@ -35,6 +35,7 @@ describe("local markdown image paths", () => {
     });
 
     expect(resolveImageSrc("https://example.com/logo.png")).toBe("https://example.com/logo.png");
+    expect(resolveImageSrc("//cdn.example.com/logo.png")).toBe("//cdn.example.com/logo.png");
     expect(resolveImageSrc("data:image/png;base64,abc")).toBe("data:image/png;base64,abc");
   });
 });

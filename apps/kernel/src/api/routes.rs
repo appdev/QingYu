@@ -25,7 +25,9 @@ use crate::{
     runtime::ServiceFailure,
 };
 
-use super::{api_error, is_api_path, resource_body, runtime, ws, ApiState};
+use super::{
+    api_error, is_api_path, is_media_namespace_path, resource_body, runtime, ws, ApiState,
+};
 
 const STANDARD_JSON_BODY_LIMIT: usize = 1024 * 1024;
 const AUTH_JSON_BODY_LIMIT: usize = 16 * 1024;
@@ -82,6 +84,7 @@ pub(crate) fn router() -> Router<ApiState> {
             "/api/v1/resources/{resource_id}",
             get(open_workspace_resource),
         )
+        .route("/media/v1/images/{resource_id}", get(open_media_image))
         .route(
             "/api/v1/documents/{document_id}/resources",
             post(create_workspace_resource),
@@ -237,6 +240,54 @@ async fn open_workspace_resource(
             .await
             .unwrap_or_else(|()| api_error(ErrorCode::WorkspaceUnavailable, None)),
         Err(error) => service_failure_response(error, ServiceOperation::OpenWorkspaceResource),
+    }
+}
+
+async fn open_media_image(
+    State(state): State<ApiState>,
+    resource_id: Result<Path<ResourceId>, PathRejection>,
+    query: Result<Query<OpenMediaImageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let (Ok(Path(resource_id)), Ok(Query(query))) = (resource_id, query) else {
+        return media_image_not_found();
+    };
+    if !is_sha256_revision(&query.revision) {
+        return media_image_not_found();
+    }
+    let Some(service) = runtime(&state).resources_api_service() else {
+        return unavailable(ServiceOperation::OpenWorkspaceResource);
+    };
+    match service
+        .open_workspace_resource(resource_id, ResourceKind::Image)
+        .await
+    {
+        Ok(resource) if resource.entry().revision.as_str() != query.revision => {
+            media_image_not_found()
+        }
+        Ok(resource) => match resource_body::response(resource).await {
+            Ok(mut response) => {
+                let headers = response.headers_mut();
+                headers.insert(
+                    header::CONTENT_DISPOSITION,
+                    header::HeaderValue::from_static("inline"),
+                );
+                headers.insert(
+                    header::CACHE_CONTROL,
+                    header::HeaderValue::from_static("private, no-store"),
+                );
+                headers.insert(
+                    header::HeaderName::from_static("cross-origin-resource-policy"),
+                    header::HeaderValue::from_static(if state.server.is_some() {
+                        "same-origin"
+                    } else {
+                        "cross-origin"
+                    }),
+                );
+                response
+            }
+            Err(()) => api_error(ErrorCode::WorkspaceUnavailable, None),
+        },
+        Err(_) => media_image_not_found(),
     }
 }
 
@@ -889,6 +940,26 @@ struct OpenWorkspaceResourceQuery {
     kind: ResourceKind,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenMediaImageQuery {
+    revision: String,
+}
+
+fn is_sha256_revision(revision: &str) -> bool {
+    let Some(digest) = revision.strip_prefix("sha256:") else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn media_image_not_found() -> Response {
+    api_error(ErrorCode::ResourceNotFound, None)
+}
+
 async fn parse_json<T>(
     request: Request<Body>,
     limit: usize,
@@ -1236,7 +1307,7 @@ fn service_failure_response(error: ServiceFailure, operation: ServiceOperation) 
 }
 
 pub(crate) async fn not_found(request: Request) -> Response {
-    if is_api_path(request.uri().path()) {
+    if is_api_path(request.uri().path()) || is_media_namespace_path(request.uri().path()) {
         api_error(ErrorCode::InvalidRequest, None)
     } else {
         StatusCode::NOT_FOUND.into_response()

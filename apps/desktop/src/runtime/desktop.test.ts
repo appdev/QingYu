@@ -319,6 +319,10 @@ describe("desktop runtime composition", () => {
       sizeBytes: item.body.size,
       workspaceGeneration: generation,
     })));
+    const imageUrl = vi.fn(({ id, revision }: { id: string; revision: KernelRevision }) =>
+      `http://127.0.0.1:49152/media/v1/images/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`
+    );
+    const open = vi.fn<KernelDomainPort["resources"]["open"]>();
     const kernel = {
       ...unavailable,
       availability: "available",
@@ -343,7 +347,9 @@ describe("desktop runtime composition", () => {
       resources: {
         ...unavailable.resources,
         createBatch,
+        imageUrl,
         list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
+        open,
       },
       workspace: {
         read: vi.fn(async () => ({
@@ -372,12 +378,13 @@ describe("desktop runtime composition", () => {
       .rejects.toThrow("unavailable for a Kernel workspace");
     await expect(owner.runtime.files.saveClipboardImage({} as never))
       .rejects.toThrow("unavailable without a configured app runtime");
-    await expect(owner.runtime.files.saveClipboardImages(images.map((image) => ({
+    const saved = await owner.runtime.files.saveClipboardImages(images.map((image) => ({
       documentPath: `${kernelWorkspaceRoot}/notes/note.md`,
       fileName: image.name,
       folder: "assets",
       image,
-    })))).resolves.toEqual(images.map((image) => ({
+    })));
+    expect(saved).toEqual(images.map((image) => ({
       alt: "fixture",
       src: `assets/${image.name}`,
     })));
@@ -390,6 +397,17 @@ describe("desktop runtime composition", () => {
         name: image.name,
       })),
     }));
+    expect(owner.runtime.files.resolveMarkdownImageSrc?.(
+      `${kernelWorkspaceRoot}/notes/note.md`,
+      saved[0]!.src,
+    )).toBe(
+      "http://127.0.0.1:49152/media/v1/images/resource-0?revision=resource-revision-0",
+    );
+    expect(imageUrl).toHaveBeenCalledWith({
+      id: "resource-0",
+      revision: "resource-revision-0",
+    });
+    expect(open).not.toHaveBeenCalled();
     expect(owner.runtime.nativeShell.capabilities.pickers).toBe("unavailable");
 
     owner.release();

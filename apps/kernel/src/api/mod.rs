@@ -337,6 +337,14 @@ async fn enforce_transport(
     }
 
     if request.method() == Method::OPTIONS {
+        if is_media_image_path(request.uri().path()) {
+            let mut response = api_error(ErrorCode::InvalidRequest, None);
+            decorate_response(
+                &mut response,
+                has_allowed_origin.then_some(&state.policy.origin),
+            );
+            return response;
+        }
         if !has_allowed_origin {
             return api_error(ErrorCode::OriginNotAllowed, None);
         }
@@ -390,16 +398,21 @@ async fn enforce_transport(
                 }
             }
         }
-    } else if (state.web.is_none() || is_api_namespace_path(request.uri().path()))
+    } else if (state.web.is_none()
+        || is_api_namespace_path(request.uri().path())
+        || is_media_image_path(request.uri().path()))
         && request.uri().path() != LIVE_PATH
         && !(state.server.is_some()
             && auth::is_public_route(request.uri().path(), request.method()))
     {
-        let native_authorized = has_valid_bearer(request.headers(), &state.runtime)
-            && !state
-                .server
-                .as_ref()
-                .is_some_and(|_| auth::is_browser_only_route(request.uri().path()));
+        let native_authorized = (state.server.is_none()
+            && is_media_image_path(request.uri().path()))
+            || (!is_media_image_path(request.uri().path())
+                && has_valid_bearer(request.headers(), &state.runtime)
+                && !state
+                    .server
+                    .as_ref()
+                    .is_some_and(|_| auth::is_browser_only_route(request.uri().path())));
         if !native_authorized {
             let Some(server) = state.server.as_ref() else {
                 let mut response = api_error(ErrorCode::Unauthorized, None);
@@ -452,7 +465,7 @@ async fn enforce_transport(
         }
     }
 
-    if is_api_path(request.uri().path())
+    if (is_api_path(request.uri().path()) || is_media_image_path(request.uri().path()))
         && !route_accepts_method(request.uri().path(), request.method())
     {
         let mut response = api_error(ErrorCode::InvalidRequest, None);
@@ -613,6 +626,7 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         | "/api/v1/sync/dejavu/key/import"
         | "/api/v1/sync/dejavu/key/export" => &[Method::POST],
         _ => match path.split('/').collect::<Vec<_>>().as_slice() {
+            ["", "media", "v1", "images", resource_id] if !resource_id.is_empty() => &[Method::GET],
             ["", "api", "v1", "resources", resource_id] if !resource_id.is_empty() => {
                 &[Method::GET]
             }
@@ -654,7 +668,9 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
 
 fn decorate_response(response: &mut Response, allowed_origin: Option<&HeaderValue>) {
     let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if !headers.contains_key(header::CACHE_CONTROL) {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -705,6 +721,17 @@ pub(crate) fn is_api_path(path: &str) -> bool {
 
 pub(crate) fn is_api_namespace_path(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/")
+}
+
+pub(crate) fn is_media_namespace_path(path: &str) -> bool {
+    path == "/media" || path.starts_with("/media/")
+}
+
+fn is_media_image_path(path: &str) -> bool {
+    matches!(
+        path.split('/').collect::<Vec<_>>().as_slice(),
+        ["", "media", "v1", "images", resource_id] if !resource_id.is_empty()
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

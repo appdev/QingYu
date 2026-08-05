@@ -714,8 +714,29 @@ function startPointerBlockDrag(
 
 function draggedBlockFrom(event: DragEvent) {
   const value = event.dataTransfer?.getData(blockDragMime) ?? "";
+  if (value.trim() === "") return null;
+
   const from = Number(value);
-  return Number.isInteger(from) ? from : null;
+  return Number.isSafeInteger(from) && from >= 0 ? from : null;
+}
+
+function hasBlockDragType(event: DragEvent) {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  const compatibleTypes = types as typeof types & {
+    contains?: (type: string) => boolean;
+    item?: (index: number) => string | null;
+  };
+  if (typeof compatibleTypes.contains === "function") {
+    return compatibleTypes.contains(blockDragMime);
+  }
+  for (let index = 0; index < compatibleTypes.length; index += 1) {
+    const type = typeof compatibleTypes.item === "function"
+      ? compatibleTypes.item(index)
+      : compatibleTypes[index];
+    if (type === blockDragMime) return true;
+  }
+  return false;
 }
 
 class BlockDragViewPlugin {
@@ -792,7 +813,7 @@ export function codeMirrorBlockDragPlugin(
       EditorView.domEventHandlers({
         dragover(event, view) {
           const target = dropTarget(event, view);
-          if (draggedBlockFrom(event) === null || !target) {
+          if (!hasBlockDragType(event) || !target) {
             return false;
           }
           event.preventDefault();
@@ -801,6 +822,8 @@ export function codeMirrorBlockDragPlugin(
           return true;
         },
         drop(event, view) {
+          if (!hasBlockDragType(event)) return false;
+
           const sourceFrom = draggedBlockFrom(event);
           const target = dropTarget(event, view);
           if (sourceFrom === null || !target) return false;

@@ -1,11 +1,13 @@
-use std::{ffi::OsString, path::Path, sync::Arc, time::Duration};
+use std::{ffi::OsString, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use axum::{
     body::{to_bytes, Body},
-    http::{header, Request, StatusCode},
+    extract::ConnectInfo,
+    http::{header, HeaderValue, Method, Request, StatusCode},
     response::Response,
     Router,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tempfile::{tempdir, TempDir};
 use tower::ServiceExt as _;
 
@@ -15,12 +17,17 @@ use super::{
 };
 use crate::{
     config::KernelConfig,
+    contract::{
+        ListWorkspaceInventoryQuery, PageLimit, ResourceKind, WorkspaceInventoryEntryDto,
+        WorkspaceRelativePath,
+    },
     paths::{KernelPaths, ServerPathLayout},
     ports::KernelPorts,
     runtime::KernelRuntime,
     server::{
-        AuthenticationRateLimiter, RateLimitPolicy, ServerAuthenticationSecurity,
-        ServerAuthenticationStore, ServerLaunchEnvironment, SessionPolicy, SessionStore,
+        compose_fixed_server_kernel, AuthenticationRateLimiter, RateLimitPolicy,
+        ServerAuthenticationSecurity, ServerAuthenticationStore, ServerLaunchEnvironment,
+        SessionPolicy, SessionStore,
     },
 };
 
@@ -34,6 +41,122 @@ struct ServerWebFixture {
     router: Router,
     _root: TempDir,
     _runtime: Arc<KernelRuntime>,
+}
+
+struct ServerWebMediaFixture {
+    router: Router,
+    resource_id: String,
+    revision: String,
+    native_credential: String,
+    _root: TempDir,
+    _runtime: Arc<KernelRuntime>,
+}
+
+impl ServerWebMediaFixture {
+    async fn new() -> Self {
+        let root = tempdir().unwrap();
+        let data = root.path().join("data");
+        let cache = root.path().join("cache");
+        let web = root.path().join("web");
+        std::fs::create_dir(&data).unwrap();
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::create_dir(&web).unwrap();
+        std::fs::write(web.join("index.html"), INDEX).unwrap();
+        let config = KernelConfig::generate().unwrap();
+        let native_credential = config.native_launch_credential().expose_secret().to_owned();
+        let paths = ServerPathLayout::for_test(&data, &cache)
+            .activate()
+            .unwrap();
+        let composition = compose_fixed_server_kernel(config, paths).await.unwrap();
+        let runtime = composition.runtime().clone();
+        let bytes = STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAABAAAAAMCAIAAADkharWAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAtUlEQVR4nGP8x4AATP8ZgeS///9BbKb/cPH/DCA2I1iWhYFEANXgCKEc4AQSzcBgD7YBIkCuDfTSoPwZ5NaVoRJA8q/LVyBpXnsTSAoxMAHJW97SWGwoKgpjeHxowYIXZ26+mNhsMrF7Qn5pAVC8traOgWHu1KnXUDTc8WVguL3K/gADgwTDoZv2a2sZ/tcnB9dDJIsZt9oxKNhRw9OGHxgSEvR+eGrlV0xHFvd8fSg7O4RkGwDyqTc3JJObhAAAAABJRU5ErkJggg==")
+            .unwrap();
+        std::fs::write(data.join("workspace/image.png"), bytes).unwrap();
+        let inventory = runtime
+            .resources_api_service()
+            .unwrap()
+            .list_workspace_inventory(ListWorkspaceInventoryQuery {
+                cursor: None,
+                limit: Some(PageLimit::new(10).unwrap()),
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+            .unwrap();
+        let resource = inventory
+            .items
+            .into_iter()
+            .find_map(|entry| match entry {
+                WorkspaceInventoryEntryDto::Resource { resource }
+                    if resource.kind == ResourceKind::Image =>
+                {
+                    Some(resource)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let activation = composition
+            .activate_api(
+                ServerLaunchEnvironment::from_lookup(|name| {
+                    (name == crate::server::SERVER_INITIALIZATION_TOKEN_ENV)
+                        .then(|| OsString::from(INITIALIZATION_TOKEN))
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let router = build_server_web_router(
+            activation,
+            TransportPolicy::same_origin(HOST, ORIGIN).unwrap(),
+            &web,
+        )
+        .unwrap();
+        Self {
+            router,
+            resource_id: resource.id.as_str().to_owned(),
+            revision: resource.revision.as_str().to_owned(),
+            native_credential,
+            _root: root,
+            _runtime: runtime,
+        }
+    }
+
+    fn media_request(&self) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/media/v1/images/{}?revision={}",
+                self.resource_id, self.revision
+            ))
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn browser_cookie(&self) -> String {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/initialize")
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                "{{\"initializationToken\":\"{INITIALIZATION_TOKEN}\",\"password\":\"Correct-Horse-Battery-Staple!7\"}}"
+            )))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "192.0.2.10:4242".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|cookie| cookie.to_str().unwrap().split(';').next().unwrap())
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
 }
 
 impl ServerWebFixture {
@@ -105,10 +228,17 @@ async fn server_web_entry_assets_and_spa_fallback_are_public_without_a_session()
 }
 
 #[tokio::test]
-async fn every_unknown_api_namespace_path_stays_json_and_never_uses_the_spa_fallback() {
+async fn every_unknown_api_or_media_namespace_path_stays_json_and_never_uses_the_spa_fallback() {
     let web = ServerWebFixture::new();
 
-    for path in ["/api", "/api/unknown", "/api/v1/unknown"] {
+    for path in [
+        "/api",
+        "/api/unknown",
+        "/api/v1/unknown",
+        "/media",
+        "/media/v1/images",
+        "/media/v1/images/not-a-capability/extra",
+    ] {
         let response = web.response("GET", path).await;
         assert_ne!(response.status(), StatusCode::OK, "{path}");
         assert_eq!(
@@ -151,6 +281,52 @@ async fn static_requests_keep_the_exact_host_and_origin_policy() {
     assert_eq!(
         wrong_origin.headers()[header::CONTENT_TYPE],
         "application/json"
+    );
+}
+
+#[tokio::test]
+async fn server_web_media_images_require_a_browser_session_and_are_same_origin_resources() {
+    let web = ServerWebMediaFixture::new().await;
+
+    let mut options = web.media_request();
+    *options.method_mut() = Method::OPTIONS;
+    options.headers_mut().insert(
+        header::ACCESS_CONTROL_REQUEST_METHOD,
+        HeaderValue::from_static("GET"),
+    );
+    let options = web.router.clone().oneshot(options).await.unwrap();
+    assert_eq!(options.status(), StatusCode::BAD_REQUEST);
+
+    let unauthenticated = web
+        .router
+        .clone()
+        .oneshot(web.media_request())
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let mut bearer = web.media_request();
+    bearer.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", web.native_credential).parse().unwrap(),
+    );
+    let bearer = web.router.clone().oneshot(bearer).await.unwrap();
+    assert_eq!(bearer.status(), StatusCode::UNAUTHORIZED);
+
+    let cookie = web.browser_cookie().await;
+    let mut authenticated = web.media_request();
+    authenticated
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
+    let authenticated = web.router.clone().oneshot(authenticated).await.unwrap();
+    assert_eq!(authenticated.status(), StatusCode::OK);
+    assert_eq!(
+        authenticated.headers()["cross-origin-resource-policy"],
+        "same-origin"
+    );
+    assert_eq!(
+        authenticated.headers()[header::CONTENT_DISPOSITION],
+        "inline"
     );
 }
 
