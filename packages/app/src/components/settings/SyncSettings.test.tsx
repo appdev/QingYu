@@ -89,7 +89,10 @@ function conflict(overrides: Partial<SyncConflictRecord> = {}): SyncConflictReco
     relativePath: "notes/conflicted.md",
     repositoryId,
     resolution: "keep-local",
-    ...overrides
+    ...overrides,
+    copyError: overrides.copyError ?? null,
+    copyPath: overrides.copyPath ?? null,
+    copyStatus: overrides.copyStatus ?? "not-requested"
   };
 }
 

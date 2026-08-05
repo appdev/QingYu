@@ -36,6 +36,17 @@ describe("Server Kernel domain adapter", () => {
     expect(Object.isFrozen(adapter.port.appConfig.bootstrap.localState)).toBe(true);
   });
 
+  it("issues a same-origin revision-bound media image URL", async () => {
+    const adapter = await createServerKernelDomainAdapter(kernelClient(), options());
+
+    expect(adapter.port.resources.imageUrl({
+      id: "image/payload.signature",
+      revision: "sha256:resource revision" as KernelRevision,
+    })).toBe(
+      "/media/v1/images/image%2Fpayload.signature?revision=sha256%3Aresource%20revision",
+    );
+  });
+
   it("maps draft creation directories from bootstrap and read AppConfig snapshots", async () => {
     const client = kernelClient();
     vi.mocked(client.appConfig.get)

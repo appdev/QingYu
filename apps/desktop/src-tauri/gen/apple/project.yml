@@ -66,8 +66,8 @@ targets:
           - pt-BR
           - it
           - ru
-        CFBundleShortVersionString: 2.5.3
-        CFBundleVersion: "2.5.3"
+        CFBundleShortVersionString: 2.5.5
+        CFBundleVersion: "2.5.5"
     entitlements:
       path: qingyu_iOS/qingyu_iOS.entitlements
     scheme:

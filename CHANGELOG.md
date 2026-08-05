@@ -1,3 +1,9 @@
+## [2.5.5](https://github.com/markrahq/markra/compare/v2.5.4...v2.5.5) (2026-08-05)
+
+### Bug Fixes
+
+* **editor:** preserve rich HTML paste formatting ([#645](https://github.com/markrahq/markra/issues/645)) ([cc57430](https://github.com/markrahq/markra/commit/cc5743084246c1a1f97df2b4ad894f95d2f20e9f)), closes [#631](https://github.com/markrahq/markra/issues/631)
+
 ## [2.5.4](https://github.com/markrahq/markra/compare/v2.5.3...v2.5.4) (2026-08-04)
 
 ### Bug Fixes

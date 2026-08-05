@@ -6,7 +6,8 @@ type MarkdownImageSrcResolverOptions = {
 };
 
 function isRemoteOrEmbeddedImageSrc(src: string) {
-  return /^[a-zA-Z][a-zA-Z\d+.-]*:/u.test(src) && !/^[a-zA-Z]:[\\/]/u.test(src);
+  return src.startsWith("//") ||
+    (/^[a-zA-Z][a-zA-Z\d+.-]*:/u.test(src) && !/^[a-zA-Z]:[\\/]/u.test(src));
 }
 
 function documentDirectory(path: string) {

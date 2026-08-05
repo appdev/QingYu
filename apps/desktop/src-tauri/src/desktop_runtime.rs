@@ -883,6 +883,7 @@ pub(crate) fn run() {
                 crate::markdown_files::attachment::save_clipboard_attachment,
                 crate::markdown_files::image::save_clipboard_image,
                 crate::markdown_files::path::canonical_local_file_path,
+                crate::clipboard::read_clipboard_content,
                 crate::clipboard::read_clipboard_text,
                 crate::windows::minimize_current_window,
                 crate::windows::open_blank_editor_window,

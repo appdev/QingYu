@@ -7,7 +7,6 @@ import type {
   KernelInvalidationNotice,
   KernelInvalidationSource,
   KernelPageCursor,
-  KernelResourceBody,
   KernelResourceSnapshot,
   KernelRevision,
   KernelWorkspaceGeneration,
@@ -43,24 +42,11 @@ export interface KernelFileRuntimeOptions {
   readonly isTerminalError?: (error: unknown) => boolean;
   readonly nativeShell?: KernelFileNativeShellFallback;
   readonly pollIntervalMs?: number;
-  readonly resolveImageSrc?: (resource: KernelResourceSnapshot) => string | undefined;
   readonly setInterval?: typeof globalThis.setInterval;
   readonly clearInterval?: typeof globalThis.clearInterval;
 }
 
-export interface KernelImageSource {
-  readonly materialize: (
-    resource: KernelResourceSnapshot,
-    open: () => Promise<KernelResourceBody>,
-    signal?: AbortSignal | null,
-  ) => Promise<string | undefined>;
-  readonly release: (source: string) => unknown;
-  readonly close?: () => unknown;
-}
-
-export interface KernelFileRuntimeOwnerOptions extends KernelFileRuntimeOptions {
-  readonly imageSource?: KernelImageSource;
-}
+export type KernelFileRuntimeOwnerOptions = KernelFileRuntimeOptions;
 
 export interface KernelFileRuntimeOwner {
   readonly files: AppFileRuntime;
@@ -95,6 +81,13 @@ function isDocumentAlreadyExistsError(error: unknown) {
     error.code === "document_already_exists";
 }
 
+function servedKernelImageUrl(
+  resources: KernelDomainPort["resources"],
+  resource: KernelResourceSnapshot,
+) {
+  return resources.imageUrl({ id: resource.id, revision: resource.revision });
+}
+
 function createBatchId() {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -121,8 +114,8 @@ export function createKernelFileRuntimeOwner(
   const invalidations = options.invalidations ?? kernel.invalidations;
   const resources = kernel.resources;
   let workspaceIdentity: Promise<WorkspaceIdentity> | undefined;
+  let workspaceEpoch = 0;
   let imageResources = new Map<string, CachedImageResource>();
-  let imageSources = new Map<string, string>();
   let imageResourceCacheGeneration: KernelWorkspaceGeneration | undefined;
   let imageResourceCacheReady = false;
   let imageResourceEpoch = 0;
@@ -139,9 +132,9 @@ export function createKernelFileRuntimeOwner(
 
   const listDirectory = async (
     parent: KernelWorkspaceRelativePath,
+    identity: WorkspaceIdentity,
     signal?: AbortSignal | null,
   ) => {
-    const identity = await workspace();
     let cursor: KernelPageCursor | undefined;
     const listed: KernelDocumentEntrySnapshot[] = [];
     do {
@@ -152,26 +145,40 @@ export function createKernelFileRuntimeOwner(
         parent,
         workspaceGeneration: identity.generation,
       });
+      if (page.workspaceGeneration !== identity.generation) {
+        throw new Error("The Kernel workspace generation changed.");
+      }
       listed.push(...page.items);
-      page.items.forEach(cacheEntry);
       cursor = page.nextCursor ?? undefined;
     } while (cursor !== undefined);
     return listed;
   };
 
-  const listTree = async (relativeRoot: string, signal?: AbortSignal | null) => {
-    const result: KernelDocumentEntrySnapshot[] = [];
-    const pending = [relativeRoot as KernelWorkspaceRelativePath];
-    while (pending.length > 0) {
-      const parent = pending.shift()!;
-      const children = await listDirectory(parent, signal);
-      result.push(...children);
-      children.forEach((entry) => {
-        if (entry.kind === "directory") pending.push(entry.relativePath);
-      });
+  const listTreeSnapshot = async (relativeRoot: string, signal?: AbortSignal | null) => {
+    while (true) {
+      if (released) throw new Error("The Kernel file runtime has been released.");
+      const expectedWorkspaceEpoch = workspaceEpoch;
+      const identity = await workspace();
+      const result: KernelDocumentEntrySnapshot[] = [];
+      const pending = [relativeRoot as KernelWorkspaceRelativePath];
+      while (pending.length > 0) {
+        const parent = pending.shift()!;
+        const children = await listDirectory(parent, identity, signal);
+        result.push(...children);
+        children.forEach((entry) => {
+          if (entry.kind === "directory") pending.push(entry.relativePath);
+        });
+      }
+      assertNotAborted(signal);
+      if (released) throw new Error("The Kernel file runtime has been released.");
+      if (expectedWorkspaceEpoch !== workspaceEpoch) continue;
+      result.forEach(cacheEntry);
+      return { entries: result, workspaceEpoch: expectedWorkspaceEpoch };
     }
-    return result;
   };
+
+  const listTree = async (relativeRoot: string, signal?: AbortSignal | null) =>
+    (await listTreeSnapshot(relativeRoot, signal)).entries;
 
   const refreshImageResources = async (
     relativeRoot: string,
@@ -217,53 +224,11 @@ export function createKernelFileRuntimeOwner(
         next.set(resource.relativePath, resource);
       }
     }
-    const nextSources = new Map<string, string>();
-    const createdSources = new Set<string>();
-    if (options.imageSource !== undefined) {
-      try {
-        for (const [relativePath, resource] of next) {
-          assertNotAborted(signal);
-          const previous = imageResources.get(relativePath);
-          const previousSource = imageSources.get(relativePath);
-          if (
-            previousSource !== undefined &&
-            previous !== undefined &&
-            sameResourceVersion(previous, resource)
-          ) {
-            nextSources.set(relativePath, previousSource);
-            continue;
-          }
-          const source = await options.imageSource.materialize(resource, async () => {
-            const body = await resources.open({
-              id: resource.id,
-              kind: resource.kind,
-              workspaceGeneration: identity.generation,
-            });
-            if (body.mediaType !== resource.mediaType) {
-              throw new Error("The Kernel image resource media type changed.");
-            }
-            return body;
-          }, signal);
-          if (source !== undefined) {
-            nextSources.set(relativePath, source);
-            createdSources.add(source);
-          }
-        }
-        assertNotAborted(signal);
-      } catch (error: unknown) {
-        createdSources.forEach(releaseImageSource);
-        throw error;
-      }
-    }
+    assertNotAborted(signal);
     if (released || expectedEpoch !== imageResourceEpoch) {
-      createdSources.forEach(releaseImageSource);
       return;
     }
-    for (const [relativePath, source] of imageSources) {
-      if (nextSources.get(relativePath) !== source) releaseImageSource(source);
-    }
     imageResources = next;
-    imageSources = nextSources;
     imageResourceCacheGeneration = identity.generation;
     imageResourceCacheReady = true;
   };
@@ -272,10 +237,16 @@ export function createKernelFileRuntimeOwner(
     relativeRoot: string,
     signal?: AbortSignal | null,
   ) => {
-    const epoch = imageResourceEpoch;
-    const treeEntries = await listTree(relativeRoot, signal);
-    await refreshImageResources(relativeRoot, treeEntries, signal, epoch);
-    return treeEntries;
+    while (true) {
+      if (released) throw new Error("The Kernel file runtime has been released.");
+      const tree = await listTreeSnapshot(relativeRoot, signal);
+      if (tree.workspaceEpoch !== workspaceEpoch) continue;
+      const epoch = imageResourceEpoch;
+      await refreshImageResources(relativeRoot, tree.entries, signal, epoch);
+      if (released) throw new Error("The Kernel file runtime has been released.");
+      if (tree.workspaceEpoch !== workspaceEpoch || epoch !== imageResourceEpoch) continue;
+      return tree.entries;
+    }
   };
 
   const ensureImageResources = async () => {
@@ -284,30 +255,37 @@ export function createKernelFileRuntimeOwner(
       imageResourceCacheReady &&
       imageResourceCacheGeneration === identity.generation
     ) return;
-    imageResourcePrewarm ??= (async () => {
-      await loadTreeAndImages("");
-    })().finally(() => {
-      imageResourcePrewarm = undefined;
-    });
+    if (imageResourcePrewarm === undefined) {
+      const prewarm = loadTreeAndImages("").then(() => undefined);
+      imageResourcePrewarm = prewarm;
+      prewarm.finally(() => {
+        if (imageResourcePrewarm === prewarm) imageResourcePrewarm = undefined;
+      }).catch(() => undefined);
+    }
     await imageResourcePrewarm;
   };
 
   const invalidateImageResources = () => {
     imageResourceEpoch += 1;
-    imageSources.forEach(releaseImageSource);
-    imageSources = new Map();
-    imageResources = new Map();
     imageResourceCacheGeneration = undefined;
     imageResourceCacheReady = false;
   };
 
-  const stopImageInvalidations = options.imageSource === undefined
-    ? undefined
-    : subscribeToInvalidations(invalidations, async (notice) => {
-        if (notice.scopes.includes("resources") || notice.scopes.includes("workspace")) {
-          invalidateImageResources();
-        }
-      });
+  const invalidateFromNotice = (notice: KernelInvalidationNotice) => {
+    const workspaceInvalidated = notice.scopes.includes("workspace");
+    if (workspaceInvalidated) {
+      workspaceEpoch += 1;
+      workspaceIdentity = undefined;
+      entries.clear();
+    }
+    const imagesInvalidated = workspaceInvalidated || notice.scopes.includes("resources");
+    if (imagesInvalidated) invalidateImageResources();
+    return imagesInvalidated;
+  };
+
+  const stopImageInvalidations = subscribeToInvalidations(invalidations, async (notice) => {
+    invalidateFromNotice(notice);
+  });
 
   const resolveEntry = async (path: string) => {
     const relativePath = relativePathFromServerPath(path);
@@ -398,29 +376,6 @@ export function createKernelFileRuntimeOwner(
     }
     if (created.kind === "image") {
       imageResources.set(created.relativePath, created);
-      if (options.imageSource !== undefined) {
-        const epoch = imageResourceEpoch;
-        const source = await options.imageSource.materialize(created, async () => {
-          const opened = await resources.open({
-            id: created.id,
-            kind: "image",
-            workspaceGeneration: identity.generation,
-          });
-          if (opened.mediaType !== created.mediaType) {
-            throw new Error("The Kernel resource media type changed.");
-          }
-          return opened;
-        });
-        if (source !== undefined) {
-          if (released || epoch !== imageResourceEpoch) {
-            releaseImageSource(source);
-          } else {
-            const previous = imageSources.get(created.relativePath);
-            if (previous !== undefined && previous !== source) releaseImageSource(previous);
-            imageSources.set(created.relativePath, source);
-          }
-        }
-      }
     }
     return {
       document,
@@ -567,11 +522,12 @@ export function createKernelFileRuntimeOwner(
       return moveEntry(document, fileName, parent);
     },
     resolveMarkdownImageSrc: (documentPath, source) => {
-      const relativePath = resolveServerMarkdownImagePath(documentPath, source);
-      if (relativePath === null) return undefined;
-      const resource = imageResources.get(relativePath);
-      if (resource === undefined) return undefined;
-      return imageSources.get(relativePath) ?? options.resolveImageSrc?.(resource);
+      const resolution = classifyServerMarkdownImageSource(documentPath, source);
+      if (resolution.kind === "unowned") return undefined;
+      if (resolution.relativePath === null) return null;
+      const resource = imageResources.get(resolution.relativePath);
+      if (resource === undefined) return null;
+      return servedKernelImageUrl(resources, resource) ?? null;
     },
     resolveMarkdownFolder: async (path) => {
       const identity = await workspace();
@@ -697,45 +653,6 @@ export function createKernelFileRuntimeOwner(
         }
       }
       created.forEach((resource) => imageResources.set(resource.relativePath, resource));
-      if (options.imageSource !== undefined) {
-        const epoch = imageResourceEpoch;
-        const pendingSources: Array<[KernelResourceSnapshot, string]> = [];
-        try {
-          for (const resource of created) {
-            if (released || epoch !== imageResourceEpoch) throw new Error("The image source lease changed.");
-            const source = await options.imageSource.materialize(resource, async () => {
-              const opened = await resources.open({
-                id: resource.id,
-                kind: "image",
-                workspaceGeneration: identity.generation,
-              });
-              if (opened.mediaType !== resource.mediaType) {
-                throw new Error("The Kernel resource media type changed.");
-              }
-              return opened;
-            });
-            if (source !== undefined) {
-              if (released || epoch !== imageResourceEpoch) {
-                releaseImageSource(source);
-                throw new Error("The image source lease changed.");
-              }
-              pendingSources.push([resource, source]);
-            }
-          }
-        } catch {
-          pendingSources.forEach(([, source]) => releaseImageSource(source));
-          pendingSources.length = 0;
-        }
-        for (const [resource, source] of pendingSources) {
-          if (released || epoch !== imageResourceEpoch) {
-            releaseImageSource(source);
-            continue;
-          }
-          const previous = imageSources.get(resource.relativePath);
-          if (previous !== undefined && previous !== source) releaseImageSource(previous);
-          imageSources.set(resource.relativePath, source);
-        }
-      }
       return created.map((resource, index) => {
         const input = inputs[index];
         if (!input) throw new Error("The Kernel resource batch metadata changed.");
@@ -778,12 +695,17 @@ export function createKernelFileRuntimeOwner(
     watchMarkdownFile: async (path, onChange, onTreeChange) => {
       const relativePath = relativePathFromServerPath(path);
       const eventSubscription = subscribeToInvalidations(invalidations, async (notice) => {
-        if (notice.scopes.includes("resources")) invalidateImageResources();
-        if (!notice.scopes.some(reloadsDocuments)) return;
+        const imagesInvalidated = invalidateFromNotice(notice);
+        const documentsReloaded = notice.scopes.some(reloadsDocuments);
+        if (!documentsReloaded && !imagesInvalidated) return;
         if (
           notice.paths !== undefined &&
           !notice.paths.some((candidate) => pathBelongsToTree(candidate, relativePath))
         ) return;
+        if (!documentsReloaded) {
+          await onTreeChange?.(path);
+          return;
+        }
         if (notice.documentChange === "tree") {
           removeCachedTree(relativePath);
           await onTreeChange?.(path);
@@ -791,7 +713,7 @@ export function createKernelFileRuntimeOwner(
         }
         entries.delete(relativePath);
         await onChange(path);
-        if (notice.documentChange === "snapshot") await onTreeChange?.(path);
+        if (imagesInvalidated || notice.documentChange === "snapshot") await onTreeChange?.(path);
       });
       if (eventSubscription !== undefined) return eventSubscription;
 
@@ -812,13 +734,13 @@ export function createKernelFileRuntimeOwner(
     watchMarkdownTree: async (path, onTreeChange) => {
       const relativePath = relativePathFromServerPath(path);
       const eventSubscription = subscribeToInvalidations(invalidations, async (notice) => {
-        if (notice.scopes.includes("resources")) invalidateImageResources();
-        if (!notice.scopes.some(reloadsDocuments)) return;
+        const imagesInvalidated = invalidateFromNotice(notice);
+        if (!notice.scopes.some(reloadsDocuments) && !imagesInvalidated) return;
         if (
           notice.paths !== undefined &&
           !notice.paths.some((candidate) => pathBelongsToTree(candidate, relativePath))
         ) return;
-        removeCachedTree(relativePath);
+        if (notice.scopes.some(reloadsDocuments)) removeCachedTree(relativePath);
         await onTreeChange(path);
       });
       if (eventSubscription !== undefined) return eventSubscription;
@@ -860,27 +782,15 @@ export function createKernelFileRuntimeOwner(
     release: () => {
       if (released) return undefined;
       released = true;
-      try {
-        options.imageSource?.close?.();
-      } catch {
-        // Closing pending image materialization is best-effort; cached URLs
-        // are still released below under the file-runtime ownership boundary.
-      }
       stopImageInvalidations?.();
       invalidateImageResources();
+      imageResources = new Map();
       entries.clear();
       workspaceIdentity = undefined;
       return undefined;
     },
   });
 
-  function releaseImageSource(source: string) {
-    try {
-      options.imageSource?.release(source);
-    } catch {
-      // Resource URL cleanup is best-effort and cannot retain a stale cache entry.
-    }
-  }
 }
 
 function assertServerRoot(path: string) {
@@ -917,27 +827,35 @@ function serverPathFromRelative(relativePath: string) {
   return `${kernelWorkspaceRoot}/${encoded}`;
 }
 
-export function resolveServerMarkdownImagePath(documentPath: string, source: string) {
+function classifyServerMarkdownImageSource(documentPath: string, source: string):
+  | { readonly kind: "kernel"; readonly relativePath: string | null }
+  | { readonly kind: "unowned" } {
   let documentRelativePath: string;
   try {
     documentRelativePath = relativePathFromServerPath(documentPath);
   } catch {
-    return null;
+    return { kind: "unowned" };
   }
-  if (documentRelativePath === "" || source === "") return null;
+  if (documentRelativePath === "" || source === "") {
+    return { kind: "kernel", relativePath: null };
+  }
 
   const sourceWithoutSuffix = source.split(/[?#]/u, 1)[0] ?? "";
-  if (sourceWithoutSuffix === "" || sourceWithoutSuffix.includes("\\")) return null;
+  if (sourceWithoutSuffix === "" || sourceWithoutSuffix.includes("\\")) {
+    return { kind: "kernel", relativePath: null };
+  }
   let rawPath: string;
   let resolved = documentRelativePath.split("/").slice(0, -1);
-  if (sourceWithoutSuffix === kernelWorkspaceRoot) return null;
+  if (sourceWithoutSuffix === kernelWorkspaceRoot) {
+    return { kind: "kernel", relativePath: null };
+  }
   if (sourceWithoutSuffix.startsWith(`${kernelWorkspaceRoot}/`)) {
     rawPath = sourceWithoutSuffix.slice(kernelWorkspaceRoot.length + 1);
     resolved = [];
   } else if (/^[a-zA-Z][a-zA-Z\d+.-]*:/u.test(sourceWithoutSuffix)) {
-    return null;
+    return { kind: "unowned" };
   } else if (sourceWithoutSuffix.startsWith("//")) {
-    return null;
+    return { kind: "unowned" };
   } else if (sourceWithoutSuffix.startsWith("/")) {
     rawPath = sourceWithoutSuffix.slice(1);
     resolved = [];
@@ -951,19 +869,29 @@ export function resolveServerMarkdownImagePath(documentPath: string, source: str
     try {
       segment = decodeURIComponent(encodedSegment);
     } catch {
-      return null;
+      return { kind: "kernel", relativePath: null };
     }
-    if (/[\u0000-\u001f\u007f-\u009f\\/]/u.test(segment)) return null;
+    if (/[\u0000-\u001f\u007f-\u009f\\/]/u.test(segment)) {
+      return { kind: "kernel", relativePath: null };
+    }
     if (segment === ".") continue;
     if (segment === "..") {
-      if (resolved.length === 0) return null;
+      if (resolved.length === 0) return { kind: "kernel", relativePath: null };
       resolved.pop();
       continue;
     }
-    if (segment === "") return null;
+    if (segment === "") return { kind: "kernel", relativePath: null };
     resolved.push(segment);
   }
-  return resolved.length === 0 ? null : resolved.join("/");
+  return {
+    kind: "kernel",
+    relativePath: resolved.length === 0 ? null : resolved.join("/"),
+  };
+}
+
+export function resolveServerMarkdownImagePath(documentPath: string, source: string) {
+  const resolution = classifyServerMarkdownImageSource(documentPath, source);
+  return resolution.kind === "kernel" ? resolution.relativePath : null;
 }
 
 function parentServerPath(relativePath: string) {
@@ -1250,18 +1178,4 @@ function imageAltFromFileName(fileName: string) {
   if (trimmed === "") return "image";
   const withoutExtension = trimmed.replace(/\.[^.]*$/u, "").trim();
   return withoutExtension || "image";
-}
-
-function sameResourceVersion(
-  left: KernelResourceSnapshot,
-  right: KernelResourceSnapshot,
-) {
-  return (
-    left.id === right.id &&
-    left.kind === right.kind &&
-    left.mediaType === right.mediaType &&
-    left.relativePath === right.relativePath &&
-    left.revision === right.revision &&
-    left.workspaceGeneration === right.workspaceGeneration
-  );
 }

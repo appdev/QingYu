@@ -272,6 +272,82 @@ describe("mobile Kernel runtime boundary", () => {
     owner.release();
   });
 
+  it("resolves mobile Markdown images to Kernel media URLs without opening Blob bytes", async () => {
+    const kernel = readyKernelPort();
+    const document = {
+      kind: "file" as const,
+      locator: "document-1" as never,
+      modifiedAt: "2026-08-05T00:00:00Z",
+      name: "note.md",
+      parent: "notes" as KernelWorkspaceRelativePath,
+      relativePath: "notes/note.md" as KernelWorkspaceRelativePath,
+      revision: "document-revision-1" as KernelRevision,
+      sizeBytes: 4,
+      workspaceGeneration: "generation-1" as KernelWorkspaceGeneration,
+    };
+    const resource = {
+      id: "mobile/image capability.signature",
+      kind: "image" as const,
+      mediaType: "image/png" as const,
+      modifiedAt: "2026-08-05T00:00:00Z",
+      name: "mobile.png",
+      parent: "notes/assets" as KernelWorkspaceRelativePath,
+      previewable: true,
+      relativePath: "notes/assets/mobile.png" as KernelWorkspaceRelativePath,
+      revision: "sha256:mobile revision" as KernelRevision,
+      sizeBytes: 8,
+      workspaceGeneration: "generation-1" as KernelWorkspaceGeneration,
+    };
+    const imageUrl = vi.fn(({ id, revision }: { id: string; revision: KernelRevision }) =>
+      `http://127.0.0.1:49152/media/v1/images/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`
+    );
+    const open = vi.fn<KernelDomainPort["resources"]["open"]>();
+    Object.assign(kernel.documents, {
+      list: vi.fn(async () => ({
+        items: [document],
+        nextCursor: null,
+        workspaceGeneration: "generation-1" as KernelWorkspaceGeneration,
+      })),
+    });
+    Object.assign(kernel.resources, {
+      create: vi.fn(async () => resource),
+      imageUrl,
+      open,
+    });
+    Object.assign(kernel.workspace, {
+      read: vi.fn(async () => ({
+        displayName: "Notes",
+        generation: "generation-1" as KernelWorkspaceGeneration,
+        id: "workspace-1",
+        readiness: "ready" as const,
+        revision: "workspace-revision-1" as KernelRevision,
+      })),
+    });
+    const owner = createMobileKernelRuntimeOwner(kernel);
+
+    const saved = await owner.runtime.files.saveClipboardImage({
+      documentPath: `${kernelWorkspaceRoot}/notes/note.md`,
+      fileName: "mobile.png",
+      folder: "assets",
+      image: new File([new Uint8Array([137, 80, 78, 71])], "mobile.png", {
+        type: "image/png",
+      }),
+    });
+
+    expect(owner.runtime.files.resolveMarkdownImageSrc?.(
+      `${kernelWorkspaceRoot}/notes/note.md`,
+      saved.src,
+    )).toBe(
+      "http://127.0.0.1:49152/media/v1/images/mobile%2Fimage%20capability.signature?revision=sha256%3Amobile%20revision",
+    );
+    expect(imageUrl).toHaveBeenCalledWith({
+      id: resource.id,
+      revision: resource.revision,
+    });
+    expect(open).not.toHaveBeenCalled();
+    owner.release();
+  });
+
   it("keeps native confirmation, image picker, system back, external links, and themes", async () => {
     mockedConfirm.mockResolvedValue(true);
 

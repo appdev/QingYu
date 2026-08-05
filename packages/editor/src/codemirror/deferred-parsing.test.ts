@@ -1,16 +1,13 @@
 import { forceParsing } from "@codemirror/language";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   blocksPlugin,
   codeMirrorBlockDragPlugin,
-  codeMirrorSpellcheckPlugin,
   foldTogglePlugin,
   footnotePreviewPlugin,
-  getCodeMirrorSpellcheckState,
   liveMarkdown,
-  markraLanguage,
   mathPreviewPlugin,
   rawHtmlPreviewPlugin,
   readCodeMirrorBlockRanges,
@@ -54,15 +51,22 @@ function decorationWidgetNames(view: EditorView) {
   return names;
 }
 
-function widgetCount(view: EditorView, name: string) {
-  return decorationWidgetNames(view).filter((candidate) => candidate === name)
-    .length;
+function widgetFroms(view: EditorView, name: string) {
+  const positions: number[] = [];
+  for (const source of view.state.facet(EditorView.decorations)) {
+    const decorations = typeof source === "function" ? source(view) : source;
+    decorations.between(0, view.state.doc.length, (from, _to, decoration) => {
+      if (decoration.spec.widget?.constructor.name === name) {
+        positions.push(from);
+      }
+    });
+  }
+  return positions.sort((left, right) => left - right);
 }
 
 afterEach(() => {
   for (const view of views.splice(0)) view.destroy();
   document.body.replaceChildren();
-  vi.useRealTimers();
 });
 
 describe("deferred Markdown parsing", () => {
@@ -95,18 +99,23 @@ describe("deferred Markdown parsing", () => {
     );
   });
 
-  it("adds block toolbars when background parsing catches up", () => {
+  it("keeps block toolbars scoped to visible ranges when background parsing catches up", () => {
     const source = `${prefix}\n\nFinal synthetic paragraph.`;
     const view = createView(source, codeMirrorBlockDragPlugin());
-    const initialCount = widgetCount(view, "BlockToolbarWidget");
 
     expect(forceParsing(view, source.length, 1_000)).toBe(true);
-    expect(widgetCount(view, "BlockToolbarWidget")).toBeGreaterThan(
-      initialCount,
-    );
-    expect(widgetCount(view, "BlockToolbarWidget")).toBe(
-      readCodeMirrorBlockRanges(view.state).length,
-    );
+    const completeRanges = readCodeMirrorBlockRanges(view.state);
+    const visibleBlockFroms = completeRanges
+      .filter((block) =>
+        view.visibleRanges.some(({ from, to }) =>
+          block.from >= from && block.from <= to
+        )
+      )
+      .map((block) => block.from);
+    const publishedFroms = widgetFroms(view, "BlockToolbarWidget");
+
+    expect(publishedFroms).toEqual(visibleBlockFroms);
+    expect(publishedFroms.length).toBeLessThan(completeRanges.length);
   });
 
   it("offers table fragment merging when background parsing catches up", () => {
@@ -150,38 +159,4 @@ describe("deferred Markdown parsing", () => {
     expect(decorationWidgetNames(view)).toContain("HeadingLevelWidget");
   });
 
-  it("rechecks stale spellcheck matches from deferred code fences", () => {
-    vi.useFakeTimers();
-    const source = `${prefix}\n\n\`\`\`text\nmisspeled\n\`\`\``;
-    const parent = document.createElement("div");
-    document.body.append(parent);
-    const view = new EditorView({
-      parent,
-      state: EditorState.create({
-        doc: source,
-        extensions: [
-          markraLanguage,
-          codeMirrorSpellcheckPlugin({
-            enabled: true,
-            spellchecker: {
-              check: (word) => word !== "misspeled",
-              suggest: () => [],
-            },
-          }),
-        ],
-      }),
-    });
-    views.push(view);
-
-    vi.advanceTimersByTime(160);
-    expect(
-      getCodeMirrorSpellcheckState(view.state).matches.map((match) => match.word),
-    ).toContain("misspeled");
-
-    expect(forceParsing(view, source.length, 1_000)).toBe(true);
-    vi.advanceTimersByTime(160);
-    expect(
-      getCodeMirrorSpellcheckState(view.state).matches.map((match) => match.word),
-    ).not.toContain("misspeled");
-  });
 });

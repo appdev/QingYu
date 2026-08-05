@@ -29,6 +29,9 @@ function deferred<T>() {
 function conflict(conflictId: string, relativePath = "folder/note.md"): SyncConflictRecord {
   return {
     conflictId,
+    copyError: null,
+    copyPath: null,
+    copyStatus: "not-requested",
     occurredAt: "2026-07-28T10:00:00Z",
     relativePath,
     repositoryId,

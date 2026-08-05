@@ -1112,6 +1112,7 @@ const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
     "open_markdown_file_in_new_window",
     "open_markdown_folder_in_new_window",
     "open_settings_window",
+    "read_clipboard_content",
     "read_clipboard_text",
     "read_desktop_kernel_startup_state",
     "read_local_image_file",

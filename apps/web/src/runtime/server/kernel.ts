@@ -497,6 +497,9 @@ export async function createServerKernelDomainAdapter(
         await confirmWorkspaceIdentity();
         return mapResourceEntry(resource, workspaceGeneration);
       },
+      imageUrl: ({ id, revision }) => (
+        `/media/v1/images/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`
+      ),
       list: async (input) => {
         await prepareDocumentOperation(input.workspaceGeneration);
         const items: ServerKernelInventoryEntry[] = [];

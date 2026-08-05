@@ -45,6 +45,7 @@ import type {
   TrashNativeMarkdownAssetsInput
 } from "../lib/tauri/file";
 import type {
+  NativeClipboardContent,
   NativeEditorContextMenuEntryOptions,
   NativeEditorContextMenuOptions,
   NativeMarkdownFileTreeContextMenuHandlers,
@@ -307,7 +308,7 @@ export type AppFileRuntime = {
   resolveMarkdownImageSrc?: (
     documentPath: string,
     source: string
-  ) => string | undefined;
+  ) => string | null | undefined;
   resolveMarkdownFolder: (path: string) => Promise<NativeMarkdownFolder>;
   resolveMarkdownPath: (path: string) => Promise<NativeMarkdownDroppedTarget>;
   resolveWorkspaceResourceRoot: (sourcePath: string) => Promise<string>;
@@ -368,6 +369,7 @@ export type AppMenuRuntime = {
     options?: NativeEditorContextMenuOptions
   ) => Promise<RuntimeCleanup>;
   listenApplicationMenuCommands: (handlers: NativeMenuHandlers) => Promise<RuntimeCleanup>;
+  readClipboardContent: () => Promise<NativeClipboardContent | null>;
   readClipboardText: () => Promise<string | null>;
   showMarkdownFileTreeContextMenu: (
     handlers: NativeMarkdownFileTreeContextMenuHandlers,
@@ -683,6 +685,11 @@ export function createDefaultAppRuntime(): AppRuntime {
       installApplicationMenu: async () => () => undefined,
       installEditorContextMenu: async () => () => undefined,
       listenApplicationMenuCommands: async () => () => undefined,
+      readClipboardContent: async () => {
+        const text = await readBrowserClipboardText();
+
+        return text ? { text } : null;
+      },
       readClipboardText: readBrowserClipboardText,
       showMarkdownFileTreeContextMenu: async () => undefined
     },
@@ -1034,6 +1041,8 @@ export {
   type ContextMenuIdPrefixes
 } from "./context-menu-items";
 export type {
+  NativeClipboardContent,
+  NativeClipboardContentReader,
   NativeEditorContextMenuOptions,
   NativeMarkdownFileTreeContextMenuHandlers,
   NativeMenuCommand,
