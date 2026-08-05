@@ -3111,7 +3111,7 @@ describe("QingYu workspace", () => {
     expect(screen.getByText("Editor remains visible.")).toBeInTheDocument();
   });
 
-  it("persists true-mobile images in the fixed managed root before inserting Markdown", async () => {
+  it("inserts a committed true-mobile image without waiting for the file tree refresh", async () => {
     const runtime = createDefaultAppRuntime();
     const managedRoot = kernelWorkspaceRoot;
     const notePath = `${managedRoot}/note.md`;
@@ -3123,6 +3123,9 @@ describe("QingYu workspace", () => {
       finishSave = resolve;
     });
     const saveClipboardImages = vi.fn(() => pendingSave);
+    const pendingTreeRefresh = new Promise<Awaited<ReturnType<
+      typeof mockedLoadNativeMarkdownFilesForPath
+    >>>(() => {});
     const pendingConfig = new Promise<never>(() => {});
     mockCompactViewport(false);
     configureAppRuntime({
@@ -3173,6 +3176,8 @@ describe("QingYu workspace", () => {
     const { container } = renderFreshApp();
 
     expect(await screen.findByText("Mobile image import")).toBeInTheDocument();
+    mockedLoadNativeMarkdownFilesForPath.mockClear();
+    mockedLoadNativeMarkdownFilesForPath.mockReturnValue(pendingTreeRefresh);
     fireEvent.click(screen.getByRole("button", { name: "Image" }));
     await waitFor(() => expect(saveClipboardImages).toHaveBeenCalledWith([{
       documentPath: notePath,
@@ -3188,6 +3193,7 @@ describe("QingYu workspace", () => {
       await pendingSave;
     });
 
+    await waitFor(() => expect(mockedLoadNativeMarkdownFilesForPath).toHaveBeenCalled());
     await waitFor(() => expect(container.querySelector(".markra-image-node")).toBeInTheDocument());
   });
 
@@ -3924,6 +3930,13 @@ describe("QingYu workspace", () => {
     await waitFor(() => {
       expect(container.querySelector('img[src="file:///mock-files/Local%20Diagram.png"]')).toBeInTheDocument();
     });
+    const insertedSource = getVisibleCodeMirrorView(container).state.doc.toString();
+    expect(insertedSource).toBe(
+      withMatchingDocumentTitle(
+        "![Local Diagram](file:///mock-files/Local%20Diagram.png)\n\n# Native\n\nStart here.",
+        "native.md"
+      )
+    );
     expect(mockedOpenNativeLocalImages).toHaveBeenCalledWith({
       title: "Import Local Images..."
     });
@@ -12414,7 +12427,7 @@ Date: 2026-08-02
     const resolveMarkdownImageSrc = vi.fn((documentPath: string, source: string) =>
       imageReady && documentPath === mockNativePath && source === "assets/server.png"
         ? signedImageUrl
-        : undefined
+        : null
     );
     configureAppRuntime({
       ...runtime,
@@ -12451,6 +12464,46 @@ Date: 2026-08-02
       expect(container.querySelector(`.cm-editor img[src="${signedImageUrl}"]`)).toBeInTheDocument();
     });
     expect(resolveMarkdownImageSrc).toHaveBeenCalledWith(mockNativePath, "assets/server.png");
+  });
+
+  it("does not pass handled Kernel-local or protocol-relative image sources to Tauri's asset fallback", async () => {
+    const convertFileSrc = vi.fn(() => "asset://must-not-be-used");
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: { convertFileSrc }
+    });
+    try {
+      const runtime = getAppRuntime();
+      const resolveMarkdownImageSrc = vi.fn((_documentPath: string, source: string) =>
+        source.startsWith("//") ? undefined : null
+      );
+      configureAppRuntime({
+        ...runtime,
+        files: {
+          ...runtime.files,
+          resolveMarkdownImageSrc
+        }
+      });
+      mockPrimaryMarkdownFile({
+        content: "# Server\n\n![Invalid](../../outside.png)\n\n![CDN](//cdn.example.test/image.png)\n\nContent",
+        name: "native.md",
+        path: mockNativePath
+      });
+
+      const { container } = renderApp();
+
+      await expectVisibleMarkdownText("Content");
+      expect(container.querySelector('.cm-editor img[src="../../outside.png"]')).toBeInTheDocument();
+      expect(container.querySelector('.cm-editor img[src="//cdn.example.test/image.png"]')).toBeInTheDocument();
+      expect(resolveMarkdownImageSrc).toHaveBeenCalledWith(mockNativePath, "../../outside.png");
+      expect(resolveMarkdownImageSrc).toHaveBeenCalledWith(
+        mockNativePath,
+        "//cdn.example.test/image.png"
+      );
+      expect(convertFileSrc).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
   });
 
   it("uses the file runtime image resolver in both document panes", async () => {

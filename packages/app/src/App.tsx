@@ -828,11 +828,13 @@ function WorkspaceApp() {
       if (cachedResolver) return cachedResolver;
 
       const fallbackResolver = createMarkdownImageSrcResolver(documentPath);
-      const resolver = (source: string) => (
-        documentPath
+      const resolver = (source: string) => {
+        const resolved = documentPath
           ? appFiles.resolveMarkdownImageSrc?.(documentPath, source)
-          : undefined
-      ) ?? fallbackResolver(source);
+          : undefined;
+        if (resolved === null) return source;
+        return resolved ?? fallbackResolver(source);
+      };
       resolverByDocumentPath.set(documentPath, resolver);
       return resolver;
     };
@@ -3881,7 +3883,7 @@ function WorkspaceApp() {
       });
       if (batch === null) return;
       savedImages = batch;
-      if (document.path) await refreshMarkdownFileTree(document.path).catch(() => {});
+      if (document.path) refreshMarkdownFileTree(document.path).catch(() => {});
     } else {
       savedImages = (await handleSaveEditorResources(createEditorResourceRequest("import", images)))
         .flatMap((resource) => resource.kind === "image"
