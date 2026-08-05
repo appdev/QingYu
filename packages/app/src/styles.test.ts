@@ -1735,7 +1735,7 @@ describe("editor stylesheet", () => {
     expect(sizedImageEnd).toBeGreaterThan(sizedImageStart);
     expect(sizedImageStyles).toContain("width: 100%");
     expect(sizedImageStyles).toContain("height: auto");
-    expect(sizedImageStyles).toContain("max-height: none");
+    expect(sizedImageStyles).toContain("max-height: none !important");
   });
 
   it("keeps hidden markdown delimiters available as zero-width caret anchors", () => {
