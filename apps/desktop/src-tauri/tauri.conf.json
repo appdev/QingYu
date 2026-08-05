@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev --host 127.0.0.1 --port 1420 --strictPort",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm build && pnpm build:icon",
+    "beforeBuildCommand": "pnpm --dir ../.. prepare:mobile-build",
     "frontendDist": "../dist"
   },
   "app": {

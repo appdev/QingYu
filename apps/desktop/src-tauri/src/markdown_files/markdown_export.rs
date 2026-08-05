@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs;
 use std::hash::Hash;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::ops::Range;
@@ -9,7 +8,7 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use cap_fs_ext::DirExt;
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, File};
 
 use super::path::{is_markdown_tree_file, markdown_tree_root_for_path, path_to_string};
 use super::resource_writer::{file_identity, FileIdentity};
@@ -315,7 +314,7 @@ impl RetainedMarkdownExportFolder {
     fn verify_target(
         &self,
         file_name: &str,
-        retained: &fs::File,
+        retained: &File,
         expected: FileIdentity,
     ) -> Result<(), String> {
         let retained_metadata = retained.metadata().map_err(|error| error.to_string())?;
@@ -480,7 +479,7 @@ fn unique_markdown_export_resource_name(file_name: &str, attempt: usize) -> Resu
 }
 
 struct RetainedMarkdownExportResource {
-    file: fs::File,
+    file: File,
     file_identity: FileIdentity,
     file_name: String,
     folder: Dir,
@@ -550,7 +549,7 @@ fn write_markdown_export_resource(
     source_name: &str,
     export_directory: &Dir,
     folder: &str,
-    write: impl FnOnce(&mut fs::File) -> Result<(), String>,
+    write: impl FnOnce(&mut File) -> Result<(), String>,
 ) -> Result<MarkdownExportImportedResource, String> {
     let relative_folder = normalized_markdown_export_resource_folder(folder)?;
     let target_folder = ensure_markdown_export_resource_folder(export_directory, &relative_folder)?;
@@ -578,7 +577,7 @@ fn write_markdown_export_resource(
         return Err("Markdown export resource target must be a regular file".to_string());
     }
     let target_identity = file_identity(&target_metadata);
-    let mut target = target.into_std();
+    let mut target = target;
     write(&mut target)?;
     target.sync_all().map_err(|error| error.to_string())?;
 
@@ -628,7 +627,7 @@ fn import_markdown_export_resource(
     {
         return Err("Markdown export resource changed during export".to_string());
     }
-    let mut source = source.into_std();
+    let mut source = source;
     write_markdown_export_resource(source_name, export_directory, folder, |target| {
         io::copy(&mut source, target).map_err(|error| error.to_string())?;
         Ok(())
@@ -651,7 +650,7 @@ fn import_markdown_export_snapshot_resource(
 fn open_markdown_export_target(
     export_folder: &RetainedMarkdownExportFolder,
     file_name: &str,
-) -> Result<(fs::File, FileIdentity), String> {
+) -> Result<(File, FileIdentity), String> {
     let target = export_folder
         .directory
         .open_with(
@@ -664,7 +663,7 @@ fn open_markdown_export_target(
         return Err("Markdown export target must be a regular file".to_string());
     }
     let identity = file_identity(&metadata);
-    Ok((target.into_std(), identity))
+    Ok((target, identity))
 }
 
 fn export_markdown_bundle_with_importer<ResourceKey>(
@@ -977,7 +976,19 @@ pub(crate) async fn export_markdown_file(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    #[test]
+    fn markdown_export_target_retains_capability_file() {
+        let open_target: fn(
+            &RetainedMarkdownExportFolder,
+            &str,
+        ) -> Result<(cap_std::fs::File, FileIdentity), String> = open_markdown_export_target;
+
+        let _ = open_target;
+    }
 
     #[test]
     fn rejects_an_export_parent_blocked_by_sync_before_creating_the_bundle() {
