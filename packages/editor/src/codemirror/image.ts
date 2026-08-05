@@ -17,6 +17,10 @@ import {
   type MarkraSyntaxNode,
 } from "./renderers.ts";
 import { moveToEditableLine } from "./blank-lines.ts";
+import {
+  imageAttributeDetails,
+  type ImageAttributeDetails,
+} from "./image-attributes.ts";
 import { unescapeMarkdown, unquoteMarkdownTitle } from "./syntax.ts";
 
 export interface MarkraImageSourceContext {
@@ -32,11 +36,16 @@ export interface ImagePreviewPluginOptions {
   resolveSource?: (context: MarkraImageSourceContext) => string | null;
 }
 
-interface ImageDetails {
+interface ImageSourceDetails {
   alt: string;
-  markdown: string;
   source: string;
   title: string;
+}
+
+interface ImageDetails extends ImageSourceDetails {
+  attributes: ImageAttributeDetails;
+  authoredWidthPx: number | null;
+  markdown: string;
 }
 
 interface ImageWidgetDomState {
@@ -63,6 +72,11 @@ interface ImageWidgetDomRecord {
 
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
 const scheme = /^([a-z][a-z\d+.-]*):/iu;
+const imageAttributeTokenSource = String.raw`(?:[#.](?:\\[^\r\n]|[^\s\\{}\r\n])+|(?:\\[^\r\n]|[^\s\\={}\r\n])+=(?:\\[^\r\n]|[^\s\\{}\r\n])+)`;
+const imageAttributeListSource = new RegExp(
+  `^\\{[ \\t]*(?:${imageAttributeTokenSource}(?:[ \\t]+${imageAttributeTokenSource})*)?[ \\t]*\\}$`,
+  "u",
+);
 
 const imageTheme = EditorView.baseTheme({
   ".cm-markra-image": {
@@ -85,12 +99,15 @@ function imageDetails(
   const closingLabel = marks[1];
   if (!url || !openingLabel || !closingLabel) return null;
 
+  const attributes = imageAttributeDetails(state, node);
   const title = node.getChild("LinkTitle");
   return {
     alt: unescapeMarkdown(
       state.sliceDoc(openingLabel.to, closingLabel.from),
     ),
-    markdown: state.sliceDoc(node.from, node.to),
+    attributes,
+    authoredWidthPx: attributes.authoredWidthPx,
+    markdown: state.sliceDoc(node.from, attributes.ownedTo),
     source: unescapeMarkdown(state.sliceDoc(url.from, url.to).trim()),
     title: title
       ? unquoteMarkdownTitle(state.sliceDoc(title.from, title.to).trim())
@@ -122,12 +139,18 @@ function unescapeImageMarkdownText(text: string) {
   return text.replace(/\\([\\\]"])/gu, "$1");
 }
 
-function parseImageMarkdownSource(source: string): ImageDetails | null {
+function parseImageMarkdownSource(
+  source: string,
+): (ImageSourceDetails & { markdown: string }) | null {
   const markdown = source.trim();
-  const match = /^!\[((?:\\.|[^\]\\])*)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+"((?:\\.|[^"\n])*)")?\)$/u.exec(
+  const match = /^!\[((?:\\.|[^\]\\])*)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+"((?:\\.|[^"\n])*)")?\)/u.exec(
     markdown,
   );
   if (!match) return null;
+  const attributes = markdown.slice(match[0].length);
+  if (attributes && !imageAttributeListSource.test(attributes)) {
+    return null;
+  }
 
   const [, alt = "", angleSource, plainSource, title = ""] = match;
   return {
@@ -183,10 +206,20 @@ function updateImageElement(image: HTMLImageElement, widget: ImageWidget) {
   }
 }
 
+function updateImageFrame(frame: HTMLElement, widget: ImageWidget) {
+  const { authoredWidthPx } = widget.details;
+  if (authoredWidthPx === null) {
+    frame.style.removeProperty("width");
+    return;
+  }
+  frame.style.width = `${Math.max(17, authoredWidthPx)}px`;
+}
+
 function imageWidgetDomKey(widget: ImageWidget) {
   return [
     widget.className,
     widget.details.markdown,
+    widget.details.authoredWidthPx ?? "",
     widget.readOnly ? "readonly" : "editable",
     widget.source,
   ].join("\u0000");
@@ -338,6 +371,7 @@ class ImageWidget extends WidgetType {
     return (
       this.className === other.className &&
       this.details.markdown === other.details.markdown &&
+      this.details.authoredWidthPx === other.details.authoredWidthPx &&
       this.from === other.from &&
       this.readOnly === other.readOnly &&
       this.selected === other.selected &&
@@ -382,6 +416,7 @@ class ImageWidget extends WidgetType {
     image.draggable = false;
     image.loading = "lazy";
     updateImageElement(image, this);
+    updateImageFrame(frame, this);
     frame.append(image, viewerButton);
     root.append(frame);
 
@@ -539,6 +574,7 @@ class ImageWidget extends WidgetType {
     state.imageRecord.key = imageWidgetDomKey(this);
     state.imageRecord.root = dom;
     updateImageElement(state.image, this);
+    updateImageFrame(state.frame, this);
     const preserveInput = dom.ownerDocument.activeElement === state.sourceInput;
     // Cursor-driven source mode is temporary: once Enter moves the caret
     // beyond the image, only an actively focused source input may keep it open.
@@ -590,7 +626,7 @@ class ImageWidget extends WidgetType {
 
 function resolveImageSource(
   view: CodeMirrorView,
-  details: ImageDetails,
+  details: ImageSourceDetails,
   resolver: ImagePreviewPluginOptions["resolveSource"],
 ) {
   const sourceContext: MarkraImageSourceContext = {
@@ -620,12 +656,14 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
         id: "markra.image-preview",
         nodeNames: ["Image"],
         render(context) {
-          const startLine = context.state.doc.lineAt(context.node.from).number;
-          const endLine = context.state.doc.lineAt(context.node.to).number;
-          if (startLine !== endLine) return true;
-
           const details = imageDetails(context.state, context.node);
           if (!details) return true;
+          const startLine = context.state.doc.lineAt(context.node.from).number;
+          const endLine = context.state.doc.lineAt(
+            details.attributes.ownedTo,
+          ).number;
+          if (startLine !== endLine) return true;
+
           const source = resolveImageSource(
             context.view,
             details,
@@ -633,7 +671,10 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
           );
           if (!source) return true;
           const line = context.state.doc.lineAt(context.node.from);
-          if (context.node.from === line.from && context.node.to === line.to) {
+          if (
+            context.node.from === line.from &&
+            details.attributes.ownedTo === line.to
+          ) {
             context.add(
               Decoration.line({ class: "cm-markra-image-line" }).range(
                 line.from,
@@ -650,10 +691,10 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
                 options.resolveSource,
                 context.revealed("node-boundary"),
                 source,
-                context.node.to,
+                details.attributes.ownedTo,
                 context.view,
               ),
-            }).range(context.node.from, context.node.to),
+            }).range(context.node.from, details.attributes.ownedTo),
           );
           return false;
         },

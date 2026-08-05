@@ -39,6 +39,28 @@ function firstLine(view: EditorView) {
   return view.dom.querySelector(".cm-line")?.textContent ?? "";
 }
 
+function clickImage(view: EditorView) {
+  view.dom.querySelector<HTMLImageElement>(".cm-markra-image")?.dispatchEvent(
+    new MouseEvent("click", { bubbles: true, cancelable: true }),
+  );
+}
+
+function sourceInput(view: EditorView) {
+  return view.dom.querySelector<HTMLInputElement>(
+    ".markra-image-node-source",
+  );
+}
+
+function pressSelectedKey(view: EditorView, key: string) {
+  const event = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    key,
+  });
+  view.contentDOM.dispatchEvent(event);
+  return event;
+}
+
 afterEach(() => {
   for (const view of views.splice(0)) view.destroy();
   document.body.replaceChildren();
@@ -96,6 +118,161 @@ describe("imagePreviewPlugin", () => {
     expect(image?.decoding).toBe("async");
     expect(firstLine(view)).toBe("Before  after");
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("renders an authored image width", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=420px}\n\nEdit";
+    const view = createView(doc);
+
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("420px");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("renders an authored image width in read-only mode", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=240px}";
+    const view = createView(doc, imagePreviewPlugin(), true);
+
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("240px");
+    expect(sourceInput(view)).toBeNull();
+  });
+
+  it("clamps an authored image width below the rendered minimum", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=12px}";
+    const view = createView(doc);
+
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("17px");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("retains an oversized authored image width in source", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=4000px}";
+    const view = createView(doc);
+
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("4000px");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("owns adjacent image attributes in the preview decoration", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=420px}\n\nEdit";
+    const view = createView(doc);
+    const image = view.dom.querySelector<HTMLImageElement>(".cm-markra-image");
+
+    expect(firstLine(view)).toBe("");
+    expect(image?.closest(".cm-markra-image-line")).not.toBeNull();
+  });
+
+  it("preserves unknown and invalid owned image attributes in editable source", () => {
+    const markdown =
+      "![Synthetic](./assets/mock.png){#hero width=1.5px data-x=yes}";
+    const view = createView(`${markdown}\n\nEdit`);
+
+    clickImage(view);
+
+    expect(sourceInput(view)?.value).toBe(markdown);
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("");
+  });
+
+  it("deletes the complete owned image attribute range", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=420px}\n\nEdit";
+    const view = createView(doc);
+
+    clickImage(view);
+    const event = pressSelectedKey(view, "Delete");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe("\n\nEdit");
+  });
+
+  it("moves below the complete owned image attribute range on Enter", () => {
+    const markdown = "![Synthetic](./assets/mock.png){width=420px}";
+    const doc = `${markdown}\nFollowing`;
+    const view = createView(doc);
+
+    clickImage(view);
+    const event = pressSelectedKey(view, "Enter");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(view.state.selection.main.head).toBe(markdown.length + 1);
+  });
+
+  it("leaves whitespace-separated image attributes as ordinary text", () => {
+    const doc = "![Synthetic](./assets/mock.png) {width=420px}\n\nEdit";
+    const view = createView(doc);
+
+    expect(firstLine(view)).toBe(" {width=420px}");
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("");
+    clickImage(view);
+    expect(sourceInput(view)?.value).toBe(
+      "![Synthetic](./assets/mock.png)",
+    );
+  });
+
+  it("keeps authored image width stable across editor recreation", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=320px}\n\nEdit";
+    const firstView = createView(doc);
+    const firstWidth = firstView.dom.querySelector<HTMLElement>(
+      ".markra-image-frame",
+    )?.style.width;
+
+    firstView.destroy();
+    views.splice(views.indexOf(firstView), 1);
+    const recreatedView = createView(doc);
+
+    expect(firstWidth).toBe("320px");
+    expect(
+      recreatedView.dom.querySelector<HTMLElement>(".markra-image-frame")
+        ?.style.width,
+    ).toBe(firstWidth);
+    expect(recreatedView.state.doc.toString()).toBe(doc);
+  });
+
+  it("accepts an attribute-aware image source edit", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=320px}\n\nEdit";
+    const view = createView(doc);
+    clickImage(view);
+    const source = sourceInput(view);
+
+    expect(source).not.toBeNull();
+    if (!source) return;
+    source.value =
+      "![Changed](https://example.test/changed.png){#hero width=360px}";
+    source.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(view.state.doc.toString()).toBe(
+      "![Changed](https://example.test/changed.png){#hero width=360px}\n\nEdit",
+    );
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("360px");
+  });
+
+  it("rejects a malformed image attribute source edit", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=320px}\n\nEdit";
+    const view = createView(doc);
+    clickImage(view);
+    const source = sourceInput(view);
+
+    expect(source).not.toBeNull();
+    if (!source) return;
+    source.value = "![Changed](https://example.test/changed.png){width}";
+    source.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(view.dom.querySelector(".markra-image-node-source-invalid"))
+      .not.toBeNull();
   });
 
   it("does not reload an unchanged image while editing text above it", () => {
