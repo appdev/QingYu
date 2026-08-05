@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Markra",
+  "productName": "QingYu",
   "version": "2.5.4",
   "identifier": "dev.markra.app",
   "build": {
@@ -60,7 +60,6 @@
     ],
     "macOS": {
       "files": {
-        "Resources/Assets.car": "icons/generated/Assets.car",
         "Resources/de.lproj": "macos-locales/de.lproj",
         "Resources/en.lproj": "macos-locales/en.lproj",
         "Resources/es.lproj": "macos-locales/es.lproj",
