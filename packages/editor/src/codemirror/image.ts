@@ -19,8 +19,14 @@ import {
 import { moveToEditableLine } from "./blank-lines.ts";
 import {
   imageAttributeDetails,
+  replaceImageWidth,
   type ImageAttributeDetails,
 } from "./image-attributes.ts";
+import {
+  imageDragActivated,
+  imageDragWidth,
+  persistedImageWidth,
+} from "./image-resize.ts";
 import { unescapeMarkdown, unquoteMarkdownTitle } from "./syntax.ts";
 
 export interface MarkraImageSourceContext {
@@ -49,17 +55,35 @@ interface ImageDetails extends ImageSourceDetails {
 }
 
 interface ImageWidgetDomState {
+  drag: ImageResizeDrag | null;
   frame: HTMLSpanElement;
   image: HTMLImageElement;
   imageRecord: ImageWidgetDomRecord;
   mediaViewer: MediaViewerHandle | null;
   onOutsideMouseDown: (event: MouseEvent) => void;
   onViewKeyDown: (event: KeyboardEvent) => void;
+  resizeHandle: HTMLSpanElement | null;
   selected: boolean;
   sourceInput: HTMLInputElement;
   sourceRow: HTMLSpanElement;
   viewerButton: HTMLButtonElement;
   widget: ImageWidget;
+}
+
+interface ImageResizeDrag {
+  activated: boolean;
+  attributes: ImageAttributeDetails;
+  document: string;
+  from: number;
+  maximumWidth: number;
+  pointerId: number;
+  pointerType: string;
+  source: string;
+  startWidth: number;
+  startX: number;
+  startY: number;
+  to: number;
+  width: number;
 }
 
 interface ImageWidgetDomRecord {
@@ -213,6 +237,34 @@ function updateImageFrame(frame: HTMLElement, widget: ImageWidget) {
     return;
   }
   frame.style.width = `${Math.max(17, authoredWidthPx)}px`;
+}
+
+function releaseImageResizeCapture(
+  state: ImageWidgetDomState,
+  pointerId: number,
+) {
+  if (
+    !state.resizeHandle ||
+    typeof state.resizeHandle.releasePointerCapture !== "function"
+  ) {
+    return;
+  }
+  try {
+    state.resizeHandle.releasePointerCapture(pointerId);
+  } catch {
+    // Capture may already have been released by the browser.
+  }
+}
+
+function cancelImageResize(
+  state: ImageWidgetDomState,
+  releaseCapture = true,
+) {
+  const drag = state.drag;
+  if (!drag) return;
+  state.drag = null;
+  updateImageFrame(state.frame, state.widget);
+  if (releaseCapture) releaseImageResizeCapture(state, drag.pointerId);
 }
 
 function imageWidgetDomKey(widget: ImageWidget) {
@@ -390,6 +442,9 @@ class ImageWidget extends WidgetType {
     const sourceRow = view.dom.ownerDocument.createElement("span");
     const sourceInput = view.dom.ownerDocument.createElement("input");
     const viewerButton = view.dom.ownerDocument.createElement("button");
+    const resizeHandle = this.readOnly
+      ? null
+      : view.dom.ownerDocument.createElement("span");
     const imageRecord = claimImageElement(root, this);
     const { image } = imageRecord;
     root.className = "markra-image-node";
@@ -412,15 +467,23 @@ class ImageWidget extends WidgetType {
       view.dom.ownerDocument,
       "markra-image-viewer-icon",
     ));
+    if (resizeHandle) {
+      const visualHandle = view.dom.ownerDocument.createElement("span");
+      resizeHandle.className = "markra-image-resize-hit-target";
+      visualHandle.className = "markra-image-resize-handle";
+      resizeHandle.append(visualHandle);
+    }
     image.decoding = "async";
     image.draggable = false;
     image.loading = "lazy";
     updateImageElement(image, this);
     updateImageFrame(frame, this);
     frame.append(image, viewerButton);
+    if (resizeHandle) frame.append(resizeHandle);
     root.append(frame);
 
     const state: ImageWidgetDomState = {
+      drag: null,
       frame,
       image,
       imageRecord,
@@ -471,6 +534,7 @@ class ImageWidget extends WidgetType {
         });
         view.focus();
       },
+      resizeHandle,
       selected: false,
       sourceInput,
       sourceRow,
@@ -479,10 +543,7 @@ class ImageWidget extends WidgetType {
     };
     imageWidgetDomState.set(root, state);
 
-    const selectImage = (event: MouseEvent) => {
-      if (event.target instanceof Node && sourceRow.contains(event.target)) return;
-      event.preventDefault();
-      event.stopPropagation();
+    const selectImageWidget = () => {
       if (state.widget.readOnly) return;
       view.focus();
       const anchor = Math.min(
@@ -491,6 +552,12 @@ class ImageWidget extends WidgetType {
       );
       view.dispatch({ selection: EditorSelection.cursor(anchor) });
       showImageSource(root, state);
+    };
+    const selectImage = (event: MouseEvent) => {
+      if (event.target instanceof Node && sourceRow.contains(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectImageWidget();
     };
     const openImageViewer = (event: Event) => {
       event.preventDefault();
@@ -546,6 +613,118 @@ class ImageWidget extends WidgetType {
       view.focus();
     };
 
+    const handleResizePointerDown = (event: PointerEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!resizeHandle || state.widget.readOnly) return;
+      cancelImageResize(state);
+      selectImageWidget();
+
+      const frameBounds = frame.getBoundingClientRect();
+      const contentBounds = view.contentDOM.getBoundingClientRect();
+      const maximumWidth = Math.max(
+        17,
+        Math.floor(contentBounds.right - frameBounds.left),
+      );
+      const startWidth = Math.max(
+        17,
+        Math.min(maximumWidth, Math.round(frameBounds.width)),
+      );
+      const { widget } = state;
+      state.drag = {
+        activated: false,
+        attributes: widget.details.attributes,
+        document: view.state.doc.toString(),
+        from: widget.from,
+        maximumWidth,
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        source: widget.details.markdown,
+        startWidth,
+        startX: event.clientX,
+        startY: event.clientY,
+        to: widget.to,
+        width: startWidth,
+      };
+      if (typeof resizeHandle.setPointerCapture === "function") {
+        try {
+          resizeHandle.setPointerCapture(event.pointerId);
+        } catch {
+          // The drag remains scoped to events delivered to the hit target.
+        }
+      }
+    };
+    const handleResizePointerMove = (event: PointerEvent) => {
+      const drag = state.drag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (view.state.doc.toString() !== drag.document) {
+        cancelImageResize(state);
+        return;
+      }
+      const deltaX = event.clientX - drag.startX;
+      const deltaY = event.clientY - drag.startY;
+      if (!drag.activated) {
+        if (!imageDragActivated(deltaX, deltaY)) return;
+        drag.activated = true;
+      }
+      drag.width = imageDragWidth(
+        drag.startWidth,
+        deltaX,
+        drag.maximumWidth,
+      );
+      frame.style.width = `${drag.width}px`;
+    };
+    const handleResizePointerUp = (event: PointerEvent) => {
+      const drag = state.drag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (
+        !drag.activated ||
+        view.state.doc.toString() !== drag.document ||
+        view.state.sliceDoc(drag.from, drag.to) !== drag.source
+      ) {
+        cancelImageResize(state);
+        return;
+      }
+
+      const width = persistedImageWidth(drag.width, drag.maximumWidth);
+      const replacement = replaceImageWidth(
+        drag.source,
+        drag.attributes,
+        width,
+      );
+      state.drag = null;
+      releaseImageResizeCapture(state, drag.pointerId);
+      if (replacement === drag.source) {
+        updateImageFrame(frame, state.widget);
+        return;
+      }
+      view.dispatch({
+        changes: { from: drag.from, insert: replacement, to: drag.to },
+        userEvent: "input",
+      });
+    };
+    const handleResizePointerCancel = (event: PointerEvent) => {
+      const drag = state.drag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelImageResize(state);
+    };
+    const handleLostPointerCapture = (event: PointerEvent) => {
+      const drag = state.drag;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      event.stopPropagation();
+      cancelImageResize(state, false);
+    };
+    const containResizeMouseEvent = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
     root.addEventListener("mousedown", selectImage);
     root.addEventListener("click", selectImage);
     image.addEventListener("dblclick", openImageViewer);
@@ -553,6 +732,17 @@ class ImageWidget extends WidgetType {
       event.stopPropagation();
     });
     viewerButton.addEventListener("click", openImageViewer);
+    resizeHandle?.addEventListener("pointerdown", handleResizePointerDown);
+    resizeHandle?.addEventListener("pointermove", handleResizePointerMove);
+    resizeHandle?.addEventListener("pointerup", handleResizePointerUp);
+    resizeHandle?.addEventListener("pointercancel", handleResizePointerCancel);
+    resizeHandle?.addEventListener(
+      "lostpointercapture",
+      handleLostPointerCapture,
+    );
+    resizeHandle?.addEventListener("mousedown", containResizeMouseEvent);
+    resizeHandle?.addEventListener("click", containResizeMouseEvent);
+    resizeHandle?.addEventListener("dblclick", containResizeMouseEvent);
     sourceRow.addEventListener("mousedown", keepSourceFocused);
     sourceRow.addEventListener("click", keepSourceFocused);
     sourceInput.addEventListener("input", () => syncImageSource(root, state));
@@ -565,6 +755,7 @@ class ImageWidget extends WidgetType {
   updateDOM(dom: HTMLElement) {
     const state = imageWidgetDomState.get(dom);
     if (!state) return false;
+    cancelImageResize(state);
     if (state.widget.source !== this.source) {
       state.mediaViewer?.close({ restoreFocus: false });
       state.mediaViewer = null;
@@ -589,6 +780,7 @@ class ImageWidget extends WidgetType {
   destroy(dom: HTMLElement) {
     const state = imageWidgetDomState.get(dom);
     if (!state) return;
+    cancelImageResize(state);
     dom.ownerDocument.removeEventListener(
       "mousedown",
       state.onOutsideMouseDown,

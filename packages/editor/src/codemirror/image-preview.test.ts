@@ -1,3 +1,4 @@
+import { history, redo, undo } from "@codemirror/commands";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +24,7 @@ function createView(
     state: EditorState.create({
       doc,
       extensions: [
+        history(),
         EditorState.readOnly.of(readOnly),
         liveMarkdown({ plugins: plugin ? [plugin] : [] }),
       ],
@@ -59,6 +61,88 @@ function pressSelectedKey(view: EditorView, key: string) {
   });
   view.contentDOM.dispatchEvent(event);
   return event;
+}
+
+type TestPointerEventType =
+  | "lostpointercapture"
+  | "pointercancel"
+  | "pointerdown"
+  | "pointermove"
+  | "pointerup";
+
+interface TestPointerEventOptions {
+  clientX: number;
+  clientY?: number;
+  pointerId?: number;
+  pointerType?: string;
+}
+
+function dispatchPointerEvent(
+  target: EventTarget,
+  type: TestPointerEventType,
+  options: TestPointerEventOptions,
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    clientX: { value: options.clientX },
+    clientY: { value: options.clientY ?? 0 },
+    isPrimary: { value: true },
+    pointerId: { value: options.pointerId ?? 7 },
+    pointerType: { value: options.pointerType ?? "mouse" },
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
+function prepareImageResize(
+  view: EditorView,
+  startWidth: number,
+  maximumWidth = 600,
+) {
+  const frame = view.dom.querySelector<HTMLElement>(".markra-image-frame");
+  const handle = view.dom.querySelector<HTMLElement>(
+    ".markra-image-resize-hit-target",
+  );
+  if (!frame || !handle) {
+    throw new Error("Expected an editable image resize handle");
+  }
+
+  vi.spyOn(frame, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, startWidth, 200),
+  );
+  vi.spyOn(view.contentDOM, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, maximumWidth, 800),
+  );
+  const setPointerCapture = vi.fn();
+  const releasePointerCapture = vi.fn();
+  Object.defineProperties(handle, {
+    releasePointerCapture: { value: releasePointerCapture },
+    setPointerCapture: { value: setPointerCapture },
+  });
+  return { frame, handle, releasePointerCapture, setPointerCapture };
+}
+
+function dragImage(
+  view: EditorView,
+  startWidth: number,
+  targetWidth: number,
+  maximumWidth = 600,
+  pointerType = "mouse",
+) {
+  const resize = prepareImageResize(view, startWidth, maximumWidth);
+  dispatchPointerEvent(resize.handle, "pointerdown", {
+    clientX: startWidth,
+    pointerType,
+  });
+  dispatchPointerEvent(resize.handle, "pointermove", {
+    clientX: targetWidth,
+    pointerType,
+  });
+  dispatchPointerEvent(resize.handle, "pointerup", {
+    clientX: targetWidth,
+    pointerType,
+  });
+  return resize;
 }
 
 afterEach(() => {
@@ -158,6 +242,276 @@ describe("imagePreviewPlugin", () => {
       view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
     ).toBe("4000px");
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it.each([
+    ["![a](x.png)", 100, 420, "![a](x.png){width=420px}"],
+    [
+      "![a](x.png){width=320px}",
+      320,
+      420,
+      "![a](x.png){width=420px}",
+    ],
+    [
+      "![a](x.png){#hero width=320px data-x=yes}",
+      320,
+      420,
+      "![a](x.png){#hero width=420px data-x=yes}",
+    ],
+  ])(
+    "persists one image resize for %s",
+    (doc, startWidth, targetWidth, expected) => {
+      const view = createView(doc);
+
+      dragImage(view, startWidth, targetWidth);
+
+      expect(view.state.doc.toString()).toBe(expected);
+      expect(
+        view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+      ).toBe("420px");
+    },
+  );
+
+  it("removes an authored width when resized within eight pixels of the content maximum", () => {
+    const view = createView("![a](x.png){width=320px}");
+
+    dragImage(view, 320, 492, 500);
+
+    expect(view.state.doc.toString()).toBe("![a](x.png)");
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("");
+  });
+
+  it("undoes and redoes one resize transaction with its authoritative frame width", () => {
+    const original = "![a](x.png){width=320px}";
+    const resized = "![a](x.png){width=420px}";
+    const view = createView(original);
+
+    dragImage(view, 320, 420);
+    expect(view.state.doc.toString()).toBe(resized);
+    expect(undo(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(original);
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("320px");
+    expect(redo(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(resized);
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("420px");
+  });
+
+  it.each(["mouse", "touch", "pen"])(
+    "resizes from a captured %s pointer",
+    (pointerType) => {
+      const view = createView("![a](x.png){width=100px}");
+
+      const resize = dragImage(view, 100, 140, 600, pointerType);
+
+      expect(view.state.doc.toString()).toBe("![a](x.png){width=140px}");
+      expect(
+        resize.handle.querySelector(".markra-image-resize-handle"),
+      ).not.toBeNull();
+      expect(resize.setPointerCapture).toHaveBeenCalledWith(7);
+      expect(resize.releasePointerCapture).toHaveBeenCalledWith(7);
+    },
+  );
+
+  it("does not persist movement below the five-pixel drag threshold", () => {
+    const doc = "![a](x.png){width=100px}";
+    const view = createView(doc);
+
+    const resize = dragImage(view, 100, 104);
+
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(resize.frame.style.width).toBe("100px");
+  });
+
+  it("ignores move and up events from a different pointer", () => {
+    const doc = "![a](x.png){width=100px}";
+    const view = createView(doc);
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+
+    dispatchPointerEvent(resize.handle, "pointermove", {
+      clientX: 180,
+      pointerId: 11,
+    });
+    dispatchPointerEvent(resize.handle, "pointerup", {
+      clientX: 180,
+      pointerId: 11,
+    });
+
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(resize.frame.style.width).toBe("100px");
+    dispatchPointerEvent(resize.handle, "pointercancel", { clientX: 100 });
+  });
+
+  it("clamps transient and persisted resize width to the image minimum", () => {
+    const view = createView("![a](x.png){width=100px}");
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: -500 });
+    expect(resize.frame.style.width).toBe("17px");
+    expect(view.state.doc.toString()).toBe("![a](x.png){width=100px}");
+    dispatchPointerEvent(resize.handle, "pointerup", { clientX: -500 });
+
+    expect(view.state.doc.toString()).toBe("![a](x.png){width=17px}");
+  });
+
+  it("clamps transient resize width to the available content width", () => {
+    const doc = "![a](x.png){width=100px}";
+    const view = createView(doc);
+    const resize = prepareImageResize(view, 100, 420);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 900 });
+
+    expect(resize.frame.style.width).toBe("420px");
+    expect(view.state.doc.toString()).toBe(doc);
+    dispatchPointerEvent(resize.handle, "pointercancel", { clientX: 900 });
+  });
+
+  it("prevents and contains only handle pointer gestures", () => {
+    const view = createView("![a](x.png){width=100px}");
+    const resize = prepareImageResize(view, 100);
+    const bubbledPointerDown = vi.fn();
+    resize.handle.parentElement?.addEventListener(
+      "pointerdown",
+      bubbledPointerDown,
+    );
+
+    const handleEvent = dispatchPointerEvent(resize.handle, "pointerdown", {
+      clientX: 100,
+    });
+    expect(handleEvent.defaultPrevented).toBe(true);
+    expect(bubbledPointerDown).not.toHaveBeenCalled();
+
+    const imageEvent = dispatchPointerEvent(
+      view.dom.querySelector<HTMLImageElement>(".cm-markra-image")!,
+      "pointerdown",
+      { clientX: 100, pointerId: 11 },
+    );
+
+    expect(imageEvent.defaultPrevented).toBe(false);
+    expect(bubbledPointerDown).toHaveBeenCalledTimes(1);
+  });
+
+  it("never opens the media viewer from resize handle events", () => {
+    const view = createView("![a](x.png){width=100px}");
+    const resize = dragImage(view, 100, 140);
+
+    resize.handle.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+    }));
+    resize.handle.dispatchEvent(new MouseEvent("dblclick", {
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    expect(document.querySelector(".markra-media-viewer-dialog")).toBeNull();
+  });
+
+  it("keeps source focus and outside-selection clearing around resize handle gestures", () => {
+    const view = createView("![a](x.png){width=100px}");
+    const resize = prepareImageResize(view, 100);
+
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    const source = sourceInput(view);
+    source?.focus();
+    source?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    expect(document.activeElement).toBe(source);
+    expect(source?.isConnected).toBe(true);
+    document.body.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(source?.isConnected).toBe(false);
+    dispatchPointerEvent(resize.handle, "pointercancel", { clientX: 100 });
+  });
+
+  it("does not render a resize handle in read-only mode", () => {
+    const view = createView(
+      "![a](x.png){width=100px}",
+      imagePreviewPlugin(),
+      true,
+    );
+
+    expect(view.dom.querySelector(".markra-image-resize-hit-target")).toBeNull();
+  });
+
+  it.each(["pointercancel", "lostpointercapture"] as const)(
+    "restores authored width without persisting on %s",
+    (eventType) => {
+      const doc = "![a](x.png){width=100px}";
+      const view = createView(doc);
+      const resize = prepareImageResize(view, 100);
+      dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+      dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+      expect(resize.frame.style.width).toBe("180px");
+
+      dispatchPointerEvent(resize.handle, eventType, { clientX: 180 });
+
+      expect(view.state.doc.toString()).toBe(doc);
+      expect(resize.frame.style.width).toBe("100px");
+    },
+  );
+
+  it("restores authored width without dispatch when a dragged widget is destroyed", () => {
+    const doc = "![a](x.png){width=100px}";
+    const view = createView(doc);
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+    expect(resize.frame.style.width).toBe("180px");
+
+    view.destroy();
+    views.splice(views.indexOf(view), 1);
+
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(resize.frame.style.width).toBe("100px");
+  });
+
+  it("cancels a pending resize when the document changes during the drag", () => {
+    const doc = "![a](x.png){width=100px}\nEdit";
+    const view = createView(doc);
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+
+    view.dispatch({
+      changes: { from: doc.length, insert: "!" },
+      userEvent: "input",
+    });
+    dispatchPointerEvent(resize.handle, "pointerup", { clientX: 180 });
+
+    expect(view.state.doc.toString()).toBe(`${doc}!`);
+    expect(resize.frame.style.width).toBe("100px");
+  });
+
+  it("cancels a transient resize before applying an updated image source width", () => {
+    const doc = "![a](x.png){width=100px}";
+    const view = createView(doc);
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+
+    const widthFrom = doc.indexOf("100px");
+    view.dispatch({
+      changes: { from: widthFrom, insert: "140px", to: widthFrom + 5 },
+      userEvent: "input",
+    });
+    dispatchPointerEvent(resize.handle, "pointerup", { clientX: 180 });
+
+    expect(view.state.doc.toString()).toBe("![a](x.png){width=140px}");
+    expect(resize.frame.style.width).toBe("140px");
   });
 
   it("owns adjacent image attributes in the preview decoration", () => {
