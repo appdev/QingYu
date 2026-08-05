@@ -2,6 +2,11 @@ import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import {
+  prepareQingyuKernelDev,
+  shouldPrepareDesktopDevKernel,
+} from "./prepare-qingyu-kernel-dev.mjs";
+
 const tauriManifestPath = fileURLToPath(
   new URL("../../../apps/desktop/src-tauri/Cargo.toml", import.meta.url)
 );
@@ -90,13 +95,27 @@ export function tauriChildEnvironment(args, environment = process.env) {
     : { ...environment };
 }
 
-export function runTauri(args = process.argv.slice(2)) {
-  const invocation = createTauriCommand(args);
-  const manifestBefore = readFileSync(tauriManifestPath, "utf8");
-  const child = spawn(invocation.command, invocation.args, {
-    env: tauriChildEnvironment(args),
+export function launchTauri(
+  args,
+  {
+    environment = process.env,
+    platform = process.platform,
+    prepareKernel = prepareQingyuKernelDev,
+    spawnChild = spawn,
+  } = {},
+) {
+  const childEnvironment = tauriChildEnvironment(args, environment);
+  if (shouldPrepareDesktopDevKernel(args)) prepareKernel(childEnvironment);
+  const invocation = createTauriCommand(args, platform);
+  return spawnChild(invocation.command, invocation.args, {
+    env: childEnvironment,
     stdio: "inherit",
   });
+}
+
+export function runTauri(args = process.argv.slice(2)) {
+  const manifestBefore = readFileSync(tauriManifestPath, "utf8");
+  const child = launchTauri(args);
   let spawnError;
   const signalHandlers = new Map(
     ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => [

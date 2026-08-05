@@ -2,10 +2,62 @@ import { describe, expect, it } from "vitest";
 
 import {
   createTauriCommand,
+  launchTauri,
   tauriChildEnvironment,
   restoreTauriManifestAfterCliRun,
   tauriExitCode,
 } from "./run-tauri.mjs";
+
+describe("launchTauri", () => {
+  it("prepares the Kernel before spawning desktop development", () => {
+    const events = [];
+    const child = { marker: "child" };
+
+    const result = launchTauri(["dev"], {
+      environment: { KEEP: "yes" },
+      prepareKernel: (environment) => events.push(["prepare", environment]),
+      spawnChild: (command, args, options) => {
+        events.push(["spawn", command, args, options]);
+        return child;
+      },
+    });
+
+    expect(result).toBe(child);
+    expect(events[0]).toEqual(["prepare", { KEEP: "yes" }]);
+    expect(events[1][0]).toBe("spawn");
+  });
+
+  it("does not spawn Tauri when Kernel preparation fails", () => {
+    let spawned = false;
+
+    expect(() =>
+      launchTauri(["dev"], {
+        environment: {},
+        prepareKernel: () => {
+          throw new Error("Kernel build failed");
+        },
+        spawnChild: () => {
+          spawned = true;
+        },
+      }),
+    ).toThrow("Kernel build failed");
+    expect(spawned).toBe(false);
+  });
+
+  it("bypasses Kernel preparation for non-development commands", () => {
+    let prepared = false;
+
+    launchTauri(["build"], {
+      environment: {},
+      prepareKernel: () => {
+        prepared = true;
+      },
+      spawnChild: () => ({ marker: "child" }),
+    });
+
+    expect(prepared).toBe(false);
+  });
+});
 
 describe("createTauriCommand", () => {
   it("runs the desktop package Tauri script without changing its arguments", () => {
