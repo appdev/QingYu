@@ -1000,24 +1000,53 @@ describe("imagePreviewPlugin", () => {
 
   it("moves Escape selection outside image ownership across unrelated updates", () => {
     const image = "![a](x.png){width=100px}";
-    const doc = `${image}\nFollowing`;
+    const prefix = "Before ";
+    const doc = `${prefix}${image} after`;
     const view = createView(doc);
     clickImage(view);
-    expect(view.state.selection.main.head).toBeGreaterThan(0);
-    expect(view.state.selection.main.head).toBeLessThan(image.length);
+    expect(view.state.selection.main.head).toBeGreaterThan(prefix.length);
+    expect(view.state.selection.main.head).toBeLessThan(
+      prefix.length + image.length,
+    );
 
     pressSelectedKey(view, "Escape");
 
-    expect(view.state.selection.main.head).toBe(image.length);
+    expect(view.state.selection.main.head).toBe(prefix.length - 1);
     expect(view.dom.querySelector(".markra-image-node-selected")).toBeNull();
     view.dispatch({
-      changes: { from: doc.length, insert: "!" },
+      changes: { from: 0, insert: "!" },
       userEvent: "input",
     });
-    expect(view.state.selection.main.head).toBe(image.length);
+    expect(view.state.selection.main.head).toBe(prefix.length);
     expect(view.dom.querySelector(".markra-image-node-selected")).toBeNull();
     expect(sourceInput(view)).toBeNull();
   });
+
+  it.each([
+    [
+      "start",
+      (image: string) => `${image}\nFollowing`,
+      (image: string) => image.length + 1,
+    ],
+    ["complete document", (image: string) => image, () => 0],
+  ])(
+    "keeps Escape selection stable at the image %s edge",
+    (_label, createDoc, expectedHead) => {
+      const image = "![a](x.png){width=100px}";
+      const view = createView(createDoc(image));
+      clickImage(view);
+
+      pressSelectedKey(view, "Escape");
+
+      expect(view.state.selection.main.head).toBe(expectedHead(image));
+      view.dispatch({
+        changes: { from: 0, insert: "Before " },
+        userEvent: "input",
+      });
+      expect(view.dom.querySelector(".markra-image-node-selected")).toBeNull();
+      expect(sourceInput(view)).toBeNull();
+    },
+  );
 
   it("opens an image in the shared media viewer from the enlarge button or a double click", () => {
     const doc =

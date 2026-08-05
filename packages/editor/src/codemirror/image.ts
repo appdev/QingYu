@@ -271,8 +271,15 @@ function clearImageSelection(root: HTMLElement, state: ImageWidgetDomState) {
   cancelImageResize(state);
   hideImageSource(root, state);
   const { view } = state.widget;
+  const imageStart = Math.min(state.widget.from, view.state.doc.length);
   const imageEnd = Math.min(state.widget.to, view.state.doc.length);
-  view.dispatch({ selection: EditorSelection.cursor(imageEnd) });
+  let selection = EditorSelection.cursor(0);
+  if (imageStart > 0) {
+    selection = EditorSelection.cursor(imageStart - 1);
+  } else if (imageEnd < view.state.doc.length) {
+    selection = EditorSelection.cursor(imageEnd + 1);
+  }
+  view.dispatch({ selection });
 }
 
 function imageWidgetDomKey(widget: ImageWidget) {
