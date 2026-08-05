@@ -151,12 +151,11 @@ describe("image attribute syntax", () => {
       ]);
   });
 
-  it("does not create owned image attributes in code, math text, raw HTML, or ordinary prose", () => {
+  it("does not create owned image attributes in code, raw HTML, or ordinary prose", () => {
     for (const doc of [
       "`![a](x.png){width=12px}`",
       "```md\n![a](x.png){width=12px}\n```",
       "    ![a](x.png){width=12px}",
-      "$x{width=12px}$",
       "<div>\n![a](x.png){width=12px}\n</div>",
       "ordinary {width=12px} braces",
     ]) {
@@ -164,6 +163,20 @@ describe("image attribute syntax", () => {
       expect(imageNodes(state).map((image) => imageAttributeDetails(state, image)))
         .toEqual([]);
     }
+  });
+
+  it.each([
+    ["inline dollar", "$![a](x.png){width=12px}$"],
+    ["display dollar", "$$![a](x.png){width=12px}$$"],
+    ["Hugo/backslash", String.raw`\(![a](x.png){width=12px}\)`],
+  ])("does not bind adjacent attributes inside %s math", (_label, doc) => {
+    expect(details(doc)).toMatchObject({
+      attributesFrom: null,
+      authoredWidthPx: null,
+      ownedTo: doc.indexOf(")") + 1,
+      widthValueFrom: null,
+      widthValueTo: null,
+    });
   });
 
   it("binds image attributes inside a GFM table cell", () => {

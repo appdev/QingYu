@@ -1,5 +1,6 @@
 import type { EditorState } from "@codemirror/state";
 import type { Element, MarkdownConfig } from "@lezer/markdown";
+import { findCodeMirrorMathRanges } from "./math-preview.ts";
 import type { MarkraSyntaxNode } from "./renderers.ts";
 
 interface AttributeToken {
@@ -160,6 +161,9 @@ export function imageAttributeDetails(
 ): ImageAttributeDetails {
   const attributes = image.nextSibling;
   if (
+    findCodeMirrorMathRanges(state).some((range) => (
+      image.from >= range.from && image.to <= range.to
+    )) ||
     attributes?.name !== "ImageAttributes" ||
     attributes.from !== image.to
   ) {
