@@ -245,6 +245,16 @@ describe("imagePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("marks only authored-width image frames as sized", () => {
+    const authored = createView("![a](x.png){width=240px}");
+    const defaultWidth = createView("![b](y.png)");
+
+    expect(authored.dom.querySelector(".markra-image-frame")?.classList)
+      .toContain("markra-image-frame-sized");
+    expect(defaultWidth.dom.querySelector(".markra-image-frame")?.classList)
+      .not.toContain("markra-image-frame-sized");
+  });
+
   it("renders an authored image width in read-only mode", () => {
     const doc = "![Synthetic](./assets/mock.png){width=240px}";
     const view = createView(doc, imagePreviewPlugin(), true);
@@ -319,6 +329,8 @@ describe("imagePreviewPlugin", () => {
     expect(
       view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
     ).toBe("");
+    expect(view.dom.querySelector(".markra-image-frame")?.classList)
+      .not.toContain("markra-image-frame-sized");
   });
 
   it("undoes and redoes one resize transaction with its authoritative frame width", () => {
@@ -580,6 +592,18 @@ describe("imagePreviewPlugin", () => {
     },
   );
 
+  it("removes transient sized state when a default-width resize is cancelled", () => {
+    const view = createView("![a](x.png)");
+    const resize = prepareImageResize(view, 100, 600);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 240 });
+
+    expect(resize.frame.classList).toContain("markra-image-frame-sized");
+    dispatchPointerEvent(resize.handle, "pointercancel", { clientX: 240 });
+    expect(resize.frame.classList).not.toContain("markra-image-frame-sized");
+    expect(resize.frame.style.width).toBe("");
+  });
+
   it("cancels an active resize when editor focus leaves", () => {
     const doc = "![a](x.png){width=100px}";
     const transactions = observeDocumentTransactions();
@@ -775,6 +799,8 @@ describe("imagePreviewPlugin", () => {
       recreatedView.dom.querySelector<HTMLElement>(".markra-image-frame")
         ?.style.width,
     ).toBe(firstWidth);
+    expect(recreatedView.dom.querySelector(".markra-image-frame")?.classList)
+      .toContain("markra-image-frame-sized");
     expect(recreatedView.state.doc.toString()).toBe(doc);
   });
 

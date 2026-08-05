@@ -1720,6 +1720,24 @@ describe("editor stylesheet", () => {
     expect(imageNodeImageStyles).toContain("display: block");
   });
 
+  it("fills an authored-width image frame without constraining its height", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const sizedImageStart = styles.indexOf(
+      ".markdown-paper .markra-image-frame.markra-image-frame-sized > img {",
+    );
+    const sizedImageEnd = styles.indexOf(
+      ".markdown-paper .markra-image-node.markra-image-node-selected",
+      sizedImageStart,
+    );
+    const sizedImageStyles = styles.slice(sizedImageStart, sizedImageEnd);
+
+    expect(sizedImageStart).toBeGreaterThanOrEqual(0);
+    expect(sizedImageEnd).toBeGreaterThan(sizedImageStart);
+    expect(sizedImageStyles).toContain("width: 100%");
+    expect(sizedImageStyles).toContain("height: auto");
+    expect(sizedImageStyles).toContain("max-height: none");
+  });
+
   it("keeps hidden markdown delimiters available as zero-width caret anchors", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
     const delimiterStart = styles.indexOf(".markdown-paper .markra-md-hidden-delimiter {");

@@ -2763,6 +2763,12 @@
     user-select: none;
   }
 
+  .markdown-paper .markra-image-frame.markra-image-frame-sized > img {
+    width: 100%;
+    height: auto;
+    max-height: none;
+  }
+
   .markdown-paper .markra-image-node.markra-image-node-selected .markra-image-frame > img {
     filter: brightness(.68);
   }

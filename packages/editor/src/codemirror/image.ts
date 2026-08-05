@@ -98,6 +98,7 @@ interface ImageWidgetDomRecord {
 
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
 const scheme = /^([a-z][a-z\d+.-]*):/iu;
+const sizedImageFrameClass = "markra-image-frame-sized";
 const imageTheme = EditorView.baseTheme({
   ".cm-markra-image": {
     borderRadius: "0.35em",
@@ -230,13 +231,18 @@ function updateImageElement(image: HTMLImageElement, widget: ImageWidget) {
   }
 }
 
-function updateImageFrame(frame: HTMLElement, widget: ImageWidget) {
-  const { authoredWidthPx } = widget.details;
-  if (authoredWidthPx === null) {
+function setImageFrameWidth(frame: HTMLElement, widthPx: number | null) {
+  if (widthPx === null) {
     frame.style.removeProperty("width");
+    frame.classList.remove(sizedImageFrameClass);
     return;
   }
-  frame.style.width = `${Math.max(17, authoredWidthPx)}px`;
+  frame.style.width = `${Math.max(17, widthPx)}px`;
+  frame.classList.add(sizedImageFrameClass);
+}
+
+function updateImageFrame(frame: HTMLElement, widget: ImageWidget) {
+  setImageFrameWidth(frame, widget.details.authoredWidthPx);
 }
 
 function releaseImageResizeCapture(
@@ -718,7 +724,7 @@ class ImageWidget extends WidgetType {
         deltaX,
         drag.maximumWidth,
       );
-      frame.style.width = `${drag.width}px`;
+      setImageFrameWidth(frame, drag.width);
     };
     const handleResizePointerUp = (event: PointerEvent) => {
       const drag = state.drag;
