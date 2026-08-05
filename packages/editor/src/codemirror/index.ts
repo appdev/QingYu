@@ -8,6 +8,7 @@ import {
   markdownSyntaxHighlighting,
   markraHighlight,
 } from "./highlight.ts";
+import { imageAttributesMarkdown } from "./image-attributes.ts";
 import {
   markraPlugins,
   type MarkraPlugin,
@@ -106,6 +107,12 @@ export type {
   MarkraImageSourceContext,
 } from "./image.ts";
 export { imagePreviewPlugin, resolveSafeImageSource } from "./image.ts";
+export type { ImageAttributeDetails } from "./image-attributes.ts";
+export {
+  imageAttributeDetails,
+  imageAttributesMarkdown,
+  replaceImageWidth,
+} from "./image-attributes.ts";
 export {
   jsonSyntaxHighlighting,
   markdownSourceSyntaxHighlighting,
@@ -212,7 +219,7 @@ export interface LiveMarkdownConfig extends LivePreviewConfig {
 }
 
 export const markraLanguage = markdown({
-  extensions: [GFM, markraHighlight],
+  extensions: [GFM, imageAttributesMarkdown, markraHighlight],
 });
 
 export function liveMarkdown(config: LiveMarkdownConfig = {}): Extension {
@@ -225,7 +232,7 @@ export function liveMarkdown(config: LiveMarkdownConfig = {}): Extension {
   return [
     highlight
       ? markraLanguage
-      : markdown({ extensions: [GFM] }),
+      : markdown({ extensions: [GFM, imageAttributesMarkdown] }),
     markdownSyntaxHighlighting,
     codeFolding(),
     livePreview(previewConfig),

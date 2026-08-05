@@ -10,6 +10,7 @@ import type { RevealScope } from "./policy.ts";
 export interface MarkraSyntaxNode {
   readonly from: number;
   readonly name: string;
+  readonly nextSibling: MarkraSyntaxNode | null;
   readonly parent: MarkraSyntaxNode | null;
   readonly to: number;
   getChild(name: string): MarkraSyntaxNode | null;
