@@ -158,6 +158,10 @@ const imageWidgetDomRecords = new WeakMap<
   CodeMirrorView,
   Set<ImageWidgetDomRecord>
 >();
+const imageWidgetDomStates = new WeakMap<
+  CodeMirrorView,
+  Set<ImageWidgetDomState>
+>();
 
 function unescapeImageMarkdownText(text: string) {
   return text.replace(/\\([\\\]"])/gu, "$1");
@@ -542,6 +546,12 @@ class ImageWidget extends WidgetType {
       widget: this,
     };
     imageWidgetDomState.set(root, state);
+    let widgetStates = imageWidgetDomStates.get(view);
+    if (!widgetStates) {
+      widgetStates = new Set();
+      imageWidgetDomStates.set(view, widgetStates);
+    }
+    widgetStates.add(state);
 
     const selectImageWidget = () => {
       if (state.widget.readOnly) return;
@@ -756,6 +766,7 @@ class ImageWidget extends WidgetType {
     const state = imageWidgetDomState.get(dom);
     if (!state) return false;
     cancelImageResize(state);
+    if ((state.resizeHandle !== null) !== !this.readOnly) return false;
     if (state.widget.source !== this.source) {
       state.mediaViewer?.close({ restoreFocus: false });
       state.mediaViewer = null;
@@ -792,6 +803,11 @@ class ImageWidget extends WidgetType {
       true,
     );
     state.mediaViewer?.close({ restoreFocus: false });
+    const widgetStates = imageWidgetDomStates.get(state.widget.view);
+    widgetStates?.delete(state);
+    if (widgetStates?.size === 0) {
+      imageWidgetDomStates.delete(state.widget.view);
+    }
     if (state.imageRecord.root === dom) {
       const { view } = state.widget;
       const releaseRecord = () => {
@@ -844,6 +860,12 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
   return defineMarkraPlugin({
     id: "markra.image-preview",
     extension: [
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+        const widgetStates = imageWidgetDomStates.get(update.view);
+        if (!widgetStates) return;
+        for (const state of widgetStates) cancelImageResize(state);
+      }),
       markraRenderer({
         id: "markra.image-preview",
         nodeNames: ["Image"],

@@ -1,5 +1,5 @@
 import { history, redo, undo } from "@codemirror/commands";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -11,11 +11,30 @@ import {
 import "./dom.test-support.ts";
 
 const views: EditorView[] = [];
+const readOnlyCompartment = new Compartment();
+
+function observeDocumentTransactions() {
+  let count = 0;
+  return {
+    extension: EditorView.updateListener.of((update) => {
+      count += update.transactions.filter((transaction) => (
+        transaction.docChanged
+      )).length;
+    }),
+    get count() {
+      return count;
+    },
+    reset() {
+      count = 0;
+    },
+  };
+}
 
 function createView(
   doc: string,
   plugin: ReturnType<typeof imagePreviewPlugin> | null = imagePreviewPlugin(),
   readOnly = false,
+  additionalExtensions: Extension = [],
 ) {
   const parent = document.createElement("div");
   document.body.append(parent);
@@ -25,8 +44,9 @@ function createView(
       doc,
       extensions: [
         history(),
-        EditorState.readOnly.of(readOnly),
+        readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
         liveMarkdown({ plugins: plugin ? [plugin] : [] }),
+        additionalExtensions,
       ],
       selection: { anchor: doc.length },
     }),
@@ -35,6 +55,14 @@ function createView(
   view.focus();
   view.dispatch({ selection: view.state.selection });
   return view;
+}
+
+function setViewReadOnly(view: EditorView, readOnly: boolean) {
+  view.dispatch({
+    effects: readOnlyCompartment.reconfigure(
+      EditorState.readOnly.of(readOnly),
+    ),
+  });
 }
 
 function firstLine(view: EditorView) {
@@ -261,11 +289,18 @@ describe("imagePreviewPlugin", () => {
   ])(
     "persists one image resize for %s",
     (doc, startWidth, targetWidth, expected) => {
-      const view = createView(doc);
+      const transactions = observeDocumentTransactions();
+      const view = createView(
+        doc,
+        imagePreviewPlugin(),
+        false,
+        transactions.extension,
+      );
 
       dragImage(view, startWidth, targetWidth);
 
       expect(view.state.doc.toString()).toBe(expected);
+      expect(transactions.count).toBe(1);
       expect(
         view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
       ).toBe("420px");
@@ -447,11 +482,49 @@ describe("imagePreviewPlugin", () => {
     expect(view.dom.querySelector(".markra-image-resize-hit-target")).toBeNull();
   });
 
+  it("removes the resize handle when an editable view becomes read-only", () => {
+    const view = createView("![a](x.png){width=100px}");
+    const editableRoot = view.dom.querySelector(".markra-image-node");
+    expect(editableRoot?.querySelector(".markra-image-resize-hit-target"))
+      .not.toBeNull();
+
+    setViewReadOnly(view, true);
+
+    const readOnlyRoot = view.dom.querySelector(".markra-image-node");
+    expect(readOnlyRoot).not.toBe(editableRoot);
+    expect(readOnlyRoot?.querySelector(".markra-image-resize-hit-target"))
+      .toBeNull();
+  });
+
+  it("adds the resize handle when a read-only view becomes editable", () => {
+    const view = createView(
+      "![a](x.png){width=100px}",
+      imagePreviewPlugin(),
+      true,
+    );
+    const readOnlyRoot = view.dom.querySelector(".markra-image-node");
+    expect(readOnlyRoot?.querySelector(".markra-image-resize-hit-target"))
+      .toBeNull();
+
+    setViewReadOnly(view, false);
+
+    const editableRoot = view.dom.querySelector(".markra-image-node");
+    expect(editableRoot).not.toBe(readOnlyRoot);
+    expect(editableRoot?.querySelector(".markra-image-resize-hit-target"))
+      .not.toBeNull();
+  });
+
   it.each(["pointercancel", "lostpointercapture"] as const)(
     "restores authored width without persisting on %s",
     (eventType) => {
       const doc = "![a](x.png){width=100px}";
-      const view = createView(doc);
+      const transactions = observeDocumentTransactions();
+      const view = createView(
+        doc,
+        imagePreviewPlugin(),
+        false,
+        transactions.extension,
+      );
       const resize = prepareImageResize(view, 100);
       dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
       dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
@@ -461,12 +534,19 @@ describe("imagePreviewPlugin", () => {
 
       expect(view.state.doc.toString()).toBe(doc);
       expect(resize.frame.style.width).toBe("100px");
+      expect(transactions.count).toBe(0);
     },
   );
 
   it("restores authored width without dispatch when a dragged widget is destroyed", () => {
     const doc = "![a](x.png){width=100px}";
-    const view = createView(doc);
+    const transactions = observeDocumentTransactions();
+    const view = createView(
+      doc,
+      imagePreviewPlugin(),
+      false,
+      transactions.extension,
+    );
     const resize = prepareImageResize(view, 100);
     dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
     dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
@@ -477,11 +557,18 @@ describe("imagePreviewPlugin", () => {
 
     expect(view.state.doc.toString()).toBe(doc);
     expect(resize.frame.style.width).toBe("100px");
+    expect(transactions.count).toBe(0);
   });
 
   it("cancels a pending resize when the document changes during the drag", () => {
     const doc = "![a](x.png){width=100px}\nEdit";
-    const view = createView(doc);
+    const transactions = observeDocumentTransactions();
+    const view = createView(
+      doc,
+      imagePreviewPlugin(),
+      false,
+      transactions.extension,
+    );
     const resize = prepareImageResize(view, 100);
     dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
     dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
@@ -490,10 +577,14 @@ describe("imagePreviewPlugin", () => {
       changes: { from: doc.length, insert: "!" },
       userEvent: "input",
     });
+    expect(resize.frame.style.width).toBe("100px");
+    expect(resize.releasePointerCapture).toHaveBeenCalledWith(7);
+    transactions.reset();
     dispatchPointerEvent(resize.handle, "pointerup", { clientX: 180 });
 
     expect(view.state.doc.toString()).toBe(`${doc}!`);
     expect(resize.frame.style.width).toBe("100px");
+    expect(transactions.count).toBe(0);
   });
 
   it("cancels a transient resize before applying an updated image source width", () => {
