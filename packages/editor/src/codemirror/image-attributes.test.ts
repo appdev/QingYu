@@ -151,6 +151,32 @@ describe("image attribute syntax", () => {
       ]);
   });
 
+  it("does not own adjacent braces inside a Markdown link ancestor", () => {
+    const doc = "[![a](x.png){width=12px}](target)";
+
+    expect(details(doc)).toMatchObject({
+      attributesFrom: null,
+      authoredWidthPx: null,
+      ownedTo: doc.indexOf(")") + 1,
+      widthValueFrom: null,
+      widthValueTo: null,
+    });
+  });
+
+  it("scans quoted unknown values with spaces and a valid width", () => {
+    const doc =
+      `![a](x.png){title="wide hero" width=420px data-note='keep this'}`;
+
+    expect(details(doc)).toMatchObject({
+      attributesFrom: 11,
+      authoredWidthPx: 420,
+      ownedTo: doc.length,
+    });
+    expect(resize(doc, 360)).toBe(
+      `![a](x.png){title="wide hero" width=360px data-note='keep this'}`,
+    );
+  });
+
   it("does not create owned image attributes in code, raw HTML, or ordinary prose", () => {
     for (const doc of [
       "`![a](x.png){width=12px}`",
@@ -193,6 +219,21 @@ describe("image attribute syntax", () => {
     expect(imageAttributeDetails(state, image)).toMatchObject({
       authoredWidthPx: 12,
       ownedTo: doc.length,
+    });
+  });
+
+  it.each([
+    ["non-safe integer", "9007199254740992"],
+    ["non-finite integer", "9".repeat(400)],
+  ])("rejects a %s width without giving up attribute ownership", (_label, width) => {
+    const doc = `![a](x.png){#hero width=${width}px}`;
+
+    expect(details(doc)).toMatchObject({
+      attributesFrom: 11,
+      authoredWidthPx: null,
+      ownedTo: doc.length,
+      widthValueFrom: null,
+      widthValueTo: null,
     });
   });
 });

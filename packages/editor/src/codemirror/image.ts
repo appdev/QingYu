@@ -19,6 +19,7 @@ import {
 import { moveToEditableLine } from "./blank-lines.ts";
 import {
   imageAttributeDetails,
+  isImageAttributeListSource,
   replaceImageWidth,
   type ImageAttributeDetails,
 } from "./image-attributes.ts";
@@ -61,6 +62,7 @@ interface ImageWidgetDomState {
   imageRecord: ImageWidgetDomRecord;
   mediaViewer: MediaViewerHandle | null;
   onOutsideMouseDown: (event: MouseEvent) => void;
+  onViewFocusOut: (event: FocusEvent) => void;
   onViewKeyDown: (event: KeyboardEvent) => void;
   resizeHandle: HTMLSpanElement | null;
   selected: boolean;
@@ -96,12 +98,6 @@ interface ImageWidgetDomRecord {
 
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
 const scheme = /^([a-z][a-z\d+.-]*):/iu;
-const imageAttributeTokenSource = String.raw`(?:[#.](?:\\[^\r\n]|[^\s\\{}\r\n])+|(?:\\[^\r\n]|[^\s\\={}\r\n])+=(?:\\[^\r\n]|[^\s\\{}\r\n])+)`;
-const imageAttributeListSource = new RegExp(
-  `^\\{[ \\t]*(?:${imageAttributeTokenSource}(?:[ \\t]+${imageAttributeTokenSource})*)?[ \\t]*\\}$`,
-  "u",
-);
-
 const imageTheme = EditorView.baseTheme({
   ".cm-markra-image": {
     borderRadius: "0.35em",
@@ -176,7 +172,7 @@ function parseImageMarkdownSource(
   );
   if (!match) return null;
   const attributes = markdown.slice(match[0].length);
-  if (attributes && !imageAttributeListSource.test(attributes)) {
+  if (attributes && !isImageAttributeListSource(attributes)) {
     return null;
   }
 
@@ -497,6 +493,16 @@ class ImageWidget extends WidgetType {
         const current = imageWidgetDomState.get(root);
         if (current) hideImageSource(root, current);
       },
+      onViewFocusOut: (event: FocusEvent) => {
+        if (
+          event.relatedTarget instanceof Node &&
+          view.dom.contains(event.relatedTarget)
+        ) {
+          return;
+        }
+        const current = imageWidgetDomState.get(root);
+        if (current) cancelImageResize(current);
+      },
       onViewKeyDown: (event: KeyboardEvent) => {
         const current = imageWidgetDomState.get(root);
         if (
@@ -507,6 +513,12 @@ class ImageWidget extends WidgetType {
           event.metaKey ||
           event.shiftKey
         ) {
+          return;
+        }
+
+        if (event.key === "Escape") {
+          event.preventDefault();
+          hideImageSource(root, current);
           return;
         }
 
@@ -624,9 +636,16 @@ class ImageWidget extends WidgetType {
     };
 
     const handleResizePointerDown = (event: PointerEvent) => {
+      if (
+        !resizeHandle ||
+        state.widget.readOnly ||
+        !event.isPrimary ||
+        event.button !== 0
+      ) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
-      if (!resizeHandle || state.widget.readOnly) return;
       cancelImageResize(state);
       selectImageWidget();
 
@@ -714,6 +733,7 @@ class ImageWidget extends WidgetType {
       }
       view.dispatch({
         changes: { from: drag.from, insert: replacement, to: drag.to },
+        selection: EditorSelection.cursor(drag.from + 1),
         userEvent: "input",
       });
     };
@@ -731,6 +751,7 @@ class ImageWidget extends WidgetType {
       cancelImageResize(state, false);
     };
     const containResizeMouseEvent = (event: MouseEvent) => {
+      if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -757,6 +778,7 @@ class ImageWidget extends WidgetType {
     sourceRow.addEventListener("click", keepSourceFocused);
     sourceInput.addEventListener("input", () => syncImageSource(root, state));
     sourceInput.addEventListener("keydown", handleSourceKeyDown);
+    view.dom.addEventListener("focusout", state.onViewFocusOut, true);
     view.dom.addEventListener("keydown", state.onViewKeyDown, true);
     if (this.selected) showImageSource(root, state);
     return root;
@@ -795,6 +817,11 @@ class ImageWidget extends WidgetType {
     dom.ownerDocument.removeEventListener(
       "mousedown",
       state.onOutsideMouseDown,
+      true,
+    );
+    state.widget.view.dom.removeEventListener(
+      "focusout",
+      state.onViewFocusOut,
       true,
     );
     state.widget.view.dom.removeEventListener(

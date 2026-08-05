@@ -37,17 +37,33 @@ function scanAttributeList(source: string): ScannedAttributeList | null {
 
   let closingBrace = -1;
   let escaped = false;
+  let quote: "\"" | "'" | null = null;
   for (let position = 1; position < source.length; position += 1) {
     const character = source[position];
     if (character === "\n" || character === "\r") return null;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
     if (!escaped && character === "{") return null;
     if (!escaped && character === "}") {
       closingBrace = position;
       break;
     }
-    escaped = !escaped && character === "\\";
   }
-  if (closingBrace < 0) return null;
+  if (closingBrace < 0 || quote !== null) return null;
 
   const tokens: AttributeToken[] = [];
   let position = 1;
@@ -57,12 +73,33 @@ function scanAttributeList(source: string): ScannedAttributeList | null {
 
     const from = position;
     let tokenEscaped = false;
+    let tokenQuote: "\"" | "'" | null = null;
     while (position < closingBrace) {
       const character = source[position];
-      if (!tokenEscaped && isSpace(character)) break;
-      tokenEscaped = !tokenEscaped && character === "\\";
+      if (tokenEscaped) {
+        tokenEscaped = false;
+        position += 1;
+        continue;
+      }
+      if (character === "\\") {
+        tokenEscaped = true;
+        position += 1;
+        continue;
+      }
+      if (tokenQuote !== null) {
+        if (character === tokenQuote) tokenQuote = null;
+        position += 1;
+        continue;
+      }
+      if (character === "\"" || character === "'") {
+        tokenQuote = character;
+        position += 1;
+        continue;
+      }
+      if (isSpace(character)) break;
       position += 1;
     }
+    if (tokenQuote !== null) return null;
     const to = position;
     const equals = firstUnescapedEquals(source, from, to);
 
@@ -97,6 +134,10 @@ function scanAttributeList(source: string): ScannedAttributeList | null {
   }
 
   return { length: closingBrace + 1, tokens };
+}
+
+export function isImageAttributeListSource(source: string) {
+  return scanAttributeList(source)?.length === source.length;
 }
 
 export const imageAttributesMarkdown: MarkdownConfig = {
@@ -160,10 +201,13 @@ export function imageAttributeDetails(
   image: MarkraSyntaxNode,
 ): ImageAttributeDetails {
   const attributes = image.nextSibling;
+  let ancestor = image.parent;
+  while (ancestor && ancestor.name !== "Link") ancestor = ancestor.parent;
   if (
     findCodeMirrorMathRanges(state).some((range) => (
       image.from >= range.from && image.to <= range.to
     )) ||
+    ancestor?.name === "Link" ||
     attributes?.name !== "ImageAttributes" ||
     attributes.from !== image.to
   ) {
@@ -189,13 +233,16 @@ export function imageAttributeDetails(
         attributes.from + width.valueFrom,
         attributes.from + width.valueTo,
       );
-  const validWidth = value !== null && /^[1-9]\d*px$/u.test(value);
+  const parsedWidth = value !== null && /^[1-9]\d*px$/u.test(value)
+    ? Number.parseInt(value, 10)
+    : null;
+  const validWidth = parsedWidth !== null && Number.isSafeInteger(parsedWidth);
 
   return {
     ownedFrom: image.from,
     attributesFrom: attributes.from,
     attributesTo: attributes.to,
-    authoredWidthPx: validWidth ? Number.parseInt(value, 10) : null,
+    authoredWidthPx: validWidth ? parsedWidth : null,
     ownedTo: attributes.to,
     widthValueFrom: validWidth && width !== null && width.valueFrom !== null
       ? attributes.from + width.valueFrom

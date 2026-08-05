@@ -99,8 +99,10 @@ type TestPointerEventType =
   | "pointerup";
 
 interface TestPointerEventOptions {
+  button?: number;
   clientX: number;
   clientY?: number;
+  isPrimary?: boolean;
   pointerId?: number;
   pointerType?: string;
 }
@@ -112,9 +114,10 @@ function dispatchPointerEvent(
 ) {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperties(event, {
+    button: { value: options.button ?? 0 },
     clientX: { value: options.clientX },
     clientY: { value: options.clientY ?? 0 },
-    isPrimary: { value: true },
+    isPrimary: { value: options.isPrimary ?? true },
     pointerId: { value: options.pointerId ?? 7 },
     pointerType: { value: options.pointerType ?? "mouse" },
   });
@@ -337,6 +340,23 @@ describe("imagePreviewPlugin", () => {
     ).toBe("420px");
   });
 
+  it("keeps the resized image selected with a cursor inside its new owned range", () => {
+    const original = "![a](x.png){width=100px}";
+    const resized = "![a](x.png){width=140px}";
+    const view = createView(original);
+
+    dragImage(view, 100, 140);
+
+    expect(view.state.doc.toString()).toBe(resized);
+    expect(view.dom.querySelector(".markra-image-node-selected")).not.toBeNull();
+    expect(sourceInput(view)?.value).toBe(resized);
+    expect(view.dom.querySelector(".markra-image-resize-hit-target")).not.toBeNull();
+    expect(view.state.selection.main.head).toBeGreaterThan(0);
+    expect(view.state.selection.main.head).toBeLessThan(resized.length);
+    expect(undo(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe(original);
+  });
+
   it.each(["mouse", "touch", "pen"])(
     "resizes from a captured %s pointer",
     (pointerType) => {
@@ -381,6 +401,28 @@ describe("imagePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
     expect(resize.frame.style.width).toBe("100px");
     dispatchPointerEvent(resize.handle, "pointercancel", { clientX: 100 });
+  });
+
+  it.each([
+    ["non-primary pointer", { isPrimary: false }],
+    ["secondary mouse button", { button: 2 }],
+  ])("ignores a %s resize start", (_label, options) => {
+    const doc = "![a](x.png){width=100px}";
+    const view = createView(doc);
+    const resize = prepareImageResize(view, 100);
+
+    const down = dispatchPointerEvent(resize.handle, "pointerdown", {
+      clientX: 100,
+      ...options,
+    });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+    dispatchPointerEvent(resize.handle, "pointerup", { clientX: 180 });
+
+    expect(down.defaultPrevented).toBe(false);
+    expect(resize.setPointerCapture).not.toHaveBeenCalled();
+    expect(resize.releasePointerCapture).not.toHaveBeenCalled();
+    expect(resize.frame.style.width).toBe("100px");
+    expect(view.state.doc.toString()).toBe(doc);
   });
 
   it("clamps transient and persisted resize width to the image minimum", () => {
@@ -538,6 +580,34 @@ describe("imagePreviewPlugin", () => {
     },
   );
 
+  it("cancels an active resize when editor focus leaves", () => {
+    const doc = "![a](x.png){width=100px}";
+    const transactions = observeDocumentTransactions();
+    const view = createView(
+      doc,
+      imagePreviewPlugin(),
+      false,
+      transactions.extension,
+    );
+    const resize = prepareImageResize(view, 100);
+    dispatchPointerEvent(resize.handle, "pointerdown", { clientX: 100 });
+    dispatchPointerEvent(resize.handle, "pointermove", { clientX: 180 });
+    expect(resize.frame.style.width).toBe("180px");
+
+    view.contentDOM.dispatchEvent(new FocusEvent("focusout", {
+      bubbles: true,
+      relatedTarget: document.body,
+    }));
+
+    expect(resize.frame.style.width).toBe("100px");
+    expect(resize.releasePointerCapture).toHaveBeenCalledWith(7);
+    expect(view.state.doc.toString()).toBe(doc);
+    transactions.reset();
+    dispatchPointerEvent(resize.handle, "pointerup", { clientX: 180 });
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(transactions.count).toBe(0);
+  });
+
   it("restores authored width without dispatch when a dragged widget is destroyed", () => {
     const doc = "![a](x.png){width=100px}";
     const transactions = observeDocumentTransactions();
@@ -627,6 +697,30 @@ describe("imagePreviewPlugin", () => {
     ).toBe("");
   });
 
+  it.each([
+    ["non-safe", "9007199254740992"],
+    ["non-finite", "9".repeat(400)],
+  ])("preserves and deterministically renders a %s authored width", (_label, width) => {
+    const doc = `![Synthetic](./assets/mock.png){#hero width=${width}px}`;
+    const firstView = createView(doc);
+
+    expect(
+      firstView.dom.querySelector<HTMLElement>(".markra-image-frame")
+        ?.style.width,
+    ).toBe("");
+    clickImage(firstView);
+    expect(sourceInput(firstView)?.value).toBe(doc);
+
+    firstView.destroy();
+    views.splice(views.indexOf(firstView), 1);
+    const recreatedView = createView(doc);
+    expect(
+      recreatedView.dom.querySelector<HTMLElement>(".markra-image-frame")
+        ?.style.width,
+    ).toBe("");
+    expect(recreatedView.state.doc.toString()).toBe(doc);
+  });
+
   it("deletes the complete owned image attribute range", () => {
     const doc = "![Synthetic](./assets/mock.png){width=420px}\n\nEdit";
     const view = createView(doc);
@@ -699,6 +793,25 @@ describe("imagePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(
       "![Changed](https://example.test/changed.png){#hero width=360px}\n\nEdit",
     );
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
+    ).toBe("360px");
+  });
+
+  it("accepts image source attributes with quoted spaces using the parser grammar", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=320px}";
+    const submitted =
+      `![Changed](https://example.test/changed.png){title="wide hero" width=360px}`;
+    const view = createView(doc);
+    clickImage(view);
+    const source = sourceInput(view);
+
+    expect(source).not.toBeNull();
+    if (!source) return;
+    source.value = submitted;
+    source.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(view.state.doc.toString()).toBe(submitted);
     expect(
       view.dom.querySelector<HTMLElement>(".markra-image-frame")?.style.width,
     ).toBe("360px");
@@ -842,6 +955,20 @@ describe("imagePreviewPlugin", () => {
       view.dom.querySelector<HTMLInputElement>(".markra-image-node-source")
         ?.value,
     ).toBe("![Synthetic alt](./assets/mock.png)");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("clears a click-selected image when Escape comes from editor focus", () => {
+    const doc = "Before ![Synthetic alt](./assets/mock.png) after";
+    const view = createView(doc);
+    clickImage(view);
+    expect(view.dom.querySelector(".markra-image-node-selected")).not.toBeNull();
+
+    const event = pressSelectedKey(view, "Escape");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.dom.querySelector(".markra-image-node-selected")).toBeNull();
+    expect(sourceInput(view)).toBeNull();
     expect(view.state.doc.toString()).toBe(doc);
   });
 
