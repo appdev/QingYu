@@ -13,7 +13,10 @@ use axum::{
 use cap_fs_ext::{DirExt as _, MetadataExt};
 use cap_std::fs::{Dir, Metadata};
 
-use super::{api_error, is_api_namespace_path, routes, ApiState, InvalidServerWebAssets};
+use super::{
+    api_error, is_api_namespace_path, is_media_namespace_path, routes, ApiState,
+    InvalidServerWebAssets,
+};
 use crate::{
     contract::ErrorCode,
     storage::{nonfollowing_read_options, open_canonical_directory_nofollow},
@@ -106,7 +109,8 @@ pub(super) async fn fallback(State(state): State<ApiState>, request: Request) ->
     if state.web.is_none() {
         return routes::not_found(request).await;
     }
-    if is_api_namespace_path(request.uri().path()) {
+    if is_api_namespace_path(request.uri().path()) || is_media_namespace_path(request.uri().path())
+    {
         return api_error(ErrorCode::InvalidRequest, None);
     }
     let method = request.method().clone();
