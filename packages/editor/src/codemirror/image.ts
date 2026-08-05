@@ -142,7 +142,7 @@ function unescapeImageMarkdownText(text: string) {
 function parseImageMarkdownSource(
   source: string,
 ): (ImageSourceDetails & { markdown: string }) | null {
-  const markdown = source.trim();
+  const markdown = source;
   const match = /^!\[((?:\\.|[^\]\\])*)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+"((?:\\.|[^"\n])*)")?\)/u.exec(
     markdown,
   );
@@ -313,8 +313,8 @@ function showImageSource(
 
 function syncImageSource(root: HTMLElement, state: ImageWidgetDomState) {
   const { view } = state.widget;
-  const markdown = state.sourceInput.value.trim();
-  if (!markdown) {
+  const markdown = state.sourceInput.value;
+  if (!markdown.trim()) {
     const from = Math.min(state.widget.from, view.state.doc.length);
     const to = Math.min(state.widget.to, view.state.doc.length);
     view.dispatch({

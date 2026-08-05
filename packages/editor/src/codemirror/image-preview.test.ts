@@ -259,6 +259,55 @@ describe("imagePreviewPlugin", () => {
     ).toBe("360px");
   });
 
+  it.each([
+    [
+      "leading whitespace",
+      " ![Changed](https://example.test/changed.png){width=360px}",
+    ],
+    [
+      "trailing whitespace",
+      "![Changed](https://example.test/changed.png){width=360px} ",
+    ],
+    [
+      "leading text",
+      "prefix ![Changed](https://example.test/changed.png){width=360px}",
+    ],
+    [
+      "trailing text",
+      "![Changed](https://example.test/changed.png){width=360px} suffix",
+    ],
+  ])("rejects and preserves an image source edit with %s", (_label, submitted) => {
+    const doc = "![Synthetic](./assets/mock.png){width=320px}\n\nEdit";
+    const view = createView(doc);
+    clickImage(view);
+    const source = sourceInput(view);
+
+    expect(source).not.toBeNull();
+    if (!source) return;
+    source.value = submitted;
+    source.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(source.value).toBe(submitted);
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(view.dom.querySelector(".markra-image-node-source-invalid"))
+      .not.toBeNull();
+  });
+
+  it("deletes the complete owned image for an all-whitespace source edit", () => {
+    const doc = "![Synthetic](./assets/mock.png){width=320px}\n\nEdit";
+    const view = createView(doc);
+    clickImage(view);
+    const source = sourceInput(view);
+
+    expect(source).not.toBeNull();
+    if (!source) return;
+    source.value = " \t ";
+    source.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(view.state.doc.toString()).toBe("\n\nEdit");
+    expect(view.dom.querySelector(".cm-markra-image")).toBeNull();
+  });
+
   it("rejects a malformed image attribute source edit", () => {
     const doc = "![Synthetic](./assets/mock.png){width=320px}\n\nEdit";
     const view = createView(doc);
