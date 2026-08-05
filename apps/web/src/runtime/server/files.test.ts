@@ -7,7 +7,6 @@ import {
   type KernelRevision,
   type KernelWorkspaceGeneration,
 } from "@markra/app/runtime";
-import { KernelApiError } from "@markra/kernel-client";
 
 import {
   createServerFileRuntime,
@@ -205,538 +204,36 @@ describe("server file facade", () => {
     }));
   });
 
-  it("reuses a newly uploaded image Blob and rematerializes it after invalidation", async () => {
-    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
-    const kernel = Object.assign(kernelPort(), {
-      invalidations: {
-        available: true,
-        subscribe: (listener: (notice: KernelInvalidationNotice) => unknown) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-            return undefined;
-          };
-        },
-      },
-    });
-    const createdEntry = resource({
-      id: "image-new.signature",
-      name: "pasted-2.png",
-      relativePath: "pasted-2.png",
-    });
-    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
-    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
-    const canonicalBody = new Blob(["canonical image"], { type: "image/png" });
-    vi.mocked(kernel.resources.open).mockResolvedValue({
-      body: canonicalBody,
-      mediaType: "image/png",
-    });
-    vi.mocked(kernel.resources.list).mockResolvedValue({
-      items: [createdEntry],
-      workspaceGeneration: generation,
-    });
-    const createObjectURL = vi.fn(() => "blob:server-new-image");
-    const revokeObjectURL = vi.fn();
-    const files = createServerFileRuntime(kernel, {
-      objectUrls: { createObjectURL, revokeObjectURL },
-    });
-    const image = new File(
-      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
-      "pasted.png",
-      { type: "image/png" },
+  it("publishes same-origin Kernel media URLs without opening preview bytes", async () => {
+    const kernel = kernelPort();
+    const imageUrl = vi.fn(({ id, revision }: { id: string; revision: KernelRevision }) =>
+      `/media/v1/images/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`
     );
-    const documentPath = `${serverWorkspaceRoot}/note.md`;
-
-    const saved = await files.saveClipboardImage({
-      documentPath,
-      fileName: "pasted.png",
-      folder: "",
-      image,
-    });
-
-    expect(saved).toEqual({ alt: "pasted", src: "pasted-2.png" });
-    expect(createObjectURL).toHaveBeenCalledWith(canonicalBody);
-    expect(kernel.resources.open).toHaveBeenCalledWith({
-      id: "image-new.signature",
-      kind: "image",
+    Object.assign(kernel.resources, { imageUrl });
+    vi.mocked(kernel.resources.list).mockResolvedValue({
+      items: [resource({
+        id: "image/root capability.signature",
+        name: "cover image.png",
+        relativePath: "cover image.png",
+      })],
       workspaceGeneration: generation,
     });
-    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src))
-      .toBe("blob:server-new-image");
-
-    publish(listeners, {
-      documentChange: "snapshot",
-      scopes: ["resources"],
-    });
-    await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-new-image"));
-    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBeUndefined();
+    const files = createServerFileRuntime(kernel);
+    const documentPath = `${serverWorkspaceRoot}/note.md`;
 
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
-    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBe(
-      "blob:server-new-image",
+
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover%20image.png")).toBe(
+      "/media/v1/images/image%2Froot%20capability.signature?revision=resource-revision-1",
     );
-    expect(kernel.resources.open).toHaveBeenCalledTimes(2);
-  });
-
-  it("rematerializes seven resources through a real runtime teardown and reload", async () => {
-    vi.useFakeTimers();
-    try {
-      const kernel = kernelPort();
-      const imageEntries = sevenImageEntries();
-      vi.mocked(kernel.documents.list).mockImplementation(async (input) => ({
-        items: input.parent === ""
-          ? [
-              entry({
-                kind: "directory",
-                locator: "assets-folder",
-                name: "assets",
-                relativePath: "assets",
-              }),
-              entry({ locator: "document-1", name: "note.md", relativePath: "note.md" }),
-            ]
-          : [],
-        nextCursor: null,
-        workspaceGeneration: generation,
-      }));
-      vi.mocked(kernel.resources.list).mockImplementation(async (input) => ({
-        items: input.parent === "assets" ? imageEntries : [],
-        workspaceGeneration: generation,
-      }));
-      let activeOpens = 0;
-      let maximumConcurrentOpens = 0;
-      let rejectNextOpen = true;
-      vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
-        activeOpens += 1;
-        maximumConcurrentOpens = Math.max(maximumConcurrentOpens, activeOpens);
-        try {
-          if (rejectNextOpen) {
-            rejectNextOpen = false;
-            throw authUnavailable();
-          }
-          return imageBody(imageEntries, id);
-        } finally {
-          activeOpens -= 1;
-        }
-      });
-      const createObjectURL = vi.fn((blob: Blob) => `blob:server-image-${blob.type}`);
-      const revokeObjectURL = vi.fn();
-
-      for (const cycle of ["first open", "full reload"]) {
-        const owner = createServerFileRuntimeOwner(kernel, {
-          objectUrls: { createObjectURL, revokeObjectURL },
-        });
-        const callsBefore = vi.mocked(kernel.resources.open).mock.calls.length;
-        const createdBefore = createObjectURL.mock.calls.length;
-        const revokedBefore = revokeObjectURL.mock.calls.length;
-        const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
-        await vi.runAllTimersAsync();
-        await expect(loading, cycle).resolves.toHaveLength(2);
-
-        expect(kernel.resources.open, cycle).toHaveBeenCalledTimes(callsBefore + 8);
-        expect(createObjectURL, cycle).toHaveBeenCalledTimes(createdBefore + 7);
-        for (const imageEntry of imageEntries) {
-          if (imageEntry.entryType !== "resource") continue;
-          expect(owner.files.resolveMarkdownImageSrc?.(
-            `${serverWorkspaceRoot}/note.md`,
-            imageEntry.resource.relativePath,
-          ), cycle).toBe(`blob:server-image-${imageEntry.resource.mediaType}`);
-        }
-
-        owner.release();
-        expect(revokeObjectURL, cycle).toHaveBeenCalledTimes(revokedBefore + 7);
-        rejectNextOpen = true;
-      }
-      expect(maximumConcurrentOpens).toBe(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries the canonical reopen of a newly created image before publishing its URL", async () => {
-    vi.useFakeTimers();
-    try {
-      const kernel = kernelPort();
-      const createdEntry = resource({
-        id: "image-created.signature",
-        name: "created.png",
-        relativePath: "created.png",
-      });
-      if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
-      vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
-      vi.mocked(kernel.resources.open)
-        .mockRejectedValueOnce(authUnavailable())
-        .mockResolvedValueOnce({
-          body: new Blob(["canonical"], { type: "image/png" }),
-          mediaType: "image/png",
-        });
-      const createObjectURL = vi.fn(() => "blob:created-after-auth-ready");
-      const owner = createServerFileRuntimeOwner(kernel, {
-        objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-      });
-
-      const saving = owner.files.saveClipboardImage({
-        documentPath: `${serverWorkspaceRoot}/note.md`,
-        fileName: "created.png",
-        folder: "",
-        image: new File(["created"], "created.png", { type: "image/png" }),
-      });
-      await vi.runAllTimersAsync();
-      await expect(saving).resolves.toEqual({ alt: "created", src: "created.png" });
-
-      expect(kernel.resources.open).toHaveBeenCalledTimes(2);
-      expect(createObjectURL).toHaveBeenCalledOnce();
-      expect(owner.files.resolveMarkdownImageSrc?.(
-        `${serverWorkspaceRoot}/note.md`,
-        "created.png",
-      )).toBe("blob:created-after-auth-ready");
-      owner.release();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("retries a seven-image batch sequentially and publishes every canonical URL", async () => {
-    vi.useFakeTimers();
-    try {
-      const kernel = kernelPort();
-      const imageEntries = sevenImageEntries();
-      const created = imageEntries.map((entry) => {
-        if (entry.entryType !== "resource") throw new Error("resource fixture expected");
-        return entry.resource;
-      });
-      vi.mocked(kernel.resources.createBatch).mockResolvedValue(created);
-      let activeOpens = 0;
-      let maximumConcurrentOpens = 0;
-      let rejectNextOpen = true;
-      vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
-        activeOpens += 1;
-        maximumConcurrentOpens = Math.max(maximumConcurrentOpens, activeOpens);
-        try {
-          if (rejectNextOpen) {
-            rejectNextOpen = false;
-            throw authUnavailable();
-          }
-          return imageBody(imageEntries, id);
-        } finally {
-          activeOpens -= 1;
-        }
-      });
-      const createObjectURL = vi.fn((blob: Blob) => `blob:created-${blob.type}`);
-      const owner = createServerFileRuntimeOwner(kernel, {
-        objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-      });
-
-      const saving = owner.files.saveClipboardImages(created.map((image) => ({
-        copyToStorage: true,
-        documentPath: `${serverWorkspaceRoot}/note.md`,
-        fileName: image.name,
-        folder: "assets",
-        image: new File([image.id], image.name, { type: image.mediaType }),
-      })));
-      await vi.runAllTimersAsync();
-      await expect(saving).resolves.toHaveLength(7);
-
-      expect(kernel.resources.open).toHaveBeenCalledTimes(8);
-      expect(maximumConcurrentOpens).toBe(1);
-      expect(createObjectURL).toHaveBeenCalledTimes(7);
-      for (const image of created) {
-        expect(owner.files.resolveMarkdownImageSrc?.(
-          `${serverWorkspaceRoot}/note.md`,
-          image.relativePath,
-        )).toBe(`blob:created-${image.mediaType}`);
-      }
-      owner.release();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it.each([
-    ["resource_not_found", 404],
-    ["kernel_not_ready", 503],
-  ] as const)("does not retry a newly created image after %s", async (code, status) => {
-    const kernel = kernelPort();
-    const createdEntry = resource({
-      id: "image-failed.signature",
-      name: "failed.png",
-      relativePath: "failed.png",
+    expect(imageUrl).toHaveBeenCalledWith({
+      id: "image/root capability.signature",
+      revision: "resource-revision-1",
     });
-    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
-    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
-    vi.mocked(kernel.resources.open).mockRejectedValue(new KernelApiError({
-      code,
-      requestId: "123e4567-e89b-42d3-a456-426614174003",
-      status,
-    }));
-    const createObjectURL = vi.fn(() => "blob:must-not-exist");
-    const owner = createServerFileRuntimeOwner(kernel, {
-      objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-    });
-
-    await expect(owner.files.saveClipboardImage({
-      documentPath: `${serverWorkspaceRoot}/note.md`,
-      fileName: "failed.png",
-      folder: "",
-      image: new File(["failed"], "failed.png", { type: "image/png" }),
-    })).rejects.toMatchObject({ code, status });
-    expect(kernel.resources.open).toHaveBeenCalledOnce();
-    expect(createObjectURL).not.toHaveBeenCalled();
-    owner.release();
+    expect(kernel.resources.open).not.toHaveBeenCalled();
   });
 
-  it.each(["single image", "image batch"] as const)(
-    "cancels a newly created %s retry when its runtime owner unmounts",
-    async (kind) => {
-      vi.useFakeTimers();
-      try {
-        const kernel = kernelPort();
-        const imageEntries = sevenImageEntries();
-        const created = imageEntries.map((entry) => {
-          if (entry.entryType !== "resource") throw new Error("resource fixture expected");
-          return entry.resource;
-        });
-        vi.mocked(kernel.resources.create).mockResolvedValue(created[0]!);
-        vi.mocked(kernel.resources.createBatch).mockResolvedValue(created);
-        let markOpenStarted: (() => unknown) | undefined;
-        const openStarted = new Promise<undefined>((resolve) => {
-          markOpenStarted = () => resolve(undefined);
-        });
-        vi.mocked(kernel.resources.open).mockImplementation(async () => {
-          markOpenStarted?.();
-          throw authUnavailable();
-        });
-        const createObjectURL = vi.fn(() => "blob:must-not-exist");
-        const revokeObjectURL = vi.fn();
-        const owner = createServerFileRuntimeOwner(kernel, {
-          objectUrls: { createObjectURL, revokeObjectURL },
-        });
-        const saving = kind === "single image"
-          ? owner.files.saveClipboardImage({
-              documentPath: `${serverWorkspaceRoot}/note.md`,
-              fileName: created[0]!.name,
-              folder: "assets",
-              image: new File([created[0]!.id], created[0]!.name, { type: created[0]!.mediaType }),
-            })
-          : owner.files.saveClipboardImages(created.map((image) => ({
-              copyToStorage: true,
-              documentPath: `${serverWorkspaceRoot}/note.md`,
-              fileName: image.name,
-              folder: "assets",
-              image: new File([image.id], image.name, { type: image.mediaType }),
-            })));
-        const outcome = saving.then(
-          (value) => ({ error: null, value }),
-          (error: unknown) => ({ error, value: null }),
-        );
-        await openStarted;
-        owner.release();
-        const result = await outcome;
-        await vi.runAllTimersAsync();
-
-        if (kind === "single image") {
-          expect(result.error).toEqual(expect.objectContaining({ name: "AbortError" }));
-        } else {
-          expect(result.error).toBeNull();
-          expect(result.value).toHaveLength(7);
-        }
-        expect(kernel.resources.open).toHaveBeenCalledOnce();
-        expect(createObjectURL).not.toHaveBeenCalled();
-        expect(revokeObjectURL).not.toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it("bounds authentication retry with backoff and returns a redacted terminal error", async () => {
-    vi.useFakeTimers();
-    const schedule = vi.spyOn(globalThis, "setTimeout");
-    try {
-      const kernel = kernelWithRootImage();
-      vi.mocked(kernel.resources.open).mockRejectedValue(authUnavailable());
-      const createObjectURL = vi.fn(() => "blob:must-not-exist");
-      const files = createServerFileRuntime(kernel, {
-        objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-      });
-
-      const loading = files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
-      const outcome = loading?.then(
-        () => ({ error: null }),
-        (error: unknown) => ({ error }),
-      );
-      await vi.runAllTimersAsync();
-
-      const result = await outcome;
-      expect(result?.error).toEqual(expect.objectContaining({
-        message: "The Server image preview is temporarily unavailable.",
-      }));
-      expect(kernel.resources.open).toHaveBeenCalledTimes(4);
-      expect(schedule.mock.calls.map(([, delay]) => delay)).toEqual([25, 75, 225]);
-      expect(createObjectURL).not.toHaveBeenCalled();
-      expect(String(result?.error)).not.toContain("123e4567");
-      expect(String(result?.error)).not.toContain("root.png");
-    } finally {
-      schedule.mockRestore();
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not retry a non-transient resource failure", async () => {
-    const kernel = kernelWithRootImage();
-    vi.mocked(kernel.resources.open).mockRejectedValue(new KernelApiError({
-      code: "resource_not_found",
-      requestId: "123e4567-e89b-42d3-a456-426614174002",
-      status: 404,
-    }));
-    const createObjectURL = vi.fn(() => "blob:must-not-exist");
-    const files = createServerFileRuntime(kernel, {
-      objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-    });
-
-    await expect(files.loadMarkdownFilesForPath?.(serverWorkspaceRoot))
-      .rejects.toMatchObject({ code: "resource_not_found", status: 404 });
-    expect(kernel.resources.open).toHaveBeenCalledOnce();
-    expect(createObjectURL).not.toHaveBeenCalled();
-  });
-
-  it.each(["request abort", "owner release"] as const)(
-    "cancels pending image authentication retry on %s",
-    async (interruption) => {
-      vi.useFakeTimers();
-      try {
-        const kernel = kernelWithRootImage();
-        let markOpenStarted: (() => unknown) | undefined;
-        const openStarted = new Promise<undefined>((resolve) => {
-          markOpenStarted = () => resolve(undefined);
-        });
-        vi.mocked(kernel.resources.open).mockImplementation(async () => {
-          markOpenStarted?.();
-          throw authUnavailable();
-        });
-        const createObjectURL = vi.fn(() => "blob:must-not-exist");
-        const owner = createServerFileRuntimeOwner(kernel, {
-          objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-        });
-        const abort = new AbortController();
-        const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot, {
-          signal: abort.signal,
-        });
-        const outcome = loading?.then(
-          () => ({ error: null }),
-          (error: unknown) => ({ error }),
-        );
-        await openStarted;
-        expect(kernel.resources.open).toHaveBeenCalledOnce();
-
-        if (interruption === "request abort") abort.abort();
-        else owner.release();
-
-        await expect(outcome).resolves.toEqual({
-          error: expect.objectContaining({ name: "AbortError" }),
-        });
-        await vi.runAllTimersAsync();
-        expect(kernel.resources.open).toHaveBeenCalledOnce();
-        expect(createObjectURL).not.toHaveBeenCalled();
-        if (interruption === "request abort") owner.release();
-      } finally {
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it("releases a materialized URL when invalidation makes its retry lease stale", async () => {
-    vi.useFakeTimers();
-    try {
-      const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
-      const kernel = Object.assign(kernelWithRootImage(), {
-        invalidations: {
-          available: true,
-          subscribe: (listener: (notice: KernelInvalidationNotice) => unknown) => {
-            listeners.add(listener);
-            return () => {
-              listeners.delete(listener);
-              return undefined;
-            };
-          },
-        },
-      });
-      vi.mocked(kernel.resources.open)
-        .mockRejectedValueOnce(authUnavailable())
-        .mockResolvedValueOnce({
-          body: new Blob(["root"], { type: "image/png" }),
-          mediaType: "image/png",
-        });
-      const revokeObjectURL = vi.fn();
-      const owner = createServerFileRuntimeOwner(kernel, {
-        objectUrls: {
-          createObjectURL: vi.fn(() => "blob:stale-auth-retry"),
-          revokeObjectURL,
-        },
-      });
-      const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
-      await vi.waitFor(() => expect(kernel.resources.open).toHaveBeenCalledOnce());
-
-      publish(listeners, { documentChange: "snapshot", scopes: ["resources"] });
-      await vi.runAllTimersAsync();
-      await expect(loading).resolves.toBeDefined();
-
-      expect(kernel.resources.open).toHaveBeenCalledTimes(2);
-      expect(revokeObjectURL).toHaveBeenCalledWith("blob:stale-auth-retry");
-      expect(owner.files.resolveMarkdownImageSrc?.(
-        `${serverWorkspaceRoot}/note.md`,
-        "root.png",
-      )).toBeUndefined();
-      owner.release();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("revokes newly uploaded image URLs when the Server runtime owner is released", async () => {
-    const kernel = kernelPort();
-    const createdEntry = resource({
-      id: "image-owner.signature",
-      name: "owner.png",
-      relativePath: "owner.png",
-    });
-    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
-    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
-    const canonicalBody = new Blob(["canonical owner image"], { type: "image/png" });
-    vi.mocked(kernel.resources.open).mockResolvedValue({
-      body: canonicalBody,
-      mediaType: "image/png",
-    });
-    const createObjectURL = vi.fn(() => "blob:server-owner-image");
-    const revokeObjectURL = vi.fn();
-    const owner = createServerFileRuntimeOwner(kernel, {
-      objectUrls: { createObjectURL, revokeObjectURL },
-    });
-    const image = new File(
-      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
-      "owner.png",
-      { type: "image/png" },
-    );
-    const documentPath = `${serverWorkspaceRoot}/note.md`;
-
-    const saved = await owner.files.saveClipboardImage({
-      documentPath,
-      fileName: "owner.png",
-      folder: "",
-      image,
-    });
-    expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src))
-      .toBe("blob:server-owner-image");
-    expect(createObjectURL).toHaveBeenCalledWith(canonicalBody);
-
-    owner.release();
-    owner.release();
-
-    expect(revokeObjectURL).toHaveBeenCalledOnce();
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-owner-image");
-    expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBeUndefined();
-  });
-
-  it("prewarms nested image capabilities before returning Markdown and rejects unsafe or non-image sources", async () => {
+  it("indexes nested images for media URLs and keeps authenticated byte reads separate", async () => {
     const kernel = kernelPort();
     const notesFolder = entry({
       kind: "directory",
@@ -799,18 +296,17 @@ describe("server file facade", () => {
       const mediaType = id === "image-svg/payload.signature" ? "image/svg+xml" : "image/png";
       return { body: new Blob(["image bytes"], { type: mediaType }), mediaType };
     });
-    const createObjectURL = vi.fn((blob: Blob) => `blob:server-${blob.type}`);
-    const files = createServerFileRuntime(kernel, {
-      objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
-    });
+    const files = createServerFileRuntime(kernel);
     const documentPath = `${serverWorkspaceRoot}/notes/today.md`;
 
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
-      .toBeUndefined();
+      .toBeNull();
     await files.readMarkdownFile(documentPath);
 
-    const imageUrl = "blob:server-image/png";
-    const svgUrl = "blob:server-image/svg+xml";
+    const imageUrl =
+      "/media/v1/images/image%2Fpayload.signature?revision=resource-revision-1";
+    const svgUrl =
+      "/media/v1/images/image-svg%2Fpayload.signature?revision=resource-revision-1";
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
       .toBe(imageUrl);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "/assets/cover%20image.png"))
@@ -821,7 +317,7 @@ describe("server file facade", () => {
     )).toBe(imageUrl);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/untrusted.svg"))
       .toBe(svgUrl);
-    expect(kernel.resources.open).toHaveBeenCalledTimes(2);
+    expect(kernel.resources.open).not.toHaveBeenCalled();
     const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
     await files.readMarkdownFile(documentPath);
     expect(kernel.resources.list).toHaveBeenCalledTimes(inventoryCallCount);
@@ -835,15 +331,22 @@ describe("server file facade", () => {
       kind: "image",
       workspaceGeneration: generation,
     });
+    expect(kernel.resources.open).toHaveBeenCalledOnce();
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/manual.pdf")).toBeNull();
     for (const source of [
+      "",
       "../../outside.png",
       "%2e%2e/%2e%2e/outside.png",
-      "../assets/manual.pdf",
       "../assets/cover%2Fimage.png",
       "../assets/%5Cevil.png",
+      "../assets\\evil.png",
       "../assets/%00evil.png",
       "../assets/bad%encoding.png",
       "../assets//cover.png",
+    ]) {
+      expect(files.resolveMarkdownImageSrc?.(documentPath, source)).toBeNull();
+    }
+    for (const source of [
       "https://example.test/cover.png",
       "data:image/png;base64,abc",
       "blob:https://example.test/id",
@@ -854,7 +357,7 @@ describe("server file facade", () => {
     }
   });
 
-  it("replaces materialized image capabilities after refresh and invalidates them on sync completion", async () => {
+  it("replaces revision-bound media URLs after refresh and invalidates them on sync completion", async () => {
     const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
     const kernel = Object.assign(kernelPort(), {
       invalidations: {
@@ -873,42 +376,37 @@ describe("server file facade", () => {
       items: [resource({ id: imageId, name: "cover.png", relativePath: "cover.png" })],
       workspaceGeneration: generation,
     }));
-    let sourceSequence = 0;
-    const revokeObjectURL = vi.fn();
-    const files = createServerFileRuntime(kernel, {
-      objectUrls: {
-        createObjectURL: vi.fn(() => `blob:server-version-${++sourceSequence}`),
-        revokeObjectURL,
-      },
-    });
+    const files = createServerFileRuntime(kernel);
     const documentPath = `${serverWorkspaceRoot}/note.md`;
 
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
-      .toBe("blob:server-version-1");
+      .toBe("/media/v1/images/image-old.signature?revision=resource-revision-1");
     imageId = "image-new.signature";
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
-      .toBe("blob:server-version-2");
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-version-1");
+      .toBe("/media/v1/images/image-new.signature?revision=resource-revision-1");
 
     const onTreeChange = vi.fn();
     await files.watchMarkdownTree(serverWorkspaceRoot, onTreeChange);
     publish(listeners, syncSucceededNotice());
 
     await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledOnce());
-    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png")).toBeUndefined();
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
+      .toBe("/media/v1/images/image-new.signature?revision=resource-revision-1");
 
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
-      .toBe("blob:server-version-3");
+      .toBe("/media/v1/images/image-new.signature?revision=resource-revision-1");
     publish(listeners, {
       documentChange: "snapshot",
       scopes: ["documents", "workspace", "resources"],
     });
 
     await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(2));
-    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png")).toBeUndefined();
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
+      .toBe("/media/v1/images/image-new.signature?revision=resource-revision-1");
+    expect(kernel.resources.open).not.toHaveBeenCalled();
   });
 
   it("routes history reads and search through exact Server Kernel capabilities", async () => {
@@ -1076,15 +574,15 @@ describe("server file facade", () => {
 
     publish(listeners, documentChangedNotice("revision-2"));
     await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledOnce());
-    expect(onFileTreeChange).not.toHaveBeenCalled();
 
     publish(listeners, {
       documentChange: "snapshot",
       scopes: ["documents", "workspace", "resources"],
     });
     await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(2));
     expect(schedule).not.toHaveBeenCalled();
 
@@ -1093,13 +591,13 @@ describe("server file facade", () => {
       scopes: ["documents", "resources"],
     });
     await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledTimes(3));
-    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledTimes(3));
     await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(3));
 
     stopFile();
     stopTree();
-    // The runtime-lifetime image source listener remains so temporary object
-    // URLs are revoked when resource or workspace capabilities change.
+    // The runtime-lifetime inventory listener remains so signed capabilities
+    // are marked stale when resource or workspace authority changes.
     expect(listeners).toHaveLength(1);
     publish(listeners, documentChangedNotice("revision-3"));
     expect(onFileChange).toHaveBeenCalledTimes(3);
@@ -1220,6 +718,9 @@ function kernelPort(): ServerKernelDomainPort {
     resources: {
       create: unavailable(),
       createBatch: unavailable(),
+      imageUrl: vi.fn(({ id, revision }) =>
+        `/media/v1/images/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`
+      ),
       list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
       open: vi.fn(async () => ({
         body: new Blob([new Uint8Array([1])]),
@@ -1252,56 +753,4 @@ function kernelPort(): ServerKernelDomainPort {
       })),
     },
   } satisfies ServerKernelDomainPort;
-}
-
-function kernelWithRootImage() {
-  const kernel = kernelPort();
-  vi.mocked(kernel.resources.list).mockResolvedValue({
-    items: [resource({
-      id: "image-root.signature",
-      name: "root.png",
-      relativePath: "root.png",
-    })],
-    workspaceGeneration: generation,
-  });
-  return kernel;
-}
-
-function authUnavailable() {
-  return new KernelApiError({
-    code: "authentication_unavailable",
-    requestId: "123e4567-e89b-42d3-a456-426614174001",
-    status: 503,
-  });
-}
-
-function sevenImageEntries() {
-  return [
-    ["avif", "image/avif"],
-    ["bmp", "image/bmp"],
-    ["gif", "image/gif"],
-    ["jpg", "image/jpeg"],
-    ["png", "image/png"],
-    ["svg", "image/svg+xml"],
-    ["webp", "image/webp"],
-  ].map(([extension, mediaType], index) => resource({
-    id: `image-${index + 1}.signature`,
-    mediaType,
-    name: `asset.${extension}`,
-    relativePath: `assets/asset.${extension}`,
-  }));
-}
-
-function imageBody(
-  entries: ReturnType<typeof sevenImageEntries>,
-  id: string,
-) {
-  const image = entries.find((entry) =>
-    entry.entryType === "resource" && entry.resource.id === id
-  );
-  if (image?.entryType !== "resource") throw new Error("missing image fixture");
-  return {
-    body: new Blob([id], { type: image.resource.mediaType }),
-    mediaType: image.resource.mediaType,
-  };
 }

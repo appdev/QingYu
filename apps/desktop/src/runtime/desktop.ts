@@ -36,7 +36,6 @@ import {
   type DesktopKernelDomainAdapter
 } from "./kernel";
 import { createDesktopNativeShellPort } from "./native-shell";
-import { createDesktopKernelImageSource } from "./kernel-image-source";
 import * as dialog from "./tauri/dialog";
 import * as files from "./tauri/file/desktop";
 import * as fonts from "./tauri/fonts";
@@ -526,7 +525,6 @@ export function createDesktopKernelRuntimeOwner(
   const shell = createDesktopRuntime({ kernel });
   const unavailable = createDefaultAppRuntime();
   const fileOwner = createKernelFileRuntimeOwner(kernel, {
-    imageSource: createDesktopKernelImageSource(),
     invalidations: kernel.invalidations,
     isTerminalError: (error) => error instanceof DesktopKernelDomainAdapterError,
     nativeShell: {

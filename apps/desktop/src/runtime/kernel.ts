@@ -469,6 +469,10 @@ export async function createDesktopKernelDomainAdapter(
           await confirmWorkspaceIdentity();
           return mapResourceEntry(resource, input.workspaceGeneration);
         },
+        imageUrl: ({ id, revision }) => new URL(
+          `/media/v1/images/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`,
+          baseUrl,
+        ).toString(),
         list: async (input) => {
           await prepareDocumentOperation(input.workspaceGeneration);
           const items: KernelInventoryEntry[] = [];

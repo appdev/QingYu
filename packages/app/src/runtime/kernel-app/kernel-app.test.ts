@@ -16,6 +16,42 @@ import {
 const generation = "generation-1" as KernelWorkspaceGeneration;
 const revision = "revision-1" as KernelRevision;
 
+function imageResource(
+  overrides: Partial<KernelResourceSnapshot> = {},
+): KernelResourceSnapshot {
+  return {
+    id: "image-1",
+    kind: "image",
+    mediaType: "image/png",
+    modifiedAt: "2026-07-31T00:00:00Z",
+    name: "cover.png",
+    parent: "" as never,
+    previewable: true,
+    relativePath: "cover.png" as never,
+    revision,
+    sizeBytes: 16,
+    workspaceGeneration: generation,
+    ...overrides,
+  };
+}
+
+function documentEntry(
+  overrides: Partial<KernelDocumentEntrySnapshot> = {},
+): KernelDocumentEntrySnapshot {
+  return {
+    kind: "file",
+    locator: "document-1" as never,
+    modifiedAt: "2026-07-31T00:00:00Z",
+    name: "note.md",
+    parent: "" as never,
+    relativePath: "note.md" as never,
+    revision,
+    sizeBytes: 5,
+    workspaceGeneration: generation,
+    ...overrides,
+  };
+}
+
 function batchResource(
   id: string,
   name: string,
@@ -67,6 +103,8 @@ function batchKernel(
     resources: {
       create: unavailable.resources.create,
       createBatch,
+      imageUrl: ({ id, revision: resourceRevision }) =>
+        `/api/v1/resources/${id}?revision=${resourceRevision}`,
       list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
       open,
     },
@@ -135,6 +173,7 @@ describe("Kernel AppRuntime adapter", () => {
       resources: {
         create: unavailable.resources.create,
         createBatch: unavailable.resources.createBatch,
+        imageUrl: unavailable.resources.imageUrl,
         list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
         open: unavailable.resources.open,
       },
@@ -621,7 +660,7 @@ describe("Kernel AppRuntime adapter", () => {
     expect(legacySave).not.toHaveBeenCalled();
   });
 
-  it("returns an encoded document-relative image URL and makes its preview available immediately", async () => {
+  it("returns an encoded document-relative image URL and resolves it through the Kernel", async () => {
     const unavailable = createUnavailableKernelDomainPort();
     const created = {
       id: "resource-encoded",
@@ -637,13 +676,6 @@ describe("Kernel AppRuntime adapter", () => {
       workspaceGeneration: generation,
     };
     let image: File;
-    const canonicalBody = new Blob(["canonical-image"], { type: "image/png" });
-    const materialize = vi.fn(async (_resource, open) => {
-      const opened = await open();
-      expect(opened.body).toBe(canonicalBody);
-      expect(opened.mediaType).toBe("image/png");
-      return "blob:new-image";
-    });
     const kernel = {
       ...unavailable,
       availability: "available",
@@ -668,8 +700,11 @@ describe("Kernel AppRuntime adapter", () => {
       resources: {
         create: vi.fn(async () => created),
         createBatch: unavailable.resources.createBatch,
+        imageUrl: vi.fn(({ id, revision: resourceRevision }) =>
+          `/api/v1/resources/${id}?revision=${resourceRevision}`,
+        ),
         list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
-        open: vi.fn(async () => ({ body: canonicalBody, mediaType: "image/png" })),
+        open: unavailable.resources.open,
       },
       workspace: {
         read: vi.fn(async () => ({
@@ -681,9 +716,7 @@ describe("Kernel AppRuntime adapter", () => {
         })),
       },
     } as unknown as KernelDomainPort;
-    const owner = createKernelFileRuntimeOwner(kernel, {
-      imageSource: { materialize, release: vi.fn() },
-    });
+    const owner = createKernelFileRuntimeOwner(kernel);
     image = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "image one.png", {
       type: "image/png",
     });
@@ -699,35 +732,18 @@ describe("Kernel AppRuntime adapter", () => {
     expect(owner.files.resolveMarkdownImageSrc?.(
       `${kernelWorkspaceRoot}/notes/note.md`,
       saved.src,
-    )).toBe("blob:new-image");
-    expect(materialize).toHaveBeenCalledWith(created, expect.any(Function));
+    )).toBe("/api/v1/resources/resource-encoded?revision=resource-revision-2");
     owner.release();
   });
 
-  it("imports an ordered image batch with one Kernel call and reopens canonical bodies", async () => {
+  it("imports an ordered image batch with one Kernel call without reopening image bodies", async () => {
     const created = [
       batchResource("batch-1", "one-2.png", "image/png"),
       batchResource("batch-2", "two.webp", "image/webp"),
     ];
     const createBatch = vi.fn(async () => created);
-    const canonical = new Map([
-      ["batch-1", new Blob(["canonical-png"], { type: "image/png" })],
-      ["batch-2", new Blob(["canonical-webp"], { type: "image/webp" })],
-    ]);
-    const open = vi.fn(async ({ id }: { id: string }) => {
-      const body = canonical.get(id);
-      if (!body) throw new Error("unknown resource");
-      return { body, mediaType: body.type };
-    });
-    const materialize = vi.fn(async (resource: KernelResourceSnapshot, read: () => Promise<{ body: Blob; mediaType: string }>) => {
-      const opened = await read();
-      expect(opened.body).toBe(canonical.get(resource.id));
-      return `blob:${resource.id}`;
-    });
-    const release = vi.fn();
-    const owner = createKernelFileRuntimeOwner(batchKernel(createBatch, open), {
-      imageSource: { materialize, release },
-    });
+    const open = vi.fn();
+    const owner = createKernelFileRuntimeOwner(batchKernel(createBatch, open));
     const first = new File(["upload-one"], "one.png", { type: "image/png" });
     const second = new File(["upload-two"], "two.webp", { type: "image/webp" });
 
@@ -762,15 +778,12 @@ describe("Kernel AppRuntime adapter", () => {
       ],
       workspaceGeneration: generation,
     }));
-    expect(open.mock.calls.map(([input]) => input.id)).toEqual(["batch-1", "batch-2"]);
-    expect(materialize).toHaveBeenCalledTimes(2);
+    expect(open).not.toHaveBeenCalled();
     expect(owner.files.resolveMarkdownImageSrc?.(
       `${kernelWorkspaceRoot}/notes/note.md`,
       "assets/two.webp",
-    )).toBe("blob:batch-2");
+    )).toBe("/api/v1/resources/batch-2?revision=revision-1");
     owner.release();
-    expect(release).toHaveBeenCalledWith("blob:batch-1");
-    expect(release).toHaveBeenCalledWith("blob:batch-2");
   });
 
   it("rejects an incomplete or reordered Kernel batch before caching previews", async () => {
@@ -803,102 +816,9 @@ describe("Kernel AppRuntime adapter", () => {
       expect(files.resolveMarkdownImageSrc?.(
         `${kernelWorkspaceRoot}/notes/note.md`,
         "assets/one.png",
-      )).toBeUndefined();
+      )).toBeNull();
     }
   });
-
-  it("keeps committed batch references but releases previews when materialization fails", async () => {
-    const created = [
-      batchResource("batch-1", "one.png", "image/png"),
-      batchResource("batch-2", "two.png", "image/png"),
-    ];
-    const release = vi.fn();
-    let count = 0;
-    const owner = createKernelFileRuntimeOwner(batchKernel(
-      vi.fn(async () => created),
-      vi.fn(async ({ id }) => ({
-        body: new Blob([id], { type: "image/png" }),
-        mediaType: "image/png",
-      })),
-    ), {
-      imageSource: {
-        materialize: async (_resource, read) => {
-          await read();
-          count += 1;
-          if (count === 2) throw new Error("preview failed");
-          return "blob:first-batch-image";
-        },
-        release,
-      },
-    });
-    const saved = await owner.files.saveClipboardImages(created.map((resource) => ({
-      copyToStorage: true,
-      documentPath: `${kernelWorkspaceRoot}/notes/note.md`,
-      fileName: resource.name,
-      folder: "assets",
-      image: new File([resource.id], resource.name, { type: "image/png" }),
-    })));
-
-    expect(saved).toHaveLength(2);
-    expect(release).toHaveBeenCalledWith("blob:first-batch-image");
-    expect(owner.files.resolveMarkdownImageSrc?.(
-      `${kernelWorkspaceRoot}/notes/note.md`,
-      "assets/one.png",
-    )).toBeUndefined();
-  });
-
-  it.each(["release", "invalidation"] as const)(
-    "releases a late batch preview after owner %s",
-    async (interruption) => {
-      const created = [batchResource("batch-1", "one.png", "image/png")];
-      let notify: ((notice: { scopes: readonly ["resources"] }) => unknown) | undefined;
-      let resolveMaterialized: ((source: string) => unknown) | undefined;
-      const release = vi.fn();
-      const invalidations: KernelDomainPort["invalidations"] = {
-        available: true,
-        subscribe: (listener) => {
-          notify = listener as never;
-          return () => undefined;
-        },
-      };
-      const owner = createKernelFileRuntimeOwner(batchKernel(
-        vi.fn(async () => created),
-        vi.fn(async () => ({
-          body: new Blob(["canonical"], { type: "image/png" }),
-          mediaType: "image/png",
-        })),
-        invalidations,
-      ), {
-        imageSource: {
-          materialize: async (_resource, read) => {
-            await read();
-            return new Promise<string>((resolve) => {
-              resolveMaterialized = resolve;
-            });
-          },
-          release,
-        },
-      });
-      const saving = owner.files.saveClipboardImages([{
-        copyToStorage: true,
-        documentPath: `${kernelWorkspaceRoot}/notes/note.md`,
-        fileName: "one.png",
-        folder: "assets",
-        image: new File(["one"], "one.png", { type: "image/png" }),
-      }]);
-      await vi.waitFor(() => expect(resolveMaterialized).toBeTypeOf("function"));
-      if (interruption === "release") owner.release();
-      else notify?.({ scopes: ["resources"] });
-      resolveMaterialized?.("blob:late-batch-image");
-
-      await expect(saving).resolves.toEqual([{ alt: "one", src: "assets/one.png" }]);
-      expect(release).toHaveBeenCalledWith("blob:late-batch-image");
-      expect(owner.files.resolveMarkdownImageSrc?.(
-        `${kernelWorkspaceRoot}/notes/note.md`,
-        "assets/one.png",
-      )).toBeUndefined();
-    },
-  );
 
   it("saves attachments as raw Kernel resources and returns a document-relative URL", async () => {
     const unavailable = createUnavailableKernelDomainPort();
@@ -1007,126 +927,28 @@ describe("Kernel AppRuntime adapter", () => {
     Object.values(forbidden).forEach((operation) => expect(operation).not.toHaveBeenCalled());
   });
 
-  it("materializes authenticated image bodies and releases object sources", async () => {
-    const unavailable = createUnavailableKernelDomainPort();
-    const listeners = new Set<(notice: {
-      scopes: readonly ("resources" | "documents")[];
-    }) => unknown>();
-    const releaseSource = vi.fn();
-    const materialize = vi.fn(async (_resource, open) => {
-      const body = await open();
-      expect(body.mediaType).toBe("image/png");
-      expect(await body.body.text()).toBe("image bytes");
-      return "blob:kernel-image-1";
-    });
-    const kernel: KernelDomainPort = {
-      ...unavailable,
-      availability: "available",
-      documents: {
-        ...unavailable.documents,
-        list: vi.fn(async () => ({
-          items: [{
-            kind: "file" as const,
-            locator: "document-1" as never,
-            modifiedAt: "2026-07-31T00:00:00Z",
-            name: "note.md",
-            parent: "" as never,
-            relativePath: "note.md" as never,
-            revision,
-            sizeBytes: 5,
-            workspaceGeneration: generation,
-          }],
-          nextCursor: null,
-          workspaceGeneration: generation,
-        })),
-      },
-      invalidations: {
-        available: true,
-        subscribe: (listener) => {
-          listeners.add(listener as never);
-          return () => listeners.delete(listener as never);
-        },
-      },
-      resources: {
-        create: unavailable.resources.create,
-        createBatch: unavailable.resources.createBatch,
-        list: vi.fn(async () => ({
-          items: [{
-            entryType: "resource" as const,
-            resource: {
-              id: "resource-1",
-              kind: "image" as const,
-              mediaType: "image/png",
-              modifiedAt: "2026-07-31T00:00:00Z",
-              name: "cover.png",
-              parent: "" as never,
-              previewable: true,
-              relativePath: "cover.png" as never,
-              revision,
-              sizeBytes: 11,
-              workspaceGeneration: generation,
-            },
-          }],
-          workspaceGeneration: generation,
-        })),
-        open: vi.fn(async () => ({
-          body: new Blob(["image bytes"], { type: "image/png" }),
-          mediaType: "image/png",
-        })),
-      },
-      workspace: {
-        read: vi.fn(async () => ({
-          displayName: "Notes",
-          generation,
-          id: "workspace-1",
-          readiness: "ready" as const,
-          revision,
-        })),
-      },
-    };
-    const owner = createKernelFileRuntimeOwner(kernel, {
-      imageSource: { materialize, release: releaseSource },
-    });
-
-    await owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
-    expect(owner.files.resolveMarkdownImageSrc?.(
-      `${kernelWorkspaceRoot}/note.md`,
-      "./cover.png",
-    )).toBe("blob:kernel-image-1");
-    expect(materialize).toHaveBeenCalledOnce();
-
-    await owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
-    expect(materialize).toHaveBeenCalledOnce();
-
-    listeners.forEach((listener) => listener({ scopes: ["resources"] }));
-    expect(releaseSource).toHaveBeenCalledWith("blob:kernel-image-1");
-    expect(owner.files.resolveMarkdownImageSrc?.(
-      `${kernelWorkspaceRoot}/note.md`,
-      "./cover.png",
-    )).toBeUndefined();
-
-    await owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
-    owner.release();
-    owner.release();
-    expect(releaseSource).toHaveBeenCalledTimes(2);
+  it("uses a synthetic workspace root with no host absolute path", () => {
+    expect(kernelWorkspaceRoot).toBe("kernel-workspace://primary");
+    expect(kernelWorkspaceRoot).not.toMatch(/^\/(?:Users|Volumes|home|data)\//u);
+    expect(kernelWorkspaceRoot).not.toMatch(/^[A-Za-z]:\\/u);
   });
 
-  it("revokes a stale image source that finishes after invalidation", async () => {
-    const unavailable = createUnavailableKernelDomainPort();
+  it("marks a missing local Kernel image as handled without claiming remote URLs", () => {
+    const files = createKernelFileRuntime(createUnavailableKernelDomainPort());
+
+    expect(files.resolveMarkdownImageSrc?.(
+      `${kernelWorkspaceRoot}/note.md`,
+      "assets/missing.png",
+    )).toBeNull();
+    expect(files.resolveMarkdownImageSrc?.(
+      `${kernelWorkspaceRoot}/note.md`,
+      "https://example.com/missing.png",
+    )).toBeUndefined();
+  });
+
+  it("requests a watched tree refresh when Kernel resources change", async () => {
     let notify: ((notice: { scopes: readonly ["resources"] }) => unknown) | undefined;
-    let resolveMaterialized: ((source: string) => unknown) | undefined;
-    const releaseSource = vi.fn();
-    const kernel: KernelDomainPort = {
-      ...unavailable,
-      availability: "available",
-      documents: {
-        ...unavailable.documents,
-        list: vi.fn(async () => ({
-          items: [],
-          nextCursor: null,
-          workspaceGeneration: generation,
-        })),
-      },
+    const files = createKernelFileRuntime(createUnavailableKernelDomainPort(), {
       invalidations: {
         available: true,
         subscribe: (listener) => {
@@ -1134,175 +956,135 @@ describe("Kernel AppRuntime adapter", () => {
           return () => undefined;
         },
       },
-      resources: {
-        create: unavailable.resources.create,
-        createBatch: unavailable.resources.createBatch,
-        list: vi.fn(async () => ({
-          items: [{
-            entryType: "resource" as const,
-            resource: {
-              id: "resource-stale",
-              kind: "image" as const,
-              mediaType: "image/png",
-              modifiedAt: "2026-07-31T00:00:00Z",
-              name: "stale.png",
-              parent: "" as never,
-              previewable: true,
-              relativePath: "stale.png" as never,
-              revision,
-              sizeBytes: 5,
-              workspaceGeneration: generation,
-            },
-          }],
-          workspaceGeneration: generation,
-        })),
-        open: vi.fn(async () => ({
-          body: new Blob(["stale"], { type: "image/png" }),
-          mediaType: "image/png",
-        })),
-      },
-      workspace: {
-        read: vi.fn(async () => ({
-          displayName: "Notes",
-          generation,
-          id: "workspace-1",
-          readiness: "ready" as const,
-          revision,
-        })),
-      },
-    };
-    const owner = createKernelFileRuntimeOwner(kernel, {
-      imageSource: {
-        materialize: async (_resource, open) => {
-          await open();
-          return new Promise<string>((resolve) => {
-            resolveMaterialized = resolve;
-          });
-        },
-        release: releaseSource,
-      },
     });
+    const onTreeChange = vi.fn(async () => undefined);
 
-    const loading = owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
-    await vi.waitFor(() => expect(resolveMaterialized).toBeTypeOf("function"));
+    const stopWatching = await files.watchMarkdownTree(kernelWorkspaceRoot, onTreeChange);
     notify?.({ scopes: ["resources"] });
-    resolveMaterialized?.("blob:stale-image");
-    await loading;
 
-    expect(releaseSource).toHaveBeenCalledWith("blob:stale-image");
-    expect(owner.files.resolveMarkdownImageSrc?.(
-      `${kernelWorkspaceRoot}/note.md`,
-      "./stale.png",
-    )).toBeUndefined();
+    await vi.waitFor(() => {
+      expect(onTreeChange).toHaveBeenCalledWith(kernelWorkspaceRoot);
+    });
+    stopWatching();
   });
 
-  it("revokes the last image source when owner release aborts after materialization", async () => {
+  it("refreshes workspace identity before rebuilding image inventory after a workspace notice", async () => {
+    const secondGeneration = "generation-2" as KernelWorkspaceGeneration;
+    let currentGeneration = generation;
+    let notify: ((notice: { scopes: readonly ["workspace"] }) => unknown) | undefined;
     const unavailable = createUnavailableKernelDomainPort();
-    let resolveMaterialized: ((source: string) => unknown) | undefined;
-    const releaseSource = vi.fn();
-    const kernel: KernelDomainPort = {
+    const readWorkspace = vi.fn(async () => ({
+      displayName: "Notes",
+      generation: currentGeneration,
+      id: "workspace-1",
+      readiness: "ready" as const,
+      revision,
+    }));
+    const listDocuments = vi.fn(async () => ({
+      items: [],
+      nextCursor: null,
+      workspaceGeneration: currentGeneration,
+    }));
+    const listResources = vi.fn(async () => ({
+      items: [],
+      workspaceGeneration: currentGeneration,
+    }));
+    const kernel = {
       ...unavailable,
       availability: "available",
-      documents: {
-        ...unavailable.documents,
-        list: vi.fn(async () => ({
-          items: [], nextCursor: null, workspaceGeneration: generation,
-        })),
+      documents: { ...unavailable.documents, list: listDocuments },
+      invalidations: {
+        available: true,
+        subscribe: (listener: (notice: { scopes: readonly ["workspace"] }) => unknown) => {
+          notify = listener;
+          return () => undefined;
+        },
       },
       resources: {
-        create: unavailable.resources.create,
-        createBatch: unavailable.resources.createBatch,
-        list: vi.fn(async () => ({
-          items: [{
-            entryType: "resource" as const,
-            resource: {
-              id: "resource-aborted",
-              kind: "image" as const,
-              mediaType: "image/png",
-              modifiedAt: "2026-07-31T00:00:00Z",
-              name: "aborted.png",
-              parent: "" as never,
-              previewable: true,
-              relativePath: "aborted.png" as never,
-              revision,
-              sizeBytes: 5,
-              workspaceGeneration: generation,
-            },
-          }],
-          workspaceGeneration: generation,
-        })),
-        open: vi.fn(async () => ({
-          body: new Blob(["aborted"], { type: "image/png" }),
-          mediaType: "image/png",
-        })),
+        ...unavailable.resources,
+        imageUrl: ({ id, revision: resourceRevision }: {
+          id: string;
+          revision: KernelRevision;
+        }) => `/media/${id}?revision=${resourceRevision}`,
+        list: listResources,
       },
-      workspace: {
-        read: vi.fn(async () => ({
-          displayName: "Notes",
-          generation,
-          id: "workspace-1",
-          readiness: "ready" as const,
-          revision,
-        })),
-      },
-    };
-    const owner = createKernelFileRuntimeOwner(kernel, {
-      imageSource: {
-        materialize: async () => new Promise<string>((resolve) => {
-          resolveMaterialized = resolve;
-        }),
-        release: releaseSource,
-      },
-    });
+      workspace: { read: readWorkspace },
+    } as unknown as KernelDomainPort;
+    const owner = createKernelFileRuntimeOwner(kernel);
+    const onTreeChange = vi.fn(async () => undefined);
 
-    const abort = new AbortController();
-    const loading = owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot, {
-      signal: abort.signal,
-    });
-    await vi.waitFor(() => expect(resolveMaterialized).toBeTypeOf("function"));
-    abort.abort();
-    resolveMaterialized?.("blob:aborted-image");
+    await owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
+    await owner.files.watchMarkdownTree(kernelWorkspaceRoot, onTreeChange);
+    currentGeneration = secondGeneration;
+    notify?.({ scopes: ["workspace"] });
+    await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledOnce());
+    await owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
 
-    await expect(loading).rejects.toThrow();
-    expect(releaseSource).toHaveBeenCalledWith("blob:aborted-image");
+    expect(readWorkspace).toHaveBeenCalledTimes(2);
+    expect(listDocuments).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceGeneration: secondGeneration,
+    }));
+    expect(listResources).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceGeneration: secondGeneration,
+    }));
     owner.release();
   });
 
-  it("releases materialized image sources when a later prewarm fails", async () => {
+  it("restarts initial image prewarming when a resource notice invalidates an in-flight inventory", async () => {
+    let notify: ((notice: { scopes: readonly ["resources"] }) => unknown) | undefined;
+    let resolveFirstInventory: ((value: {
+      items: Array<{ entryType: "resource"; resource: KernelResourceSnapshot }>;
+      workspaceGeneration: KernelWorkspaceGeneration;
+    }) => unknown) | undefined;
+    const firstInventory = new Promise<{
+      items: Array<{ entryType: "resource"; resource: KernelResourceSnapshot }>;
+      workspaceGeneration: KernelWorkspaceGeneration;
+    }>((resolve) => {
+      resolveFirstInventory = resolve;
+    });
     const unavailable = createUnavailableKernelDomainPort();
-    const resources = ["first.png", "second.png"].map((name, index) => ({
-      entryType: "resource" as const,
-      resource: {
-        id: `resource-${index + 1}`,
-        kind: "image" as const,
-        mediaType: "image/png",
-        modifiedAt: "2026-07-31T00:00:00Z",
-        name,
-        parent: "" as never,
-        previewable: true,
-        relativePath: name as never,
-        revision,
-        sizeBytes: 5,
+    const document = {
+      kind: "file" as const,
+      locator: "document-1" as never,
+      modifiedAt: "2026-07-31T00:00:00Z",
+      name: "note.md",
+      parent: "" as never,
+      relativePath: "note.md" as never,
+      revision,
+      sizeBytes: 5,
+      workspaceGeneration: generation,
+    };
+    const oldImage = imageResource({ id: "image-old" });
+    const newImage = imageResource({ id: "image-new" });
+    const listResources = vi.fn()
+      .mockImplementationOnce(async () => firstInventory)
+      .mockResolvedValue({
+        items: [{ entryType: "resource", resource: newImage }],
         workspaceGeneration: generation,
-      },
-    }));
-    const kernel: KernelDomainPort = {
+      });
+    const kernel = {
       ...unavailable,
       availability: "available",
       documents: {
         ...unavailable.documents,
         list: vi.fn(async () => ({
-          items: [], nextCursor: null, workspaceGeneration: generation,
+          items: [document],
+          nextCursor: null,
+          workspaceGeneration: generation,
         })),
+        read: vi.fn(async () => ({ ...document, contents: "![Cover](cover.png)" })),
+      },
+      invalidations: {
+        available: true,
+        subscribe: (listener: (notice: { scopes: readonly ["resources"] }) => unknown) => {
+          notify = listener;
+          return () => undefined;
+        },
       },
       resources: {
-        create: unavailable.resources.create,
-        createBatch: unavailable.resources.createBatch,
-        list: vi.fn(async () => ({ items: resources, workspaceGeneration: generation })),
-        open: vi.fn(async () => ({
-          body: new Blob(["image"], { type: "image/png" }),
-          mediaType: "image/png",
-        })),
+        ...unavailable.resources,
+        imageUrl: ({ id }: { id: string }) => `/media/${id}`,
+        list: listResources,
       },
       workspace: {
         read: vi.fn(async () => ({
@@ -1313,28 +1095,104 @@ describe("Kernel AppRuntime adapter", () => {
           revision,
         })),
       },
-    };
-    const releaseSource = vi.fn();
-    let materialized = 0;
-    const owner = createKernelFileRuntimeOwner(kernel, {
-      imageSource: {
-        materialize: async () => {
-          materialized += 1;
-          if (materialized === 2) throw new Error("second image failed");
-          return "blob:first-image";
-        },
-        release: releaseSource,
-      },
-    });
+    } as unknown as KernelDomainPort;
+    const owner = createKernelFileRuntimeOwner(kernel);
 
-    await expect(owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot))
-      .rejects.toThrow("second image failed");
-    expect(releaseSource).toHaveBeenCalledWith("blob:first-image");
+    const reading = owner.files.readMarkdownFile(`${kernelWorkspaceRoot}/note.md`);
+    await vi.waitFor(() => expect(listResources).toHaveBeenCalledOnce());
+    notify?.({ scopes: ["resources"] });
+    const concurrentReading = owner.files.readMarkdownFile(`${kernelWorkspaceRoot}/note.md`);
+    resolveFirstInventory?.({
+      items: [{ entryType: "resource", resource: oldImage }],
+      workspaceGeneration: generation,
+    });
+    await Promise.all([reading, concurrentReading]);
+
+    expect(listResources).toHaveBeenCalledTimes(2);
+    expect(owner.files.resolveMarkdownImageSrc?.(
+      `${kernelWorkspaceRoot}/note.md`,
+      "cover.png",
+    )).toBe("/media/image-new");
+    owner.release();
   });
 
-  it("uses a synthetic workspace root with no host absolute path", () => {
-    expect(kernelWorkspaceRoot).toBe("kernel-workspace://primary");
-    expect(kernelWorkspaceRoot).not.toMatch(/^\/(?:Users|Volumes|home|data)\//u);
-    expect(kernelWorkspaceRoot).not.toMatch(/^[A-Za-z]:\\/u);
+  it("does not repopulate the document cache from a superseded workspace listing", async () => {
+    const secondGeneration = "generation-2" as KernelWorkspaceGeneration;
+    let currentGeneration = generation;
+    let notify: ((notice: { scopes: readonly ["workspace"] }) => unknown) | undefined;
+    let resolveFirstList: ((value: {
+      items: KernelDocumentEntrySnapshot[];
+      nextCursor: null;
+      workspaceGeneration: KernelWorkspaceGeneration;
+    }) => unknown) | undefined;
+    const firstList = new Promise<{
+      items: KernelDocumentEntrySnapshot[];
+      nextCursor: null;
+      workspaceGeneration: KernelWorkspaceGeneration;
+    }>((resolve) => {
+      resolveFirstList = resolve;
+    });
+    const unavailable = createUnavailableKernelDomainPort();
+    const oldDocument = documentEntry({
+      locator: "old-document" as never,
+      name: "old.md",
+      relativePath: "old.md" as never,
+      workspaceGeneration: generation,
+    });
+    const newDocument = documentEntry({
+      locator: "new-document" as never,
+      name: "new.md",
+      relativePath: "new.md" as never,
+      workspaceGeneration: secondGeneration,
+    });
+    const listDocuments = vi.fn()
+      .mockImplementationOnce(async () => firstList)
+      .mockImplementation(async () => ({
+        items: [newDocument],
+        nextCursor: null,
+        workspaceGeneration: secondGeneration,
+      }));
+    const kernel = {
+      ...unavailable,
+      availability: "available",
+      documents: { ...unavailable.documents, list: listDocuments },
+      invalidations: {
+        available: true,
+        subscribe: (listener: (notice: { scopes: readonly ["workspace"] }) => unknown) => {
+          notify = listener;
+          return () => undefined;
+        },
+      },
+      resources: {
+        ...unavailable.resources,
+        list: vi.fn(async () => ({ items: [], workspaceGeneration: currentGeneration })),
+      },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation: currentGeneration,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    } as unknown as KernelDomainPort;
+    const owner = createKernelFileRuntimeOwner(kernel);
+
+    const loading = owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
+    await vi.waitFor(() => expect(listDocuments).toHaveBeenCalledOnce());
+    currentGeneration = secondGeneration;
+    notify?.({ scopes: ["workspace"] });
+    resolveFirstList?.({
+      items: [oldDocument],
+      nextCursor: null,
+      workspaceGeneration: generation,
+    });
+
+    await expect(loading).resolves.toEqual([
+      expect.objectContaining({ name: "new.md", relativePath: "new.md" }),
+    ]);
+    expect(listDocuments).toHaveBeenCalledTimes(2);
+    owner.release();
   });
 });

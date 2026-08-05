@@ -13,6 +13,7 @@ import type {
   KernelHistoryPageSnapshot,
   KernelHistorySnapshot,
   KernelHistorySnapshotId,
+  KernelImageUrlInput,
   KernelInventorySnapshot,
   KernelListDocumentsInput,
   KernelMoveDocumentInput,
@@ -128,6 +129,8 @@ describe("KernelDomainPort", () => {
     expectTypeOf<KernelDomainPort["documents"]["history"]["read"]>()
       .toBeFunction();
     expectTypeOf<KernelDomainPort["resources"]>().toBeObject();
+    expectTypeOf<KernelDomainPort["resources"]["imageUrl"]>()
+      .toEqualTypeOf<(input: KernelImageUrlInput) => string>();
     expectTypeOf<KernelDomainPort["invalidations"]>().toBeObject();
   });
 
@@ -232,6 +235,10 @@ describe("KernelDomainPort", () => {
         workspaceGeneration: "generation" as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    expect(() => port.resources.imageUrl({
+      id: "resource",
+      revision: "revision" as KernelRevision,
+    })).toThrow("Kernel domain is unavailable");
     expect(port.invalidations.available).toBe(false);
   });
 });

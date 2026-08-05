@@ -11,7 +11,6 @@ import {
 } from "@markra/app/runtime";
 import { hasTauriRuntime } from "@markra/shared";
 
-import { createKernelObjectUrlImageSource } from "./kernel-object-url-image-source";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 import {
   createDesktopKernelDomainAdapter,
@@ -129,7 +128,6 @@ export function createMobileKernelRuntimeOwner(
 ): MobileKernelRuntimeOwner {
   const transient = createDefaultAppRuntime();
   const fileOwner = createKernelFileRuntimeOwner(kernel, {
-    imageSource: createKernelObjectUrlImageSource(),
     invalidations: kernel.invalidations,
     nativeShell: {
       confirmMarkdownFileDelete: mobileRuntime.files.confirmMarkdownFileDelete,

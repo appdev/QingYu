@@ -41,6 +41,19 @@ describe("desktop Kernel domain adapter", () => {
     }>().toMatchTypeOf<DesktopKernelConnection>();
   });
 
+  it("issues an absolute revision-bound media image URL from the verified Kernel base URL", async () => {
+    const adapter = await createDesktopKernelDomainAdapter(connection(), {
+      fetch: async (url) => handshakeResponse(new URL(url).pathname),
+    });
+
+    expect(adapter.port.resources.imageUrl({
+      id: "resource/path.signature",
+      revision: "sha256:resource revision" as KernelRevision,
+    })).toBe(
+      "http://127.0.0.1:49152/media/v1/images/resource%2Fpath.signature?revision=sha256%3Aresource%20revision",
+    );
+  });
+
   it("becomes available only after an authenticated ready/runtime/workspace handshake", async () => {
     const calls: Array<{ authorization: string | null; pathname: string }> = [];
     const fetch: FetchLike = async (url, init = {}) => {
