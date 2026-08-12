@@ -1,0 +1,1326 @@
+// 轻语 · 明窗净几，字字轻语
+// Copyright (c) 2020-present, b3log.org
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+package api
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/88250/gulu"
+	"github.com/88250/lute/ast"
+	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/siyuan/kernel/model"
+	"github.com/siyuan-note/siyuan/kernel/treenode"
+	"github.com/siyuan-note/siyuan/kernel/util"
+)
+
+func listDocTree(c *gin.Context) {
+	// Add kernel API `/api/filetree/listDocTree` https://github.com/siyuan-note/siyuan/issues/10482
+
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	if util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+
+	// 加密笔记本锁定时拒绝直接列举磁盘目录，防止泄漏文档 ID、层级和数量
+	if model.IsEncryptedBox(notebook) {
+		model.HoldBoxReadLock(notebook)
+		defer model.ReleaseBoxReadLock(notebook)
+		if _, dekErr := model.GetDEKIfUnlocked(notebook); dekErr != nil {
+			ret.Code = -1
+			ret.Msg = model.Conf.Language(314)
+			return
+		}
+	}
+
+	p := arg["path"].(string)
+	p = strings.TrimSuffix(p, ".sy")
+	// 越界校验：拒绝 ..，确保路径位于 <data>/<notebook>/ 内。
+	// 无需 filepath.IsAbs —— notebook 路径全为 notebook 内相对路径，且跨 OS 对 "/" 判定不一致。
+	if found := strings.Contains(p, ".."); found {
+		ret.Code = -1
+		ret.Msg = "path must not contain '..'"
+		return
+	}
+	var doctree []*DocFile
+	root := filepath.Join(util.WorkspaceDir, "data", notebook, p)
+	if !gulu.File.IsSubPath(filepath.Join(util.WorkspaceDir, "data", notebook), root) {
+		ret.Code = -1
+		ret.Msg = "path escapes notebook directory"
+		return
+	}
+	dir, err := os.ReadDir(root)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+
+	ids := map[string]bool{}
+	for _, entry := range dir {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		if entry.IsDir() {
+			if !ast.IsNodeIDPattern(entry.Name()) {
+				continue
+			}
+
+			parent := &DocFile{ID: entry.Name()}
+			ids[parent.ID] = true
+			doctree = append(doctree, parent)
+
+			subPath := filepath.Join(root, entry.Name())
+			if err = walkDocTree(subPath, parent, ids); err != nil {
+				ret.Code = -1
+				ret.Msg = err.Error()
+				return
+			}
+		} else {
+			id := strings.TrimSuffix(entry.Name(), ".sy")
+			if !ast.IsNodeIDPattern(id) {
+				continue
+			}
+
+			doc := &DocFile{ID: id}
+			if !ids[doc.ID] {
+				doctree = append(doctree, doc)
+			}
+			ids[doc.ID] = true
+		}
+	}
+
+	ret.Data = map[string]any{
+		"tree": doctree,
+	}
+}
+
+type DocFile struct {
+	ID       string     `json:"id"`
+	Children []*DocFile `json:"children,omitempty"`
+}
+
+func walkDocTree(p string, docFile *DocFile, ids map[string]bool) (err error) {
+	dir, err := os.ReadDir(p)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range dir {
+		if entry.IsDir() {
+			if strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+
+			if !ast.IsNodeIDPattern(entry.Name()) {
+				continue
+			}
+
+			parent := &DocFile{ID: entry.Name()}
+			ids[parent.ID] = true
+			docFile.Children = append(docFile.Children, parent)
+
+			subPath := filepath.Join(p, entry.Name())
+			if err = walkDocTree(subPath, parent, ids); err != nil {
+				return
+			}
+		} else {
+			doc := &DocFile{ID: strings.TrimSuffix(entry.Name(), ".sy")}
+			if !ids[doc.ID] {
+				docFile.Children = append(docFile.Children, doc)
+			}
+			ids[doc.ID] = true
+		}
+	}
+	return
+}
+
+func upsertIndexes(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	pathsArg := arg["paths"].([]any)
+	var paths []string
+	for _, p := range pathsArg {
+		paths = append(paths, p.(string))
+	}
+	model.UpsertIndexes(paths)
+}
+
+func removeIndexes(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	pathsArg := arg["paths"].([]any)
+	var paths []string
+	for _, p := range pathsArg {
+		paths = append(paths, p.(string))
+	}
+	model.RemoveIndexes(paths)
+}
+
+func doc2Heading(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	srcID := arg["srcID"].(string)
+	targetID := arg["targetID"].(string)
+	after := arg["after"].(bool)
+	srcTreeBox, srcTreePath, err := model.Doc2Heading(srcID, targetID, after)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 5000}
+		return
+	}
+
+	ret.Data = map[string]any{
+		"srcTreeBox":  srcTreeBox,
+		"srcTreePath": srcTreePath,
+	}
+}
+
+func heading2Doc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	srcHeadingID := arg["srcHeadingID"].(string)
+	targetNotebook := arg["targetNoteBook"].(string)
+
+	// 禁止跨加密笔记本移动块：加密笔记本是孤岛
+	if bt := treenode.GetBlockTree(srcHeadingID); bt != nil && model.IsEncryptedBox(bt.BoxID) && bt.BoxID != targetNotebook {
+		ret.Code = -1
+		ret.Msg = model.Conf.Language(313)
+		ret.Data = map[string]any{"closeTimeout": 5000}
+		return
+	}
+	var targetPath string
+	if arg["targetPath"] != nil {
+		targetPath = arg["targetPath"].(string)
+	}
+	var previousPath string
+	if arg["previousPath"] != nil {
+		previousPath = arg["previousPath"].(string)
+	}
+	var toTop bool
+	if arg["toTop"] != nil {
+		toTop = arg["toTop"].(bool)
+	}
+	srcRootBlockID, targetPath, err := model.Heading2Doc(srcHeadingID, targetNotebook, targetPath, previousPath, toTop)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 5000}
+		return
+	}
+
+	model.FlushTxQueue()
+
+	box := model.Conf.Box(targetNotebook)
+	evt := util.NewCmdResult("heading2doc", 0, util.PushModeBroadcast)
+	evt.Data = map[string]any{
+		"box":            box,
+		"path":           targetPath,
+		"srcRootBlockID": srcRootBlockID,
+	}
+	util.PushEvent(evt)
+}
+
+func li2Doc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	srcListItemID := arg["srcListItemID"].(string)
+	targetNotebook := arg["targetNoteBook"].(string)
+
+	// 禁止跨加密笔记本移动块：加密笔记本是孤岛
+	if bt := treenode.GetBlockTree(srcListItemID); bt != nil && model.IsEncryptedBox(bt.BoxID) && bt.BoxID != targetNotebook {
+		ret.Code = -1
+		ret.Msg = model.Conf.Language(313)
+		ret.Data = map[string]any{"closeTimeout": 5000}
+		return
+	}
+
+	var targetPath string
+	if arg["targetPath"] != nil {
+		targetPath = arg["targetPath"].(string)
+	}
+	var previousPath string
+	if arg["previousPath"] != nil {
+		previousPath = arg["previousPath"].(string)
+	}
+	var toTop bool
+	if arg["toTop"] != nil {
+		toTop = arg["toTop"].(bool)
+	}
+	srcRootBlockID, targetPath, err := model.ListItem2Doc(srcListItemID, targetNotebook, targetPath, previousPath, toTop)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 5000}
+		return
+	}
+
+	model.FlushTxQueue()
+
+	box := model.Conf.Box(targetNotebook)
+	evt := util.NewCmdResult("li2doc", 0, util.PushModeBroadcast)
+	evt.Data = map[string]any{
+		"box":            box,
+		"path":           targetPath,
+		"srcRootBlockID": srcRootBlockID,
+	}
+	util.PushEvent(evt)
+}
+
+func getHPathByPath(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	if util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+
+	p := arg["path"].(string)
+
+	hPath, err := model.GetHPathByPath(notebook, p)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = hPath
+}
+
+func getHPathsByPaths(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	pathsArg := arg["paths"].([]any)
+	var paths []string
+	for _, p := range pathsArg {
+		paths = append(paths, p.(string))
+	}
+	hPath, err := model.GetHPathsByPaths(paths)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = hPath
+}
+
+func getHPathByID(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	id := arg["id"].(string)
+	if util.InvalidIDPattern(id, ret) {
+		return
+	}
+
+	hPath, err := model.GetHPathByID(id)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = hPath
+}
+
+func getPathByID(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	id := arg["id"].(string)
+	if util.InvalidIDPattern(id, ret) {
+		return
+	}
+
+	p, notebook, err := model.GetPathByID(id)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = map[string]any{
+		"path":     p,
+		"notebook": notebook,
+	}
+}
+
+func getFullHPathByID(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	if nil == arg["id"] {
+		return
+	}
+
+	id := arg["id"].(string)
+	hPath, err := model.GetFullHPathByID(id)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = hPath
+}
+
+func getIDsByHPath(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	if nil == arg["path"] {
+		return
+	}
+	if nil == arg["notebook"] {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	if util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+
+	p := arg["path"].(string)
+	ids, err := model.GetIDsByHPath(p, notebook)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = ids
+}
+
+func moveDocs(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	var fromPaths []string
+	fromPathsArg := arg["fromPaths"].([]any)
+	for _, fromPath := range fromPathsArg {
+		fromPaths = append(fromPaths, fromPath.(string))
+	}
+	toPath := arg["toPath"].(string)
+	toNotebook := arg["toNotebook"].(string)
+	if util.InvalidIDPattern(toNotebook, ret) {
+		return
+	}
+	callback := arg["callback"]
+	err := model.MoveDocs(fromPaths, toNotebook, toPath, callback)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 7000}
+		return
+	}
+}
+
+func moveDocsByID(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	fromIDsArg := arg["fromIDs"].([]any)
+	var fromIDs []string
+	for _, fromIDArg := range fromIDsArg {
+		fromID := fromIDArg.(string)
+		if util.InvalidIDPattern(fromID, ret) {
+			return
+		}
+		fromIDs = append(fromIDs, fromID)
+	}
+	toID := arg["toID"].(string)
+	if util.InvalidIDPattern(toID, ret) {
+		return
+	}
+
+	var fromPaths []string
+	for _, fromID := range fromIDs {
+		tree, err := model.LoadTreeByBlockID(fromID)
+		if err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			ret.Data = map[string]any{"closeTimeout": 7000}
+			return
+		}
+		fromPaths = append(fromPaths, tree.Path)
+	}
+	fromPaths = gulu.Str.RemoveDuplicatedElem(fromPaths)
+
+	var box *model.Box
+	toTree, err := model.LoadTreeByBlockID(toID)
+	if err != nil {
+		box = model.Conf.Box(toID)
+		if nil == box {
+			ret.Code = -1
+			ret.Msg = "can't found box or tree by id [" + toID + "]"
+			ret.Data = map[string]any{"closeTimeout": 7000}
+			return
+		}
+	}
+
+	var toNotebook, toPath string
+	if nil != toTree {
+		toNotebook = toTree.Box
+		toPath = toTree.Path
+	} else if nil != box {
+		toNotebook = box.ID
+		toPath = "/"
+	}
+	callback := arg["callback"]
+	err = model.MoveDocs(fromPaths, toNotebook, toPath, callback)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 7000}
+		return
+	}
+}
+
+func removeDoc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	if util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+
+	p := arg["path"].(string)
+	if err := model.RemoveDoc(notebook, p); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+	}
+}
+
+func removeDocByID(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	id := arg["id"].(string)
+	if util.InvalidIDPattern(id, ret) {
+		return
+	}
+
+	tree, err := model.LoadTreeByBlockID(id)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 7000}
+		return
+	}
+
+	if err = model.RemoveDoc(tree.Box, tree.Path); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+	}
+}
+
+func removeDocs(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	pathsArg := arg["paths"].([]any)
+	var paths []string
+	for _, path := range pathsArg {
+		paths = append(paths, path.(string))
+	}
+	if err := model.RemoveDocs(paths); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+	}
+}
+
+func renameDoc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	if util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+
+	p := arg["path"].(string)
+	title := arg["title"].(string)
+
+	err := model.RenameDoc(notebook, p, title)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	return
+}
+
+func renameDocByID(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	if nil == arg["id"] {
+		return
+	}
+
+	id := arg["id"].(string)
+	if util.InvalidIDPattern(id, ret) {
+		return
+	}
+
+	title := arg["title"].(string)
+
+	tree, err := model.LoadTreeByBlockID(id)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 7000}
+		return
+	}
+
+	err = model.RenameDoc(tree.Box, tree.Path, title)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+}
+
+func duplicateDoc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	id := arg["id"].(string)
+	tree, err := model.LoadTreeByBlockID(id)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 7000}
+		return
+	}
+
+	notebook := tree.Box
+	model.DuplicateDoc(tree)
+
+	ret.Data = map[string]any{
+		"id":       tree.Root.ID,
+		"notebook": notebook,
+		"path":     tree.Path,
+		"hPath":    tree.HPath,
+	}
+}
+
+func createDoc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	p := arg["path"].(string)
+	title := arg["title"].(string)
+	md := arg["md"].(string)
+	sortsArg := arg["sorts"]
+	var sorts []string
+	if nil != sortsArg {
+		for _, sort := range sortsArg.([]any) {
+			sorts = append(sorts, sort.(string))
+		}
+	}
+
+	tree, err := model.CreateDocByMd(notebook, p, title, md, sorts, arg)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		ret.Data = map[string]any{"closeTimeout": 7000}
+		return
+	}
+
+	ret.Data = map[string]any{
+		"id": tree.Root.ID,
+	}
+}
+
+func createDocWithMd(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	if util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+
+	tagsArg := arg["tags"]
+	var tags string
+	if nil != tagsArg {
+		tags = tagsArg.(string)
+	}
+
+	var parentID string
+	parentIDArg := arg["parentID"]
+	if nil != parentIDArg {
+		parentID = parentIDArg.(string)
+	}
+
+	id := ast.NewNodeID()
+	idArg := arg["id"]
+	if nil != idArg {
+		id = idArg.(string)
+	}
+
+	hPath := arg["path"].(string)
+	markdown := arg["markdown"].(string)
+
+	baseName := path.Base(hPath)
+	dir := path.Dir(hPath)
+	r, _ := regexp.Compile("\r\n|\r|\n|\u2028|\u2029|\t|/")
+	baseName = r.ReplaceAllString(baseName, "")
+	if 512 < utf8.RuneCountInString(baseName) {
+		baseName = gulu.Str.SubStr(baseName, 512)
+	}
+	hPath = path.Join(dir, baseName)
+	if !strings.HasPrefix(hPath, "/") {
+		hPath = "/" + hPath
+	}
+
+	withMath := false
+	withMathArg := arg["withMath"]
+	if nil != withMathArg {
+		withMath = withMathArg.(bool)
+	}
+	clippingHref := ""
+	clippingHrefArg := arg["clippingHref"]
+	if nil != clippingHrefArg {
+		clippingHref = clippingHrefArg.(string)
+	}
+
+	id, err := model.CreateWithMarkdown(tags, notebook, hPath, markdown, parentID, id, withMath, clippingHref, arg)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = id
+}
+
+func getDocCreateSavePath(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	box := model.Conf.Box(notebook)
+	var docCreateSaveBox string
+	docCreateSavePathTpl := model.Conf.FileTree.DocCreateSavePath
+	if nil != box {
+		boxConf := box.GetConf()
+		docCreateSaveBox = boxConf.DocCreateSaveBox
+		docCreateSavePathTpl = boxConf.DocCreateSavePath
+	}
+	if "" == docCreateSaveBox && "" == docCreateSavePathTpl {
+		docCreateSaveBox = model.Conf.FileTree.DocCreateSaveBox
+	}
+	if "" != docCreateSaveBox {
+		if nil == model.Conf.Box(docCreateSaveBox) {
+			// 如果配置的笔记本未打开或者不存在，则使用当前笔记本
+			docCreateSaveBox = notebook
+		}
+	}
+	if "" == docCreateSaveBox {
+		docCreateSaveBox = notebook
+	}
+	if "" == docCreateSavePathTpl {
+		docCreateSavePathTpl = model.Conf.FileTree.DocCreateSavePath
+	}
+	docCreateSavePathTpl = strings.TrimSpace(docCreateSavePathTpl)
+
+	if docCreateSaveBox != notebook {
+		if "" != docCreateSavePathTpl && !strings.HasPrefix(docCreateSavePathTpl, "/") {
+			// 如果配置的笔记本不是当前笔记本，则将相对路径转换为绝对路径
+			docCreateSavePathTpl = "/" + docCreateSavePathTpl
+		}
+	}
+
+	docCreateSavePath, err := model.RenderGoTemplate(docCreateSavePathTpl)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+
+	ret.Data = map[string]any{
+		"box":  docCreateSaveBox,
+		"path": docCreateSavePath,
+	}
+}
+
+func getRefCreateSavePath(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	box := model.Conf.Box(notebook)
+	var refCreateSaveBox string
+	refCreateSavePathTpl := model.Conf.FileTree.RefCreateSavePath
+	if nil != box {
+		boxConf := box.GetConf()
+		refCreateSaveBox = boxConf.RefCreateSaveBox
+		refCreateSavePathTpl = boxConf.RefCreateSavePath
+	}
+	if "" == refCreateSaveBox && "" == refCreateSavePathTpl {
+		refCreateSaveBox = model.Conf.FileTree.RefCreateSaveBox
+	}
+	if "" != refCreateSaveBox {
+		if nil == model.Conf.Box(refCreateSaveBox) {
+			// 如果配置的笔记本未打开或者不存在，则使用当前笔记本
+			refCreateSaveBox = notebook
+		}
+	}
+	if "" == refCreateSaveBox {
+		refCreateSaveBox = notebook
+	}
+	if "" == refCreateSavePathTpl {
+		refCreateSavePathTpl = model.Conf.FileTree.RefCreateSavePath
+	}
+
+	if refCreateSaveBox != notebook {
+		if "" != refCreateSavePathTpl && !strings.HasPrefix(refCreateSavePathTpl, "/") {
+			// 如果配置的笔记本不是当前笔记本，则将相对路径转换为绝对路径
+			refCreateSavePathTpl = "/" + refCreateSavePathTpl
+		}
+	}
+
+	refCreateSavePath, err := model.RenderGoTemplate(refCreateSavePathTpl)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	ret.Data = map[string]any{
+		"box":  refCreateSaveBox,
+		"path": refCreateSavePath,
+	}
+}
+
+func changeSort(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	pathsArg := arg["paths"].([]any)
+	var paths []string
+	for _, p := range pathsArg {
+		paths = append(paths, p.(string))
+	}
+	model.ChangeFileTreeSort(notebook, paths)
+}
+
+func searchDocs(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	var excludeIDs []string
+	if arg["excludeIDs"] != nil {
+		excludeIDsArg := arg["excludeIDs"].([]any)
+		for _, excludeID := range excludeIDsArg {
+			excludeIDs = append(excludeIDs, excludeID.(string))
+		}
+	}
+
+	k := arg["k"].(string)
+	docs := model.SearchDocs(k, excludeIDs)
+	if model.IsReadOnlyRoleContext(c) {
+		publishAccess := model.GetPublishAccess()
+		docs = model.FilterSearchDocsByPublishAccess(c, publishAccess, docs)
+	}
+	ret.Data = docs
+}
+
+func listDocsByPath(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	notebook := arg["notebook"].(string)
+	p := arg["path"].(string)
+
+	// 越界校验：拒绝 ..，确保路径位于 <data>/<notebook>/ 内
+	if strings.Contains(p, "..") {
+		ret.Code = -1
+		ret.Msg = "path must not contain '..' and must be relative"
+		return
+	}
+
+	sortParam := arg["sort"]
+	sortMode := util.SortModeUnassigned
+	if nil != sortParam {
+		sortMode = int(sortParam.(float64))
+	}
+	maxListCount := model.Conf.FileTree.MaxListCount
+	if arg["maxListCount"] != nil {
+		// API `listDocsByPath` add an optional parameter `maxListCount` https://github.com/siyuan-note/siyuan/issues/7993
+		maxListCount = int(arg["maxListCount"].(float64))
+		if 0 >= maxListCount {
+			maxListCount = math.MaxInt
+		}
+	}
+	showHidden := false
+	if arg["showHidden"] != nil {
+		showHidden = arg["showHidden"].(bool)
+	}
+
+	files, totals, err := model.ListDocTree(notebook, p, sortMode, showHidden, maxListCount)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
+	// 过滤掉发布不可见的文件
+	if model.IsReadOnlyRoleContext(c) {
+		publishAccess := model.GetPublishAccess()
+		publishIgnore := model.GetInvisiblePublishAccess(publishAccess)
+		tempFiles := []*model.File{}
+		for _, file := range files {
+			if "markdown" == file.DocType {
+				continue
+			}
+			if model.CheckPathAccessableByPublishIgnore(notebook, file.Path, publishIgnore) {
+				tempFiles = append(tempFiles, file)
+			}
+		}
+		files = tempFiles
+	}
+	if maxListCount < totals {
+		// API `listDocsByPath` add an optional parameter `ignoreMaxListHint` https://github.com/siyuan-note/siyuan/issues/10290
+		ignoreMaxListHintArg := arg["ignoreMaxListHint"]
+		if nil == ignoreMaxListHintArg || !ignoreMaxListHintArg.(bool) {
+			var app string
+			if nil != arg["app"] {
+				app = arg["app"].(string)
+			}
+			if nil == util.NotificationsCfg || util.NotificationsCfg.DocTreeMaxList {
+				util.PushMsgWithApp(app, fmt.Sprintf(model.Conf.Language(48), len(files)), 7000)
+			}
+		}
+	}
+
+	ret.Data = map[string]any{
+		"box":   notebook,
+		"path":  p,
+		"files": files,
+	}
+}
+
+func getDoc(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	id := arg["id"].(string)
+	idx := arg["index"]
+	index := 0
+	if nil != idx {
+		index = int(idx.(float64))
+	}
+
+	var query string
+	if queryArg := arg["query"]; nil != queryArg {
+		query = queryArg.(string)
+	}
+	var queryMethod int
+	if queryMethodArg := arg["queryMethod"]; nil != queryMethodArg {
+		queryMethod = int(queryMethodArg.(float64))
+	}
+	var queryTypes map[string]bool
+	if queryTypesArg := arg["queryTypes"]; nil != queryTypesArg {
+		typesArg := queryTypesArg.(map[string]any)
+		queryTypes = map[string]bool{}
+		for t, b := range typesArg {
+			queryTypes[t] = b.(bool)
+		}
+	}
+	var querySubTypes map[string]bool
+	if querySubTypesArg := arg["querySubTypes"]; nil != querySubTypesArg {
+		typesArg := querySubTypesArg.(map[string]any)
+		querySubTypes = map[string]bool{}
+		for t, b := range typesArg {
+			querySubTypes[t] = b.(bool)
+		}
+	}
+
+	m := arg["mode"] // 0: 仅当前 ID，1：向上 2：向下，3：上下都加载，4：加载末尾
+	mode := 0
+	if nil != m {
+		mode = int(m.(float64))
+	}
+	s := arg["size"]
+	size := 102400 // 默认最大加载块数
+	if nil != s {
+		size = int(s.(float64))
+	}
+	startID := ""
+	endID := ""
+	startIDArg := arg["startID"]
+	endIDArg := arg["endID"]
+	if nil != startIDArg && nil != endIDArg {
+		startID = startIDArg.(string)
+		endID = endIDArg.(string)
+		size = model.Conf.Editor.DynamicLoadBlocks
+	}
+	isBacklinkArg := arg["isBacklink"]
+	isBacklink := false
+	if nil != isBacklinkArg {
+		isBacklink = isBacklinkArg.(bool)
+	}
+	originalRefBlockIDsArg := arg["originalRefBlockIDs"]
+	originalRefBlockIDs := map[string]string{}
+	if nil != originalRefBlockIDsArg {
+		m := originalRefBlockIDsArg.(map[string]any)
+		for k, v := range m {
+			originalRefBlockIDs[k] = v.(string)
+		}
+	}
+	highlightArg := arg["highlight"]
+	highlight := true
+	if nil != highlightArg {
+		highlight = highlightArg.(bool)
+	}
+
+	var blockCount int
+	var content, parentID, parent2ID, rootID, typ string
+	var eof, scroll bool
+	var boxID, docPath string
+	var isBacklinkExpand bool
+	var keywords []string
+	var err error
+	// 加密笔记本的打开文档走 InBox 版（查加密 blocktree + content db）
+	if notebook, ok := arg["notebook"].(string); ok && notebook != "" && model.IsEncryptedBox(notebook) {
+		blockCount, content, parentID, parent2ID, rootID, typ, eof, scroll, boxID, docPath, isBacklinkExpand, keywords, err =
+			model.GetDocInBox(startID, endID, id, index, query, queryTypes, querySubTypes, queryMethod, mode, size, isBacklink, originalRefBlockIDs, highlight, notebook)
+	} else {
+		blockCount, content, parentID, parent2ID, rootID, typ, eof, scroll, boxID, docPath, isBacklinkExpand, keywords, err =
+			model.GetDoc(startID, endID, id, index, query, queryTypes, querySubTypes, queryMethod, mode, size, isBacklink, originalRefBlockIDs, highlight)
+	}
+	if errors.Is(err, model.ErrBlockNotFound) {
+		ret.Code = 3
+		return
+	}
+
+	if err != nil {
+		ret.Code = 1
+		ret.Msg = err.Error()
+		return
+	}
+
+	// 判断是否正在同步中 https://github.com/siyuan-note/siyuan/issues/6290
+	isSyncing := model.IsSyncingFile(rootID)
+
+	if model.IsReadOnlyRoleContext(c) {
+		publishAccess := model.GetPublishAccess()
+		newContent := model.FilterContentByPublishAccess(c, publishAccess, boxID, docPath, content, false)
+		if newContent != content {
+			content = newContent
+			scroll = false // 避免长页面可通过滚动无限刷出多个锁
+		}
+	}
+
+	ret.Data = map[string]any{
+		"id":               id,
+		"mode":             mode,
+		"parentID":         parentID,
+		"parent2ID":        parent2ID,
+		"rootID":           rootID,
+		"type":             typ,
+		"content":          content,
+		"blockCount":       blockCount,
+		"eof":              eof,
+		"scroll":           scroll,
+		"box":              boxID,
+		"path":             docPath,
+		"isSyncing":        isSyncing,
+		"isBacklinkExpand": isBacklinkExpand,
+		"keywords":         keywords,
+		"reqId":            arg["reqId"],
+	}
+}
+
+func setPublishAccess(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	publishAccess := model.GetPublishAccess()
+	ID := arg["id"].(string)
+	visible := arg["visible"].(bool)
+	password := arg["password"].(string)
+	disable := arg["disable"].(bool)
+
+	foundIndex := -1
+	updated := false
+	for i, item := range publishAccess {
+		if ID == item.ID {
+			foundIndex = i
+			break
+		}
+	}
+	if foundIndex >= 0 {
+		if visible && len(password) == 0 && !disable {
+			publishAccess = append(publishAccess[:foundIndex], publishAccess[foundIndex+1:]...)
+		} else {
+			publishAccess[foundIndex].Visible = visible
+			publishAccess[foundIndex].Password = password
+			publishAccess[foundIndex].Disable = disable
+		}
+		updated = true
+	} else {
+		if !visible || len(password) != 0 || disable {
+			publishAccess = append(publishAccess, &model.PublishAccessItem{
+				ID:       ID,
+				Visible:  visible,
+				Password: password,
+				Disable:  disable,
+			})
+			updated = true
+		}
+	}
+
+	if updated {
+		err := model.SetPublishAccess(publishAccess)
+		if err != nil {
+			ret.Code = -1
+			ret.Msg = err.Error()
+			return
+		}
+	}
+
+	model.PurgePublishAccess()
+}
+
+func getPublishAccess(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	var IDs []string
+	for _, ID := range arg["ids"].([]any) {
+		IDs = append(IDs, ID.(string))
+	}
+
+	publishAccess := model.GetPublishAccess()
+	maskedPublishAccess := model.PublishAccess{}
+	for _, ID := range IDs {
+		found := false
+		for _, item := range publishAccess {
+			if item.ID == ID {
+				found = true
+				maskedPublishAccess = append(maskedPublishAccess, item)
+				break
+			}
+		}
+		if !found {
+			maskedPublishAccess = append(maskedPublishAccess, &model.PublishAccessItem{
+				ID:       ID,
+				Visible:  true,
+				Password: "",
+				Disable:  false,
+			})
+		}
+	}
+
+	ret.Data = map[string]any{
+		"publishAccess": maskedPublishAccess,
+	}
+}
+
+func authFilePublishAccess(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+
+	ID := arg["id"].(string)
+	if util.InvalidIDPattern(ID, ret) {
+		return
+	}
+	password := arg["password"].(string)
+
+	publishAccess := model.GetPublishAccess()
+	for _, item := range publishAccess {
+		if item.ID == ID {
+			if item.Password == password {
+				model.SetPublishAuthCookie(c, ID, password)
+			} else {
+				ret.Msg = model.Conf.Language(285)
+			}
+			break
+		}
+	}
+}

@@ -1,0 +1,63 @@
+{
+    "name": "QingYu",
+    "short_name": "qingyu",
+    "description": "QingYu is a privacy-first space for writing and thinking, with fine-grained block references and Markdown WYSIWYG.",
+    "lang": "en",
+    "id": "/",
+    "start_url": "/",
+    "scope": "/",
+    "display": "fullscreen",
+    "display_override": [
+        "window-controls-overlay",
+        "fullscreen",
+        "standalone",
+        "minimal-ui",
+        "browser"
+    ],
+    "categories": [
+        "education",
+        "productivity",
+        "utilities"
+    ],
+    "icons": [
+        {
+            "src": "favicon.ico",
+            "type": "image/png",
+            "sizes": "any",
+            "purpose": "any"
+        }
+    ],
+    "shortcuts": [
+        {
+            "name": "QingYu Desktop",
+            "description": "Desktop web interface for QingYu",
+            "url": "/stage/build/desktop/",
+            "icons": [
+                {
+                    "src": "favicon.ico",
+                    "type": "image/png",
+                    "sizes": "512x512"
+                }
+            ]
+        },
+        {
+            "name": "QingYu Mobile",
+            "description": "Mobile web interface for QingYu",
+            "url": "/stage/build/mobile/",
+            "icons": [
+                {
+                    "src": "favicon.ico",
+                    "type": "image/png",
+                    "sizes": "512x512"
+                }
+            ]
+        }
+    ],
+    "related_applications": [],
+    "protocol_handlers": [
+        {
+            "protocol": "web+qingyu",
+            "url": "/?url=%s"
+        }
+    ]
+}
