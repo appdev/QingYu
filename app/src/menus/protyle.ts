@@ -94,7 +94,7 @@ const renderAssetList = (element: Element, k: string, position: IPosition, exts:
     });
 };
 
-export const assetMenu = (protyle: IProtyle, position: IPosition, callback?: (url: string, name: string) => void, exts?: string[]) => {
+const openAssetMenu = (protyle: IProtyle | undefined, position: IPosition, callback?: (url: string, name: string) => void, exts?: string[]) => {
     const menu = new Menu(Constants.MENU_BACKGROUND_ASSET);
     if (menu.isOpen) {
         return;
@@ -147,19 +147,19 @@ export const assetMenu = (protyle: IProtyle, position: IPosition, callback?: (ur
                         if (callback) {
                             callback(currentElement.getAttribute("data-value"), currentElement.textContent);
                         } else {
-                            hintRenderAssets(currentElement.getAttribute("data-value"), protyle);
+                            hintRenderAssets(currentElement.getAttribute("data-value"), protyle!);
                             window.siyuan.menus.menu.remove();
                         }
                     } else if (!callback) {
                         window.siyuan.menus.menu.remove();
-                        focusByRange(protyle.toolbar.range);
+                        focusByRange(protyle!.toolbar.range);
                     }
                     // 空行处插入 mp3 会多一个空的 mp3 块
                     event.preventDefault();
                     event.stopPropagation();
                 } else if (event.key === "Escape") {
                     if (!callback) {
-                        focusByRange(protyle.toolbar.range);
+                        focusByRange(protyle!.toolbar.range);
                     }
                 }
             });
@@ -195,7 +195,7 @@ export const assetMenu = (protyle: IProtyle, position: IPosition, callback?: (ur
                     if (callback) {
                         callback(currentURL, listItemElement.textContent);
                     } else {
-                        hintRenderAssets(currentURL, protyle);
+                        hintRenderAssets(currentURL, protyle!);
                         window.siyuan.menus.menu.remove();
                     }
                 }
@@ -203,6 +203,14 @@ export const assetMenu = (protyle: IProtyle, position: IPosition, callback?: (ur
             renderAssetList(element, "", position, exts);
         }
     });
+};
+
+export const assetMenu = (protyle: IProtyle, position: IPosition, callback?: (url: string, name: string) => void, exts?: string[]) => {
+    openAssetMenu(protyle, position, callback, exts);
+};
+
+export const assetPickerMenu = (position: IPosition, callback: (url: string, name: string) => void, exts?: string[]) => {
+    openAssetMenu(undefined, position, callback, exts);
 };
 
 export const fileAnnotationRefMenu = (protyle: IProtyle, refElement: HTMLElement) => {

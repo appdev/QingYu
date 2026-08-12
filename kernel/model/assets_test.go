@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,7 +82,11 @@ func TestNormalizeMissingAssetLinkDest(t *testing.T) {
 }
 
 func TestMarkdownAssetLinkDests(t *testing.T) {
-	markdown := []byte(`![标准图片](assets/image.png)
+	markdown := []byte(`---
+cover: assets/cover.png
+---
+
+![标准图片](assets/image.png)
 
 [普通资源](assets/document.pdf?page=2)
 
@@ -102,6 +107,7 @@ func TestMarkdownAssetLinkDests(t *testing.T) {
 
 	got := markdownAssetLinkDests(markdown)
 	want := []string{
+		"assets/cover.png",
 		"assets/diagram%20one.png",
 		"assets/document.pdf?page=2",
 		"assets/html.png",
@@ -109,6 +115,34 @@ func TestMarkdownAssetLinkDests(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Markdown asset destinations: got %v, want %v", got, want)
+	}
+}
+
+func TestMarkdownFrontmatterCoverFormats(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		want     string
+	}{
+		{name: "yaml", markdown: "\ufeff---\r\ncover: assets/yaml.png\r\n---\r\nBody", want: "assets/yaml.png"},
+		{name: "toml", markdown: "+++\ncover = 'assets/toml.png'\n+++\nBody", want: "assets/toml.png"},
+		{name: "json", markdown: "{\n  \"cover\": \"assets/json.png\"\n}\nBody", want: "assets/json.png"},
+		{name: "remote", markdown: "---\ncover: https://example.com/cover.png\n---\n", want: ""},
+		{name: "malformed", markdown: "---\ncover: assets/missing.png\n", want: ""},
+		{name: "body", markdown: "Text\ncover: assets/body.png\n", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ""
+			for _, dest := range markdownAssetLinkDests([]byte(test.markdown)) {
+				if strings.HasPrefix(dest, "assets/") {
+					got = dest
+				}
+			}
+			if got != test.want {
+				t.Fatalf("front matter cover: got %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

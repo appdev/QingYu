@@ -3,9 +3,9 @@
 <br>
 <strong>QingYu</strong>
 <br>
-<em>QingYu · Clear windows, a quiet desk, words softly spoken.</em>
+<em>QingYu · Sunlit windows, an uncluttered desk, words in a gentle voice.</em>
 <br><br>
-A quiet, clear writing space that remains under your control.
+A calm, clear place to write—and truly your own.
 </p>
 
 <p align="center">
@@ -15,68 +15,68 @@ A quiet, clear writing space that remains under your control.
 | <a href="README.tr.md">Türkçe</a>
 </p>
 
-> QingYu is based on the open-source project [SiYuan](https://github.com/siyuan-note/siyuan) and follows [AGPL-3.0](LICENSE). It is not an official SiYuan distribution; QingYu's product design, feature choices, releases, and support are maintained independently.
+> QingYu is an independent project built on the open-source [SiYuan](https://github.com/siyuan-note/siyuan) codebase and distributed under [AGPL-3.0](LICENSE). It is not an official SiYuan release. Its design, feature direction, releases, and support are all handled by the QingYu project.
 
 ## Why QingYu
 
-Notes should not become another system you have to maintain.
+Your notes should not become one more system demanding your attention.
 
-QingYu keeps the interface, structure, and tools in their proper place so your attention can return to the words. Begin with a sentence, connect ideas as they grow, organize source material, and build knowledge over time—without designing a perfect method first or handing your work to an account system.
+QingYu lets the interface, structure, and tools recede until only the writing remains. Start with a single sentence. Let ideas find one another, gather sources around them, and allow something lasting to take shape over time—without first inventing the perfect method or entrusting your knowledge to an account.
 
-QingYu is not a contest to collect the most features. It cares about whether writing feels natural, whether your material stays understandable, and whether your knowledge remains yours.
+There is no race to collect the most features here. What matters is that writing feels effortless, your material remains clear, and everything you create stays yours.
 
 ## Core experience
 
-### Write without noise
+### Write in quiet
 
-The block-based editor combines free-form writing with visible structure. Markdown WYSIWYG, outlines, mathematics, diagrams, and large documents are available when needed and quiet when they are not.
+The block-based editor gives free-form writing a gentle sense of structure. Markdown WYSIWYG, outlines, mathematics, diagrams, and large documents are there when called for; the rest of the time, the words stay at the center.
 
 ### Let ideas meet again
 
-Block references, backlinks, virtual references, and full-text search help connections emerge naturally. You do not need a perfect taxonomy before writing; earlier ideas can return when they become relevant again.
+Block references, backlinks, virtual references, and full-text search allow connections to surface in their own time. There is no need to build a perfect taxonomy in advance; an old thought can find its way back precisely when it matters.
 
 ### Keep sources in context
 
-Table databases, PDF reading and annotation, web clipping, OCR, assets, and flexible import and export turn collected material into something you can think and write with.
+Table databases, PDF reading and annotation, web clipping, OCR, assets, and flexible import and export bring collected material back into context—where it can become part of reading, thinking, and writing.
 
 ### Shape your own workspace
 
-Document trees, tags, bookmarks, templates, snippets, themes, icons, and plugins offer room to adapt. QingYu provides a stable foundation without prescribing one correct way to take notes.
+Document trees, tags, bookmarks, templates, snippets, themes, icons, and plugins give the workspace room to become your own. QingYu provides a steady foundation, but never dictates a single correct way to think or take notes.
 
 ### Go further when you need to
 
-A local API, built-in MCP Server, command-line tools, and self-hosted access leave space for automation and extension. These capabilities sit behind the product rather than in the middle of everyday writing.
+A local API, built-in MCP Server, command-line tools, and self-hosted access leave the door open to automation and extension. They remain quietly in the background, ready when needed without crowding the everyday act of writing.
 
 ## Your data, your space
 
-QingYu stores content in a local workspace you choose and aims to keep its data boundaries understandable, portable, and recoverable.
+QingYu keeps your content in a local workspace of your choosing. Where your data lives, how it moves, and how it can be restored are meant to remain visible and understandable.
 
-- Encrypted notebooks provide separate protection for sensitive material.
-- Local repository snapshots, history, and recovery help preserve long-term work.
-- S3, WebDAV, and local-file-system sync let you choose and manage the storage provider.
-- Core features do not require a QingYu cloud account or an official cloud-sync service.
-- QingYu does not proactively send usage behavior, diagnostics, installation events, device identifiers, or similar telemetry.
-- Markdown, PDF, Word, HTML, and other export paths help keep content from being trapped in one interface.
+- Encrypted notebooks add a separate layer of protection for sensitive material.
+- Local repository snapshots, history, and recovery help safeguard work accumulated over time.
+- Sync through S3, WebDAV, or the local file system lets you choose and manage where copies are stored.
+- The essentials work without a QingYu cloud account or any official cloud-sync service.
+- QingYu does not proactively transmit usage activity, diagnostics, installation events, device identifiers, or similar telemetry.
+- Export to Markdown, PDF, Word, HTML, and other formats keeps your writing from being locked inside a single interface.
 
-Privacy is not a tagline. It is an ongoing constraint on accounts, networking, storage, and product decisions.
+Privacy is not a line of copy. It is a lasting discipline, shaping every decision about accounts, networking, storage, and features.
 
-## Made for
+## For those who
 
-- People who want to write for years instead of repeatedly rebuilding a note-taking system.
-- Researchers organizing literature, source material, projects, and evolving ideas.
-- Knowledge workers who value local data, open formats, backups, and migration freedom.
-- Writers who appreciate visible structure but do not want tools interrupting thought.
-- Users who may extend their workspace with plugins, automation, or self-hosting.
+- Want to keep writing for years instead of endlessly rebuilding a note-taking system.
+- Work with research, literature, project records, or a growing body of personal knowledge.
+- Care about local data, open formats, dependable backups, and the freedom to move.
+- Appreciate clear structure but do not want their tools to interrupt a train of thought.
+- Like having plugins, automation, and self-hosting available when the need arises.
 
 ## Project status
 
-QingYu is under active development while its product boundaries, compatibility, and release process continue to stabilize. Official distribution channels are still being prepared. SiYuan's official installers, app-store editions, and cloud services are not QingYu releases or services.
+QingYu remains under active development. Its feature boundaries, compatibility guarantees, and release process are still taking shape, and official distribution channels are not yet ready. SiYuan installers, app-store editions, and cloud services belong to SiYuan and should not be treated as QingYu releases or services.
 
-This repository is currently intended for development, product review, and source builds. See the [changelog](CHANGELOG.md) for recorded changes.
+For now, this repository is best suited to development, reviewing the product direction, and building from source. Recorded changes are available in the [changelog](CHANGELOG.md).
 
 ## For developers
 
-QingYu combines a Go kernel with a TypeScript frontend, but this README deliberately stays at product level. Start with these references when you need implementation details:
+QingYu pairs a Go kernel with a TypeScript frontend. This README stays focused on the product; for implementation details, begin with:
 
 - [API documentation](docs/API.md)
 - [Contribution guide](.github/CONTRIBUTING.md)
@@ -85,18 +85,18 @@ QingYu combines a Go kernel with a TypeScript frontend, but this README delibera
 - [Feature-boundary design](docs/superpowers/specs/2026-08-10-feature-removal-design.md)
 - macOS, Linux, and Windows build entry points under `scripts/`
 
-Use the tool versions recorded in `kernel/go.mod`, `app/package.json`, and the project workflows.
+Treat `kernel/go.mod`, `app/package.json`, and the project workflows as the source of truth for tool versions.
 
 ## Built on SiYuan
 
-QingYu builds on SiYuan's mature block editor, data format, and open-source ecosystem while reshaping product identity, feature boundaries, and everyday experience.
+SiYuan's mature block editor, data format, and open-source ecosystem form QingYu's foundation. From there, QingYu follows its own product identity, feature boundaries, and approach to the everyday writing experience.
 
-QingYu retains necessary data and plugin compatibility, but it has independent application identifiers, configuration directories, protocols, ports, kernel naming, and product decisions. It is not an official SiYuan distribution and does not represent the SiYuan team. QingYu issues, builds, releases, and support are the responsibility of the QingYu project.
+QingYu preserves the data and plugin compatibility it needs, while maintaining its own application identifiers, configuration directories, protocols, ports, kernel name, and product decisions. It is neither an official SiYuan distribution nor a representative of the SiYuan team. Questions, builds, releases, and support concerning QingYu remain the responsibility of this project.
 
-We are grateful to the SiYuan team, Lute, the wider upstream ecosystem, and every open-source contributor whose work made this foundation possible. Upstream project: [github.com/siyuan-note/siyuan](https://github.com/siyuan-note/siyuan).
+Our thanks go to the SiYuan team, Lute and the other upstream projects, and every open-source contributor whose patient work made this foundation possible. Upstream project: [github.com/siyuan-note/siyuan](https://github.com/siyuan-note/siyuan).
 
 ## Open source and acknowledgements
 
-QingYu is distributed under the [GNU Affero General Public License v3.0](LICENSE). Distributions and modifications must continue to follow the license and preserve the copyright and attribution of the original project and its contributors.
+QingYu is open source under the [GNU Affero General Public License v3.0](LICENSE). Any distribution or modification must continue to honor the license and preserve the copyright and attribution of the original project and its contributors.
 
-May every note feel a little lighter, and every thought become a little clearer.
+May every note rest a little lighter, and every thought come gently into focus.

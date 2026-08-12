@@ -1,3 +1,5 @@
+import type {Dialog} from "../../dialog";
+
 interface CoverEntry {
     file: string;
     category: string;
@@ -11,6 +13,48 @@ interface CoverEntry {
 function getCategoryLabel(category: string): string {
     const label = (window.siyuan.languages as Record<string, string>)[category];
     return label || category;
+}
+
+async function renderCoverPicker(dialog: Dialog, onSelect: (name: string) => void): Promise<boolean> {
+    const coverData = await fetchCoverData();
+    if (!coverData) {
+        return false;
+    }
+    const {categories, coversByCategory, allCovers} = coverData;
+    let activeCategory = "all";
+    const buildCards = (category: string) => {
+        const covers = category === "all" ? allCovers : (coversByCategory.get(category) || []);
+        return covers.map((cover) => `<div class="b3-card b3-cover__card" data-name="${cover.file}"><img src="/appearance/covers/${cover.file}" loading="lazy"></div>`).join("");
+    };
+    const buildTabs = (category: string) => {
+        let tabs = `<span class="b3-chip b3-chip--hover${category === "all" ? " b3-chip--current" : ""}" data-category="all">${window.siyuan.languages.coverAll}</span>`;
+        categories.forEach((item) => {
+            tabs += `<span class="b3-chip b3-chip--hover${category === item ? " b3-chip--current" : ""}" data-category="${item}">${getCategoryLabel(item)}</span>`;
+        });
+        return `<div class="b3-cover__tabs">${tabs}</div>`;
+    };
+    const bodyElement = dialog.element.querySelector(".b3-dialog__body") as HTMLElement;
+    const render = () => {
+        bodyElement.innerHTML = `${buildTabs(activeCategory)}
+<div class="b3-cards b3-cover__cards" style="padding:16px">${buildCards(activeCategory)}</div>`;
+    };
+    render();
+    bodyElement.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement;
+        const categoryElement = target.closest<HTMLElement>("[data-category]");
+        if (categoryElement) {
+            activeCategory = categoryElement.dataset.category || "all";
+            render();
+            bodyElement.scrollTop = 0;
+            return;
+        }
+        const cardElement = target.closest<HTMLElement>(".b3-cover__card");
+        if (cardElement?.dataset.name) {
+            onSelect(cardElement.dataset.name);
+            dialog.destroy();
+        }
+    });
+    return true;
 }
 
 let cachedCovers: CoverEntry[] | null = null;
@@ -67,4 +111,4 @@ async function fetchCoverData(): Promise<{
     }
 }
 
-export { fetchCoverData, getCategoryLabel, CoverEntry };
+export {fetchCoverData, getCategoryLabel, renderCoverPicker, CoverEntry};

@@ -195,10 +195,10 @@ test("QingYu brand voice is consistent across application and README surfaces", 
     assert.match(aboutSource, /config-about__separator/);
     assert.doesNotMatch(aboutSource, /会泽百家 至公天下/);
     assert.doesNotMatch(aboutSource, /languages\.about1|languages\.accountSupport|sponsorBtn|getCloudURL|SIYUAN_IMAGE_SPONSOR/);
-    assert.match(readmeEn, /<em>QingYu · Clear windows, a quiet desk, words softly spoken\.<\/em>/);
+    assert.match(readmeEn, /<em>QingYu · Sunlit windows, an uncluttered desk, words in a gentle voice\.<\/em>/);
     assert.match(readmeZhCN, /<em>轻语 · 明窗净几，字字轻语<\/em>/);
-    assert.match(readmeJa, /<em>QingYu · 明るい窓、静かな机、言葉はそっと。<\/em>/);
-    assert.match(readmeTr, /<em>QingYu · Aydınlık pencereler, sakin bir masa, usulca söylenen sözler\.<\/em>/);
+    assert.match(readmeJa, /<em>QingYu · 光さす窓辺、整えた机。言葉はそっと息づく。<\/em>/);
+    assert.match(readmeTr, /<em>QingYu · Gün ışığı alan bir pencere, derli toplu bir masa; sözcükler usulca dile gelir\.<\/em>/);
 
     const productReadmes = [readmeEn, readmeZhCN, readmeJa, readmeTr];
     for (const readme of productReadmes) {
@@ -210,7 +210,7 @@ test("QingYu brand voice is consistent across application and README surfaces", 
         assert.doesNotMatch(readme, /OpenAI|Architecture and Ecosystem|架构和生态|アーキテクチャとエコシステム|Mimari ve Ekosistem/);
     }
     assert.match(readmeZhCN, /不是思源笔记官方发行版/);
-    assert.match(readmeEn, /not an official SiYuan distribution/);
+    assert.match(readmeEn, /not an official SiYuan release/);
     assert.match(readmeJa, /SiYuanの公式ディストリビューションではありません/);
     assert.match(readmeTr, /resmî bir SiYuan dağıtımı değildir/);
 

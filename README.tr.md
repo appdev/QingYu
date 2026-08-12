@@ -3,9 +3,9 @@
 <br>
 <strong>QingYu</strong>
 <br>
-<em>QingYu · Aydınlık pencereler, sakin bir masa, usulca söylenen sözler.</em>
+<em>QingYu · Gün ışığı alan bir pencere, derli toplu bir masa; sözcükler usulca dile gelir.</em>
 <br><br>
-Sessiz, berrak ve denetimi sizde olan bir yazma alanı.
+Sakin, berrak ve bütünüyle size ait bir yazma alanı.
 </p>
 
 <p align="center">
@@ -15,68 +15,68 @@ Sessiz, berrak ve denetimi sizde olan bir yazma alanı.
 | <b>Türkçe</b>
 </p>
 
-> QingYu, açık kaynaklı [SiYuan](https://github.com/siyuan-note/siyuan) projesi temel alınarak geliştirilmiştir ve [AGPL-3.0](LICENSE) lisansına tabidir. QingYu resmî bir SiYuan dağıtımı değildir; ürün tasarımı, özellik tercihleri, sürümler ve destek QingYu projesi tarafından bağımsız olarak yürütülür.
+> QingYu, açık kaynaklı [SiYuan](https://github.com/siyuan-note/siyuan) kod tabanı üzerine kurulan bağımsız bir projedir ve [AGPL-3.0](LICENSE) lisansı altında dağıtılır. Resmî bir SiYuan sürümü değildir. Tasarımı, ürün yönü, sürümleri ve desteği QingYu projesi tarafından bağımsız olarak yürütülür.
 
 ## QingYu neden var
 
-Notlar, yönetmeniz gereken yeni bir yüke dönüşmemeli.
+Notlarınız, sürekli ilgilenmeniz gereken bir başka sisteme dönüşmemeli.
 
-QingYu arayüzü, yapıyı ve araçları olması gereken yerde tutarak dikkatinizi yeniden kelimelere verir. Bir cümleyle başlayabilir, düşünceler büyüdükçe aralarında bağ kurabilir, kaynakları düzenleyebilir ve zaman içinde kalıcı bilgi oluşturabilirsiniz. Önceden kusursuz bir yöntem tasarlamanız ya da bilginizi bir hesap sistemine teslim etmeniz gerekmez.
+QingYu'da arayüz, yapı ve araçlar gerekmediğinde sessizce geri çekilir; geriye siz ve sözcükleriniz kalır. Tek bir cümleyle başlayabilir, düşüncelerin zamanla birbirini bulmasına izin verebilir, kaynakları onların çevresinde toplayabilir ve kalıcı bir birikimi adım adım oluşturabilirsiniz. Önceden kusursuz bir yöntem tasarlamanız ya da bilginizi bir hesaba emanet etmeniz gerekmez.
 
-QingYu daha fazla özellik toplama yarışına girmez. Yazmanın doğal hissettirmesine, içeriğin anlaşılır kalmasına ve bilginizin size ait olmaya devam etmesine önem verir.
+Burada amaç en çok özelliği bir araya getirmek değildir. Önemli olan yazmanın kendiliğinden akması, biriktirdiklerinizin anlaşılır kalması ve ürettiğiniz her şeyin size ait olmaya devam etmesidir.
 
 ## Temel deneyim
 
-### Gürültü olmadan yazın
+### Sessizce yazın
 
-Blok tabanlı düzenleyici, serbest yazımı görünür bir yapıyla birleştirir. Markdown WYSIWYG, ana hatlar, matematik, diyagramlar ve büyük belgeler gerektiğinde hazırdır; gerekmediğinde kelimelerin önüne geçmez.
+Blok tabanlı düzenleyici, serbest yazıya belli belirsiz bir düzen kazandırır. Markdown WYSIWYG, ana hatlar, matematik, diyagramlar ve büyük belgeler gerektiğinde elinizin altındadır; geri kalan zamanda alanı sözcüklere bırakır.
 
 ### Düşünceler yeniden karşılaşsın
 
-Blok referansları, geri bağlantılar, sanal referanslar ve tam metin arama bağlantıların doğal biçimde ortaya çıkmasına yardımcı olur. Yazmaya başlamadan önce kusursuz bir sınıflandırma kurmanız gerekmez; eski düşünceler yeniden anlam kazandığında geri dönebilir.
+Blok referansları, geri bağlantılar, sanal referanslar ve tam metin arama, birbirinden uzak düşünceler arasındaki bağları zamanı geldiğinde görünür kılar. Önceden kusursuz bir sınıflandırma kurmanız gerekmez; eski bir düşünce, tam ihtiyaç duyduğunuz anda yolunu yeniden size bulabilir.
 
 ### Kaynakları bağlamında tutun
 
-Tablo veritabanları, PDF okuma ve açıklama, web kırpma, OCR, varlık dosyaları ile esnek içe ve dışa aktarma seçenekleri, topladığınız malzemeyi düşünmenin ve yazmanın parçası hâline getirir.
+Tablo veritabanları, PDF okuma ve açıklama, web kırpma, OCR, varlık dosyaları ile esnek içe ve dışa aktarma seçenekleri, topladığınız malzemeyi yeniden bağlamına taşır; onu yalnızca saklanan değil, okunan, düşünülen ve yazıya katılan bir şeye dönüştürür.
 
 ### Kendi çalışma alanınızı şekillendirin
 
-Belge ağaçları, etiketler, yer imleri, şablonlar, kod parçacıkları, temalar, simgeler ve eklentiler çalışma alanını uyarlamanıza izin verir. QingYu sağlam bir temel sunar, ancak tek doğru not alma yöntemini dayatmaz.
+Belge ağaçları, etiketler, yer imleri, şablonlar, kod parçacıkları, temalar, simgeler ve eklentiler çalışma alanınızın size göre şekillenmesini sağlar. QingYu sağlam bir zemin sunar, fakat düşünmenin ya da not almanın tek bir doğru yolunu dayatmaz.
 
 ### Gerektiğinde daha ileri gidin
 
-Yerel API, yerleşik MCP Server, komut satırı araçları ve kendi sunucunuzda çalıştırma seçenekleri otomasyon ve genişletme için kapı bırakır. Bu yetenekler günlük yazma deneyiminin merkezinde değil, arka planında durur.
+Yerel API, yerleşik MCP Server, komut satırı araçları ve kendi sunucunuzda çalıştırma seçenekleri otomasyon ve genişletme için kapıyı açık tutar. Günlük yazma deneyimini kalabalıklaştırmadan, ihtiyaç duyacağınız ana dek sessizce arka planda bekler.
 
 ## Verileriniz, alanınız
 
-QingYu içeriği seçtiğiniz yerel çalışma alanında saklar ve veri sınırlarını anlaşılır, taşınabilir ve kurtarılabilir tutmayı amaçlar.
+QingYu içeriğinizi seçtiğiniz yerel çalışma alanında saklar. Verilerinizin nerede bulunduğunu, nasıl taşındığını ve gerektiğinde nasıl geri getirileceğini her zaman anlayabilmenizi amaçlar.
 
-- Şifreli not defterleri hassas içerik için ayrı koruma sağlar.
-- Yerel depo anlık görüntüleri, geçmiş ve kurtarma uzun vadeli çalışmaları korumaya yardımcı olur.
-- S3, WebDAV ve yerel dosya sistemi eşitlemesiyle depolama sağlayıcısını siz seçer ve yönetirsiniz.
-- Temel özellikler için QingYu bulut hesabı veya resmî bulut eşitleme hizmeti gerekmez.
-- Kullanım davranışı, tanılama verileri, kurulum olayları, cihaz tanımlayıcıları ya da benzer telemetri verileri etkin biçimde gönderilmez.
-- Markdown, PDF, Word, HTML ve diğer dışa aktarma yolları içeriğin tek bir arayüzde kilitli kalmasını önler.
+- Şifreli not defterleri, hassas içerik için ayrı bir koruma katmanı sunar.
+- Yerel depo anlık görüntüleri, geçmiş ve kurtarma özellikleri, zaman içinde biriken çalışmalarınızı korumaya yardımcı olur.
+- S3, WebDAV veya yerel dosya sistemi üzerinden eşitleme yapabilir; kopyaların nerede tutulacağını kendiniz seçip yönetebilirsiniz.
+- Temel özellikleri kullanmak için bir QingYu bulut hesabına veya resmî bir bulut eşitleme hizmetine ihtiyaç duymazsınız.
+- QingYu kullanım etkinliklerini, tanılama verilerini, kurulum olaylarını, cihaz tanımlayıcılarını veya benzer telemetri verilerini kendiliğinden iletmez.
+- Markdown, PDF, Word, HTML ve diğer biçimlere dışa aktarma seçenekleri, yazdıklarınızın tek bir arayüzde kilitli kalmasını önler.
 
-Gizlilik yalnızca bir slogan değil; hesaplar, ağ, depolama ve ürün kararları için sürekli bir kısıttır.
+Gizlilik bir slogan değil; hesaplardan ağa, depolamadan özellik seçimlerine kadar her kararı biçimlendiren kalıcı bir ilkedir.
 
 ## Kimler için
 
-- Not alma sistemini sürekli yeniden kurmak yerine yıllarca yazmak isteyenler.
-- Kaynakları, literatürü, projeleri ve gelişen düşünceleri düzenleyen araştırmacılar.
-- Yerel veriye, açık biçimlere, yedeklemeye ve taşıma özgürlüğüne değer veren bilgi çalışanları.
-- Görünür yapı isteyen fakat araçların düşünceyi bölmesini istemeyen yazarlar.
-- Çalışma alanını eklentiler, otomasyon veya kendi sunucusuyla genişletmek isteyen kullanıcılar.
+- Not alma sistemini durmadan yeniden kurmak yerine aynı yerde yıllarca yazmak isteyenler.
+- Araştırma kaynaklarını, literatürü, proje kayıtlarını veya büyüyen kişisel bilgi birikimini özenle düzenleyenler.
+- Yerel veriye, açık biçimlere, güvenilir yedeklere ve taşıma özgürlüğüne önem verenler.
+- Açık bir yapı isteyen, ancak kullandığı araçların düşünce akışını kesmesini istemeyenler.
+- İhtiyaç doğduğunda eklentilerden, otomasyondan veya kendi sunucusunda çalıştırma olanağından yararlanmak isteyenler.
 
 ## Proje durumu
 
-QingYu etkin olarak geliştirilmektedir; ürün sınırları, uyumluluk ve sürüm süreci henüz istikrara kavuşmaktadır. Resmî dağıtım kanalları hazırlanmaktadır. SiYuan'ın resmî kurulum paketleri, uygulama mağazası sürümleri ve bulut hizmetleri QingYu sürümleri veya hizmetleri değildir.
+QingYu'nun geliştirilmesi sürüyor. Özellik sınırları, uyumluluk kapsamı ve sürüm süreci hâlâ biçimleniyor; resmî dağıtım kanalları da henüz hazır değil. SiYuan'ın kurulum paketleri, uygulama mağazası sürümleri ve bulut hizmetleri SiYuan'a aittir; QingYu sürümü veya hizmeti olarak değerlendirilmemelidir.
 
-Bu depo şu anda geliştirme, ürün yönünü inceleme ve kaynak koddan derleme amacıyla kullanılmaktadır. Kaydedilen değişiklikler için [değişiklik günlüğüne](CHANGELOG.md) bakabilirsiniz.
+Bu depo şimdilik geliştirmeye katılmak, ürünün yönünü incelemek ve kaynak koddan derleme yapmak isteyenlere yöneliktir. Bugüne kadar kaydedilen değişiklikleri [değişiklik günlüğünde](CHANGELOG.md) bulabilirsiniz.
 
 ## Geliştiriciler için
 
-QingYu bir Go çekirdeğini TypeScript ön yüzüyle birleştirir; ancak bu README bilinçli olarak ürün düzeyinde kalır. Uygulama ayrıntıları için şu kaynaklardan başlayabilirsiniz:
+QingYu, bir Go çekirdeği ile TypeScript ön yüzünden oluşur. Bu README ürün deneyimine odaklanır; uygulama ayrıntıları için şu kaynaklardan başlayabilirsiniz:
 
 - [API belgeleri](docs/API.md)
 - [Katkı rehberi](.github/CONTRIBUTING.md)
@@ -85,18 +85,18 @@ QingYu bir Go çekirdeğini TypeScript ön yüzüyle birleştirir; ancak bu READ
 - [Özellik sınırı tasarımı](docs/superpowers/specs/2026-08-10-feature-removal-design.md)
 - `scripts/` altındaki macOS, Linux ve Windows derleme girişleri
 
-Gerekli araç sürümleri için `kernel/go.mod`, `app/package.json` ve proje iş akışlarını temel alın.
+Araç sürümleri konusunda `kernel/go.mod`, `app/package.json` ve proje iş akışlarında belirtilen bilgileri esas alın.
 
 ## SiYuan üzerine inşa edildi
 
-QingYu, SiYuan'ın olgun blok düzenleyicisini, veri biçimini ve açık kaynak ekosistemini temel alırken ürün kimliğini, özellik sınırlarını ve günlük deneyimi yeniden şekillendirir.
+SiYuan'ın yıllar içinde olgunlaşan blok düzenleyicisi, veri biçimi ve açık kaynak ekosistemi QingYu'ya sağlam bir temel sunar. QingYu bu temelin üzerinde kendi ürün kimliğini, özellik sınırlarını ve gündelik yazma deneyimini şekillendirir.
 
-Gerekli veri ve eklenti uyumluluğunu korur; ancak uygulama kimlikleri, yapılandırma dizinleri, protokoller, bağlantı noktaları, çekirdek adlandırması ve ürün kararları bağımsızdır. QingYu resmî bir SiYuan dağıtımı değildir ve SiYuan ekibini temsil etmez. QingYu ile ilgili sorunlar, derlemeler, sürümler ve destek QingYu projesinin sorumluluğundadır.
+Gerekli veri ve eklenti uyumluluğu korunurken uygulama kimlikleri, yapılandırma dizinleri, protokoller, bağlantı noktaları, çekirdek adı ve ürün kararları bağımsızdır. QingYu resmî bir SiYuan dağıtımı değildir ve SiYuan ekibini temsil etmez. QingYu ile ilgili soruların, derlemelerin, sürümlerin ve desteğin sorumluluğu QingYu projesine aittir.
 
-Bu temeli mümkün kılan SiYuan ekibine, Lute'a, diğer üst kaynak projelere ve tüm açık kaynak katkıcılarına teşekkür ederiz. Üst kaynak proje: [github.com/siyuan-note/siyuan](https://github.com/siyuan-note/siyuan).
+Bu temeli yıllar içinde mümkün kılan SiYuan ekibine, Lute'a, diğer üst kaynak projelere ve bütün açık kaynak katkıcılarına içtenlikle teşekkür ederiz. Üst kaynak proje: [github.com/siyuan-note/siyuan](https://github.com/siyuan-note/siyuan).
 
 ## Açık kaynak ve teşekkürler
 
-QingYu [GNU Affero General Public License v3.0](LICENSE) ile dağıtılır. Dağıtımlar ve değişiklikler lisansa uymalı, özgün projenin ve katkıcılarının telif ve atıf bilgilerini korumalıdır.
+QingYu, [GNU Affero General Public License v3.0](LICENSE) kapsamında açık kaynak olarak sunulur. Her türlü dağıtım ve değişiklik lisansa uymalı; özgün projenin ve katkıcılarının telif ve atıf bilgilerini korumaya devam etmelidir.
 
-Her not biraz daha hafif, her düşünce biraz daha berrak olsun.
+Her satır biraz daha hafif, her düşünce usulca daha berrak olsun.

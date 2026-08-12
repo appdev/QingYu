@@ -30,12 +30,22 @@ export interface MarkdownFrontmatterRange {
   readonly source: string;
 }
 
+export interface MarkdownFrontmatterMetadata {
+  readonly title: string | null;
+  readonly tags: readonly string[];
+  readonly icon: string | null;
+  readonly cover: string | null;
+}
+
 export type MarkdownFrontmatterReadResult =
   | { readonly status: "none" }
   | { readonly status: "malformed" }
   | {
       readonly status: "valid";
       readonly title: string | null;
+      readonly tags: readonly string[];
+      readonly icon: string | null;
+      readonly cover: string | null;
       readonly range: MarkdownFrontmatterRange;
     };
 
@@ -48,9 +58,18 @@ export type MarkdownFrontmatterTitleUpsertResult =
     }
   | { readonly ok: false; readonly reason: "malformed" };
 
+export type MarkdownFrontmatterMetadataPatch = Partial<{
+  title: string;
+  tags: readonly string[];
+  icon: string;
+  cover: string;
+}>;
+
+export type MarkdownFrontmatterMetadataUpsertResult = MarkdownFrontmatterTitleUpsertResult;
+
 type FencedDelimiter = "---" | "+++";
-type TitleReadResult =
-  | { readonly ok: true; readonly title: string | null }
+type MetadataReadResult =
+  | { readonly ok: true; readonly metadata: MarkdownFrontmatterMetadata }
   | { readonly ok: false };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -187,21 +206,34 @@ function jsonRange(
   };
 }
 
-function readYamlTitle(content: string) {
-  const document = parseYamlDocument(content);
-  if (document.errors.length > 0 || !isMap(document.contents)) return { ok: false } as const;
-  const title = document.get("title");
-  return { ok: true, title: typeof title === "string" ? title : null } as const;
+function metadataFromObject(value: Record<string, unknown>): MarkdownFrontmatterMetadata {
+  const tags = Array.isArray(value.tags)
+    ? value.tags.filter((tag): tag is string => typeof tag === "string")
+    : typeof value.tags === "string"
+      ? [value.tags]
+      : [];
+  return {
+    title: typeof value.title === "string" ? value.title : null,
+    tags,
+    icon: typeof value.icon === "string" && value.icon ? value.icon : null,
+    cover: typeof value.cover === "string" && value.cover ? value.cover : null,
+  };
 }
 
-function readTomlTitle(content: string) {
+function readYamlMetadata(content: string) {
+  const document = parseYamlDocument(content);
+  if (document.errors.length > 0 || !isMap(document.contents)) return { ok: false } as const;
+  const value = document.toJSON() as unknown;
+  return isObject(value)
+    ? { ok: true, metadata: metadataFromObject(value) } as const
+    : { ok: false } as const;
+}
+
+function readTomlMetadata(content: string) {
   try {
     const value = parseToml(content) as unknown;
     if (!isObject(value)) return { ok: false } as const;
-    return {
-      ok: true,
-      title: typeof value.title === "string" ? value.title : null,
-    } as const;
+    return { ok: true, metadata: metadataFromObject(value) } as const;
   } catch {
     return { ok: false } as const;
   }
@@ -216,15 +248,12 @@ function parseJsonObject(content: string): JsonNode | null {
   return errors.length === 0 && root?.type === "object" ? root : null;
 }
 
-function readJsonTitle(content: string) {
+function readJsonMetadata(content: string) {
   const root = parseJsonObject(content);
   if (!root) return { ok: false } as const;
   const value = getNodeValue(root) as unknown;
   if (!isObject(value)) return { ok: false } as const;
-  return {
-    ok: true,
-    title: typeof value.title === "string" ? value.title : null,
-  } as const;
+  return { ok: true, metadata: metadataFromObject(value) } as const;
 }
 
 export function readMarkdownFrontmatter(source: string): MarkdownFrontmatterReadResult {
@@ -234,13 +263,13 @@ export function readMarkdownFrontmatter(source: string): MarkdownFrontmatterRead
   if (detected === "malformed") return { status: "malformed" };
 
   const content = source.slice(detected.contentFrom, detected.contentTo);
-  const parsed: TitleReadResult = detected.kind === "yaml"
-    ? readYamlTitle(content)
+  const parsed: MetadataReadResult = detected.kind === "yaml"
+    ? readYamlMetadata(content)
     : detected.kind === "toml"
-      ? readTomlTitle(content)
-      : readJsonTitle(detected.source);
+      ? readTomlMetadata(content)
+      : readJsonMetadata(detected.source);
   if (!parsed.ok) return { status: "malformed" };
-  return { status: "valid", title: parsed.title, range: detected };
+  return { status: "valid", ...parsed.metadata, range: detected };
 }
 
 function replaceRange(source: string, from: number, to: number, replacement: string) {
@@ -252,11 +281,11 @@ function topLevelYamlValue(map: YAMLMap, key: string): YamlNode | null {
   return isNode(pair?.value) ? pair.value : null;
 }
 
-function encodeYamlTitle(title: string, newline: string) {
-  const entry = new Document({ title }).toString();
+function encodeYamlValue(key: string, value: string | readonly string[], newline: string) {
+  const entry = new Document({ [key]: value }).toString();
   const document = parseYamlDocument(entry);
   if (document.errors.length > 0 || !isMap(document.contents)) return null;
-  const node = topLevelYamlValue(document.contents, "title");
+  const node = topLevelYamlValue(document.contents, key);
   if (!node?.range) return null;
   return {
     entry: entry.replace(/\n/gu, newline),
@@ -264,12 +293,12 @@ function encodeYamlTitle(title: string, newline: string) {
   };
 }
 
-function patchYaml(content: string, title: string, newline: string) {
+function patchYaml(content: string, key: string, value: string | readonly string[], newline: string) {
   const document = parseYamlDocument(content);
   if (document.errors.length > 0 || !isMap(document.contents)) return null;
-  const encoded = encodeYamlTitle(title, newline);
+  const encoded = encodeYamlValue(key, value, newline);
   if (!encoded) return null;
-  const node = topLevelYamlValue(document.contents, "title");
+  const node = topLevelYamlValue(document.contents, key);
   if (!node?.range) {
     const insertionAt = document.directives?.docEnd && document.range
       ? document.range[1]
@@ -290,11 +319,11 @@ function patchYaml(content: string, title: string, newline: string) {
   return replaceRange(content, from, to, replacement);
 }
 
-function patchTomlContent(content: string, title: string) {
+function patchTomlContent(content: string, key: string, nextValue: string | readonly string[]) {
   try {
     const value = parseToml(content) as unknown;
     if (!isObject(value)) return null;
-    value.title = title;
+    value[key] = typeof nextValue === "string" ? nextValue : [...nextValue];
     return patchToml(content, value);
   } catch {
     return null;
@@ -334,26 +363,26 @@ function lastJsonPropertyValue(root: JsonNode, key: string) {
   return null;
 }
 
-function patchJson(content: string, title: string, newline: string) {
+function patchJson(content: string, key: string, value: string | readonly string[], newline: string) {
   const root = parseJsonObject(content);
   if (!root) return null;
-  const existingTitle = lastJsonPropertyValue(root, "title");
-  if (existingTitle) {
+  const existingValue = lastJsonPropertyValue(root, key);
+  if (existingValue) {
     return applyEdits(content, [{
-      offset: existingTitle.offset,
-      length: existingTitle.length,
-      content: JSON.stringify(title),
+      offset: existingValue.offset,
+      length: existingValue.length,
+      content: JSON.stringify(value),
     }]);
   }
-  const rawEdits = modify(content, ["title"], title, {});
+  const rawEdits = modify(content, [key], value, {});
   const edits = preserveJsonInsertionLayout(content, rawEdits, newline);
   return applyEdits(content, edits);
 }
 
-function insertYamlFrontmatter(source: string, title: string) {
+function insertYamlFrontmatter(source: string, patch: MarkdownFrontmatterMetadataPatch) {
   const from = sourceStart(source);
   const newline = detectNewline(source);
-  const document = new Document({ title });
+  const document = new Document(patch);
   const content = document.toString().replace(/\n/gu, newline);
   const metadata = `---${newline}${content}---${newline}${newline}`;
   return {
@@ -368,37 +397,62 @@ export function upsertMarkdownFrontmatterTitle(
   source: string,
   title: string,
 ): MarkdownFrontmatterTitleUpsertResult {
+  return upsertMarkdownFrontmatterMetadata(source, { title });
+}
+
+export function upsertMarkdownFrontmatterMetadata(
+  source: string,
+  patch: MarkdownFrontmatterMetadataPatch,
+): MarkdownFrontmatterMetadataUpsertResult {
   const result = readMarkdownFrontmatter(source);
   if (result.status === "malformed") return { ok: false, reason: "malformed" };
-  if (result.status === "none") return insertYamlFrontmatter(source, title);
-  if (result.title === title) {
+  const entries = Object.entries(patch) as Array<[
+    keyof MarkdownFrontmatterMetadataPatch,
+    string | readonly string[],
+  ]>;
+  if (entries.length === 0) {
     return {
       ok: true,
       changed: false,
-      kind: result.range.kind,
+      kind: result.status === "valid" ? result.range.kind : "yaml",
       source,
     };
   }
+  if (result.status === "none") return insertYamlFrontmatter(source, patch);
 
-  const newline = detectNewline(result.range.source);
-  const content = source.slice(result.range.contentFrom, result.range.contentTo);
-  const patched = result.range.kind === "yaml"
-    ? patchYaml(content, title, newline)
-    : result.range.kind === "toml"
-      ? patchTomlContent(content, title)
-      : patchJson(result.range.source, title, newline);
-  if (patched === null) return { ok: false, reason: "malformed" };
+  let nextSource = source;
+  let changed = false;
+  for (const [key, value] of entries) {
+    const current = readMarkdownFrontmatter(nextSource);
+    if (current.status !== "valid") return { ok: false, reason: "malformed" };
+    const currentValue = current[key];
+    if (Array.isArray(value)
+      ? Array.isArray(currentValue) && value.length === currentValue.length
+        && value.every((item, index) => item === currentValue[index])
+      : currentValue === value) continue;
 
-  const from = result.range.kind === "json"
-    ? result.range.from
-    : result.range.contentFrom;
-  const to = result.range.kind === "json"
-    ? result.range.to
-    : result.range.contentTo;
+    const newline = detectNewline(current.range.source);
+    const content = nextSource.slice(current.range.contentFrom, current.range.contentTo);
+    const patched = current.range.kind === "yaml"
+      ? patchYaml(content, key, value, newline)
+      : current.range.kind === "toml"
+        ? patchTomlContent(content, key, value)
+        : patchJson(current.range.source, key, value, newline);
+    if (patched === null) return { ok: false, reason: "malformed" };
+
+    const from = current.range.kind === "json"
+      ? current.range.from
+      : current.range.contentFrom;
+    const to = current.range.kind === "json"
+      ? current.range.to
+      : current.range.contentTo;
+    nextSource = replaceRange(nextSource, from, to, patched);
+    changed = true;
+  }
   return {
     ok: true,
-    changed: true,
+    changed,
     kind: result.range.kind,
-    source: replaceRange(source, from, to, patched),
+    source: nextSource,
   };
 }

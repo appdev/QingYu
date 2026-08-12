@@ -52,6 +52,15 @@ app.whenReady().then(async () => {
         </div>
     </div>
 </div>
+<div class="protyle markdown-editor" id="header-editor" style="--b3-font-family-protyle:serif;--b3-font-size-editor:18px;--b3-theme-background:rgb(30, 30, 30);--b3-theme-on-background:rgb(235, 235, 235);--b3-theme-on-surface-light:rgb(150, 150, 150);width:480px">
+    <div class="protyle-top markdown-editor__top">
+        <div class="protyle-background markdown-editor__metadata protyle-background--enable">
+            <div class="protyle-background__img markdown-editor__cover"><img alt="cover"></div>
+            <div class="protyle-background__ia"><div class="protyle-background__icon fn__none"></div><div class="b3-chips b3-chips__doctag markdown-editor__tags"><span class="b3-chip b3-chip--middle">tag</span></div><div class="protyle-background__action markdown-editor__actions"><button class="b3-button b3-button--cancel" data-type="tag"><svg></svg>Add Tag</button><button class="b3-button b3-button--cancel" data-type="icon"><svg></svg>Add icon</button><button class="b3-button b3-button--cancel" data-type="cover"><svg></svg>Add cover</button></div></div>
+        </div>
+        <div class="protyle-title markdown-editor__title"><div class="protyle-title__input">Theme title</div></div>
+    </div>
+</div>
 <div class="protyle markdown-editor" id="mobile-editor" style="height:640px;width:375px">
     <div class="protyle-content markdown-editor__content">
         <div class="protyle-top markdown-editor__top">
@@ -105,6 +114,10 @@ app.whenReady().then(async () => {
         const mobileEditor = document.querySelector("#mobile-editor");
         const mobileBody = mobileEditor.querySelector(".markdown-editor__body");
         const mobileTableViewport = mobileEditor.querySelector(".markra-table-scroll");
+        const headerEditor = document.querySelector("#header-editor");
+        const headerCover = headerEditor.querySelector(".markdown-editor__cover");
+        const headerTitle = headerEditor.querySelector(".protyle-title__input");
+        const headerActionButtons = Array.from(headerEditor.querySelectorAll(".b3-button"));
         const toolbarEditor = document.querySelector("#toolbar-editor");
         const lightToolbarEditor = toolbarEditor.cloneNode(true);
         lightToolbarEditor.id = "light-toolbar-editor";
@@ -168,6 +181,12 @@ app.whenReady().then(async () => {
             mobileScrollWidth: mobileEditor.scrollWidth,
             mobileTableClientWidth: mobileTableViewport.clientWidth,
             mobileTableScrollWidth: mobileTableViewport.scrollWidth,
+            headerCoverWidth: headerCover.getBoundingClientRect().width,
+            headerEditorWidth: headerEditor.getBoundingClientRect().width,
+            headerTitleColor: getComputedStyle(headerTitle).color,
+            headerTitleFontFamily: getComputedStyle(headerTitle).fontFamily,
+            headerTitleFontSize: getComputedStyle(headerTitle).fontSize,
+            headerActionButtonTops: headerActionButtons.map((button) => button.getBoundingClientRect().top),
             lightToolbarBackground: getComputedStyle(lightToolbarGroup).backgroundColor,
             lightToolbarBorderColor: getComputedStyle(lightToolbarGroup).borderColor,
             lightToolbarDeleteColor: getComputedStyle(lightDeleteToolbarButton).color,
@@ -248,6 +267,22 @@ app.whenReady().then(async () => {
         metrics.mobileBodyPaddingLeft === "16px";
     if (!keepsMobileWidth) {
         console.error("Markdown mobile layout escapes the viewport", metrics);
+        app.exit(1);
+        return;
+    }
+    const headerUsesNativeTheme = Math.abs(metrics.headerCoverWidth - metrics.headerEditorWidth) <= 1 &&
+        metrics.headerTitleColor === "rgb(235, 235, 235)" &&
+        metrics.headerTitleFontFamily === "serif" &&
+        metrics.headerTitleFontSize === "36px";
+    if (!headerUsesNativeTheme) {
+        console.error("Markdown metadata header does not follow the native theme and layout", metrics);
+        app.exit(1);
+        return;
+    }
+    const headerActionsStayTogether = metrics.headerActionButtonTops.length === 3 &&
+        metrics.headerActionButtonTops.every((top) => Math.abs(top - metrics.headerActionButtonTops[0]) <= 0.5);
+    if (!headerActionsStayTogether) {
+        console.error("Markdown metadata actions split across rows after adding a tag", metrics);
         app.exit(1);
         return;
     }

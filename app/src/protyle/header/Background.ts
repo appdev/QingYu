@@ -1,10 +1,8 @@
-import {hasClosestByClassName} from "../util/hasClosest";
 import {getRandom, isMobile} from "../../util/functions";
 import {hideElements} from "../ui/hideElements";
 import {uploadFiles} from "../upload";
 import {fetchPost} from "../../util/fetch";
 import {getRandomEmoji, openEmojiPanel, unicode2Emoji, updateFileTreeEmoji, updateOutlineEmoji} from "../../emoji";
-import {upDownHint} from "../../util/upDownHint";
 /// #if !MOBILE
 import {openGlobalSearch} from "../../search/util";
 /// #else
@@ -14,9 +12,9 @@ import {Dialog} from "../../dialog";
 import {Constants} from "../../constants";
 import {assetMenu} from "../../menus/protyle";
 import {previewImages} from "../preview/image";
-import {Menu} from "../../plugin/Menu";
 import {escapeHtml} from "../../util/escape";
-import {fetchCoverData, getCategoryLabel} from "./coverData";
+import {fetchCoverData, renderCoverPicker} from "./coverData";
+import {openTagMenu} from "./tagMenu";
 
 const bgs = [
     "background:radial-gradient(black 3px, transparent 4px),radial-gradient(black 3px, transparent 4px),linear-gradient(#fff 4px, transparent 0),linear-gradient(45deg, transparent 74px, transparent 75px, #a4a4a4 75px, #a4a4a4 76px, transparent 77px, transparent 109px),linear-gradient(-45deg, transparent 75px, transparent 76px, #a4a4a4 76px, #a4a4a4 77px, transparent 78px, transparent 109px),#fff;background-size: 109px 109px, 109px 109px,100% 6px, 109px 109px, 109px 109px;background-position: 54px 55px, 0px 0px, 0px 0px, 0px 0px, 0px 0px;",
@@ -300,68 +298,22 @@ export class Background {
                         });
                     };
 
-                    fetchCoverData().then((coverData) => {
-                        if (!coverData) {
-                            renderCSSPatterns(dialog);
-                            return;
-                        }
-                        const { categories, coversByCategory, allCovers } = coverData;
-
-                        const buildCards = (category: string): string => {
-                            const covers = category === "all" ? allCovers : (coversByCategory.get(category) || []);
-                            return covers.map(c => {
-                                const url = `/appearance/covers/${c.file}`;
-                                return `<div class="b3-card b3-cover__card" data-name="${c.file}"><img src="${url}" loading="lazy"></div>`;
-                            }).join("");
-                        };
-
-                        const buildTabs = (activeCategory: string): string => {
-                            let tabs = `<span class="b3-chip b3-chip--hover${activeCategory === "all" ? " b3-chip--current" : ""}" data-category="all">${window.siyuan.languages.coverAll}</span>`;
-                            for (const cat of categories) {
-                                tabs += `<span class="b3-chip b3-chip--hover${activeCategory === cat ? " b3-chip--current" : ""}" data-category="${cat}">${getCategoryLabel(cat)}</span>`;
-                            }
-                            return `<div class="b3-cover__tabs">${tabs}</div>`;
-                        };
-
-                        let activeCategory = "all";
-
-                        const renderContent = (): void => {
-                            const bodyEl = dialog.element.querySelector(".b3-dialog__body");
-                            if (bodyEl) {
-                                bodyEl.innerHTML = `${buildTabs(activeCategory)}
-        <div class="b3-cards b3-cover__cards" style="padding:16px">${buildCards(activeCategory)}</div>`;
-                            }
-                        };
-
-                        renderContent();
-
-                        // 点击事件委托
-                        dialog.element.querySelector(".b3-dialog__body")!.addEventListener("click", (event) => {
-                            const target = event.target as HTMLElement;
-                            const chip = target.closest(".b3-chip") as HTMLElement;
-                            if (chip && chip.hasAttribute("data-category")) {
-                                activeCategory = chip.getAttribute("data-category") || "all";
-                                renderContent();
-                                dialog.element.querySelector(".b3-dialog__body")!.scrollTop = 0;
-                            } else if (target.closest(".b3-cover__card")) {
-                                const card = target.closest(".b3-cover__card") as HTMLElement;
-                                const name = card.getAttribute("data-name");
-                                fetchPost("/api/asset/insertCover", {
-                                    id: protyle.block.rootID,
-                                    name
-                                }, (response) => {
-                                    const succMap = response.data.succMap;
-                                    const url = succMap[Object.keys(succMap)[0]];
-                                    this.ial["title-img"] = `background-image:url("${url}")`;
-                                    this.render(this.ial, protyle.block.rootID);
-                                    fetchPost("/api/attr/setBlockAttrs", {
-                                        id: protyle.block.rootID,
-                                        attrs: {"title-img": this.ial["title-img"]}
-                                    });
-                                });
-                                dialog.destroy();
-                            }
+                    renderCoverPicker(dialog, (name) => {
+                        fetchPost("/api/asset/insertCover", {
+                            id: protyle.block.rootID,
+                            name
+                        }, (response) => {
+                            const succMap = response.data.succMap;
+                            const url = succMap[Object.keys(succMap)[0]];
+                            this.ial["title-img"] = `background-image:url("${url}")`;
+                            this.render(this.ial, protyle.block.rootID);
+                            fetchPost("/api/attr/setBlockAttrs", {
+                                id: protyle.block.rootID,
+                                attrs: {"title-img": this.ial["title-img"]}
+                            });
                         });
+                    }).then((rendered) => {
+                        if (!rendered) renderCSSPatterns(dialog);
                     }).catch(() => {
                         renderCSSPatterns(dialog);
                     });
@@ -681,12 +633,9 @@ export class Background {
                 }
                 html += `<div class="b3-chip b3-chip--middle b3-chip--pointer" data-type="open-search">${escapeHtml(item)}<svg class="b3-chip__close" data-type="remove-tag"><use xlink:href="#iconClose"></use></svg></div>`;
             });
-            this.tagsElement.innerHTML = `${html}
-<div class="protyle-background__action fn__flex-center">
-    <button class="b3-button b3-button--cancel" style="margin-bottom: 8px" data-menu="true" data-type="tag"><svg><use xlink:href="#iconAdd"></use></svg>${window.siyuan.languages.addTag}</button>
-</div>`;
+            this.tagsElement.innerHTML = html;
             this.tagsElement.classList.remove("fn__none");
-            this.actionElements[0].classList.add("fn__none");
+            this.actionElements[0].classList.remove("fn__none");
         } else {
             this.tagsElement.innerHTML = "";
             this.tagsElement.classList.add("fn__none");
@@ -737,100 +686,11 @@ export class Background {
     }
 
     private openTag(protyle: IProtyle, target: HTMLElement) {
-        window.siyuan.menus.menu.remove();
-        const menu = new Menu();
-        menu.addItem({
-            iconHTML: "",
-            type: "empty",
-            label: `<div class="fn__flex-column b3-menu__filter">
-    <input class="b3-text-field fn__flex-shrink" placeholder="${window.siyuan.languages.tag}"/>
-    <div class="fn__hr"></div>
-    <div class="b3-list fn__flex-1 b3-list--background">
-        <img style="margin: 0 auto;display: block;width: 64px;height: 64px" src="/stage/loading-pure.svg">
-    </div>
-</div>`,
-            bind: (element) => {
-                const listElement = element.querySelector(".b3-list--background");
-                fetchPost("/api/search/searchTag", {
-                    k: "",
-                }, (response) => {
-                    let html = "";
-                    const currentTags = this.getTags();
-                    response.data.tags.forEach((item: string, index: number) => {
-                        html += `<div class="b3-list-item b3-list-item--narrow${index === 0 ? " b3-list-item--focus" : ""}">
-    <div class="fn__flex-1">${item}</div>
-    ${currentTags.includes(Lute.UnEscapeHTMLStr(item)) ? '<svg class="b3-menu__checked"><use xlink:href="#iconSelect"></use></svg>' : ""}
-</div>`;
-                    });
-                    listElement.innerHTML = html;
-                });
-                const inputElement = element.querySelector("input");
-                inputElement.addEventListener("keydown", (event: KeyboardEvent) => {
-                    event.stopPropagation();
-                    if (event.isComposing) {
-                        return;
-                    }
-                    upDownHint(listElement, event);
-                    if (event.key === "Enter") {
-                        const currentElement = listElement.querySelector(".b3-list-item--focus") as HTMLElement;
-                        this.addTags(currentElement ?
-                            (currentElement.dataset.type === "new" ? currentElement.querySelector("mark").textContent.trim() : currentElement.textContent.trim()) :
-                            inputElement.value.trim(), protyle, () => {
-                            inputElement.value = "";
-                            inputElement.dispatchEvent(new CustomEvent("input"));
-                        });
-                    } else if (event.key === "Escape") {
-                        window.siyuan.menus.menu.remove();
-                    }
-                });
-                inputElement.addEventListener("input", (event) => {
-                    event.stopPropagation();
-                    fetchPost("/api/search/searchTag", {
-                        k: inputElement.value.trim(),
-                    }, (response) => {
-                        let searchHTML = "";
-                        let hasKey = false;
-                        const currentTags = this.getTags();
-                        response.data.tags.forEach((item: string, index: number) => {
-                            searchHTML += `<div class="b3-list-item b3-list-item--narrow${index === 0 ? " b3-list-item--focus" : ""}">
-    <div class="fn__flex-1">${item}</div>
-    ${currentTags.includes(Lute.UnEscapeHTMLStr(item.replace(/<mark>/g, "").replace(/<\/mark>/g, ""))) ? '<svg class="b3-menu__checked"><use xlink:href="#iconSelect"></use></svg>' : ""}
-</div>`;
-                            if (item === `<mark>${response.data.k}</mark>`) {
-                                hasKey = true;
-                            }
-                        });
-                        if (!hasKey && response.data.k) {
-                            searchHTML = `<div data-type="new" class="b3-list-item b3-list-item--narrow${searchHTML ? "" : " b3-list-item--focus"}"><div class="fn__flex-1">${window.siyuan.languages.new} <mark>${escapeHtml(response.data.k)}</mark></div></div>` + searchHTML;
-                        }
-                        listElement.innerHTML = searchHTML;
-                    });
-                });
-                listElement.addEventListener("click", (event) => {
-                    const target = event.target as HTMLElement;
-                    const listItemElement = hasClosestByClassName(target, "b3-list-item");
-                    if (!listItemElement) {
-                        return;
-                    }
-                    this.addTags(listItemElement.dataset.type === "new" ? listItemElement.querySelector("mark").textContent.trim() : listItemElement.textContent.trim(),
-                        protyle, () => {
-                            inputElement.value = "";
-                            inputElement.dispatchEvent(new CustomEvent("input"));
-                            inputElement.focus();
-                        });
-                });
-            }
+        openTagMenu({
+            target,
+            getCurrentTags: () => this.getTags(),
+            toggleTag: (tag, done) => this.addTags(tag, protyle, done),
         });
-        const itemsElement = menu.element.querySelector(".b3-menu__items");
-        itemsElement.setAttribute("style", "overflow: initial");
-        /// #if MOBILE
-        menu.fullscreen();
-        itemsElement.firstElementChild.setAttribute("style", "padding: 0 8px;height: 100%;");
-        /// #else
-        const rect = target.getBoundingClientRect();
-        menu.open({x: rect.left, y: rect.top + rect.height});
-        menu.element.querySelector("input").focus();
-        /// #endif
     }
 
     private getTags(removeTag?: string) {

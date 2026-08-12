@@ -25,7 +25,7 @@ const iconName = (name: MarkdownIconName) => {
     return "add" as const;
 };
 
-const resolveImageSource = (source: string) => {
+export const resolveMarkdownImageSource = (source: string) => {
     const value = source.trim().replace(/^<|>$/gu, "");
     if (!value || /^(?:javascript|vbscript):/iu.test(value)) {
         return null;
@@ -46,7 +46,13 @@ const resolveImageSource = (source: string) => {
     return value.startsWith("assets/") ? `/${value}` : value;
 };
 
-const uploadAssets = async ({files}: MarkdownClipboardAssetRequest) => {
+export const resolveMarkdownCoverSource = (source: string) => {
+    const value = source.trim().replace(/^<|>$/gu, "");
+    if (/^[a-z][a-z\d+.-]*:/iu.test(value) && !/^(?:https?|blob|data):/iu.test(value)) return null;
+    return resolveMarkdownImageSource(value);
+};
+
+export const uploadMarkdownAssets = async ({files}: MarkdownClipboardAssetRequest) => {
     if (files.length === 0) {
         return [];
     }
@@ -102,7 +108,7 @@ export const createSiyuanMarkdownAdapter = (
         return renderWithSiyuan(source, "mermaid", context);
     },
     resolveImageSource(source) {
-        return resolveImageSource(source);
+        return resolveMarkdownImageSource(source);
     },
-    saveClipboardAssets: uploadAssets,
+    saveClipboardAssets: uploadMarkdownAssets,
 });
