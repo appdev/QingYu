@@ -3,6 +3,7 @@
   "desktopName": "com.apkdv.qingyu",
   "version": "3.7.3",
   "description": "QingYu · Clear windows, a quiet desk, words softly spoken.",
+  "homepage": "https://apkdv.com/",
   "main": "./electron/main.js",
   "packageManager": "pnpm@11.12.0",
   "scripts": {
@@ -37,7 +38,10 @@
     "note-taking",
     "notebook"
   ],
-  "author": "QingYu Project",
+  "author": {
+    "name": "QingYu Project",
+    "email": "lengyue@apkdv.com"
+  },
   "devDependencies": {
     "@codemirror/commands": "6.10.4",
     "@codemirror/lang-markdown": "^6.5.2",

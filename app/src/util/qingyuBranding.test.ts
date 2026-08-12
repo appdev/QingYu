@@ -222,6 +222,14 @@ test("QingYu brand voice is consistent across application and README surfaces", 
     assert.match(readmeJa, /SiYuanの公式ディストリビューションではありません/);
     assert.match(readmeTr, /resmî bir SiYuan dağıtımı değildir/);
 
+    const packageMetadata = JSON.parse((await readRepositoryFile("app/package.json")).toString()) as {
+        homepage?: string;
+        author?: {name?: string, email?: string};
+    };
+    assert.equal(packageMetadata.homepage, "https://apkdv.com/");
+    assert.equal(packageMetadata.author?.name, "QingYu Project");
+    assert.equal(packageMetadata.author?.email, "lengyue@apkdv.com");
+
     const manifest = JSON.parse(manifestSource) as {description: string};
     assert.match(manifest.description, /privacy-first space for writing and thinking/);
 
