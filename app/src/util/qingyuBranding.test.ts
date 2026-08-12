@@ -138,6 +138,14 @@ test("QingYu packaging launches the renamed kernel", async () => {
     assert.doesNotMatch(buildSource, /SiYuan-Kernel/);
 });
 
+test("QingYu manual CD derives a release tag and supports the first release", async () => {
+    const workflowSource = (await readRepositoryFile(".github/workflows/cd.yml")).toString();
+    assert.match(workflowSource, /LATEST="\$\{\{ github\.event\.repository\.default_branch \}\}"/);
+    assert.match(workflowSource, /RELEASE_TAG="v\$\{\{ steps\.version\.outputs\.value \}\}"/);
+    assert.match(workflowSource, /tag: \$\{\{ needs\.prepare\.outputs\.release_tag \}\}/);
+    assert.doesNotMatch(workflowSource, /-t \$\{\{ github\.ref \}\}/);
+});
+
 test("QingYu keeps the official updater unchanged behind one migration marker", async () => {
     const updaterSource = (await readRepositoryFile("kernel/model/updater.go")).toString();
     assert.equal(updaterSource.match(/TODO\(QingYu\)/g)?.length, 1);

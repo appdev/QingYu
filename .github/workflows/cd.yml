@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_title: ${{ steps.release_info.outputs.release_title }}
+      release_tag: ${{ steps.release_info.outputs.release_tag }}
       version: ${{ steps.version.outputs.value }}
       packageManager: ${{ steps.packageManager.outputs.value }}
       release_body: ${{ steps.release_info.outputs.release_body }}
@@ -36,7 +37,9 @@ jobs:
 
       - id: thisLatestRelease
         run: |
-          LATEST=$(gh api "repos/${{ github.repository }}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+          if ! LATEST=$(gh api "repos/${{ github.repository }}/releases/latest" --jq '.tag_name' 2>/dev/null); then
+            LATEST="${{ github.event.repository.default_branch }}"
+          fi
           echo "release=$LATEST" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,9 +75,14 @@ jobs:
       - name: Gather Release Information
         id: release_info
         run: |
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="v${{ steps.version.outputs.value }}"
+          fi
           echo "release_title=QingYu v${{ steps.version.outputs.value }}" >> $GITHUB_OUTPUT
-          changelog_header=$(python scripts/parse-changelog-HEAD.py -t ${{ github.ref }} -b ${{ steps.thisLatestRelease.outputs.release }} -e ${{ steps.electronVersion.outputs.value }} ${{ github.repository }})
-          changelog=$(python scripts/parse-changelog.py -t ${{ github.ref }} ${{ github.repository }})
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          changelog_header=$(python scripts/parse-changelog-HEAD.py -t "$RELEASE_TAG" -b "${{ steps.thisLatestRelease.outputs.release }}" -e "${{ steps.electronVersion.outputs.value }}" "${{ github.repository }}")
+          changelog=$(python scripts/parse-changelog.py -t "$RELEASE_TAG" "${{ github.repository }}")
           EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
           echo "release_body<<$EOF" >> $GITHUB_OUTPUT
           echo "$changelog_header" >> $GITHUB_OUTPUT
@@ -404,7 +412,8 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           name: ${{ needs.prepare.outputs.release_title }}
-          tag: ${{ github.ref }}
+          tag: ${{ needs.prepare.outputs.release_tag }}
+          commit: ${{ github.sha }}
           body: ${{ needs.prepare.outputs.release_body }}
           draft: false
           prerelease: true
@@ -416,7 +425,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           VERSION=${{ needs.prepare.outputs.version }}
-          gh release upload ${{ github.ref_name }} \
+          gh release upload ${{ needs.prepare.outputs.release_tag }} \
             "qingyu-linux/qingyu-${VERSION}-linux.AppImage#qingyu-${VERSION}-linux.AppImage" \
             "qingyu-linux/qingyu-${VERSION}-linux.tar.gz#qingyu-${VERSION}-linux.tar.gz" \
             "qingyu-linux/qingyu-${VERSION}-linux.deb#qingyu-${VERSION}-linux.deb" \
