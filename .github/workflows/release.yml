@@ -1,0 +1,30 @@
+name: QingYu Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "是否创建预发布版本（Docker 仅构建、不发布）"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and create QingYu release
+    if: ${{ github.repository == 'appdev/QingYu' }}
+    uses: ./.github/workflows/cd.yml
+    with:
+      prerelease: ${{ inputs.prerelease }}
+    secrets: inherit
+
+  docker:
+    name: Build QingYu Docker image
+    if: ${{ github.repository == 'appdev/QingYu' }}
+    uses: ./.github/workflows/dockerimage.yml
+    with:
+      prerelease: ${{ inputs.prerelease }}
+    secrets: inherit

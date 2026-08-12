@@ -1,12 +1,19 @@
 name: CD For QingYu
 
 on:
-  push:
-    tags:
-      - '*-alpha*'
-      - '*-beta*'
-      - '*-rc*'
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: "是否创建预发布版本"
+        required: true
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      prerelease:
+        description: "是否创建预发布版本"
+        required: true
+        type: boolean
 
 permissions:
   contents: write
@@ -49,18 +56,19 @@ jobs:
         run: |
           echo "value=$(jq .version ${{ env.package_json }} -r)" >> $GITHUB_OUTPUT
 
-      - name: Verify tag matches package.json version
-        # 仅 tag 推送触发时校验：去掉 tag 前导 v 后与 package.json 中的版本号比对，
-        # 不一致说明开发者推 tag 前忘记同步版本号，直接终止整个流程。
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Validate release version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
           VERSION="${{ steps.version.outputs.value }}"
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "Tag (v$TAG) does not match version in package.json ($VERSION), stopping"
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)(\.[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Prerelease version must use an alpha, beta, or rc suffix: $VERSION"
+              exit 1
+            fi
+          elif [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Stable version must match x.y.z: $VERSION"
             exit 1
           fi
-          echo "Tag matches version: $TAG"
+          echo "Release version is valid: $VERSION"
 
       - name: Extract electronVersion from package.json
         id: electronVersion
@@ -75,11 +83,9 @@ jobs:
       - name: Gather Release Information
         id: release_info
         run: |
-          RELEASE_TAG="${GITHUB_REF_NAME}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            RELEASE_TAG="v${{ steps.version.outputs.value }}"
-          fi
-          echo "release_title=QingYu v${{ steps.version.outputs.value }}" >> $GITHUB_OUTPUT
+          VERSION="${{ steps.version.outputs.value }}"
+          RELEASE_TAG="v$VERSION"
+          echo "release_title=QingYu v$VERSION" >> $GITHUB_OUTPUT
           echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
           changelog_header=$(python scripts/parse-changelog-HEAD.py -t "$RELEASE_TAG" -b "${{ steps.thisLatestRelease.outputs.release }}" -e "${{ steps.electronVersion.outputs.value }}" "${{ github.repository }}")
           changelog=$(python scripts/parse-changelog.py -t "$RELEASE_TAG" "${{ github.repository }}")
@@ -416,7 +422,7 @@ jobs:
           commit: ${{ github.sha }}
           body: ${{ needs.prepare.outputs.release_body }}
           draft: false
-          prerelease: true
+          prerelease: ${{ inputs.prerelease }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Release Assets
