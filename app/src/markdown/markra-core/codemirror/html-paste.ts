@@ -4,6 +4,7 @@ import type { RemoteClipboardImage } from "../clipboard-asset-types";
 export interface CodeMirrorHtmlPaste {
   readonly markdown: string;
   readonly remoteImages: readonly RemoteClipboardImage[];
+  readonly source: "explicit-code" | "host" | "turndown" | "plain-text";
   readonly structured: boolean;
 }
 
@@ -18,6 +19,7 @@ const richTextSelector = [
   "b",
   "blockquote",
   "del",
+  "div",
   "em",
   "h1",
   "h2",
@@ -29,6 +31,8 @@ const richTextSelector = [
   "i",
   "img",
   "ol",
+  "p",
+  "pre",
   "s",
   "strike",
   "strong",
@@ -37,17 +41,11 @@ const richTextSelector = [
   "table",
   "ul",
 ].join(",");
-const preformattedBlockNames = new Set(["DIV", "P", "PRE"]);
 const anchorMarkupPattern = /<a\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/a\s*>/giu;
 
 function preformattedStyle(element: Element) {
   const style = element.getAttribute("style") ?? "";
   return codeFontPattern.test(style) || preformattedWhitespacePattern.test(style);
-}
-
-function preformattedElements(document: Document) {
-  return Array.from(document.querySelectorAll<HTMLElement>("pre, [style]"))
-    .filter((element) => element.tagName === "PRE" || preformattedStyle(element));
 }
 
 function styledInlineLinkMarkup(link: HTMLAnchorElement) {
@@ -94,87 +92,8 @@ function normalizeAnchorBlockMarkup(html: string, parser: DOMParser) {
   });
 }
 
-function meaningfulBodyNodes(document: Document) {
-  return Array.from(document.body.childNodes).filter(
-    (node) => node.nodeType === 1 ||
-      (node.nodeType === 3 && Boolean(node.textContent?.trim())),
-  );
-}
-
-function hasMixedPreformattedContent(document: Document) {
-  const bodyNodes = meaningfulBodyNodes(document);
-  return preformattedElements(document).some(
-    (element) => bodyNodes.some(
-      (node) => node !== element && !element.contains(node),
-    ),
-  );
-}
-
 function hasStructuredHtml(document: Document) {
-  return document.querySelector(richTextSelector) !== null ||
-    hasMixedPreformattedContent(document);
-}
-
-function syntaxHighlightedPlainText(
-  document: Document,
-  plainText: string,
-) {
-  if (!plainText || document.querySelector("pre > code")) return null;
-  if (preformattedElements(document).length === 0 || hasStructuredHtml(document)) {
-    return null;
-  }
-
-  // Syntax-highlighted clipboard HTML represents punctuation as ordinary text.
-  // Turndown would escape it as Markdown, so preserve the accompanying source.
-  return plainText.replace(/\r\n?/gu, "\n");
-}
-
-function preformattedNodeText(node: Node): string {
-  if (node.nodeType === 3) return node.textContent ?? "";
-  if (node.nodeType !== 1) return "";
-  const element = node as Element;
-  if (element.tagName === "BR") return "\n";
-
-  const text = Array.from(element.childNodes)
-    .map((child) => preformattedNodeText(child))
-    .join("");
-  if (!preformattedBlockNames.has(element.tagName)) return text;
-  return `${text.replace(/\n+$/u, "")}\n`;
-}
-
-function codeLanguageClass(element: Element) {
-  const candidates = [element, ...Array.from(element.querySelectorAll("[class]"))];
-  for (const candidate of candidates) {
-    for (const className of candidate.classList) {
-      const match = /^(?:lang(?:uage)?)-(.+)$/iu.exec(className);
-      if (match?.[1]) return `language-${match[1]}`;
-    }
-  }
-
-  return "";
-}
-
-function normalizeStyledCodeBlocks(document: Document) {
-  for (const element of preformattedElements(document)) {
-    if (!preformattedBlockNames.has(element.tagName)) continue;
-    if (element.tagName === "PRE" && element.querySelector(":scope > code")) {
-      continue;
-    }
-    const parent = element.parentElement;
-    if (parent && preformattedStyle(parent)) continue;
-
-    const codeText = preformattedNodeText(element)
-      .replace(/\r\n?/gu, "\n")
-      .replace(/\n+$/u, "");
-    if (!codeText) continue;
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    const languageClass = codeLanguageClass(element);
-    if (languageClass) code.classList.add(languageClass);
-    code.textContent = codeText;
-    pre.append(code);
-    element.replaceWith(pre);
-  }
+  return document.querySelector(richTextSelector) !== null;
 }
 
 function normalizedCellMarkdown(service: TurndownService, cell: Element) {
@@ -252,6 +171,13 @@ function hostMarkdown(
   }
 }
 
+function normalizeMarkdown(markdown: string) {
+  return markdown
+    .replace(/\r\n?/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
 function remoteImage(image: Element): RemoteClipboardImage | null {
   const src = image.getAttribute("src") ?? "";
   try {
@@ -280,19 +206,20 @@ export function convertCodeMirrorClipboardHtml(
   );
   const service = createClipboardTurndownService();
   const structured = hasStructuredHtml(document);
-  const code = syntaxHighlightedPlainText(document, plainText);
-  // Turndown collapses whitespace in ordinary styled elements before applying
-  // rules, so semanticize code containers while their authored line breaks remain.
-  if (!code) normalizeStyledCodeBlocks(document);
-  const convertedByHost = code || !structured
+  const convertedByHost = hostMarkdown(document.body.innerHTML, convertHtmlToMarkdown);
+  const convertedByTurndown = convertHtmlToMarkdown
     ? ""
-    : hostMarkdown(document.body.innerHTML, convertHtmlToMarkdown);
-  const markdown = code || convertedByHost || service
-    .turndown(document.body.innerHTML)
-    .replace(/\r\n?/gu, "\n")
-    .replace(/\n{3,}/gu, "\n\n")
-    .trim();
+    : service.turndown(document.body.innerHTML);
+  const convertedPlainText = plainText || document.body.textContent || "";
+  const markdown = normalizeMarkdown(convertedByHost || convertedByTurndown || convertedPlainText);
   if (!markdown) return null;
+  const source = convertedByHost
+    ? "host"
+    : convertedByTurndown
+      ? document.querySelector("pre > code")
+        ? "explicit-code"
+        : "turndown"
+      : "plain-text";
 
   return {
     markdown,
@@ -300,6 +227,7 @@ export function convertCodeMirrorClipboardHtml(
       const remote = remoteImage(image);
       return remote ? [remote] : [];
     }),
+    source,
     structured,
   };
 }

@@ -14,6 +14,7 @@
     "test:markdown-layout": "electron ./scripts/testMarkdownLayout.cjs",
     "test:markdown-appearance": "node ./scripts/testMarkdownAppearance.cjs",
     "test:markdown-live-preview": "node ./scripts/testMarkdownLivePreview.cjs",
+    "test:markdown-paste-benchmark": "node ./scripts/benchmarkMarkdownPaste.cjs",
     "dev": "webpack --mode development",
     "dev:mac": "node ./scripts/devMac.js",
     "dev:mobile": "webpack --mode development --config webpack.mobile.js",

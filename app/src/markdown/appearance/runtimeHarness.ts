@@ -10,6 +10,8 @@ import {
     createCodeMirrorBlockDropIndicator,
 } from "../markra-core/codemirror";
 import {createSiyuanMarkraExtension} from "../markraExtension";
+import {MarkdownDocumentScrollController} from "../documentScroll";
+import {reconfigureSiyuanMarkraExtension} from "../markdownEditorExtension";
 import {listAppearanceContracts, type MarkdownAppearanceMode, type MarkdownAppearancePlatform} from "./contracts";
 import {APPEARANCE_FIXTURE_MARKDOWN, createNativeAppearanceFixture} from "./fixture";
 import {acquireMarkdownAppearance, type MarkdownAppearanceHandle} from "./themeResolver";
@@ -79,10 +81,26 @@ export interface RuntimeAppearanceReport {
     uncovered: string[];
 }
 
+export interface RuntimeDocumentBehaviorReport {
+    documentScrollOwnerCount: number;
+    documentScrollOwnerIsContent: boolean;
+    renderedLineCount: number;
+    titleLeavesViewport: boolean;
+}
+
+export interface RuntimeModeContinuityReport {
+    anchorOffsetDifference: number;
+    anchorPositionAfter: number;
+    anchorPositionBefore: number;
+    sameView: boolean;
+}
+
 export interface MarkdownAppearanceRuntimeHarness {
     destroy(): Promise<void>;
     interact(state: string): Promise<void>;
     measure(): RuntimeAppearanceReport;
+    measureDocumentBehavior(): Promise<RuntimeDocumentBehaviorReport>;
+    measureModeContinuity(): Promise<RuntimeModeContinuityReport>;
     mount(options?: RuntimeHarnessOptions): Promise<RuntimeAppearanceFixture>;
     setMode(mode: MarkdownAppearanceMode): Promise<void>;
     setTheme(theme: "daylight" | "midnight" | "standard-third-party"): Promise<void>;
@@ -235,8 +253,9 @@ const createNativeShell = (document: Document, blockDOM: string, width: number) 
     const shell = document.createElement("section");
     shell.className = "protyle markdown-appearance-runtime__native";
     shell.dataset.appearanceFixture = "native-shell";
+    shell.style.height = "1400px";
     shell.style.width = `${width}px`;
-    shell.innerHTML = "<div class=\"protyle-background\"></div><div class=\"protyle-title\"><div class=\"protyle-title__input\">Appearance fixture</div></div><div class=\"protyle-content\"></div>";
+    shell.innerHTML = "<div class=\"protyle-content\"><div class=\"protyle-background\"></div><div class=\"protyle-title\"><div class=\"protyle-title__input\">Appearance fixture</div></div></div>";
     const nativeRoot = createNativeAppearanceFixture(document, blockDOM);
     shell.querySelector(".protyle-content")?.append(nativeRoot);
     const references = document.createElement("div");
@@ -255,8 +274,9 @@ const createMarkdownShell = (
     const shell = document.createElement("section");
     shell.className = "protyle markdown-editor markdown-appearance-runtime__markdown";
     shell.dataset.markdownPlatform = platform;
+    shell.style.height = "1400px";
     shell.style.width = `${width}px`;
-    shell.innerHTML = "<div class=\"protyle-background markdown-editor__metadata\"></div><div class=\"protyle-title markdown-editor__title\"><div class=\"protyle-title__input\">Appearance fixture</div></div><div class=\"markdown-editor__body\"><div class=\"markdown-editor__surface b3-typography\"></div></div><div class=\"markdown-editor__status\"></div>";
+    shell.innerHTML = "<div class=\"protyle-content markdown-editor__content\"><div class=\"protyle-top markdown-editor__top\"><div class=\"protyle-background markdown-editor__metadata\"></div><div class=\"protyle-title markdown-editor__title\"><div class=\"protyle-title__input\">Appearance fixture</div></div></div><div class=\"markdown-editor__body\" style=\"padding:16px 16px 0 24px\"><div class=\"markdown-editor__surface b3-typography\"></div></div></div><div class=\"markdown-editor__status\"></div>";
     return shell;
 };
 
@@ -289,6 +309,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
     let active: {
         adapter: MarkdownHostAdapter;
         appearanceHandle: MarkdownAppearanceHandle;
+        documentScroll: MarkdownDocumentScrollController;
         fixture: RuntimeAppearanceFixture;
         mode: MarkdownAppearanceMode;
         modeCompartment: Compartment;
@@ -308,6 +329,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         const current = active;
         active = null;
         current.appearanceHandle.release();
+        current.documentScroll.destroy();
         current.fixture.view.destroy();
         current.themeStyle?.remove();
         current.fixture.root.remove();
@@ -346,7 +368,8 @@ export const installMarkdownAppearanceRuntimeHarness = (
         }
         const markdownRoot = createMarkdownShell(document, platform, width);
         const surface = markdownRoot.querySelector<HTMLElement>(".markdown-editor__surface");
-        if (!surface) throw new Error("Markdown appearance surface was not created");
+        const content = markdownRoot.querySelector<HTMLElement>(".markdown-editor__content");
+        if (!surface || !content) throw new Error("Markdown appearance document shell was not created");
         grid.append(native.shell, markdownRoot);
         root.append(grid);
         document.body.append(root);
@@ -363,11 +386,13 @@ export const installMarkdownAppearanceRuntimeHarness = (
                     modeCompartment.of(createSiyuanMarkraExtension({
                         adapter,
                         documentPath: () => "/appearance-runtime.md",
+                        getScrollContainer: () => content,
                         mode,
                     })),
                 ],
             }),
         });
+        const documentScroll = new MarkdownDocumentScrollController(() => view, content);
         const appearanceHandle = acquireMarkdownAppearance(markdownRoot);
         const fixture: RuntimeAppearanceFixture = {
             markdownRoot,
@@ -379,6 +404,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         active = {
             adapter,
             appearanceHandle,
+            documentScroll,
             fixture,
             mode,
             modeCompartment,
@@ -413,13 +439,13 @@ export const installMarkdownAppearanceRuntimeHarness = (
 
     const setMode = async (mode: MarkdownAppearanceMode) => {
         if (!active || active.mode === mode) return;
-        active.fixture.view.dispatch({
-            effects: active.modeCompartment.reconfigure(createSiyuanMarkraExtension({
-                adapter: active.adapter,
-                documentPath: () => "/appearance-runtime.md",
-                mode,
-            })),
-        });
+        const content = active.fixture.markdownRoot.querySelector<HTMLElement>(".markdown-editor__content");
+        reconfigureSiyuanMarkraExtension(active.fixture.view, active.modeCompartment, {
+            adapter: active.adapter,
+            documentPath: () => "/appearance-runtime.md",
+            getScrollContainer: () => content,
+            mode,
+        }, active.documentScroll);
         active.mode = mode;
         await waitForLayout(window);
     };
@@ -550,7 +576,78 @@ export const installMarkdownAppearanceRuntimeHarness = (
         };
     };
 
-    const api = {destroy, interact, measure, mount, setMode, setTheme};
+    const measureDocumentBehavior = async (): Promise<RuntimeDocumentBehaviorReport> => {
+        if (!active) throw new Error("Mount the Markdown appearance harness before measuring document behavior");
+        const content = active.fixture.markdownRoot.querySelector<HTMLElement>(".markdown-editor__content");
+        const codeMirrorScroller = active.fixture.markdownRoot.querySelector<HTMLElement>(".cm-scroller");
+        const title = active.fixture.markdownRoot.querySelector<HTMLElement>(".markdown-editor__title");
+        if (!content || !codeMirrorScroller || !title) {
+            throw new Error("The Markdown document scroll structure is incomplete");
+        }
+        const verticalOwners = [content, codeMirrorScroller].filter((element) => {
+            const overflowY = window.getComputedStyle(element).overflowY;
+            return /(auto|scroll)/u.test(overflowY) && element.scrollHeight > element.clientHeight;
+        });
+        content.scrollTop = Math.max(0, content.scrollHeight - content.clientHeight);
+        await waitForLayout(window);
+        const contentRect = content.getBoundingClientRect();
+        const titleLeavesViewport = title.getBoundingClientRect().bottom < contentRect.top;
+        const report = {
+            documentScrollOwnerCount: verticalOwners.length,
+            documentScrollOwnerIsContent: verticalOwners[0] === content,
+            renderedLineCount: active.fixture.view.contentDOM.querySelectorAll(".cm-line").length,
+            titleLeavesViewport,
+        };
+        content.scrollTop = 0;
+        await waitForLayout(window);
+        return report;
+    };
+
+    const measureModeContinuity = async (): Promise<RuntimeModeContinuityReport> => {
+        if (!active) throw new Error("Mount the Markdown appearance harness before measuring mode continuity");
+        const current = active;
+        const content = current.fixture.markdownRoot.querySelector<HTMLElement>(".markdown-editor__content");
+        if (!content) throw new Error("The Markdown document scroll container is missing");
+        content.scrollTop = Math.max(0, (content.scrollHeight - content.clientHeight) / 2);
+        await waitForLayout(window);
+        const contentRect = content.getBoundingClientRect();
+        const position = current.fixture.view.posAtCoords({
+            x: contentRect.left + contentRect.width / 2,
+            y: contentRect.top + contentRect.height / 2,
+        }, false);
+        if (position === null) throw new Error("CodeMirror did not resolve the viewport-center document position");
+        current.fixture.view.dispatch({selection: {anchor: position}});
+        const before = current.documentScroll.captureAnchor();
+        if (!before) throw new Error("The Markdown mode-switch anchor could not be captured");
+        const view = current.fixture.view;
+        const originalMode = current.mode;
+        const originalSelection = view.state.selection;
+        await setMode(originalMode === "visual" ? "source" : "visual");
+        const after = current.documentScroll.captureAnchor();
+        if (!after) throw new Error("The Markdown mode-switch anchor could not be restored");
+        const report = {
+            anchorOffsetDifference: Math.abs(after.viewportOffset - before.viewportOffset),
+            anchorPositionAfter: after.position,
+            anchorPositionBefore: before.position,
+            sameView: current.fixture.view === view,
+        };
+        await setMode(originalMode);
+        view.dispatch({selection: originalSelection});
+        content.scrollTop = 0;
+        await waitForLayout(window);
+        return report;
+    };
+
+    const api = {
+        destroy,
+        interact,
+        measure,
+        measureDocumentBehavior,
+        measureModeContinuity,
+        mount,
+        setMode,
+        setTheme,
+    };
     window.__siyuanMarkdownAppearanceTest = api;
     return api;
 };

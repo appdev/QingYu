@@ -9,6 +9,7 @@ app.whenReady().then(async () => {
     const css = sass.compile(path.join(__dirname, "../src/assets/scss/base.scss")).css;
     const nativeCodeBlockDOM = markdownToBlockDOM("```javascript\nconst nativeValue = 1;\n```")
         .replace("const nativeValue = 1;", "<span class=\"hljs-keyword\">const</span>&nbsp;nativeValue = 1;");
+    const nativeParagraphDOM = markdownToBlockDOM("First paragraph\n\nSecond paragraph");
     const window = new BrowserWindow({
         width: 500,
         show: false,
@@ -18,6 +19,7 @@ app.whenReady().then(async () => {
     });
     const columns = Array.from({length: 8}, (_, index) => `<th>Column ${index + 1} with a long heading</th>`).join("");
     const cells = Array.from({length: 8}, (_, index) => `<td>Value ${index + 1} with content that keeps the table wide</td>`).join("");
+    const longDocumentLines = Array.from({length: 80}, (_, index) => `<div class="cm-line">Paragraph ${index + 1}</div>`).join("");
     const html = `<!doctype html><style>.syntax-token{color:rgb(224, 108, 117)}.hljs-keyword{color:rgb(197, 80, 90)}.toolbar-fixture .markra-table-control{opacity:1;pointer-events:auto}.parity-fixture .protyle-wysiwyg .code-block{background-color:rgb(24, 25, 26);border-radius:8px}${css}</style>
 <div class="protyle markdown-editor" style="--b3-theme-primary:rgb(66, 133, 244);height:600px;width:480px">
     <div class="protyle-content markdown-editor__content">
@@ -40,6 +42,16 @@ app.whenReady().then(async () => {
         </div>
     </div>
 </div>
+<div class="protyle markdown-editor" id="paragraph-spacing-editor" style="--b3-font-size-editor:16px;width:480px">
+    <div class="protyle-wysiwyg" data-appearance-fixture="native">${nativeParagraphDOM}</div>
+    <div class="cm-editor" data-markdown-mode="visual">
+        <div class="cm-content">
+            <div class="cm-line cm-markra-paragraph p"><span>First paragraph</span></div>
+            <div class="cm-line cm-markra-empty-line"><br></div>
+            <div class="cm-line cm-markra-paragraph p"><span>Second paragraph</span></div>
+        </div>
+    </div>
+</div>
 <div class="protyle markdown-editor" id="large-image-editor" style="width:1000px">
     <div class="markdown-editor__surface b3-typography">
         <span class="img markra-image-node"><span class="markra-image-frame markra-image-frame-sized" style="width:800px"><img class="cm-markra-image" alt="enlarged" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='506' height='538'%3E%3Crect width='506' height='538' fill='blue'/%3E%3C/svg%3E"><span class="protyle-action__drag" style="display:block"></span></span></span>
@@ -52,6 +64,21 @@ app.whenReady().then(async () => {
         </div>
         <div class="markdown-editor__body">
             <div class="markdown-editor__surface b3-typography"></div>
+        </div>
+    </div>
+</div>
+<div class="protyle markdown-editor" id="document-scroll-editor" style="height:320px;width:480px">
+    <div class="protyle-content markdown-editor__content">
+        <div class="protyle-top markdown-editor__top">
+            <div class="protyle-background markdown-editor__metadata protyle-background--enable"></div>
+            <div class="protyle-title markdown-editor__title"><div class="protyle-title__input">Long document</div></div>
+        </div>
+        <div class="markdown-editor__body">
+            <div class="markdown-editor__surface b3-typography">
+                <div class="cm-editor" data-markdown-mode="visual">
+                    <div class="cm-scroller"><div class="cm-content">${longDocumentLines}</div></div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -114,11 +141,24 @@ app.whenReady().then(async () => {
         const enlargedImage = largeImageEditor.querySelector("img");
         const visualHeading = visualEditor.querySelector(".cm-markra-h1 span");
         const visualLink = visualEditor.querySelector(".cm-markra-link");
+        const paragraphSpacingEditor = document.querySelector("#paragraph-spacing-editor");
+        const nativeParagraphs = paragraphSpacingEditor.querySelectorAll(".protyle-wysiwyg > .p");
+        const markdownParagraphs = paragraphSpacingEditor.querySelectorAll(".cm-markra-paragraph");
         const emptyEditor = document.querySelector("#empty-editor");
         const emptyBody = emptyEditor.querySelector(".markdown-editor__body");
         const emptySurface = emptyEditor.querySelector(".markdown-editor__surface");
         const emptyBodyRect = emptyBody.getBoundingClientRect();
         const emptySurfaceRect = emptySurface.getBoundingClientRect();
+        const documentScrollEditor = document.querySelector("#document-scroll-editor");
+        const documentScroller = documentScrollEditor.querySelector(".markdown-editor__content");
+        const codeMirrorScroller = documentScrollEditor.querySelector(".cm-scroller");
+        const documentTitle = documentScrollEditor.querySelector(".markdown-editor__title");
+        const verticalOwners = [documentScroller, codeMirrorScroller].filter((element) => {
+            const overflowY = getComputedStyle(element).overflowY;
+            return /(auto|scroll)/u.test(overflowY) && element.scrollHeight > element.clientHeight;
+        });
+        documentScroller.scrollTop = Math.min(240, documentScroller.scrollHeight - documentScroller.clientHeight);
+        const documentScrollerRect = documentScroller.getBoundingClientRect();
         const mobileEditor = document.querySelector("#mobile-editor");
         const mobileBody = mobileEditor.querySelector(".markdown-editor__body");
         const mobileTableViewport = mobileEditor.querySelector(".markra-table-scroll");
@@ -193,12 +233,17 @@ app.whenReady().then(async () => {
             visualLinkColor: getComputedStyle(visualLink).color,
             visualThemeHeadingColor: getComputedStyle(visualEditor).getPropertyValue("--b3-editor-appearance-block-heading-1-color").trim(),
             visualThemeLinkColor: getComputedStyle(visualEditor).getPropertyValue("--b3-editor-appearance-inline-link-color").trim(),
+            nativeParagraphDistance: nativeParagraphs[1].getBoundingClientRect().top - nativeParagraphs[0].getBoundingClientRect().top,
+            markdownParagraphDistance: markdownParagraphs[1].getBoundingClientRect().top - markdownParagraphs[0].getBoundingClientRect().top,
             enlargedImageFrameWidth: enlargedImageFrame.getBoundingClientRect().width,
             enlargedImageWidth: enlargedImage.getBoundingClientRect().width,
             enlargedImageHeight: enlargedImage.getBoundingClientRect().height,
             emptyBodyBottom: emptyBodyRect.bottom,
             emptyPreviewBottom: emptySurfaceRect.bottom,
             emptyPreviewHeight: emptySurfaceRect.height,
+            documentScrollOwnerCount: verticalOwners.length,
+            documentScrollOwnerIsContent: verticalOwners[0] === documentScroller,
+            documentTitleLeavesViewport: documentTitle.getBoundingClientRect().bottom < documentScrollerRect.top,
             mobileBodyPaddingLeft: getComputedStyle(mobileBody).paddingLeft,
             mobileClientWidth: mobileEditor.clientWidth,
             mobileScrollWidth: mobileEditor.scrollWidth,
@@ -295,6 +340,16 @@ app.whenReady().then(async () => {
         metrics.visualLinkColor === metrics.visualThemeLinkColor;
     if (!visualColorsMatch) {
         console.error("Markdown visual mode leaks source syntax colors", metrics);
+        app.exit(1);
+        return;
+    }
+    if (Math.abs(metrics.markdownParagraphDistance - metrics.nativeParagraphDistance) > 1) {
+        console.error("Markdown authored blank lines add extra paragraph spacing", metrics);
+        app.exit(1);
+        return;
+    }
+    if (metrics.documentScrollOwnerCount !== 1 || !metrics.documentScrollOwnerIsContent || !metrics.documentTitleLeavesViewport) {
+        console.error("Markdown document does not use one native-like vertical scroll owner", metrics);
         app.exit(1);
         return;
     }

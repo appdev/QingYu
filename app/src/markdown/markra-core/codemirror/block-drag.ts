@@ -38,6 +38,7 @@ export interface CodeMirrorBlockDragLabels {
 }
 
 export interface CodeMirrorBlockDragPluginOptions {
+  getScrollContainer?: (view: CodeMirrorView) => HTMLElement | null;
   labels?: Partial<CodeMirrorBlockDragLabels>;
 }
 
@@ -478,6 +479,7 @@ class BlockToolbarWidget extends WidgetType {
   constructor(
     blockFrom: number,
     readonly labels: CodeMirrorBlockDragLabels,
+    readonly getScrollContainer: (view: CodeMirrorView) => HTMLElement | null,
   ) {
     super();
     this.labelsKey = JSON.stringify(labels);
@@ -489,7 +491,10 @@ class BlockToolbarWidget extends WidgetType {
   }
 
   eq(other: BlockToolbarWidget) {
-    if (this.labelsKey !== other.labelsKey) return false;
+    if (
+      this.labelsKey !== other.labelsKey ||
+      this.getScrollContainer !== other.getScrollContainer
+    ) return false;
 
     const nextBlockFrom = other.blockFrom;
     other.runtime = this.runtime;
@@ -544,7 +549,13 @@ class BlockToolbarWidget extends WidgetType {
     // Button drags do not reliably emit the HTML5 drag lifecycle in every
     // WebView, so pointer events provide the primary cross-platform path.
     drag.addEventListener("pointerdown", (event) => {
-      startPointerBlockDrag(view, this.blockFrom, drag, event);
+      startPointerBlockDrag(
+        view,
+        this.blockFrom,
+        drag,
+        event,
+        this.getScrollContainer,
+      );
     });
     toolbar.append(add, drag);
     return toolbar;
@@ -554,6 +565,7 @@ class BlockToolbarWidget extends WidgetType {
 function blockDecorationsFromRanges(
   blocks: readonly CodeMirrorBlockRange[],
   labels: CodeMirrorBlockDragLabels,
+  getScrollContainer: (view: CodeMirrorView) => HTMLElement | null,
 ) {
   const decorations = blocks.flatMap((block) => [
     Decoration.line({
@@ -564,7 +576,7 @@ function blockDecorationsFromRanges(
       // controls also use side -1, and their negative gutter margin would
       // otherwise pull the drag handle back over the H1-H6 button.
       side: -2,
-      widget: new BlockToolbarWidget(block.from, labels),
+      widget: new BlockToolbarWidget(block.from, labels, getScrollContainer),
     }).range(block.from),
   ]);
   return Decoration.set(decorations, true);
@@ -706,6 +718,7 @@ function updateBlockDragUi(
   view: CodeMirrorView,
   target: NonNullable<ReturnType<typeof dropTarget>>,
   event: MouseEvent,
+  getScrollContainer: (view: CodeMirrorView) => HTMLElement | null,
 ) {
   const ui = blockDragUi.get(view);
   if (!ui || !target.element) return;
@@ -717,11 +730,18 @@ function updateBlockDragUi(
   ui.ghost.style.left = `${event.clientX + 12}px`;
   ui.ghost.style.top = `${event.clientY + 12}px`;
 
-  const scroll = view.dom.closest<HTMLElement>(".paper-scroll");
+  const scroll = getScrollContainer(view);
   if (!scroll) return;
-  const scrollRect = scroll.getBoundingClientRect();
-  if (event.clientY < scrollRect.top + 48) scroll.scrollTop -= 18;
-  if (event.clientY > scrollRect.bottom - 48) scroll.scrollTop += 18;
+  scrollCodeMirrorBlockDragViewport(scroll, event.clientY);
+}
+
+export function scrollCodeMirrorBlockDragViewport(
+  scrollContainer: HTMLElement,
+  pointerY: number,
+) {
+  const scrollRect = scrollContainer.getBoundingClientRect();
+  if (pointerY < scrollRect.top + 48) scrollContainer.scrollTop -= 18;
+  if (pointerY > scrollRect.bottom - 48) scrollContainer.scrollTop += 18;
 }
 
 function startPointerBlockDrag(
@@ -729,6 +749,7 @@ function startPointerBlockDrag(
   sourceFrom: number,
   handle: HTMLElement,
   event: PointerEvent,
+  getScrollContainer: (view: CodeMirrorView) => HTMLElement | null,
 ) {
   if (event.button !== 0 || view.state.facet(EditorState.readOnly)) return;
   event.preventDefault();
@@ -760,7 +781,7 @@ function startPointerBlockDrag(
     }
 
     const target = dropTarget(moveEvent, view);
-    if (target) updateBlockDragUi(view, target, moveEvent);
+    if (target) updateBlockDragUi(view, target, moveEvent, getScrollContainer);
     moveEvent.preventDefault();
   };
   const handlePointerUp = (upEvent: PointerEvent) => {
@@ -825,7 +846,11 @@ class BlockDragViewPlugin {
   decorations: DecorationSet;
   tree: ReturnType<typeof syntaxTree>;
 
-  constructor(view: CodeMirrorView, readonly labels: CodeMirrorBlockDragLabels) {
+  constructor(
+    view: CodeMirrorView,
+    readonly labels: CodeMirrorBlockDragLabels,
+    readonly getScrollContainer: (view: CodeMirrorView) => HTMLElement | null,
+  ) {
     this.tree = syntaxTree(view.state);
     this.blocks = view.state.facet(EditorState.readOnly)
       ? []
@@ -834,7 +859,11 @@ class BlockDragViewPlugin {
         view.visibleRanges,
         this.tree,
       );
-    this.decorations = blockDecorationsFromRanges(this.blocks, labels);
+    this.decorations = blockDecorationsFromRanges(
+      this.blocks,
+      labels,
+      getScrollContainer,
+    );
   }
 
   update(update: ViewUpdate) {
@@ -848,7 +877,11 @@ class BlockDragViewPlugin {
     ) {
       this.tree = tree;
       this.blocks = mapBlockRanges(this.blocks, update);
-      this.decorations = blockDecorationsFromRanges(this.blocks, this.labels);
+      this.decorations = blockDecorationsFromRanges(
+        this.blocks,
+        this.labels,
+        this.getScrollContainer,
+      );
       return;
     }
 
@@ -867,7 +900,11 @@ class BlockDragViewPlugin {
           update.view.visibleRanges,
           tree,
         );
-      this.decorations = blockDecorationsFromRanges(this.blocks, this.labels);
+      this.decorations = blockDecorationsFromRanges(
+        this.blocks,
+        this.labels,
+        this.getScrollContainer,
+      );
     }
   }
 }
@@ -876,11 +913,13 @@ export function codeMirrorBlockDragPlugin(
   options: CodeMirrorBlockDragPluginOptions = {},
 ) {
   const labels = { ...defaultLabels, ...options.labels };
+  const getScrollContainer = options.getScrollContainer ?? ((view) =>
+    view.dom.closest<HTMLElement>(".markdown-editor__content"));
   return defineMarkraPlugin({
     id: "markra.block-drag",
     extension: [
       ViewPlugin.define(
-        (view) => new BlockDragViewPlugin(view, labels),
+        (view) => new BlockDragViewPlugin(view, labels, getScrollContainer),
         { decorations: (plugin) => plugin.decorations },
       ),
       EditorView.domEventHandlers({
@@ -891,7 +930,7 @@ export function codeMirrorBlockDragPlugin(
           }
           event.preventDefault();
           if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-          updateBlockDragUi(view, target, event);
+          updateBlockDragUi(view, target, event, getScrollContainer);
           return true;
         },
         drop(event, view) {

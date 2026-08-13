@@ -30,6 +30,7 @@ import {Constants} from "../constants";
 import {assetPickerMenu} from "../menus/protyle";
 import {fetchCoverData, renderCoverPicker} from "../protyle/header/coverData";
 import {openTagMenu} from "../protyle/header/tagMenu";
+import {MarkdownDocumentScrollController} from "./documentScroll";
 
 interface IMarkdownDocument {
     path: string;
@@ -57,7 +58,7 @@ export class MarkdownEditor extends Model {
     private destroyed = false;
     private modeCompartment = new Compartment();
     private titleElement: HTMLElement;
-    private topElement: HTMLElement;
+    private contentElement: HTMLElement;
     private metadataElement: HTMLElement;
     private coverElement: HTMLElement;
     private iconElement: HTMLElement;
@@ -66,6 +67,7 @@ export class MarkdownEditor extends Model {
     private statusElement: HTMLElement;
     private appearanceHandle: MarkdownAppearanceHandle;
     private resizeObserver: ResizeObserver;
+    private documentScroll: MarkdownDocumentScrollController;
 
     constructor(options: {app: App, tab?: Tab, element?: HTMLElement, notebookId: string, path: string}) {
         super({app: options.app});
@@ -99,8 +101,9 @@ export class MarkdownEditor extends Model {
                 documentPath: () => this.path,
             }),
             documentPath: () => this.path,
+            getScrollContainer: () => this.contentElement,
             mode: this.preview ? "visual" : "source",
-        });
+        }, this.documentScroll);
     }
 
     public flush() {
@@ -246,6 +249,7 @@ export class MarkdownEditor extends Model {
         }
         this.destroyed = true;
         this.view?.destroy();
+        this.documentScroll?.destroy();
         this.resizeObserver?.disconnect();
         this.appearanceHandle?.release();
         if (process.env.NODE_ENV === "development") {
@@ -295,7 +299,7 @@ export class MarkdownEditor extends Model {
 </div>`;
         this.element.classList.add("protyle", "markdown-editor");
         this.element.classList.toggle("markdown-editor--full-width", window.siyuan.config.editor.fullWidth);
-        this.topElement = this.element.querySelector(".markdown-editor__top");
+        this.contentElement = this.element.querySelector(".markdown-editor__content");
         this.metadataElement = this.element.querySelector(".markdown-editor__metadata");
         this.metadataElement.classList.toggle("protyle-background--mobileshow", isMobile());
         this.coverElement = this.element.querySelector(".markdown-editor__cover");
@@ -408,6 +412,7 @@ export class MarkdownEditor extends Model {
                 this.modeCompartment.of(createSiyuanMarkraExtension({
                     adapter,
                     documentPath: () => this.path,
+                    getScrollContainer: () => this.contentElement,
                     mode: "visual",
                 })),
                 EditorView.updateListener.of((update) => {
@@ -424,6 +429,7 @@ export class MarkdownEditor extends Model {
             ],
             parent: this.surfaceElement,
         });
+        this.documentScroll = new MarkdownDocumentScrollController(() => this.view, this.contentElement);
         if (process.env.NODE_ENV === "development") {
             Object.defineProperty(this.element, "__markdownEditorView", {
                 configurable: true,
@@ -465,7 +471,6 @@ export class MarkdownEditor extends Model {
 
     private setPreview(preview: boolean, focus = true) {
         this.preview = preview;
-        this.topElement.classList.toggle("fn__none", !preview);
         this.element.querySelector('[data-type="markdown-source"]')?.classList.toggle("block__icon--active", !preview);
         this.element.querySelector('[data-type="markdown-preview"]')?.classList.toggle("block__icon--active", preview);
         if (this.view) {
@@ -475,13 +480,11 @@ export class MarkdownEditor extends Model {
                     documentPath: () => this.path,
                 }),
                 documentPath: () => this.path,
+                getScrollContainer: () => this.contentElement,
                 mode: preview ? "visual" : "source",
-            });
+            }, this.documentScroll);
             if (focus) {
                 this.view.focus();
-            } else {
-                this.view.dispatch({selection: {anchor: this.view.state.doc.length}});
-                this.view.scrollDOM.scrollTop = 0;
             }
         }
     }

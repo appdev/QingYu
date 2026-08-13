@@ -6,6 +6,9 @@
   &__content {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   &__top,
@@ -41,15 +44,14 @@
   &__body {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
+    flex: 1 0 auto;
     padding: 16px 24px 0;
   }
 
   &__surface {
     box-sizing: border-box;
     flex: 1;
-    min-height: 100%;
+    min-height: 0;
     min-width: 0;
     overflow: hidden;
     width: 100%;
@@ -143,7 +145,6 @@
     color: var(--b3-editor-appearance-shell-document-color, var(--b3-theme-on-background));
     font-family: var(--b3-font-family-code);
     font-size: var(--b3-font-size-editor);
-    height: 100%;
     min-height: 100%;
   }
 
@@ -177,6 +178,13 @@
   .cm-editor[data-markdown-mode="visual"] .cm-line:not(.cm-markra-code-line) {
     @include editorAppearance.editor-block-box;
     position: relative;
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-empty-line {
+    line-height: 0;
+    margin-block: 0;
+    min-height: 0;
+    padding-block: 0;
   }
 
   .cm-markra-h1 {
@@ -1049,8 +1057,9 @@
 
   .cm-scroller {
     line-height: 1.625;
-    overflow: auto;
-    overscroll-behavior: contain;
+    overflow-x: auto;
+    overflow-y: visible;
+    overscroll-behavior-x: contain;
   }
 
   @media (max-width: 600px) {

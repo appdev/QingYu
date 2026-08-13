@@ -37,18 +37,65 @@ test("prefers the host HTML to Markdown converter for structured clipboard conte
     assert.equal(result.markdown, "# 标题\n\n| 项目 |\n| --- |\n| 内容 |");
 });
 
-test("falls back to Turndown when the host converter returns no Markdown", () => {
-    const result = convertCodeMirrorClipboardHtml("<h2>回退标题</h2>", "", () => "");
+test("does not rewrite a pre-wrap paragraph before host conversion", () => {
+    let received = "";
+    const text = "说明：“本地有效”必然要求 H=true。";
+    const result = convertCodeMirrorClipboardHtml(
+        `<p style="white-space: pre-wrap">${text}</p>`,
+        text,
+        (html) => {
+            received = html;
+            return text;
+        },
+    );
 
-    assert.equal(result?.markdown, "## 回退标题");
+    assert.ok(result);
+    assert.match(received, /^<p/u);
+    assert.doesNotMatch(received, /<pre|<code/u);
+    assert.equal(result.markdown, text);
+    assert.equal(result.source, "host");
 });
 
-test("falls back to Turndown when the host converter throws", () => {
-    const result = convertCodeMirrorClipboardHtml("<strong>粗体</strong>", "", () => {
+test("keeps a styled paragraph after a rich table outside a code fence", () => {
+    const expected = "| 动作码 | 含义 |\n| --- | --- |\n| Local | 本地有效 |\n\n说明：“本地有效”必然要求 H=true。";
+    let received = "";
+    const result = convertCodeMirrorClipboardHtml(
+        '<table><tr><th>动作码</th><th>含义</th></tr><tr><td>Local</td><td>本地有效</td></tr></table><p style="white-space: pre-wrap">说明：“本地有效”必然要求 H=true。</p>',
+        "动作码 含义 Local 本地有效 说明",
+        (html) => {
+            received = html;
+            return expected;
+        },
+    );
+
+    assert.ok(result);
+    assert.doesNotMatch(received, /<pre|<code/u);
+    assert.equal(result.markdown, expected);
+    assert.doesNotMatch(result.markdown, /```[\s\S]*说明/u);
+    assert.equal(result.source, "host");
+});
+
+test("falls back to plain text when the host converter returns no Markdown", () => {
+    const result = convertCodeMirrorClipboardHtml("<h2>回退标题</h2>", "回退标题", () => "");
+
+    assert.equal(result?.markdown, "回退标题");
+    assert.equal(result?.source, "plain-text");
+});
+
+test("falls back to plain text when the host converter throws", () => {
+    const result = convertCodeMirrorClipboardHtml("<strong>粗体</strong>", "粗体", () => {
         throw new Error("converter unavailable");
     });
 
+    assert.equal(result?.markdown, "粗体");
+    assert.equal(result?.source, "plain-text");
+});
+
+test("uses Turndown only when the host converter is unavailable", () => {
+    const result = convertCodeMirrorClipboardHtml("<strong>粗体</strong>");
+
     assert.equal(result?.markdown, "**粗体**");
+    assert.equal(result?.source, "turndown");
 });
 
 test("creates the Turndown fallback from a webpack default export", async () => {

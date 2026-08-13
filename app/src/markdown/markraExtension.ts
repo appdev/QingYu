@@ -40,6 +40,7 @@ import {
 export interface SiyuanMarkraExtensionOptions {
     adapter: MarkdownHostAdapter;
     documentPath(): string;
+    getScrollContainer?(view: EditorView): HTMLElement | null;
     mode: "source" | "visual";
 }
 
@@ -81,6 +82,7 @@ export const createSiyuanModeAppearanceExtension = (mode: "source" | "visual"): 
 export const createSiyuanMarkraExtension = ({
     adapter,
     documentPath,
+    getScrollContainer,
     mode,
 }: SiyuanMarkraExtensionOptions): Extension => {
     const imageOptions = {
@@ -139,7 +141,7 @@ export const createSiyuanMarkraExtension = ({
                     positionLanguagePopover: adapter.positionPopover,
                     updateLanguages: (detail) => adapter.updateCodeLanguages?.(detail) ?? detail.languages,
                 }),
-                codeMirrorBlockDragPlugin(),
+                codeMirrorBlockDragPlugin({getScrollContainer}),
                 codeMirrorClipboardAssetsPlugin({
                     convertHtmlToMarkdown: adapter.convertHtmlToMarkdown,
                     saveAttachment,

@@ -45,6 +45,12 @@ test("runtime harness mounts isolated fixtures and restores application appearan
 
     assert.ok(fixture.root.querySelector('[data-appearance-fixture="native"]'));
     assert.ok(fixture.root.querySelector('[data-markdown-mode="visual"]'));
+    const markdownContent = fixture.markdownRoot.querySelector(".markdown-editor__content");
+    const nativeContent = fixture.root.querySelector(".markdown-appearance-runtime__native .protyle-content");
+    assert.ok(markdownContent?.querySelector(":scope > .markdown-editor__top"));
+    assert.ok(markdownContent?.querySelector(":scope > .markdown-editor__body"));
+    assert.ok(nativeContent?.querySelector(":scope > .protyle-title"));
+    assert.ok(nativeContent?.querySelector(':scope > [data-appearance-fixture="native"]'));
     assert.equal(fixture.root.closest(".markdown-editor"), null);
     await fixture.destroy();
     assert.deepEqual(captureApplicationAppearance(document, appearance), initial);

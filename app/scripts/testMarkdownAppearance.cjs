@@ -89,6 +89,15 @@ const main = async () => {
             await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(row)}).then(() => true)`);
             await evaluate(call, `window.__siyuanMarkdownAppearanceTest.setTheme(${JSON.stringify(row.theme)})`);
             const stateReports = [{state: "base", report: await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measure()")}];
+            const behavior = await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measureDocumentBehavior()");
+            assert.equal(behavior.documentScrollOwnerCount, 1, "Markdown must expose one document-level vertical scroller");
+            assert.equal(behavior.documentScrollOwnerIsContent, true, "Markdown content must own document scrolling");
+            assert.equal(behavior.titleLeavesViewport, true, "Markdown title must leave the viewport with the document");
+            assert.ok(behavior.renderedLineCount > 0, "CodeMirror must render visible document lines");
+            const continuity = await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measureModeContinuity()");
+            assert.equal(continuity.sameView, true, "Markdown mode changes must preserve the EditorView");
+            assert.equal(continuity.anchorPositionAfter, continuity.anchorPositionBefore, "Markdown mode changes must preserve the document anchor");
+            assert.ok(continuity.anchorOffsetDifference <= 1, "Markdown mode changes must preserve the anchor viewport offset");
             if (row.theme === "midnight" && row.mode === "visual") {
                 for (const contractId of ["block.paragraph", "block.heading-1"]) {
                     const measurement = stateReports[0].report.measurements.find((item) => item.contractId === contractId);
@@ -132,10 +141,10 @@ const main = async () => {
                 await evaluate(call, `window.__siyuanMarkdownAppearanceTest.interact(${JSON.stringify(state)})`);
                 stateReports.push({state, report: await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measure()")});
             }
-            reports.push({...row, overflow, stateReports});
+            reports.push({...row, behavior, continuity, overflow, stateReports});
             fs.writeFileSync(
                 path.join(outputDirectory, `${index}-${row.theme}-${row.mode}-${row.platform}.json`),
-                JSON.stringify({row, overflow, stateReports}, null, 2),
+                JSON.stringify({row, behavior, continuity, overflow, stateReports}, null, 2),
             );
             await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
         }
