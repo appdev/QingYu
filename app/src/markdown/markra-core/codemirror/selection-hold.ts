@@ -57,15 +57,8 @@ const selectionHoldField = StateField.define<HeldSelection | null>({
   }),
 });
 
-const selectionHoldTheme = EditorView.baseTheme({
-  ".markra-selection-hold": {
-    background: "color-mix(in srgb, var(--accent, #3b82f6) 18%, transparent)",
-    borderRadius: "0.2em",
-  },
-});
-
 export function codeMirrorSelectionHoldPlugin(): Extension {
-  return [selectionHoldField, selectionHoldTheme];
+  return selectionHoldField;
 }
 
 export function showCodeMirrorSelectionHold(

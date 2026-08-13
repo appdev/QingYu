@@ -1,14 +1,4 @@
-.markdown-theme-probe {
-  contain: strict !important;
-  height: 1px !important;
-  inset: -10000px auto auto -10000px !important;
-  overflow: hidden !important;
-  pointer-events: none !important;
-  position: fixed !important;
-  visibility: hidden !important;
-  width: 760px !important;
-  z-index: -1 !important;
-}
+@use "../util/editor-appearance" as editorAppearance;
 
 .markdown-editor {
   background-color: var(--b3-theme-background);
@@ -66,10 +56,9 @@
   }
 
   &__surface {
-    color: var(--b3-markdown-root-color, var(--b3-theme-on-background));
-    font-family: var(--b3-markdown-root-font-family, var(--b3-font-family-protyle));
-    font-size: var(--b3-markdown-root-font-size, var(--b3-font-size-editor));
-    line-height: var(--b3-markdown-root-line-height, 1.625);
+    @include editorAppearance.editor-content-root;
+    color: var(--b3-editor-appearance-shell-document-color, var(--b3-theme-on-background));
+    line-height: var(--b3-editor-appearance-shell-document-line-height, 1.625);
     min-width: 0;
     outline: 0;
 
@@ -151,7 +140,7 @@
 
   .cm-editor {
     background-color: transparent !important;
-    color: var(--b3-markdown-root-color, var(--b3-theme-on-background));
+    color: var(--b3-editor-appearance-shell-document-color, var(--b3-theme-on-background));
     font-family: var(--b3-font-family-code);
     font-size: var(--b3-font-size-editor);
     height: 100%;
@@ -164,120 +153,78 @@
     padding-bottom: 50vh;
   }
 
+  // CodeMirror 使用零宽图片保护控件两侧的光标位置，不能让思源正文图片规则把它改成块级图片。
+  .cm-widgetBuffer {
+    display: inline !important;
+    height: 1em !important;
+    margin: 0 !important;
+    max-width: none !important;
+    width: 0 !important;
+  }
+
   .cm-editor[data-markdown-mode="visual"] .cm-content {
     font-family: var(--b3-font-family-protyle);
 
-    .cm-line span {
+    .cm-line:not(.cm-markra-code-line) span {
       color: inherit;
     }
 
     .cm-line span.cm-markra-link {
-      color: var(--b3-markdown-link-color, var(--b3-theme-primary));
+      color: var(--b3-editor-appearance-inline-link-color, var(--b3-protyle-inline-link-color, var(--b3-theme-primary)));
     }
   }
 
-  .cm-markra-h1,
-  .cm-markra-h2,
-  .cm-markra-h3,
-  .cm-markra-h4,
-  .cm-markra-h5,
-  .cm-markra-h6 {
-    color: var(--b3-markdown-h1-color, inherit);
-    font-family: var(--b3-markdown-h1-font-family, inherit);
-    font-style: var(--b3-markdown-h1-font-style, normal);
-    font-weight: var(--b3-markdown-h1-font-weight, 600);
-    letter-spacing: var(--b3-markdown-h1-letter-spacing, normal);
-    padding-bottom: 4px;
-    padding-top: 4px;
+  .cm-editor[data-markdown-mode="visual"] .cm-line:not(.cm-markra-code-line) {
+    @include editorAppearance.editor-block-box;
+    position: relative;
   }
 
   .cm-markra-h1 {
-    font-size: var(--b3-markdown-h1-font-size, 1.75em);
-    line-height: var(--b3-markdown-h1-line-height, 1.35);
+    @include editorAppearance.editor-heading(1, 1.75em);
   }
 
   .cm-markra-h2 {
-    color: var(--b3-markdown-h2-color, inherit);
-    font-family: var(--b3-markdown-h2-font-family, inherit);
-    font-size: var(--b3-markdown-h2-font-size, 1.55em);
-    font-style: var(--b3-markdown-h2-font-style, normal);
-    font-weight: var(--b3-markdown-h2-font-weight, 600);
-    letter-spacing: var(--b3-markdown-h2-letter-spacing, normal);
-    line-height: var(--b3-markdown-h2-line-height, 1.4);
+    @include editorAppearance.editor-heading(2, 1.55em);
   }
 
   .cm-markra-h3 {
-    color: var(--b3-markdown-h3-color, inherit);
-    font-family: var(--b3-markdown-h3-font-family, inherit);
-    font-size: var(--b3-markdown-h3-font-size, 1.38em);
-    font-style: var(--b3-markdown-h3-font-style, normal);
-    font-weight: var(--b3-markdown-h3-font-weight, 600);
-    letter-spacing: var(--b3-markdown-h3-letter-spacing, normal);
-    line-height: var(--b3-markdown-h3-line-height, normal);
+    @include editorAppearance.editor-heading(3, 1.38em);
   }
 
   .cm-markra-h4 {
-    color: var(--b3-markdown-h4-color, inherit);
-    font-family: var(--b3-markdown-h4-font-family, inherit);
-    font-size: var(--b3-markdown-h4-font-size, 1.25em);
-    font-style: var(--b3-markdown-h4-font-style, normal);
-    font-weight: var(--b3-markdown-h4-font-weight, 600);
-    letter-spacing: var(--b3-markdown-h4-letter-spacing, normal);
-    line-height: var(--b3-markdown-h4-line-height, normal);
+    @include editorAppearance.editor-heading(4, 1.25em);
   }
 
   .cm-markra-h5 {
-    color: var(--b3-markdown-h5-color, inherit);
-    font-family: var(--b3-markdown-h5-font-family, inherit);
-    font-size: var(--b3-markdown-h5-font-size, 1.13em);
-    font-style: var(--b3-markdown-h5-font-style, normal);
-    font-weight: var(--b3-markdown-h5-font-weight, 600);
-    letter-spacing: var(--b3-markdown-h5-letter-spacing, normal);
-    line-height: var(--b3-markdown-h5-line-height, normal);
+    @include editorAppearance.editor-heading(5, 1.13em);
   }
 
   .cm-markra-h6 {
-    color: var(--b3-markdown-h6-color, inherit);
-    font-family: var(--b3-markdown-h6-font-family, inherit);
-    font-size: var(--b3-markdown-h6-font-size, 1em);
-    font-style: var(--b3-markdown-h6-font-style, normal);
-    font-weight: var(--b3-markdown-h6-font-weight, 600);
-    letter-spacing: var(--b3-markdown-h6-letter-spacing, normal);
-    line-height: var(--b3-markdown-h6-line-height, normal);
+    @include editorAppearance.editor-heading(6, 1em);
   }
 
   .cm-markra-strong {
-    color: var(--b3-markdown-strong-color, inherit);
-    font-weight: var(--b3-markdown-strong-font-weight, 600);
+    @include editorAppearance.editor-inline-format(strong);
   }
 
   .cm-markra-emphasis {
-    color: var(--b3-markdown-emphasis-color, inherit);
-    font-style: var(--b3-markdown-emphasis-font-style, italic);
+    @include editorAppearance.editor-inline-format(emphasis);
   }
 
   .cm-markra-strikethrough {
-    color: var(--b3-markdown-strikethrough-color, inherit);
-    text-decoration-color: var(--b3-markdown-strikethrough-text-decoration-color, currentcolor);
+    @include editorAppearance.editor-inline-format(strikethrough);
   }
 
   .cm-markra-highlight {
-    background-color: var(--b3-markdown-highlight-background-color, var(--b3-protyle-inline-mark-background));
-    color: var(--b3-markdown-highlight-color, var(--b3-protyle-inline-mark-color));
+    @include editorAppearance.editor-inline-format(highlight);
   }
 
   .cm-markra-inline-code {
-    background-color: var(--b3-markdown-inline-code-background-color, var(--b3-theme-surface));
-    border-radius: var(--b3-markdown-inline-code-border-radius, var(--b3-border-radius));
-    color: var(--b3-markdown-inline-code-color, inherit);
-    font-family: var(--b3-markdown-inline-code-font-family, var(--b3-font-family-code));
-    padding: 0.15em 0.25em;
+    @include editorAppearance.editor-inline-format(code);
   }
 
   .cm-markra-link {
-    color: var(--b3-markdown-link-color, var(--b3-theme-primary));
-    text-decoration-color: var(--b3-markdown-link-text-decoration-color, currentcolor);
-    text-decoration: underline;
+    @include editorAppearance.editor-inline-format(link);
   }
 
   .cm-markra-math-inline {
@@ -287,24 +234,127 @@
     vertical-align: middle;
   }
 
-  .cm-markra-blockquote {
-    background-color: var(--b3-markdown-blockquote-background-color, transparent);
-    border-left-color: var(--b3-markdown-blockquote-marker-background-color, var(--b3-markdown-blockquote-border-left-color, var(--b3-border-color)));
-    border-left-style: var(--b3-markdown-blockquote-border-left-style, solid);
-    border-left-width: var(--b3-markdown-blockquote-marker-width, var(--b3-markdown-blockquote-border-left-width, 4px));
-    color: var(--b3-markdown-blockquote-color, var(--b3-theme-on-surface));
-    padding-left: 8px !important;
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-blockquote:not(.cm-markra-callout) {
+    @include editorAppearance.editor-blockquote;
+    border-radius: 0;
+    padding: 4px 8px 4px 14px;
+
+    &::before {
+      bottom: 0;
+      top: 0;
+    }
+
+    &.cm-markra-blockquote-first {
+      border-radius: var(--b3-border-radius) var(--b3-border-radius) 0 0;
+      padding-top: 10px;
+
+      &::before {
+        top: 6px;
+      }
+    }
+
+    &.cm-markra-blockquote-last {
+      border-radius: 0 0 var(--b3-border-radius) var(--b3-border-radius);
+      padding-bottom: 10px;
+
+      &::before {
+        bottom: 6px;
+      }
+    }
+
+    &.cm-markra-blockquote-first.cm-markra-blockquote-last {
+      border-radius: var(--b3-border-radius);
+    }
   }
 
-  .cm-markra-callout {
-    background-color: var(--b3-theme-surface);
-    border-left: 4px solid var(--b3-theme-primary);
-    padding-left: 12px !important;
+  .cm-markra-task-checkbox {
+    @include editorAppearance.editor-task;
   }
 
-  .cm-markra-callout--warning,
-  .cm-markra-callout--caution {
-    border-left-color: var(--b3-theme-error);
+  .cm-line.cm-markra-callout {
+    --markra-callout-color: var(--b3-callout-note);
+    background-color: var(--b3-bq-background);
+    color: var(--b3-theme-on-surface);
+    padding-left: calc(.25em + 6px) !important;
+    position: relative;
+
+    &::before {
+      background-color: var(--markra-callout-color);
+      bottom: 0;
+      content: "";
+      left: 2px;
+      position: absolute;
+      top: 0;
+      width: .25em;
+    }
+
+    &.markra-callout-tip {
+      --markra-callout-color: var(--b3-callout-tip);
+    }
+
+    &.markra-callout-warning {
+      --markra-callout-color: var(--b3-callout-warning);
+    }
+
+    &.markra-callout-caution {
+      --markra-callout-color: var(--b3-callout-caution);
+    }
+
+    &.markra-callout-active {
+      background-color: var(--b3-list-hover);
+    }
+  }
+
+  .cm-line.markra-callout-first {
+    border-radius: var(--b3-border-radius) var(--b3-border-radius) 0 0;
+
+    &::before {
+      border-radius: var(--b3-border-radius) var(--b3-border-radius) 0 0;
+      top: 6px;
+    }
+  }
+
+  .cm-line.markra-callout-last {
+    border-radius: 0 0 var(--b3-border-radius) var(--b3-border-radius);
+
+    &::before {
+      border-radius: 0 0 var(--b3-border-radius) var(--b3-border-radius);
+      bottom: 6px;
+    }
+  }
+
+  .markra-callout-spacer {
+    height: 0;
+  }
+
+  .markra-callout-header {
+    align-items: center;
+    color: var(--markra-callout-color);
+    display: inline-flex;
+    font-weight: 650;
+    gap: .4em;
+  }
+
+  .cm-line.markra-callout-first .markra-callout-type-select {
+    position: absolute;
+    right: 1em;
+    top: 4px;
+  }
+
+  .markra-callout-type-select {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--b3-border-radius);
+    color: inherit;
+    font: inherit;
+    opacity: 0;
+  }
+
+  .cm-markra-callout:hover .markra-callout-type-select,
+  .markra-callout-active .markra-callout-type-select,
+  .markra-callout-type-select:focus {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .cm-markra-footnote {
@@ -312,10 +362,60 @@
     font-size: 0.9em;
   }
 
-  .cm-markra-code,
-  .cm-markra-frontmatter,
-  .cm-markra-html,
-  .cm-markra-diagram,
+  .cm-markra-footnote-reference {
+    color: var(--b3-theme-primary);
+    font-size: .75em;
+    line-height: 1;
+    position: relative;
+    vertical-align: super;
+
+    > button {
+      background: transparent;
+      border: 0;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      padding: 0 .12em;
+    }
+  }
+
+  .markra-footnote-preview {
+    color: var(--b3-theme-on-background);
+    display: block;
+    font-size: .95rem;
+    line-height: 1.45;
+    max-width: min(20rem, calc(100vw - 32px));
+    padding: .6em .75em;
+    width: max-content;
+
+    &[data-appearance-state="error"] {
+      color: var(--b3-theme-error);
+    }
+  }
+
+  .cm-markra-footnote-reference > .markra-footnote-preview {
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    box-shadow: var(--b3-dialog-shadow);
+    left: 0;
+    position: absolute;
+    top: calc(100% + .35em);
+    z-index: 20;
+  }
+
+  .cm-markra-footnote-definition {
+    color: var(--b3-theme-on-surface);
+  }
+
+  .cm-markra-footnote-definition-label {
+    color: var(--b3-theme-primary);
+    cursor: pointer;
+    font-size: .82em;
+    font-weight: 650;
+    margin-right: .45em;
+  }
+
   .cm-markra-table,
   .cm-markra-horizontal-rule {
     box-sizing: border-box;
@@ -324,26 +424,111 @@
     min-width: 0;
   }
 
-  .cm-markra-code,
-  .cm-markra-frontmatter {
-    background-color: var(--b3-markdown-code-background-color, var(--b3-theme-surface));
-    border-radius: var(--b3-markdown-code-border-radius, var(--b3-border-radius));
-    color: var(--b3-markdown-code-color, inherit);
-    font-family: var(--b3-markdown-code-font-family, var(--b3-font-family-code));
-    overflow: auto;
-    padding: 12px 16px;
+  .cm-markra-code-line {
+    background-color: var(--b3-editor-appearance-block-code-background-color, var(--b3-theme-surface));
+    color: var(--b3-editor-appearance-block-code-color, inherit);
+    font-family: var(--b3-editor-appearance-block-code-font-family, var(--b3-font-family-code));
+    font-size: var(--b3-editor-appearance-block-code-font-size, 85%);
+    line-height: var(--b3-editor-appearance-block-code-line-height, 1.625);
+    padding-left: calc(var(--b3-editor-appearance-block-code-padding-left, 1em) + var(--b3-editor-appearance-block-code-outer-padding-left, 4px)) !important;
+    padding-right: calc(var(--b3-editor-appearance-block-code-padding-right, 1em) + var(--b3-editor-appearance-block-code-outer-padding-right, 4px)) !important;
+  }
+
+  .cm-markra-code-opening-line,
+  .cm-markra-code-closing-line {
+    background: transparent;
+    height: 0;
+    line-height: 0;
+    min-height: 0;
+    overflow: visible;
+    padding: 0 1em !important;
     position: relative;
-    white-space: pre;
   }
 
-  .cm-markra-code pre {
-    margin: 0;
+  .cm-markra-code-content-first {
+    border-radius: var(--b3-editor-appearance-block-code-border-radius, var(--b3-border-radius)) var(--b3-editor-appearance-block-code-border-radius, var(--b3-border-radius)) 0 0;
+    padding-top: calc(var(--b3-editor-appearance-block-code-padding-top, 2em) + var(--b3-editor-appearance-block-code-outer-padding-top, 4px));
   }
 
-  .cm-markra-code__language {
-    color: var(--b3-theme-on-surface-light);
-    float: right;
-    font-size: 0.8em;
+  .cm-markra-code-content-last {
+    border-radius: 0 0 var(--b3-editor-appearance-block-code-border-radius, var(--b3-border-radius)) var(--b3-editor-appearance-block-code-border-radius, var(--b3-border-radius));
+    padding-bottom: calc(var(--b3-editor-appearance-block-code-padding-bottom, 1.6em) + var(--b3-editor-appearance-block-code-outer-padding-bottom, 4px));
+  }
+
+  .cm-markra-code-content-line[data-code-line-number]::before {
+    color: var(--b3-editor-appearance-control-code-language-color, var(--b3-theme-on-surface));
+    content: attr(data-code-line-number);
+    display: inline-block;
+    margin-right: 1em;
+    min-width: 2ch;
+    text-align: right;
+    user-select: none;
+  }
+
+  .cm-markra-code-source-line {
+    color: var(--b3-theme-on-surface);
+  }
+
+  .cm-markra-code-content-first.cm-markra-code-content-last {
+    border-radius: var(--b3-editor-appearance-block-code-border-radius, var(--b3-border-radius));
+  }
+
+  .cm-markra-code-actions {
+    align-items: center;
+    display: flex;
+    left: var(--b3-editor-appearance-block-code-outer-padding-left, 4px);
+    position: absolute;
+    right: var(--b3-editor-appearance-block-code-outer-padding-right, 4px);
+    top: var(--b3-editor-appearance-block-code-outer-padding-top, 4px);
+    z-index: 1;
+  }
+
+  .cm-markra-code-content-first:hover + .cm-markra-code-actions,
+  .cm-editor:hover .cm-markra-code-actions .protyle-icon,
+  .cm-editor:hover .cm-markra-code-actions .protyle-action__language,
+  .cm-markra-code-actions:focus-within .protyle-icon,
+  .cm-markra-code-actions:focus-within .protyle-action__language {
+    opacity: 1;
+  }
+
+  .markra-code-language-control {
+    align-self: center;
+    background: transparent;
+    border: 0;
+    color: var(--b3-editor-appearance-control-code-language-color, var(--b3-theme-on-surface));
+    cursor: pointer;
+    font-family: var(--b3-font-family);
+    // 操作栏位于已缩小为 85% 的代码行内，使用 100% 可得到原生操作栏相同的 85% 编辑器字号。
+    font-size: 100%;
+    font-weight: normal;
+    letter-spacing: normal;
+    line-height: calc(1.625 / .85);
+    margin-left: 1em;
+    margin-top: -4px;
+    opacity: .86;
+    padding: 0;
+    transition: var(--b3-transition);
+  }
+
+  .markra-code-language-popover {
+    max-width: 50vw;
+    min-width: 320px;
+  }
+
+  .markra-code-copy-button,
+  .markra-code-more-button {
+    border: 0;
+    opacity: .86;
+
+  }
+
+  .markra-code-copy-check-icon,
+  .markra-code-copy-button[data-copied="true"] .markra-code-copy-icon {
+    display: none;
+  }
+
+  .markra-code-copy-button[data-copied="true"] .markra-code-copy-check-icon {
+    display: block;
   }
 
   .cm-markra-html,
@@ -351,27 +536,100 @@
     overflow: auto;
   }
 
-  .cm-markra-horizontal-rule hr {
-    border: 0;
-    border-top: 1px solid var(--b3-border-color);
-    margin: 16px 0;
+  .markra-math-render {
+    cursor: text;
+  }
+
+  .markra-math-render-display {
+    @include editorAppearance.editor-rendered-block(block-math);
+    display: block;
+    overflow-x: auto;
+    min-height: 62px;
+    padding: 4px;
+    text-align: center;
+  }
+
+  .markra-math-render-active-preview {
+    margin-top: .4em;
+  }
+
+  .markra-mermaid-render {
+    @include editorAppearance.editor-rendered-block(block-mermaid);
+    cursor: text;
+    display: block;
+    margin: .5em 0;
+    min-height: 3.5em;
+    overflow: auto;
+    padding: 4px;
+    position: relative;
+    text-align: center;
+  }
+
+  .markra-mermaid-render svg {
+    height: auto;
+    max-width: 100%;
+  }
+
+  .cm-markra-code-exit-wrap,
+  .cm-markra-code-exit {
+    display: inline-block;
+    height: 100%;
+    width: 100%;
+  }
+
+  .cm-markra-code-exit {
+    cursor: text;
+  }
+
+  .markra-code-block[data-mermaid-mode="preview"] {
+    box-sizing: border-box;
+    display: inline-block;
+    margin: 0;
+    max-width: 100%;
+    vertical-align: top;
+    width: 100%;
+  }
+
+  .markra-html-node {
+    @include editorAppearance.editor-rendered-block(block-raw-html);
+    display: block;
+    overflow: auto;
+    min-height: 26px;
+    padding: 4px;
+
+    img {
+      max-width: 100%;
+    }
+  }
+
+  .cm-markra-horizontal-rule {
+    @include editorAppearance.editor-horizontal-rule;
+    cursor: pointer;
   }
 
   .cm-markra-table-wrap {
+    border-radius: var(--b3-border-radius);
     box-sizing: border-box;
+    display: block;
+    margin: 2px 0;
     max-width: 100%;
     min-width: 0;
-    padding-top: 44px;
+    overflow: visible;
+    padding: 4px;
+    position: relative;
   }
 
   .markra-table-scroll {
+    display: block;
     max-width: 100%;
     min-width: 0;
     overflow-x: auto;
+    overflow-y: hidden;
     overscroll-behavior-x: contain;
   }
 
   .cm-markra-table {
+    @include editorAppearance.editor-table;
     border-collapse: collapse;
     margin: 0;
     min-width: max-content;
@@ -380,34 +638,31 @@
 
     th,
     td {
-      border-color: var(--b3-markdown-table-cell-border-bottom-color, var(--b3-border-color));
-      border-style: var(--b3-markdown-table-cell-border-bottom-style, solid);
-      border-width: var(--b3-markdown-table-cell-border-bottom-width, 1px);
-      color: var(--b3-markdown-table-cell-color, inherit);
+      color: var(--b3-editor-appearance-block-table-color, inherit);
       min-width: 112px;
-      padding: 8px 10px;
       vertical-align: top;
     }
 
     th {
-      background-color: var(--b3-markdown-table-head-background-color, var(--b3-theme-surface));
-      color: var(--b3-markdown-table-head-color, inherit);
-      font-weight: var(--b3-markdown-table-head-font-weight, 600);
+      background-color: var(--b3-list-hover);
+      font-weight: var(--b3-editor-appearance-block-table-font-weight, 600);
     }
   }
 
   .markra-table-control {
-    background-color: var(--b3-theme-background);
-    border: 1px solid var(--b3-border-color);
-    color: var(--b3-theme-on-surface);
+    @include editorAppearance.editor-control-button;
+    height: 1.5em;
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    transition: opacity 150ms ease;
+    width: 1.5em;
+  }
 
-    &:hover,
-    &:focus-visible,
-    &[aria-pressed="true"],
-    &[aria-expanded="true"] {
-      background-color: var(--b3-list-hover);
-      color: var(--b3-theme-primary);
-    }
+  .cm-markra-table-wrap:hover .markra-table-control,
+  .cm-markra-table-wrap:focus-within .markra-table-control {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .markra-table-control-group {
@@ -426,30 +681,26 @@
     align-items: center;
     display: flex;
     gap: 8px;
-    left: 0;
-    max-width: 100%;
+    max-width: calc(100% - 8px);
+    opacity: 0;
+    overflow-x: auto;
+    pointer-events: none;
     position: absolute;
-    top: 0;
+    right: 4px;
+    top: 4px;
+    transition: opacity 150ms ease;
     z-index: 10;
   }
 
-  .markra-table-align-controls .markra-table-control {
-    background-color: transparent;
-    border: 0;
-    border-radius: 6px;
-    color: var(--b3-theme-on-surface);
-    height: 28px;
-    padding: 0;
-    position: static;
-    width: 28px;
+  .cm-markra-table-wrap:hover .markra-table-align-controls,
+  .cm-markra-table-wrap:focus-within .markra-table-align-controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
 
-    &:hover,
-    &:focus-visible,
-    &[aria-pressed="true"],
-    &[aria-expanded="true"] {
-      background-color: var(--b3-list-hover);
-      color: var(--b3-theme-primary);
-    }
+  .markra-table-align-controls .markra-table-control {
+    @include editorAppearance.editor-control-button;
+    position: static;
   }
 
   .markra-table-control-icon {
@@ -457,16 +708,312 @@
     width: 16px;
   }
 
+  .markra-table-add-column {
+    right: .375em;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .markra-table-add-row {
+    bottom: .375em;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .markra-table-delete-control {
+    transform: translate(-50%, -50%);
+  }
+
+  .markra-table-size-popover {
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    box-shadow: var(--b3-dialog-shadow);
+    padding: .55em;
+    z-index: 100;
+  }
+
+  .markra-table-size-grid {
+    gap: .18em;
+  }
+
+  .markra-table-size-cell {
+    aspect-ratio: 1;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius-b);
+    padding: 0;
+
+    &:hover,
+    &:focus {
+      background: var(--b3-theme-primary-lightest);
+      border-color: var(--b3-theme-primary);
+    }
+  }
+
+  .markra-table-size-footer {
+    align-items: center;
+    gap: .35em;
+    justify-content: center;
+    margin-top: .5em;
+  }
+
+  .markra-table-size-input {
+    width: 3.5em;
+  }
+
+  .cm-markra-table[contenteditable="true"] th:focus,
+  .cm-markra-table[contenteditable="true"] td:focus {
+    box-shadow: inset 0 0 0 2px var(--b3-theme-primary);
+  }
+
   .markra-table-delete-table:hover,
   .markra-table-delete-table:focus-visible {
     color: var(--b3-theme-error);
   }
 
+  .markra-table-fragment-merge {
+    display: flex;
+    justify-content: center;
+    padding: .2em 0;
+  }
+
+  .markra-table-fragment-merge-button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    gap: .35em;
+    opacity: .65;
+  }
+
+  .cm-markra-search-match {
+    background-color: var(--b3-theme-primary-lightest);
+    border-radius: var(--b3-border-radius-b);
+  }
+
+  .cm-markra-search-match-current {
+    background-color: var(--b3-theme-primary-lighter);
+    box-shadow: 0 0 0 1px var(--b3-theme-primary);
+  }
+
+  .cm-search,
+  .markra-search-popover {
+    background-color: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    box-shadow: var(--b3-dialog-shadow);
+    color: var(--b3-theme-on-background);
+  }
+
+  .cm-search input {
+    background-color: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    color: var(--b3-theme-on-background);
+
+    &:focus {
+      border-color: var(--b3-theme-primary);
+      box-shadow: 0 0 0 1px var(--b3-theme-primary-lightest);
+      outline: 0;
+    }
+  }
+
+  .cm-search button {
+    @include editorAppearance.editor-control-button;
+  }
+
+  .markra-heading-toggle-button,
+  .markra-list-toggle-button {
+    @include editorAppearance.editor-control-button;
+    height: 1.25em;
+    inset-inline-start: -1.55em;
+    opacity: 0;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1.25em;
+
+    &::before {
+      content: "▾";
+    }
+
+    &[data-collapsed="true"]::before {
+      content: "▸";
+    }
+  }
+
+  .cm-markra-block-toolbar {
+    display: inline-flex;
+    gap: .15em;
+    inset-inline-start: -3.2em;
+    opacity: 0;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+
+    > button {
+      @include editorAppearance.editor-control-button;
+      height: 1.4em;
+      width: 1.4em;
+    }
+
+    > .markra-block-drag-handle {
+      cursor: grab;
+    }
+  }
+
+  .cm-line:hover > .cm-markra-block-toolbar,
+  .cm-markra-block-toolbar:focus-within,
+  .cm-line:hover > .markra-heading-toggle-button,
+  .cm-line:hover > .markra-list-toggle-button,
+  .markra-heading-toggle-button:focus-visible,
+  .markra-list-toggle-button:focus-visible {
+    opacity: 1;
+  }
+
+  .markra-block-drop-indicator {
+    @include editorAppearance.editor-drag-indicator;
+    height: 4px;
+    position: fixed;
+    z-index: 30;
+
+    &[data-show="false"] {
+      display: none;
+    }
+  }
+
+  .markra-block-drag-ghost {
+    background-color: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    box-shadow: var(--b3-dialog-shadow);
+    color: var(--b3-theme-on-background);
+    max-width: min(28rem, calc(100vw - 32px));
+    overflow: hidden;
+    padding: .4em .65em;
+    pointer-events: none;
+    position: fixed;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    z-index: 31;
+  }
+
+  .markra-block-drag-source {
+    background-color: var(--b3-theme-primary-lightest);
+  }
+
+  .markra-image-upload-placeholder {
+    align-items: center;
+    color: var(--b3-theme-on-surface);
+    display: inline-flex;
+    gap: .4em;
+    opacity: .72;
+  }
+
+  .markra-image-upload-placeholder-spinner {
+    animation: markra-codemirror-upload-spin .9s linear infinite;
+    border: 2px solid currentcolor;
+    border-radius: 50%;
+    border-right-color: transparent;
+    height: .8em;
+    width: .8em;
+  }
+
+  .cm-markra-trailing-space {
+    cursor: text;
+    display: block;
+    min-height: 6rem;
+    width: 100%;
+  }
+
+  .markra-selection-hold {
+    background: color-mix(in srgb, var(--b3-theme-primary) 18%, transparent);
+    border-radius: var(--b3-border-radius-b);
+  }
+
+  .markra-media-viewer-dialog {
+    align-items: center;
+    background-color: color-mix(in srgb, var(--b3-theme-on-background) 72%, transparent);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    position: absolute;
+    z-index: 100;
+
+    &[data-fullscreen="true"] {
+      position: fixed;
+    }
+  }
+
+  .markra-media-viewer-panel {
+    background-color: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    box-shadow: var(--b3-dialog-shadow);
+    display: flex;
+    flex-direction: column;
+    height: min(80vh, 720px);
+    max-height: calc(100% - 32px);
+    max-width: calc(100% - 32px);
+    overflow: hidden;
+    width: min(80vw, 960px);
+  }
+
+  .markra-media-viewer-toolbar {
+    align-items: center;
+    border-bottom: 1px solid var(--b3-border-color);
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+    padding: 4px;
+  }
+
+  .markra-media-viewer-control-button,
+  .markra-media-viewer-close-button {
+    @include editorAppearance.editor-control-button;
+  }
+
+  .markra-media-viewer-content {
+    cursor: grab;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+
+    &[data-dragging="true"] {
+      cursor: grabbing;
+    }
+  }
+
+  .markra-media-viewer-canvas {
+    align-items: center;
+    display: flex;
+    height: 100%;
+    justify-content: center;
+    transform-origin: center;
+    width: 100%;
+  }
+
+  .markra-media-viewer-media {
+    max-height: 100%;
+    max-width: 100%;
+  }
+
   .markra-image-node {
+    color: var(--b3-editor-appearance-media-image-color, inherit);
     display: inline-block;
-    max-width: calc(100% - 10px);
+    // 拖拽柄跨出图片框时仍必须留在编辑面内；小图继续使用固有尺寸。
+    max-width: calc(100% - 20px);
     position: relative;
     vertical-align: middle;
+
+    &[data-appearance-state="error"] .markra-image-frame {
+      outline: 1px solid var(--b3-theme-error);
+      outline-offset: 2px;
+    }
 
     &.markra-image-node-selected .markra-image-frame {
       outline: 1px solid var(--b3-theme-primary);
@@ -475,15 +1022,17 @@
 
     .markra-image-frame {
       display: inline-block;
-      // 为思源原生拖拽柄预留半个控件宽度，避免默认大图撑出页签。
-      max-width: calc(100% - 10px);
+      max-width: 100%;
       position: relative;
     }
 
     img {
+      border-radius: var(--b3-editor-appearance-media-image-border-radius, var(--b3-border-radius));
       display: block;
       height: auto;
+      max-height: none;
       max-width: 100%;
+      object-fit: contain;
       width: 100%;
     }
 
@@ -522,18 +1071,50 @@
   }
 
   .cm-gutters {
-    background-color: transparent;
-    border: 0;
-    color: var(--b3-theme-on-surface-light);
+    background-color: var(--b3-editor-appearance-editor-gutter-background-color, var(--b3-theme-background));
+    border-color: var(--b3-editor-appearance-editor-gutter-border-right-color, var(--b3-border-color));
+    color: var(--b3-editor-appearance-editor-gutter-color, var(--b3-theme-on-surface-light));
+    font-family: var(--b3-editor-appearance-editor-gutter-font-family, var(--b3-font-family-code));
   }
 
   .cm-activeLine,
   .cm-activeLineGutter {
-    background-color: var(--b3-list-hover);
+    background-color: var(--b3-editor-appearance-editor-active-line-background-color, var(--b3-list-hover));
   }
 
   .cm-selectionBackground,
   .cm-content ::selection {
-    background-color: var(--b3-theme-primary-lighter) !important;
+    background-color: var(--b3-editor-appearance-editor-selection-background-color, var(--b3-theme-primary-lightest)) !important;
+  }
+
+  .cm-cursor {
+    border-left-color: var(--b3-editor-appearance-editor-cursor-border-left-color, var(--b3-theme-primary));
+  }
+
+  .cm-placeholder {
+    color: var(--b3-editor-appearance-editor-placeholder-color, var(--b3-empty-color));
+  }
+
+  &[data-markdown-platform="mobile"] {
+    .cm-markra-code-actions .protyle-icon,
+    .cm-markra-code-actions .protyle-action__language,
+    .markra-heading-toggle-button,
+    .markra-list-toggle-button,
+    .cm-markra-block-toolbar {
+      opacity: .86;
+      pointer-events: auto;
+    }
+
+    .protyle-util,
+    .b3-menu,
+    .markra-code-language-popover {
+      max-width: calc(100vw - 16px);
+    }
+  }
+}
+
+@keyframes markra-codemirror-upload-spin {
+  to {
+    transform: rotate(360deg);
   }
 }

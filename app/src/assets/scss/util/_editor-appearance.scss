@@ -1,0 +1,168 @@
+@mixin editor-content-root {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--b3-font-family-protyle);
+  font-size: var(--b3-font-size-editor);
+  font-variant-ligatures: no-common-ligatures;
+}
+
+@mixin editor-block-box {
+  border-radius: var(--b3-border-radius);
+  line-height: 1.625;
+  margin: 2px 0;
+  padding: 4px;
+}
+
+@mixin editor-focus-ring {
+  outline: 1px solid var(--b3-theme-primary);
+  outline-offset: 1px;
+}
+
+@mixin editor-drag-indicator {
+  background-color: var(--b3-theme-primary-lighter);
+  border-radius: var(--b3-border-radius);
+  pointer-events: none;
+}
+
+@mixin editor-heading($level, $size) {
+  color: var(--b3-editor-appearance-block-heading-#{$level}-color, inherit);
+  font-family: var(--b3-editor-appearance-block-heading-#{$level}-font-family, inherit);
+  font-size: var(--b3-editor-appearance-block-heading-#{$level}-font-size, $size);
+  font-style: var(--b3-editor-appearance-block-heading-#{$level}-font-style, normal);
+  font-weight: var(--b3-editor-appearance-block-heading-#{$level}-font-weight, 600);
+  letter-spacing: var(--b3-editor-appearance-block-heading-#{$level}-letter-spacing, normal);
+  line-height: var(--b3-editor-appearance-block-heading-#{$level}-line-height, 1.625);
+}
+
+@mixin editor-inline-format($kind) {
+  @if $kind == strong {
+    color: var(--b3-editor-appearance-inline-strong-color, var(--b3-protyle-inline-strong-color));
+    font-weight: var(--b3-editor-appearance-inline-strong-font-weight, bold);
+  } @else if $kind == emphasis {
+    color: var(--b3-editor-appearance-inline-emphasis-color, var(--b3-protyle-inline-em-color));
+    font-style: var(--b3-editor-appearance-inline-emphasis-font-style, italic);
+  } @else if $kind == strikethrough {
+    color: var(--b3-editor-appearance-inline-strikethrough-color, var(--b3-protyle-inline-s-color));
+    text-decoration: var(--b3-editor-appearance-inline-strikethrough-text-decoration-line, line-through);
+    text-decoration-color: var(--b3-editor-appearance-inline-strikethrough-text-decoration-color, currentcolor);
+    text-decoration-style: var(--b3-editor-appearance-inline-strikethrough-text-decoration-style, solid);
+  } @else if $kind == highlight {
+    background-color: var(--b3-editor-appearance-inline-highlight-background-color, var(--b3-protyle-inline-mark-background));
+    border-radius: var(--b3-editor-appearance-inline-highlight-border-radius, 0);
+    color: var(--b3-editor-appearance-inline-highlight-color, var(--b3-protyle-inline-mark-color));
+    padding-left: var(--b3-editor-appearance-inline-highlight-padding-left, 0);
+    padding-right: var(--b3-editor-appearance-inline-highlight-padding-right, 0);
+  } @else if $kind == code {
+    background-color: var(--b3-editor-appearance-inline-code-background-color, var(--b3-theme-surface));
+    border-radius: var(--b3-editor-appearance-inline-code-border-radius, var(--b3-border-radius));
+    color: var(--b3-editor-appearance-inline-code-color, inherit);
+    font-family: var(--b3-editor-appearance-inline-code-font-family, var(--b3-font-family-code));
+    font-size: var(--b3-editor-appearance-inline-code-font-size, inherit);
+    padding-left: var(--b3-editor-appearance-inline-code-padding-left, .25em);
+    padding-right: var(--b3-editor-appearance-inline-code-padding-right, .25em);
+  } @else if $kind == link {
+    color: var(--b3-editor-appearance-inline-link-color, var(--b3-protyle-inline-link-color, var(--b3-theme-primary)));
+    text-decoration-color: var(--b3-editor-appearance-inline-link-text-decoration-color, currentcolor);
+    text-decoration-line: var(--b3-editor-appearance-inline-link-text-decoration-line, none);
+    text-decoration-style: var(--b3-editor-appearance-inline-link-text-decoration-style, solid);
+  }
+}
+
+@mixin editor-blockquote {
+  background-color: var(--b3-editor-appearance-block-blockquote-background-color, var(--b3-bq-background));
+  border-radius: var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius));
+  color: var(--b3-editor-appearance-block-blockquote-color, var(--b3-theme-on-surface));
+  padding-left: var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px));
+  position: relative;
+
+  &::before {
+    background-color: var(--b3-editor-appearance-block-blockquote-border-left-color, var(--b3-theme-surface-lighter));
+    border-radius: var(--b3-border-radius);
+    bottom: 6px;
+    content: "";
+    left: 2px;
+    position: absolute;
+    top: 6px;
+    width: var(--b3-editor-appearance-block-blockquote-border-left-width, .25em);
+  }
+}
+
+@mixin editor-task {
+  accent-color: var(--b3-editor-appearance-block-task-accent-color, var(--b3-theme-primary));
+  cursor: pointer;
+  height: var(--b3-editor-appearance-block-task-height, max(14px, calc(1em - 4px)));
+  margin: 0 .45em 0 0;
+  vertical-align: -.08em;
+  width: var(--b3-editor-appearance-block-task-width, max(14px, calc(1em - 4px)));
+}
+
+@mixin editor-horizontal-rule {
+  background-color: transparent;
+  background-image: linear-gradient(
+    var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light)),
+    var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light))
+  );
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: calc(100% - 8px) 1px;
+  border: 0;
+  box-sizing: content-box;
+  color: var(--b3-editor-appearance-block-horizontal-rule-color, var(--b3-theme-on-background));
+  display: block;
+  height: var(--b3-editor-appearance-block-horizontal-rule-height, 1.625em);
+  margin: 2px 0;
+  padding: 4px;
+  width: 100%;
+}
+
+@mixin editor-table {
+  border-collapse: collapse;
+
+  th,
+  td {
+    border: 1px solid var(--b3-border-color);
+    padding: 4px 8px;
+  }
+}
+
+@mixin editor-control-button {
+  align-items: center;
+  background-color: transparent;
+  border: 0;
+  border-radius: var(--b3-border-radius);
+  color: var(--b3-theme-on-surface);
+  cursor: pointer;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+
+  &:hover,
+  &:focus-visible,
+  &[aria-pressed="true"],
+  &[aria-expanded="true"] {
+    background-color: var(--b3-list-hover);
+    color: var(--b3-theme-primary);
+  }
+
+  &:disabled {
+    opacity: .38;
+    pointer-events: none;
+  }
+}
+
+@mixin editor-rendered-block($contract-id) {
+  background-color: var(--b3-editor-appearance-#{$contract-id}-background-color, var(--b3-theme-surface));
+  border: 1px solid var(--b3-editor-appearance-#{$contract-id}-border-color, var(--b3-border-color));
+  border-radius: var(--b3-editor-appearance-#{$contract-id}-border-radius, var(--b3-border-radius));
+  box-sizing: border-box;
+  color: var(--b3-editor-appearance-#{$contract-id}-color, var(--b3-theme-on-background));
+  max-width: 100%;
+  min-width: 0;
+
+  &[data-appearance-state="error"] {
+    border-color: var(--b3-theme-error);
+    color: var(--b3-theme-error);
+  }
+}

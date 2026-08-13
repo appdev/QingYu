@@ -217,6 +217,10 @@ class RawHtmlWidget extends WidgetType {
 
     root.dataset.type = "html";
     root.dataset.value = this.range.source;
+    root.dataset.appearanceState = nodes.length > 0 ? "ready" : "error";
+    if (nodes.length === 0) {
+      root.setAttribute("aria-invalid", "true");
+    }
     root.tabIndex = 0;
     root.setAttribute("role", "button");
     root.setAttribute("aria-label", "Edit HTML source");
@@ -306,13 +310,6 @@ function changedLinesMayContainRawHtml(update: ViewUpdate) {
 const rawHtmlTheme = EditorView.baseTheme({
   ".cm-markra-html-hidden-line": {
     display: "none",
-  },
-  ".markra-html-node": {
-    display: "block",
-    maxWidth: "100%",
-  },
-  ".markra-html-node img": {
-    maxWidth: "100%",
   },
   ".cm-markra-inline-html": {
     cursor: "text",

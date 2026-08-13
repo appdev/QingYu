@@ -177,6 +177,7 @@ interface CSSStyleDeclarationElectron extends CSSStyleDeclaration {
 }
 
 interface Window {
+    __siyuanMarkdownAppearanceTest?: import("../markdown/appearance/runtimeHarness").MarkdownAppearanceRuntimeHarness;
     DOMPurify: {
         sanitize(dirty: string, options?: any): string;
     };

@@ -90,19 +90,8 @@ const searchField = StateField.define<CodeMirrorSearchState>({
   },
 });
 
-const searchTheme = EditorView.baseTheme({
-  ".cm-markra-search-match": {
-    backgroundColor: "color-mix(in srgb, #f59e0b 32%, transparent)",
-    borderRadius: "0.18em",
-  },
-  ".cm-markra-search-match-current": {
-    backgroundColor: "color-mix(in srgb, #f59e0b 58%, transparent)",
-    boxShadow: "0 0 0 1px color-mix(in srgb, #d97706 72%, transparent)",
-  },
-});
-
 export function codeMirrorSearchPlugin(): Extension {
-  return [searchField, searchTheme];
+  return searchField;
 }
 
 export function getCodeMirrorSearchState(

@@ -2,7 +2,6 @@ import { syntaxTree } from "@codemirror/language";
 import type { EditorState, Range } from "@codemirror/state";
 import {
   Decoration,
-  EditorView,
   ViewPlugin,
   WidgetType,
   type DecorationSet,
@@ -10,6 +9,10 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin";
+import {
+  markdownHostAdapterFacet,
+  type MarkdownControlHandle,
+} from "../adapter";
 import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy";
 import { syntaxTreeChanged, updateChangesStayAfter } from "./changes";
 
@@ -32,6 +35,7 @@ interface FootnoteReference {
 const definitionPattern = /^[ \t]{0,3}\[\^([^\]\s]+)\]:[ \t]*(.*)$/u;
 const referencePattern = /\[\^([^\]\s]+)\]/gu;
 const codeNodeNames = new Set(["CodeBlock", "FencedCode", "InlineCode"]);
+const footnotePreviewHandles = new WeakMap<HTMLElement, MarkdownControlHandle>();
 
 function activateFootnoteSource(
   view: CodeMirrorView,
@@ -157,17 +161,32 @@ class FootnoteReferenceWidget extends WidgetType {
     reference.append(button);
 
     const closePreview = () => {
+      footnotePreviewHandles.get(reference)?.destroy();
+      footnotePreviewHandles.delete(reference);
       preview?.remove();
       preview = null;
     };
     const openPreview = () => {
       const definition = this.reference.definition;
-      if (!definition || preview) return;
+      if (preview) return;
       preview = document.createElement("span");
       preview.className = "markra-footnote-preview";
-      preview.textContent = definition.content || `Footnote ${definition.label}`;
+      preview.dataset.appearanceState = definition ? "ready" : "error";
+      preview.textContent = definition?.content || `Footnote ${this.reference.label}`;
       preview.setAttribute("role", "tooltip");
-      reference.append(preview);
+      if (!definition) preview.setAttribute("aria-invalid", "true");
+      const handle = view.state.facet(markdownHostAdapterFacet)?.mountPopover?.({
+        anchor: button,
+        content: preview,
+        kind: "footnote",
+        ownerDocument: document,
+        restoreFocus: false,
+      });
+      if (handle) {
+        footnotePreviewHandles.set(reference, handle);
+      } else {
+        reference.append(preview);
+      }
     };
     const navigate = (event: Event) => {
       const definition = this.reference.definition;
@@ -202,6 +221,11 @@ class FootnoteReferenceWidget extends WidgetType {
     });
     reference.addEventListener("click", handleClick);
     return reference;
+  }
+
+  destroy(dom: HTMLElement) {
+    footnotePreviewHandles.get(dom)?.destroy();
+    footnotePreviewHandles.delete(dom);
   }
 }
 
@@ -294,50 +318,6 @@ function buildFootnoteDecorations(view: CodeMirrorView): FootnoteDecorationState
   };
 }
 
-const footnoteTheme = EditorView.baseTheme({
-  ".cm-markra-footnote-reference": {
-    color: "var(--accent, currentColor)",
-    fontSize: "0.75em",
-    lineHeight: "1",
-    position: "relative",
-    verticalAlign: "super",
-  },
-  ".cm-markra-footnote-reference > button": {
-    background: "transparent",
-    border: "0",
-    color: "inherit",
-    cursor: "pointer",
-    font: "inherit",
-    padding: "0 0.12em",
-  },
-  ".markra-footnote-preview": {
-    background: "var(--editor-paper-bg, Canvas)",
-    border: "1px solid var(--editor-border, currentColor)",
-    borderRadius: "0.45em",
-    boxShadow: "0 0.5em 1.5em rgb(0 0 0 / 16%)",
-    color: "var(--text-primary, CanvasText)",
-    fontSize: "0.95rem",
-    left: "0",
-    lineHeight: "1.45",
-    maxWidth: "20rem",
-    padding: "0.6em 0.75em",
-    position: "absolute",
-    top: "calc(100% + 0.35em)",
-    width: "max-content",
-    zIndex: "20",
-  },
-  ".cm-markra-footnote-definition": {
-    color: "var(--text-secondary, currentColor)",
-  },
-  ".cm-markra-footnote-definition-label": {
-    color: "var(--accent, currentColor)",
-    cursor: "pointer",
-    fontSize: "0.82em",
-    fontWeight: "650",
-    marginRight: "0.45em",
-  },
-});
-
 export function footnotePreviewPlugin() {
   return defineMarkraPlugin({
     id: "markra.footnote-preview",
@@ -379,7 +359,6 @@ export function footnotePreviewPlugin() {
         },
         { decorations: (plugin) => plugin.decorations },
       ),
-      footnoteTheme,
     ],
   });
 }

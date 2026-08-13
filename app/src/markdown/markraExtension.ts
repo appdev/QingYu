@@ -1,10 +1,19 @@
 import {EditorState, type Extension} from "@codemirror/state";
-import {EditorView} from "@codemirror/view";
+import {
+    EditorView,
+    highlightActiveLine,
+    highlightActiveLineGutter,
+    lineNumbers,
+    placeholder,
+} from "@codemirror/view";
+import {getCodeLanguages} from "../protyle/codeLanguage";
 import type {MarkdownHostAdapter} from "./markra-core/adapter";
 import {markdownHostAdapter} from "./markra-core/adapter";
+import {readSiyuanCodeBlockConfig} from "./codeBlockConfig";
 import {
     calloutPreviewPlugin,
     codeBlockPreviewPlugin,
+    codeMirrorBlockDragPlugin,
     codeMirrorClipboardAssetsPlugin,
     footnotePreviewPlugin,
     foldTogglePlugin,
@@ -47,7 +56,6 @@ const editorTheme = EditorView.theme({
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",
     },
-    ".cm-gutters": {display: "none"},
     ".cm-line": {padding: "0"},
     ".cm-scroller": {
         fontFamily: "inherit",
@@ -55,6 +63,20 @@ const editorTheme = EditorView.theme({
         overflow: "visible",
     },
 });
+
+const sourceModeAppearance: Extension[] = [
+    lineNumbers(),
+    highlightActiveLine(),
+    highlightActiveLineGutter(),
+    EditorView.editorAttributes.of({"data-markdown-mode": "source"}),
+];
+
+const visualModeAppearance: Extension[] = [
+    EditorView.editorAttributes.of({"data-markdown-mode": "visual"}),
+];
+
+export const createSiyuanModeAppearanceExtension = (mode: "source" | "visual"): Extension =>
+    mode === "source" ? sourceModeAppearance : visualModeAppearance;
 
 export const createSiyuanMarkraExtension = ({
     adapter,
@@ -72,7 +94,7 @@ export const createSiyuanMarkraExtension = ({
     const common: Extension[] = [
         markdownHostAdapter(adapter),
         EditorView.lineWrapping,
-        EditorView.editorAttributes.of({"data-markdown-mode": mode}),
+        createSiyuanModeAppearanceExtension(mode),
         EditorView.contentAttributes.of({
             "aria-label": "Markdown",
             "aria-multiline": "true",
@@ -80,6 +102,7 @@ export const createSiyuanMarkraExtension = ({
             role: "textbox",
             spellcheck: "false",
         }),
+        placeholder(window.siyuan?.languages?.emptyPlaceholder ?? ""),
         editorTheme,
     ];
     if (mode === "source") {
@@ -93,13 +116,35 @@ export const createSiyuanMarkraExtension = ({
         const [saved] = await adapter.saveClipboardAssets({files: [file], insertionOffset: 0});
         return saved ? {label: file.name, src: saved.markdownDestination} : null;
     };
+    const codeBlockConfig = readSiyuanCodeBlockConfig(window.siyuan?.config?.editor);
     return [
         ...common,
         liveMarkdown({
             plugins: [
                 calloutPreviewPlugin(),
-                codeBlockPreviewPlugin(),
-                codeMirrorClipboardAssetsPlugin({saveAttachment, saveImage}),
+                codeBlockPreviewPlugin({
+                    ...codeBlockConfig,
+                    icons: {
+                        check: "#iconCheck",
+                        copy: "#iconCopy",
+                        more: "#iconMore",
+                    },
+                    labels: {
+                        clearLanguage: window.siyuan?.languages?.clear ?? "Clear",
+                        searchLanguage: window.siyuan?.languages?.search ?? "Search",
+                    },
+                    languages: () => getCodeLanguages()
+                        .map((language) => ({label: language, value: language})),
+                    openCodeLanguageMenu: adapter.openCodeLanguageMenu,
+                    positionLanguagePopover: adapter.positionPopover,
+                    updateLanguages: (detail) => adapter.updateCodeLanguages?.(detail) ?? detail.languages,
+                }),
+                codeMirrorBlockDragPlugin(),
+                codeMirrorClipboardAssetsPlugin({
+                    convertHtmlToMarkdown: adapter.convertHtmlToMarkdown,
+                    saveAttachment,
+                    saveImage,
+                }),
                 footnotePreviewPlugin(),
                 foldTogglePlugin(),
                 formattingPlugin({keybindings: false}),

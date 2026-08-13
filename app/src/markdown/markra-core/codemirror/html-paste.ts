@@ -7,6 +7,10 @@ export interface CodeMirrorHtmlPaste {
   readonly structured: boolean;
 }
 
+export type ConvertClipboardHtmlToMarkdown = (
+  html: string,
+) => string | null | undefined;
+
 const codeFontPattern = /(?:monospace|menlo|monaco|consolas|courier|sfmono|fira code|jetbrains mono|cascadia code|source code pro)/iu;
 const preformattedWhitespacePattern = /white-space\s*:\s*(?:pre|pre-wrap|break-spaces)/iu;
 const richTextSelector = [
@@ -203,8 +207,17 @@ function tableMarkdown(service: TurndownService, table: Element) {
   ].join("\n");
 }
 
-function createTurndownService() {
-  const service = new TurndownService({
+type TurndownServiceModule = typeof TurndownService | {
+  readonly default: typeof TurndownService;
+};
+
+export function createClipboardTurndownService(
+  turndownModule: TurndownServiceModule = TurndownService as unknown as TurndownServiceModule,
+) {
+  const TurndownConstructor = typeof turndownModule === "function"
+    ? turndownModule
+    : turndownModule.default;
+  const service = new TurndownConstructor({
     bulletListMarker: "-",
     codeBlockStyle: "fenced",
     emDelimiter: "*",
@@ -227,6 +240,18 @@ function createTurndownService() {
   return service;
 }
 
+function hostMarkdown(
+  html: string,
+  convertHtmlToMarkdown: ConvertClipboardHtmlToMarkdown | undefined,
+) {
+  if (!convertHtmlToMarkdown) return "";
+  try {
+    return convertHtmlToMarkdown(html)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function remoteImage(image: Element): RemoteClipboardImage | null {
   const src = image.getAttribute("src") ?? "";
   try {
@@ -245,6 +270,7 @@ function remoteImage(image: Element): RemoteClipboardImage | null {
 export function convertCodeMirrorClipboardHtml(
   html: string,
   plainText = "",
+  convertHtmlToMarkdown?: ConvertClipboardHtmlToMarkdown,
 ): CodeMirrorHtmlPaste | null {
   if (!html.trim() || typeof DOMParser === "undefined") return null;
   const parser = new DOMParser();
@@ -252,13 +278,16 @@ export function convertCodeMirrorClipboardHtml(
     normalizeAnchorBlockMarkup(html, parser),
     "text/html",
   );
-  const service = createTurndownService();
+  const service = createClipboardTurndownService();
   const structured = hasStructuredHtml(document);
   const code = syntaxHighlightedPlainText(document, plainText);
   // Turndown collapses whitespace in ordinary styled elements before applying
   // rules, so semanticize code containers while their authored line breaks remain.
   if (!code) normalizeStyledCodeBlocks(document);
-  const markdown = code ?? service
+  const convertedByHost = code || !structured
+    ? ""
+    : hostMarkdown(document.body.innerHTML, convertHtmlToMarkdown);
+  const markdown = code || convertedByHost || service
     .turndown(document.body.innerHTML)
     .replace(/\r\n?/gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")

@@ -1,4 +1,4 @@
-import { Decoration, EditorView, WidgetType, type EditorView as CodeMirrorView } from "@codemirror/view";
+import { Decoration, WidgetType, type EditorView as CodeMirrorView } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin";
 import { markraRenderer } from "./renderers";
 import { readMarkdownFrontmatter } from "../markdown";
@@ -32,17 +32,6 @@ class HorizontalRuleWidget extends WidgetType {
     return rule;
   }
 }
-
-const horizontalRuleTheme = EditorView.baseTheme({
-  ".cm-markra-horizontal-rule": {
-    border: "0",
-    borderTop: "1px solid color-mix(in srgb, currentColor 22%, transparent)",
-    cursor: "pointer",
-    display: "block",
-    margin: "1.25em 0",
-    width: "100%",
-  },
-});
 
 export function horizontalRulePlugin() {
   return defineMarkraPlugin({
@@ -81,7 +70,6 @@ export function horizontalRulePlugin() {
           return false;
         },
       }),
-      horizontalRuleTheme,
     ],
   });
 }

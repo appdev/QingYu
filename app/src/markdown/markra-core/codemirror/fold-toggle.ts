@@ -8,7 +8,6 @@ import {
 import type { EditorState } from "@codemirror/state";
 import {
   Decoration,
-  EditorView,
   ViewPlugin,
   WidgetType,
   type DecorationSet,
@@ -136,8 +135,8 @@ class FoldToggleWidget extends WidgetType {
         : this.labels.collapseListItem;
     button.type = "button";
     button.className = heading
-      ? "markra-heading-toggle-button"
-      : "markra-list-toggle-button";
+      ? "block__icon protyle-action__arrow markra-heading-toggle-button"
+      : "block__icon protyle-action__arrow markra-list-toggle-button";
     button.dataset.collapsed = String(this.collapsed);
     button.ariaExpanded = String(!this.collapsed);
     button.ariaLabel = label;
@@ -202,25 +201,6 @@ class FoldToggleViewPlugin {
   }
 }
 
-const foldToggleTheme = EditorView.baseTheme({
-  ".markra-heading-toggle-button, .markra-list-toggle-button": {
-    background: "transparent",
-    border: "0",
-    color: "inherit",
-    cursor: "pointer",
-    display: "inline-block",
-    marginInlineEnd: "0.3em",
-    opacity: "0.45",
-    padding: "0 0.15em",
-  },
-  ".markra-heading-toggle-button::before, .markra-list-toggle-button::before": {
-    content: '"▾"',
-  },
-  '.markra-heading-toggle-button[data-collapsed="true"]::before, .markra-list-toggle-button[data-collapsed="true"]::before': {
-    content: '"▸"',
-  },
-});
-
 export function foldTogglePlugin(
   options: FoldTogglePluginOptions = {},
 ) {
@@ -232,7 +212,6 @@ export function foldTogglePlugin(
         (view) => new FoldToggleViewPlugin(view, labels),
         { decorations: (plugin) => plugin.decorations },
       ),
-      foldToggleTheme,
     ],
   });
 }

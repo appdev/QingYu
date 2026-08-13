@@ -15,12 +15,6 @@ function defaultScrollContainer(view: EditorView) {
   return view.dom.closest<HTMLElement>(".paper-scroll");
 }
 
-const typewriterActiveLineTheme = EditorView.baseTheme({
-  '&[data-typewriter-mode="true"].cm-focused .cm-activeLine': {
-    backgroundColor: "color-mix(in srgb, currentColor 8%, transparent)",
-  },
-});
-
 class CodeMirrorTypewriterView {
   private animationFrame: number | null = null;
   private paddingFrame: number | null = null;
@@ -170,7 +164,6 @@ export function codeMirrorTypewriterMode(
       "data-typewriter-mode": "true",
     }),
     highlightActiveLine(),
-    typewriterActiveLineTheme,
     typewriterView,
   ];
 }

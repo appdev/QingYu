@@ -65,7 +65,7 @@ const INLINE_CLASSES: Readonly<Record<string, string>> = {
 };
 
 const BLOCK_CLASSES: Readonly<Record<string, string>> = {
-  Blockquote: "cm-markra-blockquote bq",
+  Blockquote: "cm-markra-blockquote",
   Paragraph: "cm-markra-paragraph p",
 };
 
@@ -400,6 +400,12 @@ function buildDecorations(
       if (blockClass) {
         const firstLine = state.doc.lineAt(visibleNodeFrom).number;
         const lastLine = state.doc.lineAt(visibleNodeTo - 1).number;
+        const blockquoteFirstLine = node.name === "Blockquote"
+          ? state.doc.lineAt(node.from).number
+          : null;
+        const blockquoteLastLine = node.name === "Blockquote"
+          ? state.doc.lineAt(Math.max(node.from, node.to - 1)).number
+          : null;
         let paragraphEndLine: number | null = null;
         if (
           node.name === "Paragraph" &&
@@ -421,9 +427,11 @@ function buildDecorations(
           const key = `${blockClass}:${line.from}`;
           if (!decoratedBlockLines.has(key)) {
             decoratedBlockLines.add(key);
-            const className = lineNumber === paragraphEndLine
-              ? `${blockClass} cm-markra-paragraph-end`
-              : blockClass;
+            const lineClasses = [blockClass];
+            if (lineNumber === paragraphEndLine) lineClasses.push("cm-markra-paragraph-end");
+            if (lineNumber === blockquoteFirstLine) lineClasses.push("cm-markra-blockquote-first");
+            if (lineNumber === blockquoteLastLine) lineClasses.push("cm-markra-blockquote-last");
+            const className = lineClasses.join(" ");
             ranges.push(Decoration.line({ class: className }).range(line.from));
           }
         }

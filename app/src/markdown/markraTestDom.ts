@@ -2,8 +2,8 @@ import {JSDOM} from "jsdom";
 
 const TEST_GLOBALS = [
     "window", "document", "navigator", "MutationObserver", "ResizeObserver", "requestAnimationFrame",
-    "cancelAnimationFrame", "DOMParser", "Event", "HTMLElement", "KeyboardEvent", "MouseEvent", "Node", "Range", "Window",
-    "HTMLInputElement", "HTMLTextAreaElement", "SVGElement", "getComputedStyle",
+    "cancelAnimationFrame", "DOMParser", "Element", "Event", "FocusEvent", "HTMLElement", "KeyboardEvent", "MouseEvent", "Node", "Range", "Window",
+    "HTMLImageElement", "HTMLInputElement", "HTMLTextAreaElement", "SVGElement", "getComputedStyle",
 ] as const;
 
 export const installMarkdownTestDom = () => {
@@ -34,8 +34,11 @@ export const installMarkdownTestDom = () => {
         requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
         cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
         DOMParser: dom.window.DOMParser,
+        Element: dom.window.Element,
         Event: dom.window.Event,
+        FocusEvent: dom.window.FocusEvent,
         HTMLElement: dom.window.HTMLElement,
+        HTMLImageElement: dom.window.HTMLImageElement,
         HTMLInputElement: dom.window.HTMLInputElement,
         HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
         KeyboardEvent: dom.window.KeyboardEvent,

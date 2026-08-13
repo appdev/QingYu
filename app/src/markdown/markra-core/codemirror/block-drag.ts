@@ -457,7 +457,7 @@ function blockControl(
 ) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = className;
+  button.className = `block__icon ${className}`;
   button.ariaLabel = label;
   button.title = label;
   button.addEventListener("mousedown", (event) => {
@@ -655,6 +655,13 @@ interface BlockDragUi {
 
 const blockDragUi = new WeakMap<CodeMirrorView, BlockDragUi>();
 
+export function createCodeMirrorBlockDropIndicator(document: Document) {
+  const indicator = document.createElement("span");
+  indicator.className = "markra-block-drop-indicator";
+  indicator.dataset.show = "false";
+  return indicator;
+}
+
 function clearBlockDragUi(view: CodeMirrorView) {
   const ui = blockDragUi.get(view);
   if (!ui) return;
@@ -677,10 +684,8 @@ function startBlockDragUi(
   const source = view.dom.querySelector<HTMLElement>(
     `.cm-line[data-markra-block-from="${sourceFrom}"]`,
   );
-  const indicator = view.dom.ownerDocument.createElement("span");
+  const indicator = createCodeMirrorBlockDropIndicator(view.dom.ownerDocument);
   const ghost = view.dom.ownerDocument.createElement("span");
-  indicator.className = "markra-block-drop-indicator";
-  indicator.dataset.show = "false";
   ghost.className = "markra-block-drag-ghost";
   ghost.dataset.show = "true";
   ghost.textContent = source?.textContent?.trim() || "Markdown block";
@@ -867,30 +872,6 @@ class BlockDragViewPlugin {
   }
 }
 
-const blockDragTheme = EditorView.baseTheme({
-  ".cm-markra-block-toolbar": {
-    display: "inline-flex",
-    gap: "0.15em",
-    marginInlineStart: "-3.2em",
-    marginInlineEnd: "0.45em",
-    opacity: "0.15",
-    verticalAlign: "middle",
-  },
-  ".cm-line:hover > .cm-markra-block-toolbar, .cm-markra-block-toolbar:focus-within": {
-    opacity: "1",
-  },
-  ".cm-markra-block-toolbar > button": {
-    background: "transparent",
-    border: "0",
-    color: "inherit",
-    cursor: "pointer",
-    padding: "0 0.15em",
-  },
-  ".cm-markra-block-toolbar > .markra-block-drag-handle": {
-    cursor: "grab",
-  },
-});
-
 export function codeMirrorBlockDragPlugin(
   options: CodeMirrorBlockDragPluginOptions = {},
 ) {
@@ -932,7 +913,6 @@ export function codeMirrorBlockDragPlugin(
           return true;
         },
       }),
-      blockDragTheme,
     ],
   });
 }

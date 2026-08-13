@@ -1,6 +1,7 @@
 // Lute 配置全部读取全局 window.siyuan.config / window.siyuan.emojis，跨编辑器一致，
 // 因此所有 Protyle 编辑器共用同一个 Lute 实例，将内存与初始化开销从 O(编辑器数) 降为 O(1)。
 let luteInstance: Lute | undefined;
+let luteOptions: ILuteOptions | undefined;
 
 /**
  * 获取（首次调用时创建）共享 Lute 单例。
@@ -10,7 +11,8 @@ let luteInstance: Lute | undefined;
  */
 export const getLute = (options: ILuteOptions): Lute => {
     if (!luteInstance) {
-        luteInstance = setLute(options);
+        luteOptions = options;
+        luteInstance = setLute(options, true);
     }
     return luteInstance;
 };
@@ -24,9 +26,28 @@ export const getLuteInstance = (): Lute | undefined => {
 };
 
 /**
+ * 创建与内核 BlockDOM 输出一致的静态 Protyle Lute。
+ *
+ * 编辑器共享实例启用了 Spin，用于行内编辑与粘贴；外观探针需要关闭 Spin，才能得到服务端下发给原生编辑器的 DOM 层级。
+ */
+export const createStaticProtyleLute = (): Lute | undefined => {
+    if (!window.siyuan?.config?.editor?.markdown || !window.siyuan.emojis) {
+        return undefined;
+    }
+    return setLute(luteOptions ?? {
+        emojiSite: "",
+        emojis: {},
+        headingAnchor: false,
+        listStyle: false,
+        paragraphBeginningSpace: false,
+        sanitize: true,
+    }, false);
+};
+
+/**
  * 根据全局配置与传入选项构建一个新的 Lute 实例，供共享单例初始化使用。
  */
-const setLute = (options: ILuteOptions) => {
+const setLute = (options: ILuteOptions, spin: boolean) => {
     const lute: Lute = Lute.New();
     lute.SetSpellcheck(window.siyuan.config.editor.spellcheck);
     lute.SetProtyleMarkNetImg(window.siyuan.config.editor.displayNetImgMark);
@@ -52,7 +73,6 @@ const setLute = (options: ILuteOptions) => {
     lute.SetKramdownIAL(true);
     lute.SetTag(true);
     lute.SetSuperBlock(true);
-    lute.SetCallout(true);
     lute.SetInlineAsterisk(window.siyuan.config.editor.markdown.inlineAsterisk);
     lute.SetInlineUnderscore(window.siyuan.config.editor.markdown.inlineUnderscore);
     lute.SetSup(window.siyuan.config.editor.markdown.inlineSup);
@@ -62,8 +82,6 @@ const setLute = (options: ILuteOptions) => {
     lute.SetGFMStrikethrough1(false);
     lute.SetGFMStrikethrough(window.siyuan.config.editor.markdown.inlineStrikethrough);
     lute.SetMark(window.siyuan.config.editor.markdown.inlineMark);
-    lute.SetSpin(true);
-    lute.SetProtyleWYSIWYG(true);
     if (options.lazyLoadImage) {
         lute.SetImageLazyLoading(options.lazyLoadImage);
     }
@@ -77,8 +95,12 @@ const setLute = (options: ILuteOptions) => {
     }
     lute.SetUnorderedListMarker("-");
     lute.SetDataTask(true);
-    lute.SetExportNormalizeTaskListMarker(true);
+    lute.SetExportNormalizeTaskListMarker(spin);
     lute.SetArbitraryTaskListItemMarker(true);
     lute.SetEnsureListItemParagraph(true); // 空列表项下创建子列表前补一个空段落
+    // 模式开关放在所有语法选项之后，确保静态 BlockDOM 与行内 Spin 渲染不会被后续设置改写。
+    lute.SetSpin(spin);
+    lute.SetProtyleWYSIWYG(true);
+    lute.SetCallout(true);
     return lute;
 };

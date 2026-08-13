@@ -17,15 +17,49 @@ export interface MarkdownRenderContext {
     ownerDocument: Document;
 }
 
+export interface MarkdownCodeLanguageUpdate {
+    languages: string[];
+    listElement: HTMLElement;
+    type: "init" | "match";
+    value: string;
+}
+
+export interface MarkdownControlHandle {
+    readonly element: HTMLElement;
+    destroy(): void;
+    focus(): void;
+}
+
+export interface MarkdownPopoverRequest {
+    anchor: HTMLElement;
+    content: HTMLElement;
+    kind: "footnote" | "media" | "search";
+    ownerDocument: Document;
+    restoreFocus: boolean;
+}
+
+export interface MarkdownCodeLanguageMenuRequest {
+    anchor: HTMLElement;
+    currentLanguage: string;
+    languages: readonly string[];
+    onDestroy?(): void;
+    onSelect(language: string): void;
+    ownerDocument: Document;
+}
+
 export interface MarkdownHostAdapter {
+    convertHtmlToMarkdown?(html: string): string | null | undefined;
     createIcon(name: MarkdownIconName, className: string, ownerDocument: Document): SVGElement;
     notifyError(message: string): void;
+    mountPopover?(request: MarkdownPopoverRequest): MarkdownControlHandle | null;
+    openCodeLanguageMenu?(request: MarkdownCodeLanguageMenuRequest): MarkdownControlHandle | null;
     openLink(target: string): void;
     positionPopover(anchor: HTMLElement, popover: HTMLElement): void;
     renderMath(source: string, displayMode: boolean, context: MarkdownRenderContext): HTMLElement;
     renderMermaid(source: string, context: MarkdownRenderContext): Promise<HTMLElement>;
     resolveImageSource(source: string, documentPath: string): string | null;
     saveClipboardAssets(request: MarkdownClipboardAssetRequest): Promise<readonly MarkdownSavedAsset[]>;
+    updateCodeLanguages?(detail: MarkdownCodeLanguageUpdate): readonly string[];
 }
 
 export const markdownHostAdapterFacet = Facet.define<MarkdownHostAdapter, MarkdownHostAdapter | null>({

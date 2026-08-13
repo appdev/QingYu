@@ -41,6 +41,7 @@ import {
   type MarkraRendererContext,
   type MarkraSyntaxNode,
 } from "./renderers";
+import type {MarkdownControlHandle, MarkdownHostAdapter} from "../adapter";
 
 export interface CodeBlockHighlightSpan {
   readonly className: string;
@@ -60,9 +61,15 @@ export interface CodeBlockPreviewPluginOptions {
     context: CodeBlockHighlightContext,
   ) => readonly CodeBlockHighlightSpan[];
   labels?: Partial<CodeBlockPreviewLabels>;
-  languages?: readonly MarkraCodeLanguageOption[];
+  icons?: Partial<Record<"check" | "copy" | "more", string>>;
+  languages?: readonly MarkraCodeLanguageOption[] | (() => readonly MarkraCodeLanguageOption[]);
+  ligatures?: boolean;
+  lineWrap?: boolean;
+  openCodeLanguageMenu?: MarkdownHostAdapter["openCodeLanguageMenu"];
   plainTextLabel?: string;
+  positionLanguagePopover?: (anchor: HTMLElement, popover: HTMLElement) => void;
   showLineNumbers?: boolean;
+  updateLanguages?: (context: CodeBlockLanguageUpdateContext) => readonly string[];
   renderMermaid?: (
     context: CodeBlockMermaidContext,
   ) => Promise<string>;
@@ -75,11 +82,20 @@ export interface CodeBlockMermaidContext {
 }
 
 export interface CodeBlockPreviewLabels {
+  readonly clearLanguage: string;
   readonly codeCopied: string;
   readonly copyCode: string;
   readonly language: string;
   readonly mermaidDiagram: string;
   readonly mermaidError: string;
+  readonly searchLanguage: string;
+}
+
+export interface CodeBlockLanguageUpdateContext {
+  readonly languages: string[];
+  readonly listElement: HTMLElement;
+  readonly type: "init" | "match";
+  readonly value: string;
 }
 
 interface CodeBlockParts {
@@ -93,11 +109,13 @@ interface CodeBlockParts {
 }
 
 const defaultLabels: CodeBlockPreviewLabels = {
+  clearLanguage: "Clear",
   codeCopied: "Code copied",
   copyCode: "Copy code block",
   language: "Code block language",
   mermaidDiagram: "Mermaid diagram",
   mermaidError: "Unable to render Mermaid diagram",
+  searchLanguage: "Search",
 };
 
 const svgNamespace = "http://www.w3.org/2000/svg";
@@ -105,270 +123,51 @@ const svgNamespace = "http://www.w3.org/2000/svg";
 function createCodeControlIcon(
   document: Document,
   className: string,
-  children: readonly {
-    readonly attributes: Readonly<Record<string, string>>;
-    readonly tag: "path" | "rect";
-  }[],
+  symbol: string,
 ) {
   const icon = document.createElementNS(svgNamespace, "svg");
+  const use = document.createElementNS(svgNamespace, "use");
   icon.classList.add(className);
   icon.setAttribute("aria-hidden", "true");
-  icon.setAttribute("fill", "none");
-  icon.setAttribute("height", "15");
-  icon.setAttribute("stroke", "currentColor");
-  icon.setAttribute("stroke-linecap", "round");
-  icon.setAttribute("stroke-linejoin", "round");
-  icon.setAttribute("stroke-width", "2");
-  icon.setAttribute("viewBox", "0 0 24 24");
-  icon.setAttribute("width", "15");
-  for (const childDefinition of children) {
-    const child = document.createElementNS(svgNamespace, childDefinition.tag);
-    for (const [name, value] of Object.entries(childDefinition.attributes)) {
-      child.setAttribute(name, value);
-    }
-    icon.append(child);
-  }
+  use.setAttribute("href", symbol);
+  use.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", symbol);
+  icon.append(use);
   return icon;
 }
 
-const copyIconChildren = [
-  {
-    tag: "rect",
-    attributes: {
-      height: "14",
-      rx: "2",
-      ry: "2",
-      width: "14",
-      x: "8",
-      y: "8",
-    },
-  },
-  {
-    tag: "path",
-    attributes: {
-      d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
-    },
-  },
-] as const;
-
-const checkIconChildren = [
-  {
-    tag: "path",
-    attributes: { d: "M20 6 9 17l-5-5" },
-  },
-] as const;
-
 const codeBlockTheme = EditorView.baseTheme({
-  ".cm-markra-code-line": {
-    backgroundColor: "color-mix(in srgb, currentColor 5%, transparent)",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    paddingLeft: "0.85em",
-    paddingRight: "0.85em",
+  ".cm-markra-code-content-line[data-code-line-wrap='true']": {
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
   },
-  ".cm-markra-code-header-line": {
-    borderRadius: "0.45em 0.45em 0 0",
-    paddingBottom: "0.35em",
-    paddingTop: "0.35em",
+  ".cm-markra-code-content-line[data-code-line-wrap='false']": {
+    whiteSpace: "pre",
+    wordBreak: "initial",
   },
-  ".cm-markra-code-top-gap": {
-    height: "12px",
-    margin: "0",
-    pointerEvents: "none",
-    width: "100%",
+  ".cm-markra-code-content-line[data-code-ligatures='true']": {
+    fontVariantLigatures: "normal",
   },
-  ".cm-markra-code-header": {
-    color: "color-mix(in srgb, currentColor 62%, transparent)",
-    display: "inline-block",
-    fontFamily: 'var(--font-ui, "Noto Sans SC Variable", sans-serif)',
-    fontSize: "0.78em",
-    fontWeight: "650",
-    letterSpacing: "0.04em",
-  },
-  ".cm-markra-code-header-wrap": {
-    alignItems: "center",
-    display: "flex",
-    gap: "0.5em",
-    justifyContent: "space-between",
-  },
-  ".cm-markra-code-header-actions": {
-    alignItems: "center",
-    display: "inline-flex",
-    gap: "0.35em",
-  },
-  ".markra-code-copy-button, .markra-code-language-select": {
-    background: "transparent",
-    border: "1px solid color-mix(in srgb, currentColor 15%, transparent)",
-    borderRadius: "0.35em",
-    color: "inherit",
-    font: "inherit",
-    fontSize: "0.78em",
-    minHeight: "1.65rem",
-  },
-  ".markra-code-copy-button": {
-    cursor: "pointer",
-    opacity: "1",
-    padding: "0.15em 0.55em",
-    pointerEvents: "auto",
-    position: "static",
-    transform: "none",
-  },
-  ".markra-code-language-select": {
-    padding: "0.1em 0.35em",
-  },
-  ".cm-markra-code-content-line": {
-    borderLeft: "1px solid color-mix(in srgb, currentColor 10%, transparent)",
-    borderRight: "1px solid color-mix(in srgb, currentColor 10%, transparent)",
-  },
-  ".cm-markra-code-content-line[data-code-line-number]::before": {
-    color: "color-mix(in srgb, currentColor 38%, transparent)",
-    content: "attr(data-code-line-number)",
-    display: "inline-block",
-    marginRight: "1em",
-    minWidth: "2ch",
-    textAlign: "right",
-    userSelect: "none",
-  },
-  ".cm-markra-code-closing-line": {
-    borderRadius: "0 0 0.45em 0.45em",
-    height: "3.5em",
-    lineHeight: "0.75em",
-    minHeight: "3.5em",
-    overflow: "visible",
-    position: "relative",
-  },
-  ".cm-markra-code-exit-wrap": {
-    display: "inline-block",
-    height: "100%",
-    width: "100%",
-  },
-  ".cm-markra-code-exit": {
-    cursor: "text",
-    display: "inline-block",
-    height: "100%",
-    width: "100%",
-  },
-  ".cm-markra-code-source-line": {
-    color: "color-mix(in srgb, currentColor 72%, transparent)",
-  },
-  ".markra-mermaid-render": {
-    background: "color-mix(in srgb, currentColor 3%, transparent)",
-    border: "1px solid color-mix(in srgb, currentColor 12%, transparent)",
-    borderRadius: "0.45em",
-    cursor: "text",
-    display: "block",
-    margin: "0.5em 0",
-    minHeight: "3.5em",
-    overflow: "auto",
-    padding: "0.85em",
-    position: "relative",
-    textAlign: "center",
-  },
-  // An inline-block avoids the empty line boxes WebKit can produce around
-  // CodeMirror's widget buffers while still letting the preview fill the row.
-  ".markra-code-block[data-mermaid-mode='preview']": {
-    boxSizing: "border-box",
-    display: "inline-block",
-    margin: "0",
-    maxWidth: "100%",
-    verticalAlign: "top",
-    width: "100%",
-  },
-  ".markra-code-block[data-mermaid-mode='preview'] .markra-mermaid-render": {
-    background: "transparent",
-    border: "0",
-    margin: "0",
-    padding: "0",
-  },
-  ".markra-mermaid-render svg": {
-    height: "auto",
-    maxWidth: "100%",
+  ".cm-markra-code-content-line[data-code-ligatures='false']": {
+    fontVariantLigatures: "none",
   },
 });
 
-class CodeBlockTopGapWidget extends WidgetType {
-  constructor(readonly showLineNumbers: boolean) {
-    super();
-  }
-
-  eq(other: WidgetType) {
-    return other instanceof CodeBlockTopGapWidget &&
-      other.showLineNumbers === this.showLineNumbers;
-  }
-
-  get estimatedHeight() {
-    return 12;
-  }
-
-  toDOM(view: CodeMirrorView) {
-    const gap = view.dom.ownerDocument.createElement("div");
-    gap.className = "cm-markra-code-top-gap";
-    gap.setAttribute("aria-hidden", "true");
-    gap.setAttribute(
-      "data-code-line-numbers",
-      String(this.showLineNumbers),
-    );
-    return gap;
-  }
-}
-
-function codeBlockTopGapDecorations(
-  state: EditorState,
-  showLineNumbers: boolean,
-) {
-  const gaps: Range<Decoration>[] = [];
-  syntaxTree(state).iterate({
-    enter(node) {
-      if (node.type.name !== "FencedCode") return;
-      const firstLine = state.doc.lineAt(node.from);
-      const lastLine = state.doc.lineAt(node.to);
-      if (firstLine.number === lastLine.number) return;
-      const fencedLanguage = /^\s*(?:`{3,}|~{3,})\s*([^\s`]*)/u
-        .exec(firstLine.text)?.[1] ?? "";
-      if (isMermaidLanguage(normalizeMarkraCodeLanguage(fencedLanguage))) {
-        return;
-      }
-      // Fenced code may be indented by up to three spaces. Block widgets
-      // anchored after that indentation split the folded header in WebKit.
-      gaps.push(
-        Decoration.widget({
-          block: true,
-          side: -100,
-          widget: new CodeBlockTopGapWidget(showLineNumbers),
-        }).range(firstLine.from),
-      );
-    },
-  });
-  return Decoration.set(gaps, true);
-}
-
-function createCodeBlockTopGapField(showLineNumbers: boolean) {
-  return StateField.define<DecorationSet>({
-    create: (state) => codeBlockTopGapDecorations(state, showLineNumbers),
-    update(gaps, transaction) {
-      // Background parsing commits a new tree without changing Markdown.
-      // Re-scan so blocks discovered after initial load receive their chrome.
-      const treeChanged = syntaxTreeChanged(
-        transaction.startState,
-        transaction.state,
-      );
-      return transaction.docChanged || treeChanged
-        ? codeBlockTopGapDecorations(transaction.state, showLineNumbers)
-        : gaps;
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
-}
+const codeBlockHeaderCleanups = new WeakMap<HTMLElement, () => void>();
 
 class CodeBlockHeaderWidget extends WidgetType {
   constructor(
     readonly code: string,
     readonly displayLanguage: string,
+    readonly icons: Readonly<Record<"check" | "copy" | "more", string>>,
     readonly labels: CodeBlockPreviewLabels,
     readonly language: string,
     readonly languageFrom: number,
     readonly languageTo: number,
-    readonly languages: readonly MarkraCodeLanguageOption[],
+    readonly languages: NonNullable<CodeBlockPreviewPluginOptions["languages"]>,
     readonly openingMarkTo: number,
+    readonly openCodeLanguageMenu?: CodeBlockPreviewPluginOptions["openCodeLanguageMenu"],
+    readonly positionLanguagePopover?: CodeBlockPreviewPluginOptions["positionLanguagePopover"],
+    readonly updateLanguages?: CodeBlockPreviewPluginOptions["updateLanguages"],
   ) {
     super();
   }
@@ -377,12 +176,13 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       this.code === other.code &&
       this.displayLanguage === other.displayLanguage &&
+      JSON.stringify(this.icons) === JSON.stringify(other.icons) &&
       this.language === other.language &&
       this.languageFrom === other.languageFrom &&
       this.languageTo === other.languageTo &&
       this.openingMarkTo === other.openingMarkTo &&
       JSON.stringify(this.labels) === JSON.stringify(other.labels) &&
-      JSON.stringify(this.languages) === JSON.stringify(other.languages)
+      (this.languages === other.languages || JSON.stringify(this.languages) === JSON.stringify(other.languages))
     );
   }
 
@@ -390,20 +190,23 @@ class CodeBlockHeaderWidget extends WidgetType {
     const document = view.dom.ownerDocument;
     const wrapper = document.createElement("span");
     const label = document.createElement("span");
-    const actions = document.createElement("span");
-    const languageControl = document.createElement("span");
-    const language = document.createElement("select");
+    const languageControl = label;
+    const spacer = document.createElement("span");
     const copy = document.createElement("button");
+    const more = document.createElement("button");
+    let languagePopover: HTMLElement | null = null;
+    let languageMenuHandle: MarkdownControlHandle | null = null;
+    let removeOutsideListener: (() => void) | null = null;
 
-    wrapper.className = "cm-markra-code-header-wrap";
-    label.className = "cm-markra-code-header";
+    wrapper.className = "protyle-action cm-markra-code-actions";
+    label.className = "protyle-action--first protyle-action__language markra-code-language-control cm-markra-code-header markra-code-language-label";
     label.textContent = this.displayLanguage;
-    actions.className = "cm-markra-code-header-actions";
-    languageControl.className = "markra-code-language-control";
-    language.className = "markra-code-language-select";
-    language.ariaLabel = this.labels.language;
-    language.disabled = view.state.readOnly;
-    copy.className = "markra-code-copy-button";
+    spacer.className = "fn__flex-1";
+    label.ariaLabel = this.labels.language;
+    label.role = "button";
+    label.setAttribute("aria-disabled", String(view.state.readOnly));
+    label.tabIndex = view.state.readOnly ? -1 : 0;
+    copy.className = "protyle-icon protyle-action__copy markra-code-copy-button";
     copy.type = "button";
     copy.ariaLabel = this.labels.copyCode;
     copy.title = this.labels.copyCode;
@@ -412,36 +215,28 @@ class CodeBlockHeaderWidget extends WidgetType {
       createCodeControlIcon(
         document,
         "markra-code-copy-icon",
-        copyIconChildren,
+        this.icons.copy,
       ),
       createCodeControlIcon(
         document,
         "markra-code-copy-check-icon",
-        checkIconChildren,
+        this.icons.check,
       ),
     );
+    more.className = "protyle-icon protyle-action__menu markra-code-more-button";
+    more.type = "button";
+    more.ariaLabel = this.labels.language;
+    more.title = this.labels.language;
+    more.disabled = view.state.readOnly;
+    more.append(createCodeControlIcon(
+      document,
+      "markra-code-more-icon",
+      this.icons.more,
+    ));
 
-    const languageOptions = [...this.languages];
-    if (
-      this.language &&
-      !languageOptions.some((option) => option.value === this.language)
-    ) {
-      languageOptions.push({ label: this.language, value: this.language });
-    }
-    for (const optionDefinition of languageOptions) {
-      const option = document.createElement("option");
-      option.value = optionDefinition.value;
-      option.textContent = optionDefinition.label;
-      language.append(option);
-    }
-    language.value = this.language;
-
-    language.addEventListener("mousedown", (event) => event.stopPropagation());
-    language.addEventListener("change", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    const updateLanguage = (nextValue: string) => {
       if (view.state.readOnly) return;
-      const nextLanguage = normalizeMarkraCodeLanguage(language.value);
+      const nextLanguage = normalizeMarkraCodeLanguage(nextValue);
       if (nextLanguage === this.language) return;
       view.dispatch({
         changes: this.languageFrom < this.languageTo
@@ -452,6 +247,171 @@ class CodeBlockHeaderWidget extends WidgetType {
             }
           : { from: this.openingMarkTo, insert: nextLanguage },
       });
+    };
+
+    const closeLanguagePopover = () => {
+      languageMenuHandle?.destroy();
+      languageMenuHandle = null;
+      removeOutsideListener?.();
+      removeOutsideListener = null;
+      languagePopover?.remove();
+      languagePopover = null;
+    };
+
+    const openLanguagePopover = () => {
+      if (view.state.readOnly || languagePopover || languageMenuHandle) return;
+      const baseLanguages = (typeof this.languages === "function" ? this.languages() : this.languages)
+        .map((option) => option.value)
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right));
+      let hostMenuDestroyed = false;
+      let hostHandle: MarkdownControlHandle | null = null;
+      hostHandle = this.openCodeLanguageMenu?.({
+        anchor: label,
+        currentLanguage: this.language,
+        languages: baseLanguages,
+        onDestroy: () => {
+          hostMenuDestroyed = true;
+          if (languageMenuHandle === hostHandle) languageMenuHandle = null;
+        },
+        onSelect: updateLanguage,
+        ownerDocument: document,
+      }) ?? null;
+      if (hostHandle) {
+        if (!hostMenuDestroyed) {
+          languageMenuHandle = hostHandle;
+          hostHandle.focus();
+        }
+        return;
+      }
+      const popover = document.createElement("div");
+      const content = document.createElement("div");
+      const search = document.createElement("input");
+      const list = document.createElement("div");
+      popover.className = "protyle-util markra-code-language-popover";
+      content.className = "fn__flex-column";
+      content.dataset.id = "codeLanguage";
+      content.style.maxHeight = "50vh";
+      search.className = "b3-text-field";
+      search.placeholder = this.labels.searchLanguage;
+      search.style.margin = "0 8px 4px 8px";
+      list.className = "b3-list fn__flex-1 b3-list--background";
+      list.style.position = "relative";
+      content.append(search, list);
+      popover.append(content);
+      (view.dom.closest(".markdown-editor") ?? document.body).append(popover);
+      languagePopover = popover;
+
+      const applyHostLanguages = (
+        languages: string[],
+        type: CodeBlockLanguageUpdateContext["type"],
+        value: string,
+      ) => [...(this.updateLanguages?.({ languages, listElement: list, type, value }) ?? languages)];
+      const languages = applyHostLanguages(baseLanguages, "init", "");
+
+      const renderList = (items: readonly string[], value: string) => {
+        list.replaceChildren();
+        const clear = document.createElement("div");
+        clear.className = "b3-list-item";
+        clear.dataset.id = "clearLanguage";
+        clear.textContent = this.labels.clearLanguage;
+        list.append(clear);
+        for (const item of items) {
+          const option = document.createElement("div");
+          option.className = "b3-list-item";
+          option.dataset.id = item;
+          option.textContent = item;
+          list.append(option);
+        }
+        if (value && !items.includes(value)) {
+          const custom = document.createElement("div");
+          const strong = document.createElement("b");
+          custom.className = "b3-list-item";
+          custom.dataset.id = "customLanguage";
+          strong.textContent = value.replace(/`| /gu, "_");
+          custom.append(strong);
+          list.append(custom);
+        }
+        (list.children[1] ?? list.firstElementChild)?.classList.add("b3-list-item--focus");
+      };
+
+      renderList(languages, "");
+      search.addEventListener("input", (event) => {
+        const value = search.value.trim();
+        const lowerValue = value.toLowerCase();
+        let matches = value
+          ? languages.filter((item) => item.toLowerCase().includes(lowerValue))
+            .sort((left, right) => {
+              const leftStarts = left.toLowerCase().startsWith(lowerValue);
+              const rightStarts = right.toLowerCase().startsWith(lowerValue);
+              if (leftStarts && rightStarts) return left.length - right.length;
+              if (leftStarts) return -1;
+              if (rightStarts) return 1;
+              return 0;
+            })
+          : languages;
+        matches = applyHostLanguages(matches, "match", value);
+        renderList(matches, value);
+        event.stopPropagation();
+      });
+      list.addEventListener("click", (event) => {
+        const item = (event.target as HTMLElement).closest<HTMLElement>(".b3-list-item");
+        if (!item) return;
+        const nextLanguage = item.dataset.id === "clearLanguage"
+          ? ""
+          : item.dataset.id === "customLanguage"
+            ? item.textContent ?? ""
+            : item.dataset.id ?? "";
+        closeLanguagePopover();
+        updateLanguage(nextLanguage);
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      search.addEventListener("keydown", (event) => {
+        const focused = list.querySelector<HTMLElement>(".b3-list-item--focus");
+        if (event.key === "Escape") {
+          closeLanguagePopover();
+          label.focus();
+          event.preventDefault();
+        } else if (event.key === "Enter" && focused) {
+          focused.click();
+          event.preventDefault();
+        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const items = [...list.querySelectorAll<HTMLElement>(".b3-list-item")];
+          const currentIndex = Math.max(0, items.indexOf(focused as HTMLElement));
+          const nextIndex = event.key === "ArrowDown"
+            ? Math.min(items.length - 1, currentIndex + 1)
+            : Math.max(0, currentIndex - 1);
+          focused?.classList.remove("b3-list-item--focus");
+          items[nextIndex]?.classList.add("b3-list-item--focus");
+          items[nextIndex]?.scrollIntoView({ block: "nearest" });
+          event.preventDefault();
+        }
+        event.stopPropagation();
+      });
+      this.positionLanguagePopover?.(label, popover);
+      const outsideListener = (event: MouseEvent) => {
+        const target = event.target as Node;
+        if (!popover.contains(target) && !languageControl.contains(target) && !more.contains(target)) {
+          closeLanguagePopover();
+        }
+      };
+      document.addEventListener("mousedown", outsideListener, true);
+      removeOutsideListener = () => document.removeEventListener("mousedown", outsideListener, true);
+      search.select();
+    };
+
+    label.addEventListener("mousedown", (event) => event.stopPropagation());
+    label.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLanguagePopover();
+    });
+    label.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openLanguagePopover();
+      }
     });
 
     copy.addEventListener("mousedown", (event) => event.stopPropagation());
@@ -467,12 +427,23 @@ class CodeBlockHeaderWidget extends WidgetType {
       }).catch(() => undefined);
     });
 
+    more.addEventListener("mousedown", (event) => event.stopPropagation());
+    more.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLanguagePopover();
+    });
+
     // Keep both controls in one header surface. The closing widget stays a
     // compact exit target instead of creating detached chrome below the block.
-    languageControl.append(language);
-    actions.append(languageControl, copy);
-    wrapper.append(label, actions);
+    wrapper.append(languageControl, spacer, copy, more);
+    codeBlockHeaderCleanups.set(wrapper, closeLanguagePopover);
     return wrapper;
+  }
+
+  destroy(dom: HTMLElement) {
+    codeBlockHeaderCleanups.get(dom)?.();
+    codeBlockHeaderCleanups.delete(dom);
   }
 }
 
@@ -652,6 +623,7 @@ class MermaidPreviewWidget extends WidgetType {
     preview.className = "markra-mermaid-render";
     preview.tabIndex = 0;
     preview.ariaLabel = this.labels.mermaidDiagram;
+    preview.dataset.appearanceState = "loading";
     preview.setAttribute("aria-busy", "true");
 
     const revealSource = (event: Event) => {
@@ -680,6 +652,8 @@ class MermaidPreviewWidget extends WidgetType {
       runtime.renderToken += 1;
       const token = runtime.renderToken;
       const theme = mermaidThemeFromElement(preview);
+      preview.dataset.appearanceState = "loading";
+      delete preview.dataset.error;
       preview.setAttribute("aria-busy", "true");
       this.renderMermaid({ source: this.source, theme, view })
         .then((svg) => {
@@ -689,12 +663,16 @@ class MermaidPreviewWidget extends WidgetType {
           ensureMermaidContrast(preview);
           removeEmptyMermaidLabels(preview);
           this.appendZoomButton(runtime, view, preview, wrapper);
+          preview.dataset.appearanceState = "ready";
+          preview.ariaLabel = this.labels.mermaidDiagram;
           preview.setAttribute("aria-busy", "false");
         })
         .catch(() => {
           if (token !== runtime.renderToken) return;
           preview.textContent = this.labels.mermaidError;
           preview.dataset.error = "true";
+          preview.dataset.appearanceState = "error";
+          preview.ariaLabel = this.labels.mermaidError;
           preview.setAttribute("aria-busy", "false");
         });
     };
@@ -785,6 +763,7 @@ function readMermaidPreviewBlocks(state: EditorState) {
       if (node.type.name !== "FencedCode") return;
       const parts = codeBlockParts(state, node.node as MarkraSyntaxNode);
       if (
+        !parts.hasClosingFence ||
         !parts.codeNode ||
         !parts.code.trim() ||
         !isMermaidLanguage(parts.language)
@@ -1273,7 +1252,15 @@ export function codeBlockPreviewPlugin(
 ) {
   const plainTextLabel = options.plainTextLabel?.trim() || "Plain text";
   const labels = { ...defaultLabels, ...options.labels };
+  const icons = {
+    check: "#iconCheck",
+    copy: "#iconCopy",
+    more: "#iconMore",
+    ...options.icons,
+  };
   const languages = options.languages ?? markraCodeLanguageOptions;
+  const ligatures = options.ligatures ?? true;
+  const lineWrap = options.lineWrap ?? true;
   const showLineNumbers = options.showLineNumbers ?? true;
   const highlight = options.highlight ?? ((context: CodeBlockHighlightContext) =>
     highlightMarkraCode(context.language, context.code));
@@ -1349,7 +1336,6 @@ export function codeBlockPreviewPlugin(
       // are measured explicitly, so repeated blocks cannot accumulate a
       // pointer-to-caret offset.
       createMermaidPreviewField(labels, renderMermaid),
-      createCodeBlockTopGapField(showLineNumbers),
       markraRenderer({
         id: "markra.code-block-preview",
         nodeNames: ["FencedCode"],
@@ -1359,14 +1345,8 @@ export function codeBlockPreviewPlugin(
           const parts = codeBlockParts(state, node);
           const firstLine = state.doc.lineAt(node.from);
           const lastLine = state.doc.lineAt(node.to);
-          if (
-            !parts.hasClosingFence &&
-            firstLine.number === lastLine.number
-          ) {
-            // Keep a newly typed fence visible until Enter pairs it. Folding
-            // its only line would leave a zero-height block with no caret.
-            return false;
-          }
+          // 未闭合围栏会被解析到文档末尾，闭合前保持源码可避免吞入下方正文。
+          if (!parts.hasClosingFence) return false;
           const revealed = context.revealed("line");
           // A Mermaid source selection must not collapse as soon as dragging
           // makes it non-empty. Anchor-only matching preserves drags that
@@ -1408,16 +1388,23 @@ export function codeBlockPreviewPlugin(
               line.number === firstLine.number
                 ? sourceRevealed
                   ? "cm-markra-code-source-line"
-                  : "cm-markra-code-header-line"
+                  : "cm-markra-code-opening-line"
                 : parts.hasClosingFence && line.number === lastLine.number
                   ? sourceRevealed
                     ? "cm-markra-code-source-line"
                     : "cm-markra-code-closing-line"
                   : "cm-markra-code-content-line";
             const codeContentLine = roleClass === "cm-markra-code-content-line";
+            const positionClasses = codeContentLine
+              ? `${line.number === firstLine.number + 1 ? " markra-code-block cm-markra-code-content-first" : ""}${
+                line.number === lastLine.number - 1 ? " cm-markra-code-content-last" : ""
+              }`
+              : "";
             if (codeContentLine) codeLineNumber += 1;
             const lineNumberVisibility = {
+              "data-code-ligatures": String(ligatures),
               "data-code-line-numbers": String(showLineNumbers),
+              "data-code-line-wrap": String(lineWrap),
             };
             context.add(
               Decoration.line({
@@ -1435,7 +1422,7 @@ export function codeBlockPreviewPlugin(
                         "data-code-block-end": String(node.to),
                       }
                     : undefined,
-                class: `cm-markra-code-line ${roleClass}`,
+                class: `cm-markra-code-line ${roleClass}${positionClasses}`,
               }).range(line.from),
             );
           }
@@ -1446,12 +1433,16 @@ export function codeBlockPreviewPlugin(
                 widget: new CodeBlockHeaderWidget(
                   parts.code,
                   parts.language || plainTextLabel,
+                  icons,
                   labels,
                   parts.language,
                   parts.languageFrom,
                   parts.languageTo,
                   languages,
                   parts.openingMarkTo,
+                  options.openCodeLanguageMenu,
+                  options.positionLanguagePopover,
+                  options.updateLanguages,
                 ),
               }).range(firstLine.from, firstLine.to),
             );

@@ -15,6 +15,8 @@ import {
 import {hasClosestBlock, hasClosestByAttribute, hasClosestByClassName, hasClosestByTag} from "../util/hasClosest";
 import {Link} from "./Link";
 import {setPosition} from "../../util/setPosition";
+import {getCodeLanguages} from "../codeLanguage";
+import {mountCodeLanguageMenu} from "../codeLanguageMenu";
 import {transaction, updateTransaction} from "../wysiwyg/transaction";
 import {Constants} from "../../constants";
 import {
@@ -1339,136 +1341,42 @@ export class Toolbar {
         window.siyuan.menus.menu.remove();
         this.range = getEditorRange(nodeElement);
         this.clearSubElement();
-        this.subElement.innerHTML = `<div data-id="codeLanguage" class="fn__flex-column" style="max-height:50vh">
-    <input placeholder="${window.siyuan.languages.search}" style="margin: 0 8px 4px 8px" class="b3-text-field"/>
-    <div class="b3-list fn__flex-1 b3-list--background" style="position: relative"></div>
-</div>`;
-        const listElement = this.subElement.lastElementChild.lastElementChild as HTMLElement;
-
-        let html = `<div data-id="clearLanguage" class="b3-list-item">${window.siyuan.languages.clear}</div>`;
-        let hljsLanguages = Constants.ALIAS_CODE_LANGUAGES.concat(window.hljs?.listLanguages() ?? []).sort();
-
-        const eventDetail = {languages: hljsLanguages, type: "init", listElement};
-        if (protyle.app && protyle.app.plugins) {
-            protyle.app.plugins.forEach((plugin: any) => {
-                plugin.eventBus.emit("code-language-update", eventDetail);
-            });
-        }
-
-        hljsLanguages = eventDetail.languages;
-        hljsLanguages.forEach((item) => {
-            html += `<div data-id="${item}" class="b3-list-item">${item}</div>`;
-        });
-
-        listElement.innerHTML = html;
-        listElement.firstElementChild.nextElementSibling.classList.add("b3-list-item--focus");
-
-        const inputElement = this.subElement.querySelector("input");
-        inputElement.addEventListener("keydown", (event: KeyboardEvent) => {
-            event.stopPropagation();
-            if (event.isComposing) {
-                return;
-            }
-            upDownHint(listElement, event);
-            if (event.key === "Enter") {
-                this.updateLanguage(languageElements, protyle, this.subElement.querySelector(".b3-list-item--focus").textContent);
-                event.preventDefault();
-                return;
-            }
-            if (event.key === "Escape") {
-                this.subElement.classList.add("fn__none");
-                focusByRange(this.range);
-            }
-        });
-
-        const highlightText = (text: string, search: string) => {
-            // 转义正则特殊字符
-            const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            // 创建不区分大小写的正则表达式
-            const regex = new RegExp(escapedSearch, "gi");
-            // 替换匹配内容并保留原始大小写
-            return text.replace(regex, match =>
-                `<b>${match}</b>`
-            );
-        };
-
-        inputElement.addEventListener("input", (event) => {
-            const value = inputElement.value.trim();
-            let matchLanguages;
-            let html = `<div data-id="clearLanguage" class="b3-list-item">${window.siyuan.languages.clear}</div>`;
-            let isMatchLanguages = false;
-            // Sort
-            if (value) {
-                const lowerCaseValue = value.toLowerCase();
-                matchLanguages = hljsLanguages.filter(
-                    item => item.toLowerCase().includes(lowerCaseValue)
-                ).sort((a, b) => {
-                    // 不区分大小写
-                    const aStartsWith = a.toLowerCase().startsWith(lowerCaseValue);
-                    const bStartsWith = b.toLowerCase().startsWith(lowerCaseValue);
-
-                    // 两者都匹配开头时，短字符串优先
-                    if (aStartsWith && bStartsWith) return a.length - b.length;
-                    if (aStartsWith) return -1;
-                    if (bStartsWith) return 1;
-
-                    // 都不匹配时保持原顺序
-                    return 0;
-                });
-
-                if (window.hljs?.getLanguage(value)) {
-                    // Default languages and their aliases
-                    matchLanguages = [value].concat(matchLanguages.filter(item => item !== value));
-                }
-            }
-
-            const eventDetail = {languages: value ? matchLanguages : hljsLanguages, type: "match", value, listElement};
-            if (protyle.app && protyle.app.plugins) {
-                protyle.app.plugins.forEach((plugin: any) => {
-                    plugin.eventBus.emit("code-language-update", eventDetail);
-                });
-            }
-
-            matchLanguages = eventDetail.languages;
-            if (value) {
-                matchLanguages.forEach((item) => {
-                    if (value === item) {
-                        isMatchLanguages = true;
-                        html += `<div data-id="${item}" class="b3-list-item"><b>${item}</b></div>`;
-                    } else {
-                        html += `<div data-id="${item}" class="b3-list-item">${highlightText(item, value)}</div>`;
-                    }
-                });
-            } else {
-                matchLanguages.forEach((item) => {
-                    html += `<div data-id="${item}" class="b3-list-item">${item}</div>`;
-                });
-            }
-            if (value && !isMatchLanguages) {
-                html += `<div data-id="customLanguage" class="b3-list-item"><b>${escapeHtml(value.replace(/`| /g, "_"))}</b></div>`;
-            }
-            listElement.innerHTML = html;
-            listElement.firstElementChild.nextElementSibling.classList.add("b3-list-item--focus");
-            event.stopPropagation();
-        });
-        listElement.addEventListener("click", (event) => {
-            const target = event.target as HTMLElement;
-            const listElement = hasClosestByClassName(target, "b3-list-item");
-            if (!listElement) {
-                return;
-            }
-            this.updateLanguage(languageElements, protyle, listElement.textContent);
-        });
         this.subElement.style.zIndex = (++window.siyuan.zIndex).toString();
-        this.subElement.classList.remove("fn__none");
-        /// #if !MOBILE
-        const nodeRect = languageElements[0].getBoundingClientRect();
-        setPosition(this.subElement, nodeRect.left, nodeRect.bottom, nodeRect.height);
-        /// #else
-        setPosition(this.subElement, 0, 0);
-        /// #endif
+        const handle = mountCodeLanguageMenu({
+            anchor: languageElements[0],
+            container: this.subElement.parentElement ?? document.body,
+            currentLanguage: languageElements[0].textContent ?? "",
+            element: this.subElement,
+            labels: {
+                clear: window.siyuan.languages.clear,
+                search: window.siyuan.languages.search,
+            },
+            languages: getCodeLanguages(),
+            onFilter: (detail) => {
+                protyle.app?.plugins?.forEach((plugin: any) => {
+                    try {
+                        plugin.eventBus.emit("code-language-update", detail);
+                    } catch (error) {
+                        console.warn("code-language-update failed", error);
+                    }
+                    detail.languages = [...new Set((Array.isArray(detail.languages) ? detail.languages : [])
+                        .filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
+                });
+                return detail.languages;
+            },
+            onSelect: (language) => this.updateLanguage(languageElements, protyle, language),
+            position: (_anchor, popover) => {
+                /// #if !MOBILE
+                const nodeRect = languageElements[0].getBoundingClientRect();
+                setPosition(popover, nodeRect.left, nodeRect.bottom, nodeRect.height);
+                /// #else
+                setPosition(popover, 0, 0);
+                /// #endif
+            },
+        });
+        this.subElementCloseCB = () => handle.destroy();
         this.element.classList.add("fn__none");
-        inputElement.select();
+        handle.focus();
     }
 
     public showMultiSelectMode(protyle: IProtyle, blockElement: HTMLElement) {

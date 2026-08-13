@@ -2,6 +2,8 @@ import type {App} from "../index";
 import {showMessage} from "../dialog/message";
 import {openLink} from "../editor/openLink";
 import {processRender} from "../protyle/util/processCode";
+import {setPosition} from "../util/setPosition";
+import {mountCodeLanguageMenu, type CodeLanguageFilterDetail} from "../protyle/codeLanguageMenu";
 import {
     type MarkdownClipboardAssetRequest,
     type MarkdownHostAdapter,
@@ -9,11 +11,32 @@ import {
     type MarkdownRenderContext,
 } from "./markra-core/adapter";
 import {createSiyuanMarkdownIcon} from "./markra-core/shared";
+import {convertSiyuanClipboardHtmlToMarkdown} from "./luteHtmlConverter";
+import {mountSiyuanMarkdownPopover} from "./siyuanMarkdownPopover";
+
+export {mountSiyuanMarkdownPopover} from "./siyuanMarkdownPopover";
 
 export interface SiyuanMarkdownAdapterOptions {
     app: App;
     documentPath(): string;
 }
+
+const normalizeCodeLanguages = (value: unknown) => [...new Set((Array.isArray(value) ? value : [])
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim()))];
+
+const emitCodeLanguageUpdate = (app: App, detail: CodeLanguageFilterDetail) => {
+    detail.languages = normalizeCodeLanguages(detail.languages);
+    app.plugins.forEach((plugin) => {
+        try {
+            plugin.eventBus.emit("code-language-update", detail);
+        } catch (error) {
+            console.warn("code-language-update failed", error);
+        }
+        detail.languages = normalizeCodeLanguages(detail.languages);
+    });
+    return detail.languages;
+};
 
 const iconName = (name: MarkdownIconName) => {
     if (name === "trash") {
@@ -87,19 +110,47 @@ const renderWithSiyuan = (source: string, subtype: "math" | "mermaid", context: 
 export const createSiyuanMarkdownAdapter = (
     options: SiyuanMarkdownAdapterOptions,
 ): MarkdownHostAdapter => ({
+    convertHtmlToMarkdown: convertSiyuanClipboardHtmlToMarkdown,
     createIcon(name, className, ownerDocument) {
         return createSiyuanMarkdownIcon(ownerDocument, iconName(name), className);
     },
     notifyError(message) {
         showMessage(message, 6000, "error");
     },
+    mountPopover(request) {
+        return mountSiyuanMarkdownPopover({
+            ...request,
+            position(anchor, popover) {
+                const rect = anchor.getBoundingClientRect();
+                setPosition(popover, rect.left, rect.bottom, rect.height);
+            },
+        });
+    },
+    openCodeLanguageMenu(request) {
+        return mountCodeLanguageMenu({
+            anchor: request.anchor,
+            container: request.anchor.closest(".markdown-editor") ?? request.ownerDocument.body,
+            currentLanguage: request.currentLanguage,
+            languages: request.languages,
+            labels: {
+                clear: window.siyuan.languages.clear,
+                search: window.siyuan.languages.search,
+            },
+            onDestroy: request.onDestroy,
+            onFilter: (detail) => emitCodeLanguageUpdate(options.app, detail),
+            onSelect: request.onSelect,
+            position: (anchor, popover) => {
+                const rect = anchor.getBoundingClientRect();
+                setPosition(popover, rect.left, rect.bottom, rect.height);
+            },
+        });
+    },
     openLink(target) {
         openLink(options.app, target);
     },
     positionPopover(anchor, popover) {
         const anchorRect = anchor.getBoundingClientRect();
-        popover.style.left = `${Math.max(8, anchorRect.left)}px`;
-        popover.style.top = `${anchorRect.bottom + 6}px`;
+        setPosition(popover, anchorRect.left, anchorRect.bottom, anchorRect.height);
     },
     renderMath(source, _displayMode, context) {
         return renderWithSiyuan(source, "math", context);
@@ -111,4 +162,7 @@ export const createSiyuanMarkdownAdapter = (
         return resolveMarkdownImageSource(source);
     },
     saveClipboardAssets: uploadMarkdownAssets,
+    updateCodeLanguages(detail) {
+        return emitCodeLanguageUpdate(options.app, detail);
+    },
 });

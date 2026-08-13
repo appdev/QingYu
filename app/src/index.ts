@@ -48,6 +48,7 @@ import {setBodyHighlight} from "./util/assets";
 import {reloadSync} from "./util/reloadSync";
 import {setTitle} from "./util/processTitle";
 import {handleMarkdownSaveBarrier} from "./markdown/saveBarrier";
+import {installMarkdownAppearanceRuntimeHarness} from "./markdown/appearance/runtimeHarness";
 
 export class App {
     public plugins: import("./plugin").Plugin[] = [];
@@ -285,6 +286,10 @@ export class App {
 }
 
 const siyuanApp = new App();
+
+if (process.env.NODE_ENV === "development") {
+    installMarkdownAppearanceRuntimeHarness(siyuanApp);
+}
 
 window.openFileByURL = (openURL) => {
     const blockInfo = parseSiYuanUriInfo(openURL);

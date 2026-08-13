@@ -1,4 +1,5 @@
 @use "../util/function";
+@use "../util/editor-appearance" as editorAppearance;
 
 @font-face {
   font-family: 'JetBrainsMono-Regular';
@@ -8,11 +9,7 @@
 
 .b3-typography,
 .protyle-wysiwyg {
-  font-variant-ligatures: no-common-ligatures;
-  display: flex;
-  flex-direction: column;
-  font-size: var(--b3-font-size-editor);
-  font-family: var(--b3-font-family-protyle);
+  @include editorAppearance.editor-content-root;
 
   img {
     max-width: 100%;
@@ -24,10 +21,7 @@
   & > p,
   blockquote > p,
   [data-node-id] {
-    line-height: 1.625;
-    padding: 4px;
-    margin: 2px 0;
-    border-radius: var(--b3-border-radius);
+    @include editorAppearance.editor-block-box;
   }
 
   ins > iframe {
@@ -53,21 +47,18 @@
   em,
   a[data-type~="em"],
   span[data-type~="em"] {
-    font-style: italic;
-    color: var(--b3-protyle-inline-em-color);
+    @include editorAppearance.editor-inline-format(emphasis);
   }
 
   s,
   span[data-type~="s"] {
-    color: var(--b3-protyle-inline-s-color);
-    text-decoration: line-through;
+    @include editorAppearance.editor-inline-format(strikethrough);
   }
 
   strong,
   a[data-type~="strong"],
   span[data-type~="strong"] {
-    font-weight: bold;
-    color: var(--b3-protyle-inline-strong-color);
+    @include editorAppearance.editor-inline-format(strong);
   }
 
   span[data-type~="inline-math"] {
@@ -116,8 +107,7 @@
 
   mark,
   span[data-type~="mark"] {
-    background-color: var(--b3-protyle-inline-mark-background);
-    color: var(--b3-protyle-inline-mark-color);
+    @include editorAppearance.editor-inline-format(highlight);
 
     &.mark--hl {
       background-color: var(--b3-theme-primary-lighter);
@@ -257,53 +247,37 @@
   h4,
   h5,
   h6 {
-    padding: 4px;
-    margin: 2px 0;
-  }
-
-  .h1,
-  .h2,
-  .h3,
-  .h4,
-  .h5,
-  .h6,
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6 {
-    font-weight: 600;
+    @include editorAppearance.editor-block-box;
   }
 
   h1,
   .h1 {
-    font-size: 1.75em;
+    @include editorAppearance.editor-heading(1, 1.75em);
   }
 
   h2,
   .h2 {
-    font-size: 1.55em;
+    @include editorAppearance.editor-heading(2, 1.55em);
   }
 
   .h3,
   h3 {
-    font-size: 1.38em;
+    @include editorAppearance.editor-heading(3, 1.38em);
   }
 
   .h4,
   h4 {
-    font-size: 1.25em
+    @include editorAppearance.editor-heading(4, 1.25em);
   }
 
   .h5,
   h5 {
-    font-size: 1.13em;
+    @include editorAppearance.editor-heading(5, 1.13em);
   }
 
   .h6,
   h6 {
-    font-size: 1em;
+    @include editorAppearance.editor-heading(6, 1em);
   }
 
   audio {
@@ -366,6 +340,7 @@
   code:not(.hljs),
   span[data-type~="code"] {
     @extend .fn__code;
+    @include editorAppearance.editor-inline-format(code);
     tab-size: 4;
   }
 

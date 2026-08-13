@@ -30,11 +30,15 @@ export type {
 export {
   addCodeMirrorBlockBelow,
   codeMirrorBlockDragPlugin,
+  createCodeMirrorBlockDropIndicator,
   moveCodeMirrorBlock,
   readCodeMirrorBlockRanges,
 } from "./block-drag";
 export type { CodeMirrorClipboardAssetsPluginOptions } from "./clipboard-assets";
-export { codeMirrorClipboardAssetsPlugin } from "./clipboard-assets";
+export {
+  codeMirrorClipboardAssetsPlugin,
+  createClipboardUploadPlaceholder,
+} from "./clipboard-assets";
 export type { CalloutPreviewPluginOptions } from "./callout-preview";
 export { calloutPreviewPlugin } from "./callout-preview";
 export type {

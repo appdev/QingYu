@@ -519,7 +519,7 @@ function createControl(
 ) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `markra-table-control ${className}`;
+  button.className = `block__icon markra-table-control ${className}`;
   button.ariaLabel = label;
   button.title = label;
   button.addEventListener("mousedown", (event) => {
@@ -1494,7 +1494,7 @@ class TableWidget extends WidgetType {
 
     const sizeButton = document.createElement("button");
     sizeButton.type = "button";
-    sizeButton.className = "markra-table-control markra-table-size-button";
+    sizeButton.className = "block__icon markra-table-control markra-table-size-button";
     sizeButton.ariaLabel = this.labels.adjustTable;
     sizeButton.ariaExpanded = "false";
     sizeButton.title = this.labels.adjustTable;
@@ -1708,9 +1708,7 @@ class TableWidget extends WidgetType {
 const tableTheme = EditorView.baseTheme({
   ".cm-markra-table-wrap": {
     display: "block",
-    margin: "1.5em 0",
     overflow: "visible",
-    padding: "44px 2.25em 2.25em 0",
     position: "relative",
   },
   ".cm-markra-table-hidden-line": {
@@ -1721,51 +1719,14 @@ const tableTheme = EditorView.baseTheme({
     overflowX: "auto",
   },
   ".markra-table-align-controls": {
-    alignItems: "center",
     display: "flex",
-    gap: "8px",
     left: "0",
-    maxWidth: "100%",
     position: "absolute",
     top: "0",
-    zIndex: "10",
-  },
-  ".markra-table-control-group": {
-    alignItems: "center",
-    display: "inline-flex",
-    flex: "0 0 auto",
-    gap: "1px",
-    padding: "3px",
   },
   ".markra-table-control": {
-    alignItems: "center",
-    borderRadius: "999px",
     cursor: "pointer",
-    display: "inline-flex",
-    height: "1.5em",
-    justifyContent: "center",
-    opacity: "0",
-    padding: "0",
-    pointerEvents: "none",
     position: "absolute",
-    transition: "opacity 150ms ease",
-    width: "1.5em",
-  },
-  ".cm-markra-table-wrap:hover .markra-table-control, .cm-markra-table-wrap:focus-within .markra-table-control": {
-    opacity: "1",
-    pointerEvents: "auto",
-  },
-  ".markra-table-size-button, .markra-table-align-button, .markra-table-width-button, .markra-table-delete-table": {
-    borderRadius: "6px",
-    height: "28px",
-    opacity: "1",
-    pointerEvents: "auto",
-    position: "static",
-    width: "28px",
-  },
-  ".markra-table-control-icon": {
-    height: "16px",
-    width: "16px",
   },
   ".markra-table-add-column": {
     right: "0.375em",
@@ -1780,43 +1741,12 @@ const tableTheme = EditorView.baseTheme({
   ".markra-table-delete-control": {
     transform: "translate(-50%, -50%)",
   },
-  ".cm-markra-table": {
-    borderCollapse: "collapse",
-    width: "100%",
-  },
-  ".markra-table-size-popover": {
-    background: "var(--bg-primary, Canvas)",
-    border: "1px solid var(--border-default, currentColor)",
-    borderRadius: "0.5em",
-    boxShadow: "0 0.75em 2em rgb(0 0 0 / 18%)",
-    padding: "0.55em",
-    zIndex: "100",
-  },
   ".markra-table-size-grid": {
     display: "grid",
-    gap: "0.18em",
     gridTemplateColumns: `repeat(${tableSizePickerColumns}, 1.05em)`,
   },
-  ".markra-table-size-cell": {
-    aspectRatio: "1",
-    background: "color-mix(in srgb, currentColor 4%, transparent)",
-    border: "1px solid color-mix(in srgb, currentColor 20%, transparent)",
-    borderRadius: "0.12em",
-    padding: "0",
-  },
-  ".markra-table-size-cell:hover, .markra-table-size-cell:focus": {
-    background: "color-mix(in srgb, var(--accent, currentColor) 22%, transparent)",
-    borderColor: "var(--accent, currentColor)",
-  },
   ".markra-table-size-footer": {
-    alignItems: "center",
     display: "flex",
-    gap: "0.35em",
-    justifyContent: "center",
-    marginTop: "0.5em",
-  },
-  ".markra-table-size-input": {
-    width: "3.5em",
   },
   '.cm-markra-table[data-width-mode="auto"]': {
     tableLayout: "auto",
@@ -1825,19 +1755,9 @@ const tableTheme = EditorView.baseTheme({
     tableLayout: "fixed",
   },
   ".cm-markra-table th, .cm-markra-table td": {
-    border: "1px solid color-mix(in srgb, currentColor 18%, transparent)",
     cursor: "text",
     outline: "none",
-    padding: "0.42em 0.65em",
     position: "relative",
-    verticalAlign: "top",
-  },
-  '.cm-markra-table[contenteditable="true"] th:focus, .cm-markra-table[contenteditable="true"] td:focus': {
-    boxShadow: "inset 0 0 0 2px currentColor",
-  },
-  ".cm-markra-table th": {
-    backgroundColor: "color-mix(in srgb, currentColor 5%, transparent)",
-    fontWeight: "650",
   },
 });
 

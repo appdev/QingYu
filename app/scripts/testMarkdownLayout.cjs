@@ -1,11 +1,14 @@
 const path = require("path");
 const {app, BrowserWindow} = require("electron");
 const sass = require("sass");
+const {markdownToBlockDOM} = require("./markdownAppearanceFixture.cjs");
 
 app.commandLine.appendSwitch("disable-gpu");
 
 app.whenReady().then(async () => {
     const css = sass.compile(path.join(__dirname, "../src/assets/scss/base.scss")).css;
+    const nativeCodeBlockDOM = markdownToBlockDOM("```javascript\nconst nativeValue = 1;\n```")
+        .replace("const nativeValue = 1;", "<span class=\"hljs-keyword\">const</span>&nbsp;nativeValue = 1;");
     const window = new BrowserWindow({
         width: 500,
         show: false,
@@ -15,7 +18,7 @@ app.whenReady().then(async () => {
     });
     const columns = Array.from({length: 8}, (_, index) => `<th>Column ${index + 1} with a long heading</th>`).join("");
     const cells = Array.from({length: 8}, (_, index) => `<td>Value ${index + 1} with content that keeps the table wide</td>`).join("");
-    const html = `<!doctype html><style>.syntax-token{color:rgb(224, 108, 117)}.toolbar-fixture .markra-table-control{opacity:1;pointer-events:auto}${css}</style>
+    const html = `<!doctype html><style>.syntax-token{color:rgb(224, 108, 117)}.hljs-keyword{color:rgb(197, 80, 90)}.toolbar-fixture .markra-table-control{opacity:1;pointer-events:auto}.parity-fixture .protyle-wysiwyg .code-block{background-color:rgb(24, 25, 26);border-radius:8px}${css}</style>
 <div class="protyle markdown-editor" style="--b3-theme-primary:rgb(66, 133, 244);height:600px;width:480px">
     <div class="protyle-content markdown-editor__content">
         <div class="markdown-editor__body">
@@ -29,7 +32,7 @@ app.whenReady().then(async () => {
         </div>
     </div>
 </div>
-<div class="protyle markdown-editor" id="visual-editor" style="--b3-markdown-h1-color:rgb(120, 40, 160);--b3-markdown-h1-font-size:36px;--b3-markdown-link-color:rgb(20, 110, 180);--b3-markdown-root-color:rgb(33, 33, 33);--b3-theme-on-background:rgb(33, 33, 33);--b3-theme-primary:rgb(66, 133, 244);height:200px;width:480px">
+<div class="protyle markdown-editor" id="visual-editor" style="--b3-editor-appearance-block-heading-1-color:rgb(120, 40, 160);--b3-editor-appearance-block-heading-1-font-size:36px;--b3-editor-appearance-inline-link-color:rgb(20, 110, 180);--b3-editor-appearance-shell-document-color:rgb(33, 33, 33);--b3-theme-on-background:rgb(33, 33, 33);--b3-theme-primary:rgb(66, 133, 244);height:200px;width:480px">
     <div class="cm-editor" data-markdown-mode="visual">
         <div class="cm-content">
             <div class="cm-line cm-markra-h1"><span class="syntax-token">Visual heading</span></div>
@@ -61,7 +64,7 @@ app.whenReady().then(async () => {
         <div class="protyle-title markdown-editor__title"><div class="protyle-title__input">Theme title</div></div>
     </div>
 </div>
-<div class="protyle markdown-editor" id="mobile-editor" style="height:640px;width:375px">
+<div class="protyle markdown-editor" data-markdown-platform="mobile" id="mobile-editor" style="height:640px;width:375px">
     <div class="protyle-content markdown-editor__content">
         <div class="protyle-top markdown-editor__top">
             <div class="protyle-title markdown-editor__title">Mobile.md</div>
@@ -85,9 +88,14 @@ app.whenReady().then(async () => {
                 <span class="markra-table-control-group markra-table-delete-controls" data-table-control-group="delete"><button class="markra-table-control markra-table-delete-table"><svg class="markra-table-control-icon"></svg></button></span>
             </span>
             <div class="markra-table-scroll"><table class="cm-markra-table"><tbody><tr><td>内容</td></tr></tbody></table></div>
-        </div>
     </div>
-</div>`;
+</div>
+</div>
+<div class="protyle markdown-editor parity-fixture" id="code-parity-editor" style="--b3-font-family-code:'Theme Code';--b3-editor-appearance-block-code-background-color:rgb(24, 25, 26);--b3-editor-appearance-block-code-border-radius:8px;--b3-editor-appearance-control-code-language-color:rgb(91, 92, 93);--b3-theme-on-surface:rgb(91, 92, 93);width:640px">
+    <div class="protyle-wysiwyg" data-appearance-fixture="native">${nativeCodeBlockDOM}</div>
+    <div class="cm-editor" data-markdown-mode="visual"><div class="cm-content"><div class="cm-line cm-markra-code-line cm-markra-code-opening-line"><span class="protyle-action cm-markra-code-actions"><button class="protyle-action--first protyle-action__language markra-code-language-control cm-markra-code-header markra-code-language-label">javascript</button><span class="fn__flex-1"></span><button class="protyle-icon protyle-action__copy markra-code-copy-button" data-copied="false"><svg class="markra-code-copy-icon"></svg><svg class="markra-code-copy-check-icon"></svg></button><button class="protyle-icon protyle-action__menu markra-code-more-button"><svg></svg></button></span></div><div class="cm-line cm-markra-code-line cm-markra-code-content-line cm-markra-code-content-first cm-markra-code-content-last"><span class="cm-markra-code-token hljs-keyword">const</span>&nbsp;markdownValue = 1;</div><div class="cm-line cm-markra-code-line cm-markra-code-closing-line"></div></div></div>
+</div>
+`;
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     const metrics = await window.webContents.executeJavaScript(`(() => {
         const editor = document.querySelector(".markdown-editor");
@@ -140,6 +148,21 @@ app.whenReady().then(async () => {
         const lightDeleteToolbarButton = lightToolbar.querySelector(".markra-table-delete-table");
         const toolbarRect = toolbar.getBoundingClientRect();
         const toolbarTableRect = toolbarEditor.querySelector(".cm-markra-table").getBoundingClientRect();
+        const codeParityEditor = document.querySelector("#code-parity-editor");
+        const nativeCode = codeParityEditor.querySelector(".code-block");
+        const nativeCodeContent = codeParityEditor.querySelector(".hljs");
+        const nativeCodeAction = codeParityEditor.querySelector(".protyle-action__language");
+        const nativeCodeActions = codeParityEditor.querySelector(".code-block > .protyle-action");
+        const nativeCopyButton = codeParityEditor.querySelector(".protyle-wysiwyg .protyle-action__copy");
+        const markdownCode = codeParityEditor.querySelector(".cm-markra-code-content-first");
+        const markdownCodeContent = codeParityEditor.querySelector(".cm-markra-code-content-line");
+        const markdownCodeActions = codeParityEditor.querySelector(".cm-markra-code-actions");
+        const nativeCodeToken = codeParityEditor.querySelector(".protyle-wysiwyg .hljs-keyword");
+        const markdownCodeToken = codeParityEditor.querySelector(".cm-markra-code-token.hljs-keyword");
+        const markdownCodeAction = codeParityEditor.querySelector(".markra-code-language-label");
+        const markdownCopyButton = codeParityEditor.querySelector(".markra-code-copy-button");
+        const markdownCopyIcon = codeParityEditor.querySelector(".markra-code-copy-icon");
+        const markdownCopyCheckIcon = codeParityEditor.querySelector(".markra-code-copy-check-icon");
         const imageFrameRect = imageFrame.getBoundingClientRect();
         const imageHandleRect = imageHandle.getBoundingClientRect();
         return {
@@ -168,8 +191,8 @@ app.whenReady().then(async () => {
             visualHeadingColor: getComputedStyle(visualHeading).color,
             visualHeadingFontSize: getComputedStyle(visualHeading.closest(".cm-markra-h1")).fontSize,
             visualLinkColor: getComputedStyle(visualLink).color,
-            visualThemeHeadingColor: getComputedStyle(visualEditor).getPropertyValue("--b3-markdown-h1-color").trim(),
-            visualThemeLinkColor: getComputedStyle(visualEditor).getPropertyValue("--b3-markdown-link-color").trim(),
+            visualThemeHeadingColor: getComputedStyle(visualEditor).getPropertyValue("--b3-editor-appearance-block-heading-1-color").trim(),
+            visualThemeLinkColor: getComputedStyle(visualEditor).getPropertyValue("--b3-editor-appearance-inline-link-color").trim(),
             enlargedImageFrameWidth: enlargedImageFrame.getBoundingClientRect().width,
             enlargedImageWidth: enlargedImage.getBoundingClientRect().width,
             enlargedImageHeight: enlargedImage.getBoundingClientRect().height,
@@ -204,6 +227,7 @@ app.whenReady().then(async () => {
             toolbarGroupCount: toolbarGroups.length,
             toolbarGroupTops: toolbarGroups.map((group) => group.getBoundingClientRect().top),
             toolbarHeight: toolbarRect.height,
+            toolbarTop: toolbarRect.top,
             toolbarIconHeights: toolbarIcons.map((icon) => icon.getBoundingClientRect().height),
             toolbarIconWidths: toolbarIcons.map((icon) => icon.getBoundingClientRect().width),
             toolbarRight: toolbarRect.right,
@@ -211,9 +235,36 @@ app.whenReady().then(async () => {
             toolbarSelectedColor: getComputedStyle(selectedToolbarButton).color,
             toolbarSurfaceRight: toolbarSurface.getBoundingClientRect().right,
             toolbarTableTop: toolbarTableRect.top,
+            toolbarTableBottom: toolbarTableRect.bottom,
             toolbarBottom: toolbarRect.bottom,
             toolbarThemeOnSurface: getComputedStyle(toolbarEditor).getPropertyValue("--b3-theme-on-surface").trim(),
             toolbarThemePrimary: getComputedStyle(toolbarEditor).getPropertyValue("--b3-theme-primary").trim(),
+            nativeCodeBackground: getComputedStyle(nativeCode).backgroundColor,
+            nativeCodeRadius: getComputedStyle(nativeCode).borderRadius,
+            nativeCodeFontFamily: getComputedStyle(nativeCodeContent).fontFamily,
+            nativeCodeActionColor: getComputedStyle(nativeCodeAction).color,
+            markdownCodeBackground: getComputedStyle(markdownCode).backgroundColor,
+            markdownCodeRadius: getComputedStyle(markdownCode).borderTopLeftRadius,
+            markdownCodeFontFamily: getComputedStyle(markdownCodeContent).fontFamily,
+            markdownCodeActionColor: getComputedStyle(markdownCodeAction).color,
+            nativeCodeTextOffset: nativeCodeToken.getBoundingClientRect().top - nativeCode.getBoundingClientRect().top,
+            markdownCodeTextOffset: markdownCodeToken.getBoundingClientRect().top - markdownCode.getBoundingClientRect().top,
+            nativeCodeHeight: nativeCode.getBoundingClientRect().height,
+            markdownCodeHeight: markdownCode.getBoundingClientRect().height,
+            nativeCodeLanguageLeft: nativeCodeAction.getBoundingClientRect().left - nativeCode.getBoundingClientRect().left,
+            markdownCodeLanguageLeft: markdownCodeAction.getBoundingClientRect().left - markdownCode.getBoundingClientRect().left,
+            nativeCodeLanguageTop: nativeCodeAction.getBoundingClientRect().top - nativeCode.getBoundingClientRect().top,
+            markdownCodeLanguageTop: markdownCodeAction.getBoundingClientRect().top - markdownCode.getBoundingClientRect().top,
+            nativeCodeActionRight: nativeCode.getBoundingClientRect().right - nativeCodeActions.getBoundingClientRect().right,
+            markdownCodeActionRight: markdownCode.getBoundingClientRect().right - markdownCodeActions.getBoundingClientRect().right,
+            nativeCodeActionTop: nativeCodeActions.getBoundingClientRect().top - nativeCode.getBoundingClientRect().top,
+            markdownCodeActionTop: markdownCodeActions.getBoundingClientRect().top - markdownCode.getBoundingClientRect().top,
+            nativeCodeTokenColor: getComputedStyle(nativeCodeToken).color,
+            markdownCodeTokenColor: getComputedStyle(markdownCodeToken).color,
+            markdownCopyIconDisplay: getComputedStyle(markdownCopyIcon).display,
+            markdownCopyCheckIconDisplay: getComputedStyle(markdownCopyCheckIcon).display,
+            markdownCopyButtonWidth: markdownCopyButton.getBoundingClientRect().width,
+            nativeCopyButtonWidth: nativeCopyButton.getBoundingClientRect().width,
         };
     })()`);
     const keepsTabWidth = metrics.editorScrollWidth === metrics.editorClientWidth &&
@@ -289,7 +340,8 @@ app.whenReady().then(async () => {
     const toolbarFitsNarrowEditor = metrics.toolbarEditorScrollWidth === metrics.toolbarEditorClientWidth &&
         metrics.toolbarScrollWidth <= metrics.toolbarEditorClientWidth &&
         metrics.toolbarRight <= metrics.toolbarSurfaceRight + 1 &&
-        metrics.toolbarTableTop >= metrics.toolbarBottom + 7 &&
+        metrics.toolbarTableTop <= metrics.toolbarTop + 1 &&
+        metrics.toolbarTableBottom >= metrics.toolbarBottom - 1 &&
         metrics.toolbarGroupCount === 4 &&
         metrics.toolbarGroupTops.every((top) => Math.abs(top - metrics.toolbarGroupTops[0]) <= 0.5) &&
         metrics.toolbarGap === "8px" &&
@@ -305,6 +357,25 @@ app.whenReady().then(async () => {
         metrics.lightToolbarDeleteColor === metrics.lightToolbarThemeOnSurface;
     if (!toolbarFitsNarrowEditor) {
         console.error("Markdown table toolbar does not fit the narrow editor", metrics);
+        app.exit(1);
+        return;
+    }
+    const codeBlockUsesNativeTheme = metrics.markdownCodeBackground === metrics.nativeCodeBackground &&
+        metrics.markdownCodeRadius === metrics.nativeCodeRadius &&
+        metrics.markdownCodeFontFamily === metrics.nativeCodeFontFamily &&
+        metrics.markdownCodeActionColor === metrics.nativeCodeActionColor &&
+        Math.abs(metrics.markdownCodeTextOffset - metrics.nativeCodeTextOffset) <= 1 &&
+        Math.abs(metrics.markdownCodeHeight - metrics.nativeCodeHeight) <= 1 &&
+        Math.abs(metrics.markdownCodeLanguageLeft - metrics.nativeCodeLanguageLeft) <= 1 &&
+        Math.abs(metrics.markdownCodeLanguageTop - metrics.nativeCodeLanguageTop) <= 1 &&
+        Math.abs(metrics.markdownCodeActionRight - metrics.nativeCodeActionRight) <= 1 &&
+        Math.abs(metrics.markdownCodeActionTop - metrics.nativeCodeActionTop) <= 1 &&
+        metrics.markdownCodeTokenColor === metrics.nativeCodeTokenColor &&
+        metrics.markdownCopyIconDisplay !== "none" &&
+        metrics.markdownCopyCheckIconDisplay === "none" &&
+        Math.abs(metrics.markdownCopyButtonWidth - metrics.nativeCopyButtonWidth) <= 1;
+    if (!codeBlockUsesNativeTheme) {
+        console.error("Markdown code block does not use the native theme", metrics);
         app.exit(1);
         return;
     }

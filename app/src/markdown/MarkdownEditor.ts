@@ -14,7 +14,8 @@ import {
     uploadMarkdownAssets,
 } from "./siyuanAdapter";
 import {trackMarkdownFlush} from "./saveBarrier";
-import {acquireMarkdownThemeBridge} from "./markdownThemeBridge";
+import {acquireMarkdownAppearance, type MarkdownAppearanceHandle} from "./appearance/themeResolver";
+import {reconfigureSiyuanMarkraExtension} from "./markdownEditorExtension";
 import {isMarkdownSelectAll, selectElementContents} from "./keyboard";
 import {
     readMarkdownFrontmatter,
@@ -63,7 +64,7 @@ export class MarkdownEditor extends Model {
     private tagsElement: HTMLElement;
     private surfaceElement: HTMLElement;
     private statusElement: HTMLElement;
-    private releaseThemeBridge: () => void;
+    private appearanceHandle: MarkdownAppearanceHandle;
     private resizeObserver: ResizeObserver;
 
     constructor(options: {app: App, tab?: Tab, element?: HTMLElement, notebookId: string, path: string}) {
@@ -79,12 +80,27 @@ export class MarkdownEditor extends Model {
             this.headElement.classList.add("item--unupdate");
         }
         this.renderShell();
-        this.releaseThemeBridge = acquireMarkdownThemeBridge(this.element.ownerDocument);
+        this.appearanceHandle = acquireMarkdownAppearance(this.element);
         this.load();
     }
 
     public save() {
         return this.flush();
+    }
+
+    public refreshEditorConfig() {
+        this.appearanceHandle?.refresh();
+        if (!this.view) {
+            return;
+        }
+        reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
+            adapter: createSiyuanMarkdownAdapter({
+                app: this.app,
+                documentPath: () => this.path,
+            }),
+            documentPath: () => this.path,
+            mode: this.preview ? "visual" : "source",
+        });
     }
 
     public flush() {
@@ -231,7 +247,7 @@ export class MarkdownEditor extends Model {
         this.destroyed = true;
         this.view?.destroy();
         this.resizeObserver?.disconnect();
-        this.releaseThemeBridge?.();
+        this.appearanceHandle?.release();
         if (process.env.NODE_ENV === "development") {
             delete (this.element as HTMLElement & {__markdownEditorView?: EditorView}).__markdownEditorView;
         }
@@ -453,15 +469,13 @@ export class MarkdownEditor extends Model {
         this.element.querySelector('[data-type="markdown-source"]')?.classList.toggle("block__icon--active", !preview);
         this.element.querySelector('[data-type="markdown-preview"]')?.classList.toggle("block__icon--active", preview);
         if (this.view) {
-            this.view.dispatch({
-                effects: this.modeCompartment.reconfigure(createSiyuanMarkraExtension({
-                    adapter: createSiyuanMarkdownAdapter({
-                        app: this.app,
-                        documentPath: () => this.path,
-                    }),
+            reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
+                adapter: createSiyuanMarkdownAdapter({
+                    app: this.app,
                     documentPath: () => this.path,
-                    mode: preview ? "visual" : "source",
-                })),
+                }),
+                documentPath: () => this.path,
+                mode: preview ? "visual" : "source",
             });
             if (focus) {
                 this.view.focus();
@@ -646,9 +660,11 @@ export class MarkdownEditor extends Model {
     }
 
     private updateLayout() {
+        const mobile = isMobile();
+        this.element.dataset.markdownPlatform = mobile ? "mobile" : "desktop";
         let left = 24;
         let right = 16;
-        if (!isMobile()) {
+        if (!mobile) {
             const width = this.element.clientWidth;
             if (!window.siyuan.config.editor.fullWidth) {
                 let padding = (width - Constants.SIZE_EDITOR_WIDTH) / 2;

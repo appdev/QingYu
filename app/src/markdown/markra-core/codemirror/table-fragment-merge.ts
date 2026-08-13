@@ -2,7 +2,6 @@ import { syntaxTree } from "@codemirror/language";
 import type { EditorState } from "@codemirror/state";
 import {
   Decoration,
-  EditorView,
   ViewPlugin,
   WidgetType,
   type DecorationSet,
@@ -179,24 +178,6 @@ function mergeDecorations(state: EditorState, label: string): DecorationSet {
   );
 }
 
-const mergeTheme = EditorView.baseTheme({
-  ".markra-table-fragment-merge": {
-    display: "flex",
-    justifyContent: "center",
-    padding: "0.2em 0",
-  },
-  ".markra-table-fragment-merge-button": {
-    alignItems: "center",
-    background: "transparent",
-    border: "0",
-    color: "inherit",
-    cursor: "pointer",
-    display: "inline-flex",
-    gap: "0.35em",
-    opacity: "0.65",
-  },
-});
-
 class TableFragmentMergeViewPlugin {
   decorations: DecorationSet;
 
@@ -226,7 +207,6 @@ export function tableFragmentMergePlugin(
         (view) => new TableFragmentMergeViewPlugin(view, label),
         { decorations: (plugin) => plugin.decorations },
       ),
-      mergeTheme,
     ],
   });
 }

@@ -198,6 +198,7 @@ function buildCalloutDecorations(view: CodeMirrorView) {
       ranges.push(
         Decoration.line({
           attributes: {
+            "data-appearance-state": "ready",
             "data-callout-label": callout.marker.label,
             "data-callout-type": callout.marker.type,
           },
@@ -252,69 +253,6 @@ const calloutSpacingField = StateField.define<DecorationSet>({
   },
 });
 
-const calloutTheme = EditorView.baseTheme({
-  ".cm-line.cm-markra-callout": {
-    background: "color-mix(in srgb, var(--callout-color, #4f7cac) 6%, transparent)",
-    borderLeft: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
-    borderRight: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
-    paddingInline: "1em",
-  },
-  ".cm-line.markra-callout-first": {
-    borderTopLeftRadius: "0.45em",
-    borderTopRightRadius: "0.45em",
-    borderTop: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
-    paddingTop: "0.85em",
-  },
-  ".cm-line.markra-callout-last": {
-    borderBottom: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
-    borderBottomLeftRadius: "0.45em",
-    borderBottomRightRadius: "0.45em",
-    paddingBottom: "0.85em",
-  },
-  ".markra-callout-spacer": {
-    height: "1.25em",
-  },
-  ".cm-line.cm-markra-callout.markra-callout-tip": {
-    "--callout-color": "#299764",
-  },
-  ".cm-line.cm-markra-callout.markra-callout-important": {
-    "--callout-color": "#8250df",
-  },
-  ".cm-line.cm-markra-callout.markra-callout-warning": {
-    "--callout-color": "#9a6700",
-  },
-  ".cm-line.cm-markra-callout.markra-callout-caution": {
-    "--callout-color": "#cf222e",
-  },
-  ".cm-line.markra-callout-active": {
-    borderColor: "color-mix(in srgb, var(--callout-color, #4f7cac) 38%, transparent)",
-  },
-  ".markra-callout-header": {
-    alignItems: "center",
-    color: "var(--callout-color, #4f7cac)",
-    display: "inline-flex",
-    fontWeight: "650",
-    gap: "0.4em",
-  },
-  ".cm-line.markra-callout-first .markra-callout-type-select": {
-    position: "absolute",
-    right: "1em",
-    top: "0.85em",
-  },
-  ".markra-callout-type-select": {
-    background: "transparent",
-    border: "1px solid transparent",
-    borderRadius: "0.35em",
-    color: "inherit",
-    font: "inherit",
-    opacity: "0",
-  },
-  ".cm-markra-callout:hover .markra-callout-type-select, .markra-callout-active .markra-callout-type-select, .markra-callout-type-select:focus": {
-    opacity: "1",
-    pointerEvents: "auto",
-  },
-});
-
 export function calloutPreviewPlugin(
   options: CalloutPreviewPluginOptions = {},
 ) {
@@ -345,7 +283,6 @@ export function calloutPreviewPlugin(
             { decorations: (plugin) => plugin.decorations },
           ),
           calloutSpacingField,
-          calloutTheme,
         ]
       : [],
   });

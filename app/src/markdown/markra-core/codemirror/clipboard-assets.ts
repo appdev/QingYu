@@ -38,7 +38,10 @@ import {
   serializeCodeMirrorMarkdownLink,
 } from "./controller";
 import { detectCodePaste, type DetectedCodePaste } from "./code-paste";
-import { convertCodeMirrorClipboardHtml } from "./html-paste";
+import {
+  convertCodeMirrorClipboardHtml,
+  type ConvertClipboardHtmlToMarkdown,
+} from "./html-paste";
 import { defineMarkraPlugin } from "./plugin";
 
 function savedAttachment(resource: SavedEditorResource): resource is Extract<SavedEditorResource, {kind: "attachment"}> {
@@ -50,6 +53,7 @@ function savedImage(resource: SavedEditorResource): resource is Extract<SavedEdi
 }
 
 export interface CodeMirrorClipboardAssetsPluginOptions {
+  convertHtmlToMarkdown?: ConvertClipboardHtmlToMarkdown;
   documentPath?: () => string | null | undefined;
   saveAttachment?: SaveClipboardAttachment;
   saveImage?: SaveClipboardImage;
@@ -88,6 +92,26 @@ function nextClipboardAssetId(prefix: string) {
   return `markra-${prefix}-${nextClipboardAssetSequence}`;
 }
 
+export function createClipboardUploadPlaceholder(
+  document: Document,
+  id: string,
+  text: string,
+) {
+  const placeholder = document.createElement("span");
+  const spinner = document.createElement("span");
+  const label = document.createElement("span");
+  placeholder.className = "markra-image-upload-placeholder";
+  placeholder.dataset.markraImageUploadPlaceholder = id;
+  placeholder.setAttribute("aria-live", "polite");
+  placeholder.setAttribute("role", "status");
+  spinner.className = "markra-image-upload-placeholder-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  label.className = "markra-image-upload-placeholder-label";
+  label.textContent = text;
+  placeholder.append(spinner, label);
+  return placeholder;
+}
+
 class UploadPlaceholderWidget extends WidgetType {
   constructor(
     readonly id: string,
@@ -101,20 +125,11 @@ class UploadPlaceholderWidget extends WidgetType {
   }
 
   toDOM(view: CodeMirrorView) {
-    const document = view.dom.ownerDocument;
-    const placeholder = document.createElement("span");
-    const spinner = document.createElement("span");
-    const label = document.createElement("span");
-    placeholder.className = "markra-image-upload-placeholder";
-    placeholder.dataset.markraImageUploadPlaceholder = this.id;
-    placeholder.setAttribute("aria-live", "polite");
-    placeholder.setAttribute("role", "status");
-    spinner.className = "markra-image-upload-placeholder-spinner";
-    spinner.setAttribute("aria-hidden", "true");
-    label.className = "markra-image-upload-placeholder-label";
-    label.textContent = this.label;
-    placeholder.append(spinner, label);
-    return placeholder;
+    return createClipboardUploadPlaceholder(
+      view.dom.ownerDocument,
+      this.id,
+      this.label,
+    );
   }
 }
 
@@ -442,11 +457,16 @@ function insertHtmlPaste(
   event: ClipboardEvent,
   field: StateField<ClipboardAssetsState>,
   saveRemoteImage: SaveRemoteClipboardImage | undefined,
+  convertHtmlToMarkdown: ConvertClipboardHtmlToMarkdown | undefined,
 ) {
   const html = event.clipboardData?.getData("text/html") ?? "";
   if (!html) return false;
   const plainText = event.clipboardData?.getData("text/plain") ?? "";
-  const converted = convertCodeMirrorClipboardHtml(html, plainText);
+  const converted = convertCodeMirrorClipboardHtml(
+    html,
+    plainText,
+    convertHtmlToMarkdown,
+  );
   if (!converted) return false;
   // Rendered rich text can contain an incidental Markdown-looking fragment.
   // Only preserve the raw source when the HTML has no authored document structure.
@@ -562,26 +582,6 @@ function dropSelection(view: CodeMirrorView, event: DragEvent) {
   return EditorSelection.cursor(view.state.selection.main.head);
 }
 
-const clipboardTheme = EditorView.baseTheme({
-  ".markra-image-upload-placeholder": {
-    alignItems: "center",
-    display: "inline-flex",
-    gap: "0.4em",
-    opacity: "0.72",
-  },
-  ".markra-image-upload-placeholder-spinner": {
-    animation: "markra-codemirror-upload-spin 0.9s linear infinite",
-    border: "2px solid currentColor",
-    borderRightColor: "transparent",
-    borderRadius: "999px",
-    height: "0.8em",
-    width: "0.8em",
-  },
-  "@keyframes markra-codemirror-upload-spin": {
-    to: { transform: "rotate(360deg)" },
-  },
-});
-
 function imageSaver(
   options: CodeMirrorClipboardAssetsPluginOptions,
   origin: "clipboard" | "drop",
@@ -684,7 +684,13 @@ export function codeMirrorClipboardAssetsPlugin(
             return true;
           }
           if (insertCodePaste(view, event)) return true;
-          return insertHtmlPaste(view, event, field, saveRemoteImage);
+          return insertHtmlPaste(
+            view,
+            event,
+            field,
+            saveRemoteImage,
+            options.convertHtmlToMarkdown,
+          );
         },
         drop(event, view) {
           if (view.state.readOnly) return false;
@@ -734,7 +740,6 @@ export function codeMirrorClipboardAssetsPlugin(
           return true;
         },
       }),
-      clipboardTheme,
     ],
   });
 }

@@ -70,21 +70,11 @@ const trailingSpaceField = StateField.define({
   },
 });
 
-const trailingTheme = EditorView.baseTheme({
-  ".cm-markra-trailing-space": {
-    cursor: "text",
-    display: "block",
-    minHeight: "6rem",
-    width: "100%",
-  },
-});
-
 export function trailingSpacePlugin() {
   return defineMarkraPlugin({
     id: "markra.trailing-space",
     extension: [
       trailingSpaceField,
-      trailingTheme,
     ],
   });
 }

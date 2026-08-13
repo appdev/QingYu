@@ -88,13 +88,46 @@ test("renders tables through the Markra visual core without changing source", as
     assert.equal(editor.dom.querySelectorAll("tbody tr").length, 1);
 });
 
+test("keeps following text outside an unfinished code fence until Enter closes it", async () => {
+    const editor = createView("```\n下方正文");
+    editor.dispatch({selection: {anchor: 3}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(editor.dom.querySelector(".cm-markra-code-header"), null);
+    assert.equal(editor.dom.querySelector(".cm-markra-code-content-line"), null);
+    assert.equal(editor.dom.querySelector(".cm-markra-code-top-gap"), null);
+
+    const handled = runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "Enter",
+    }), "editor");
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(handled, true);
+    assert.equal(editor.state.doc.toString(), "```\n\n```\n下方正文");
+    assert.ok(editor.dom.querySelector(".cm-markra-code-header"));
+    assert.equal(editor.dom.querySelector(".cm-markra-code-content-line")?.textContent, "");
+});
+
+test("does not preview an unfinished Mermaid fence over following text", async () => {
+    const source = "```mermaid\ngraph TD\n下方正文";
+    const editor = createView(source);
+    editor.dispatch({selection: {anchor: "```mermaid".length}});
+    editor.contentDOM.dispatchEvent(new Event("blur"));
+    await Promise.resolve();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(editor.state.doc.toString(), source);
+    assert.equal(editor.dom.querySelector(".markra-mermaid-render"), null);
+});
+
 test("adds safe SiYuan semantic aliases to rendered Markdown", async () => {
     const editor = createView("# 标题\n\n> 引用\n\n**粗体** *斜体* ~~删除~~ ==高亮== `代码`");
     editor.dispatch({selection: {anchor: editor.state.doc.length}});
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
     assert.ok(editor.dom.querySelector(".cm-markra-h1.h1"));
-    assert.ok(editor.dom.querySelector(".cm-markra-blockquote.bq"));
+    assert.ok(editor.dom.querySelector(".cm-markra-blockquote.cm-markra-blockquote-first.cm-markra-blockquote-last"));
+    assert.equal(editor.dom.querySelector(".cm-markra-blockquote.bq"), null);
     assert.ok(editor.dom.querySelector('.cm-markra-strong[data-type~="strong"]'));
     assert.ok(editor.dom.querySelector('.cm-markra-emphasis[data-type~="em"]'));
     assert.ok(editor.dom.querySelector('.cm-markra-strikethrough[data-type~="s"]'));
@@ -149,7 +182,9 @@ test("keeps visual table actions visible after the table loses focus", async () 
     const sizeButton = editor.dom.querySelector(".markra-table-size-button") as HTMLButtonElement;
     sizeButton.blur();
 
-    assert.equal(getComputedStyle(sizeButton).opacity, "1");
+    assert.equal(sizeButton.classList.contains("block__icon"), true);
+    assert.equal(sizeButton.hidden, false);
+    assert.equal(sizeButton.disabled, false);
 });
 
 test("keeps the table size picker inside the CodeMirror theme scope", async () => {
@@ -185,7 +220,7 @@ test("uses the intrinsic image width until the user resizes it", async () => {
     const image = editor.dom.querySelector(".markra-image-frame img") as HTMLImageElement;
     const frame = editor.dom.querySelector(".markra-image-frame") as HTMLElement;
     assert.equal(image.loading, "eager");
-    assert.equal(getComputedStyle(image).maxHeight, "none");
+    assert.equal(image.classList.contains("cm-markra-image"), true);
     Object.defineProperty(image, "naturalWidth", {configurable: true, value: 506});
     image.dispatchEvent(new Event("load"));
 

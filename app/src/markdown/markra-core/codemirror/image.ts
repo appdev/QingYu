@@ -65,6 +65,7 @@ interface ImageWidgetDomState {
   image: HTMLImageElement;
   imageRecord: ImageWidgetDomRecord;
   mediaViewer: MediaViewerHandle | null;
+  onImageError: () => void;
   onImageLoad: () => void;
   onOutsideMouseDown: (event: MouseEvent) => void;
   onViewFocusOut: (event: FocusEvent) => void;
@@ -104,17 +105,6 @@ interface ImageWidgetDomRecord {
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
 const scheme = /^([a-z][a-z\d+.-]*):/iu;
 const sizedImageFrameClass = "markra-image-frame-sized";
-const imageTheme = EditorView.baseTheme({
-  ".cm-markra-image": {
-    borderRadius: "0.35em",
-    display: "inline-block",
-    maxHeight: "none",
-    maxWidth: "100%",
-    objectFit: "contain",
-    verticalAlign: "middle",
-  },
-});
-
 function imageDetails(
   state: EditorState,
   node: MarkraSyntaxNode,
@@ -502,6 +492,8 @@ class ImageWidget extends WidgetType {
     const imageRecord = claimImageElement(root, this);
     const { image } = imageRecord;
     root.className = "img markra-image-node";
+    root.dataset.appearanceState = "loading";
+    root.setAttribute("aria-busy", "true");
     root.contentEditable = "false";
     root.draggable = false;
     frame.className = "markra-image-frame";
@@ -540,9 +532,19 @@ class ImageWidget extends WidgetType {
       image,
       imageRecord,
       mediaViewer: null,
+      onImageError: () => {
+        const current = imageWidgetDomState.get(root);
+        if (!current) return;
+        root.dataset.appearanceState = "error";
+        root.setAttribute("aria-busy", "false");
+        root.setAttribute("aria-invalid", "true");
+      },
       onImageLoad: () => {
         const current = imageWidgetDomState.get(root);
         if (!current) return;
+        root.dataset.appearanceState = "ready";
+        root.setAttribute("aria-busy", "false");
+        root.removeAttribute("aria-invalid");
         updateImageFrame(current.frame, current.widget, current.image);
         current.widget.view.requestMeasure();
       },
@@ -602,8 +604,9 @@ class ImageWidget extends WidgetType {
       widget: this,
     };
     imageWidgetDomState.set(root, state);
+    image.addEventListener("error", state.onImageError);
     image.addEventListener("load", state.onImageLoad);
-    if (image.complete) state.onImageLoad();
+    if (image.complete && image.naturalWidth > 0) state.onImageLoad();
     let widgetStates = imageWidgetDomStates.get(view);
     if (!widgetStates) {
       widgetStates = new Set();
@@ -839,9 +842,13 @@ class ImageWidget extends WidgetType {
     if (!state) return false;
     cancelImageResize(state);
     if ((state.resizeHandle !== null) !== !this.readOnly) return false;
-    if (state.widget.source !== this.source) {
+    const sourceChanged = state.widget.source !== this.source;
+    if (sourceChanged) {
       state.mediaViewer?.close({ restoreFocus: false });
       state.mediaViewer = null;
+      dom.dataset.appearanceState = "loading";
+      dom.setAttribute("aria-busy", "true");
+      dom.removeAttribute("aria-invalid");
     }
     state.widget = this;
     state.imageRecord.from = this.from;
@@ -864,6 +871,7 @@ class ImageWidget extends WidgetType {
     const state = imageWidgetDomState.get(dom);
     if (!state) return;
     cancelImageResize(state);
+    state.image.removeEventListener("error", state.onImageError);
     state.image.removeEventListener("load", state.onImageLoad);
     dom.ownerDocument.removeEventListener(
       "mousedown",
@@ -998,7 +1006,6 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
           return false;
         },
       }),
-      imageTheme,
     ],
   });
 }

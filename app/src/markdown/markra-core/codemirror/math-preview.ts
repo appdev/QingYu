@@ -256,6 +256,9 @@ class MathWidget extends WidgetType {
     const element = view.dom.ownerDocument.createElement("span");
     element.className = this.className;
     element.innerHTML = this.html;
+    const hasRenderError = element.querySelector(".katex-error") !== null;
+    element.dataset.appearanceState = hasRenderError ? "error" : "ready";
+    if (hasRenderError) element.setAttribute("aria-invalid", "true");
     element.tabIndex = 0;
     element.setAttribute("role", "button");
     element.setAttribute("aria-label", "Edit math source");
@@ -398,18 +401,6 @@ function buildMathDecorations(view: CodeMirrorView): MathDecorationState {
 const mathTheme = EditorView.baseTheme({
   ".cm-markra-math-hidden-line": {
     display: "none",
-  },
-  ".markra-math-render": {
-    cursor: "text",
-  },
-  ".markra-math-render-display": {
-    display: "block",
-    overflowX: "auto",
-    padding: "0.4em 0",
-    textAlign: "center",
-  },
-  ".markra-math-render-active-preview": {
-    marginTop: "0.4em",
   },
 });
 
