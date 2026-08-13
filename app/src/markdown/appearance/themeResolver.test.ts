@@ -50,6 +50,52 @@ test("prefers SiYuan variables and probes standard Protyle selectors", () => {
     assert.equal(document.querySelectorAll("[data-markdown-appearance-probe]").length, 1);
 });
 
+test("probes native code and block control components", () => {
+    const theme = document.createElement("style");
+    theme.textContent = `
+        .protyle-wysiwyg .protyle-action__copy { color: rgb(12, 34, 56); }
+        .block__icons .block__icon { color: rgb(65, 43, 21); height: 24px; width: 24px; }
+    `;
+    document.head.append(theme);
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    assert.equal(snapshot.values["--b3-editor-appearance-control-code-copy-color"], "rgb(12, 34, 56)");
+    assert.equal(snapshot.values["--b3-editor-appearance-control-table-button-color"], "rgb(65, 43, 21)");
+    assert.equal(snapshot.values["--b3-editor-appearance-control-table-button-height"], "24px");
+});
+
+test("decomposes inset callout rings into continuous line-edge shadows", () => {
+    const readComputedStyle = window.getComputedStyle.bind(window);
+    window.getComputedStyle = ((element: Element) => readComputedStyle(element)) as typeof window.getComputedStyle;
+    Object.assign(window, {
+        Lute: {
+            New: () => ({
+                Md2BlockDOM: () => "<div class=\"bq\"><div class=\"p\"><div contenteditable=\"true\">[!NOTE]\nNote callout</div></div><div class=\"protyle-attr\"></div></div>",
+            }),
+        },
+    });
+    const theme = document.createElement("style");
+    theme.textContent = `.protyle-wysiwyg [data-type="NodeCallout"][data-subtype="NOTE"] {
+        box-shadow: inset 0 0 0 2px rgb(12, 34, 56);
+    }`;
+    document.head.append(theme);
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    const prefix = "--b3-editor-appearance-block-callout-note-box-shadow";
+    assert.equal(
+        snapshot.values[`${prefix}-inline`],
+        "rgb(12, 34, 56) 2px 0 0 inset, rgb(12, 34, 56) -2px 0 0 inset",
+    );
+    assert.equal(
+        snapshot.values[`${prefix}-first`],
+        "rgb(12, 34, 56) 2px 0 0 inset, rgb(12, 34, 56) -2px 0 0 inset, rgb(12, 34, 56) 0 2px 0 inset",
+    );
+    assert.equal(
+        snapshot.values[`${prefix}-last`],
+        "rgb(12, 34, 56) 2px 0 0 inset, rgb(12, 34, 56) -2px 0 0 inset, rgb(12, 34, 56) 0 -2px 0 inset",
+    );
+});
+
 test("resolves theme variables from the Protyle probe scope before the application root", () => {
     document.documentElement.style.setProperty("--b3-theme-on-background", "rgb(1, 2, 3)");
     document.documentElement.style.setProperty("--b3-theme-primary", "rgb(4, 5, 6)");

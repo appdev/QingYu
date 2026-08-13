@@ -1,5 +1,5 @@
 import {appearanceVariableName, listAppearanceContracts, type MarkdownAppearanceContract} from "./contracts";
-import {APPEARANCE_FIXTURE_MARKDOWN} from "./fixture";
+import {APPEARANCE_FIXTURE_MARKDOWN, createNativeAppearanceFixture} from "./fixture";
 import {createStaticProtyleLute} from "../../protyle/render/setLute";
 
 export interface MarkdownAppearanceSnapshot {
@@ -72,17 +72,18 @@ const createProbe = (document: Document) => {
     probe.setAttribute("aria-hidden", "true");
     probe.setAttribute("inert", "");
     probe.style.cssText = "contain:layout style;left:-100000px;pointer-events:none;position:fixed;top:0;visibility:hidden;width:720px";
-    const nativeRoot = document.createElement("div");
-    nativeRoot.className = "protyle-wysiwyg";
+    let nativeRoot = createNativeAppearanceFixture(document, "");
     const lute = createStaticProtyleLute() ?? createFallbackStaticLute(document.defaultView as LuteWindow | null);
     if (lute) {
         try {
-            nativeRoot.innerHTML = lute.Md2BlockDOM(APPEARANCE_FIXTURE_MARKDOWN);
+            nativeRoot = createNativeAppearanceFixture(document, lute.Md2BlockDOM(APPEARANCE_FIXTURE_MARKDOWN));
         } catch {
             // Lute 探针失败时保留空的原生容器，并让各契约使用语义回退。
         }
     }
-    probe.append(nativeRoot);
+    const references = document.createElement("div");
+    references.innerHTML = "<div class=\"block__icons\"><button class=\"block__icon\"><svg></svg></button></div>";
+    probe.append(nativeRoot, references);
     return probe;
 };
 
@@ -97,13 +98,28 @@ const probeReference = (
     const reference = probe.matches(selector)
         ? probe
         : probe.querySelector<HTMLElement>(selector);
-    return reference ? document.defaultView?.getComputedStyle(reference) ?? null : null;
+    const pseudo = contract.propertyReferences?.[property]?.pseudo;
+    return reference ? document.defaultView?.getComputedStyle(reference, pseudo) ?? null : null;
 };
 
 const readProperty = (computed: CSSStyleDeclaration | null, property: string) => {
     if (!computed) return "";
     const value = computed[property as keyof CSSStyleDeclaration];
     return typeof value === "string" && isValidValue(value) ? value.trim() : "";
+};
+
+const decomposeInsetRing = (boxShadow: string) => {
+    const colorFirst = /^(.+?)\s+0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+([0-9]*\.?[0-9]+px)\s+inset$/u.exec(boxShadow);
+    const insetFirst = /^inset\s+0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+([0-9]*\.?[0-9]+px)\s+(.+)$/u.exec(boxShadow);
+    const color = colorFirst?.[1] ?? insetFirst?.[2];
+    const width = colorFirst?.[2] ?? insetFirst?.[1];
+    if (!color || !width) return {first: "none", inline: "none", last: "none"};
+    const inline = `${color} ${width} 0 0 inset, ${color} -${width} 0 0 inset`;
+    return {
+        first: `${inline}, ${color} 0 ${width} 0 inset`,
+        inline,
+        last: `${inline}, ${color} 0 -${width} 0 inset`,
+    };
 };
 
 const resolveValues = (
@@ -123,7 +139,15 @@ const resolveValues = (
             const probed = readProperty(computed, computedProperty);
             const fallback = readVariable(probe, semanticFallback(contract, property));
             const resolved = directVariable || probed || fallback;
-            if (resolved) values[variable] = resolved;
+            if (resolved) {
+                values[variable] = resolved;
+                if (property === "boxShadow" && contract.id.startsWith("block.callout-")) {
+                    const edges = decomposeInsetRing(resolved);
+                    values[appearanceVariableName(contract.id, "boxShadowFirst")] = edges.first;
+                    values[appearanceVariableName(contract.id, "boxShadowInline")] = edges.inline;
+                    values[appearanceVariableName(contract.id, "boxShadowLast")] = edges.last;
+                }
+            }
         }
     }
     return values;

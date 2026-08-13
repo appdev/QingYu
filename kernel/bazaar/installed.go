@@ -117,8 +117,8 @@ func isBelowRequiredAppVersion(pkg *Package) bool {
 		return false
 	}
 
-	// 如果包要求的 minAppVersion 大于当前版本，则不允许安装
-	if 0 < semver.Compare("v"+pkg.MinAppVersion, "v"+util.Ver) {
+	// 如果包要求的 minAppVersion 大于当前兼容的思源版本，则不允许安装
+	if 0 < semver.Compare("v"+pkg.MinAppVersion, "v"+util.SiYuanCompatibleVer) {
 		return true
 	}
 	return false

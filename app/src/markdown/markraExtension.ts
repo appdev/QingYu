@@ -10,7 +10,10 @@ import {getCodeLanguages} from "../protyle/codeLanguage";
 import type {MarkdownHostAdapter} from "./markra-core/adapter";
 import {markdownHostAdapter} from "./markra-core/adapter";
 import {readSiyuanCodeBlockConfig} from "./codeBlockConfig";
+import {markdownSelectAllExtension} from "./markdownSelectAll";
 import {
+    blocksPlugin,
+    type BlockLabels,
     calloutPreviewPlugin,
     codeBlockPreviewPlugin,
     codeMirrorBlockDragPlugin,
@@ -36,6 +39,28 @@ import {
     tablePreviewPlugin,
     trailingSpacePlugin,
 } from "./markra-core/codemirror";
+
+const getBlockLabels = (): Partial<BlockLabels> => {
+    const languages = window.siyuan?.languages;
+    const labels: Partial<BlockLabels> = {};
+    const assign = (id: keyof BlockLabels, label?: string) => {
+        if (label) {
+            labels[id] = label;
+        }
+    };
+    assign("block.paragraph", languages?.paragraph);
+    assign("block.heading.1", languages?.heading1);
+    assign("block.heading.2", languages?.heading2);
+    assign("block.heading.3", languages?.heading3);
+    assign("block.heading.4", languages?.heading4);
+    assign("block.heading.5", languages?.heading5);
+    assign("block.heading.6", languages?.heading6);
+    assign("block.bullet-list", languages?.unorderedList);
+    assign("block.quote", languages?.quote);
+    assign("block.callout", languages?.callout);
+    assign("block.table", languages?.table);
+    return labels;
+};
 
 export interface SiyuanMarkraExtensionOptions {
     adapter: MarkdownHostAdapter;
@@ -106,6 +131,7 @@ export const createSiyuanMarkraExtension = ({
         }),
         placeholder(window.siyuan?.languages?.emptyPlaceholder ?? ""),
         editorTheme,
+        markdownSelectAllExtension(),
     ];
     if (mode === "source") {
         return [...common, markraLanguage, markdownSourceSyntaxHighlighting];
@@ -123,6 +149,10 @@ export const createSiyuanMarkraExtension = ({
         ...common,
         liveMarkdown({
             plugins: [
+                blocksPlugin({
+                    keybindings: false,
+                    labels: getBlockLabels(),
+                }),
                 calloutPreviewPlugin(),
                 codeBlockPreviewPlugin({
                     ...codeBlockConfig,
@@ -154,7 +184,9 @@ export const createSiyuanMarkraExtension = ({
                 horizontalRulePlugin(),
                 imageAtomicEditingPlugin(),
                 imagePreviewPlugin(imageOptions),
-                insertionsPlugin(),
+                insertionsPlugin({
+                    labels: window.siyuan?.languages?.date ? {"insert.today": window.siyuan.languages.date} : {},
+                }),
                 linksPlugin(linkOptions),
                 mathPreviewPlugin(),
                 markdownEditingPlugin(),
@@ -171,7 +203,7 @@ export const createSiyuanMarkraExtension = ({
                 }),
                 trailingSpacePlugin(),
             ],
-            slashMenu: false,
+            slashMenu: true,
         }),
         EditorState.readOnly.of(false),
     ];

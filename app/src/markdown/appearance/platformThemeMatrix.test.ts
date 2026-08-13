@@ -8,8 +8,12 @@ import {applyThemeCss} from "./testSupport";
 import {resolveMarkdownAppearanceForTest} from "./themeResolver";
 
 export const STANDARD_THIRD_PARTY_THEME_CSS = `
-:root { --b3-theme-on-background: rgb(10, 20, 30); }
+:root {
+    --b3-theme-on-background: rgb(10, 20, 30);
+    --third-party-inline-code: rgb(235, 87, 87);
+}
 .protyle-wysiwyg .code-block { border-radius: 13px; }
+.protyle-wysiwyg span[data-type~="code"] { color: var(--third-party-inline-code); }
 `;
 
 let cleanup: () => void;
@@ -20,7 +24,7 @@ beforeEach(() => {
     Object.assign(window, {
         Lute: {
             New: () => ({
-                Md2BlockDOM: () => "<div class=\"code-block\" data-type=\"NodeCodeBlock\"><div class=\"protyle-action\"></div><div class=\"hljs\">code</div></div>",
+                Md2BlockDOM: () => "<div class=\"p\"><div><span data-type=\"code\">inline</span></div></div><div class=\"code-block\" data-type=\"NodeCodeBlock\"><div class=\"protyle-action\"></div><div class=\"hljs\">code</div></div>",
             }),
         },
     });
@@ -38,6 +42,7 @@ test("standard third-party themes support variables and Protyle selector probes"
 
     assert.equal(snapshot.values["--b3-editor-appearance-shell-document-color"], "rgb(10, 20, 30)");
     assert.equal(snapshot.values["--b3-editor-appearance-block-code-border-radius"], "13px");
+    assert.equal(snapshot.values["--b3-editor-appearance-inline-code-color"], "var(--third-party-inline-code)");
 });
 
 test("every appearance contract declares the shared desktop and mobile matrix", () => {

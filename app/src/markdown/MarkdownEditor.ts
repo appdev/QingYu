@@ -31,6 +31,7 @@ import {assetPickerMenu} from "../menus/protyle";
 import {fetchCoverData, renderCoverPicker} from "../protyle/header/coverData";
 import {openTagMenu} from "../protyle/header/tagMenu";
 import {MarkdownDocumentScrollController} from "./documentScroll";
+import {MarkdownSlashMenuController} from "./markdownSlashMenu";
 
 interface IMarkdownDocument {
     path: string;
@@ -68,6 +69,7 @@ export class MarkdownEditor extends Model {
     private appearanceHandle: MarkdownAppearanceHandle;
     private resizeObserver: ResizeObserver;
     private documentScroll: MarkdownDocumentScrollController;
+    private slashMenu?: MarkdownSlashMenuController;
 
     constructor(options: {app: App, tab?: Tab, element?: HTMLElement, notebookId: string, path: string}) {
         super({app: options.app});
@@ -95,6 +97,7 @@ export class MarkdownEditor extends Model {
         if (!this.view) {
             return;
         }
+        this.slashMenu?.close();
         reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
             adapter: createSiyuanMarkdownAdapter({
                 app: this.app,
@@ -104,6 +107,7 @@ export class MarkdownEditor extends Model {
             getScrollContainer: () => this.contentElement,
             mode: this.preview ? "visual" : "source",
         }, this.documentScroll);
+        this.slashMenu?.update();
     }
 
     public flush() {
@@ -166,6 +170,8 @@ export class MarkdownEditor extends Model {
                 this.setStatus("conflict");
                 confirmDialog(window.siyuan.languages.conflict, window.siyuan.languages.refresh, () => {
                     this.dirty = false;
+                    this.slashMenu?.destroy();
+                    this.slashMenu = undefined;
                     this.view.destroy();
                     this.surfaceElement.innerHTML = "";
                     void this.load();
@@ -248,6 +254,8 @@ export class MarkdownEditor extends Model {
             void this.flush();
         }
         this.destroyed = true;
+        this.slashMenu?.destroy();
+        this.slashMenu = undefined;
         this.view?.destroy();
         this.documentScroll?.destroy();
         this.resizeObserver?.disconnect();
@@ -425,10 +433,13 @@ export class MarkdownEditor extends Model {
                         }
                         this.scheduleSave();
                     }
+                    this.slashMenu?.update();
                 }),
             ],
             parent: this.surfaceElement,
         });
+        this.slashMenu = new MarkdownSlashMenuController(this.view, this.contentElement);
+        this.slashMenu.update();
         this.documentScroll = new MarkdownDocumentScrollController(() => this.view, this.contentElement);
         if (process.env.NODE_ENV === "development") {
             Object.defineProperty(this.element, "__markdownEditorView", {
@@ -474,6 +485,7 @@ export class MarkdownEditor extends Model {
         this.element.querySelector('[data-type="markdown-source"]')?.classList.toggle("block__icon--active", !preview);
         this.element.querySelector('[data-type="markdown-preview"]')?.classList.toggle("block__icon--active", preview);
         if (this.view) {
+            this.slashMenu?.close();
             reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
                 adapter: createSiyuanMarkdownAdapter({
                     app: this.app,
@@ -483,6 +495,7 @@ export class MarkdownEditor extends Model {
                 getScrollContainer: () => this.contentElement,
                 mode: preview ? "visual" : "source",
             }, this.documentScroll);
+            this.slashMenu?.update();
             if (focus) {
                 this.view.focus();
             }

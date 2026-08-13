@@ -288,6 +288,7 @@ export const initBar = (app: App) => {
     if (window.siyuan.config.appearance.hideToolbar) {
         document.body.classList.add("body--toolbar-hide");
     }
+    resizeTopBar();
 };
 
 export const setZoom = (type: "zoomIn" | "zoomOut" | "restore") => {

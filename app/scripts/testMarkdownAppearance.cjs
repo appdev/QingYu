@@ -61,6 +61,7 @@ const matrix = [
     {theme: "daylight", mode: "visual", platform: "desktop", width: 500, input: "mouse"},
     {theme: "midnight", mode: "visual", platform: "desktop", width: 500, input: "keyboard"},
     {theme: "standard-third-party", mode: "visual", platform: "desktop", width: 320, input: "mouse"},
+    {theme: "savor", mode: "visual", platform: "desktop", width: 500, input: "mouse"},
     {theme: "daylight", mode: "visual", platform: "mobile", width: 375, input: "touch"},
     {theme: "midnight", mode: "source", platform: "desktop", width: 500, input: "keyboard"},
     {theme: "standard-third-party", mode: "source", platform: "mobile", width: 375, input: "touch"},
@@ -89,6 +90,47 @@ const main = async () => {
             await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(row)}).then(() => true)`);
             await evaluate(call, `window.__siyuanMarkdownAppearanceTest.setTheme(${JSON.stringify(row.theme)})`);
             const stateReports = [{state: "base", report: await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measure()")}];
+            for (const contractId of ["inline.code", "inline.highlight", "inline.link"]) {
+                const measurement = stateReports[0].report.measurements.find((item) => item.contractId === contractId);
+                assert.equal(
+                    measurement?.styleDiffs.color,
+                    undefined,
+                    `${contractId} differs from the native theme color: ${JSON.stringify(row)}`,
+                );
+            }
+            if (row.mode === "visual") {
+                const equivalentContracts = [
+                    "editor.visual",
+                    "block.heading-1",
+                    "block.heading-2",
+                    "block.heading-3",
+                    "block.heading-4",
+                    "block.heading-5",
+                    "block.heading-6",
+                    "block.list",
+                    "block.blockquote",
+                    "block.callout-note",
+                    "block.callout-tip",
+                    "block.callout-important",
+                    "block.callout-warning",
+                    "block.callout-caution",
+                    "block.code",
+                    "control.code-language",
+                    "control.code-copy",
+                    "control.code-more",
+                    "control.table-button",
+                ];
+                for (const contractId of equivalentContracts) {
+                    const measurement = stateReports[0].report.measurements.find((item) =>
+                        item.contractId === contractId);
+                    assert.ok(measurement?.markdown && measurement.native, `Missing parity measurement for ${contractId}`);
+                    assert.deepEqual(
+                        measurement.styleDiffs,
+                        {},
+                        `${contractId} differs from its native equivalent: ${JSON.stringify(row)}`,
+                    );
+                }
+            }
             const behavior = await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measureDocumentBehavior()");
             assert.equal(behavior.documentScrollOwnerCount, 1, "Markdown must expose one document-level vertical scroller");
             assert.equal(behavior.documentScrollOwnerIsContent, true, "Markdown content must own document scrolling");
@@ -182,7 +224,7 @@ const main = async () => {
         "control.table-toolbar",
     ];
     const missingRequired = requiredRuntimeContracts.filter((id) => !seen.has(id));
-    assert.equal(matrix.length, 6);
+    assert.equal(matrix.length, 7);
     assert.ok(contractCount >= 50, `Unexpected appearance contract count: ${contractCount}`);
     assert.deepEqual(missingRequired, [], `Required runtime contracts were not rendered: ${missingRequired.join(", ")}`);
     const knownContracts = new Set(allReports.flatMap((report) => report.measurements.map((measurement) => measurement.contractId)));

@@ -47,10 +47,27 @@
     "markdownSelector": ".cm-editor[data-markdown-mode=\"visual\"]",
     "ownedSelectors": [".cm-editor[data-markdown-mode=\"visual\"] .cm-content", ".cm-editor[data-markdown-mode=\"visual\"] .cm-line"],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg"},
+    "propertyReferences": {
+      "color": {"selector": ".protyle-wysiwyg .p [contenteditable=\"true\"]", "property": "color"},
+      "fontFamily": {"selector": ".protyle-wysiwyg .p [contenteditable=\"true\"]", "property": "fontFamily"},
+      "fontSize": {"selector": ".protyle-wysiwyg .p [contenteditable=\"true\"]", "property": "fontSize"},
+      "lineHeight": {"selector": ".protyle-wysiwyg .p [contenteditable=\"true\"]", "property": "lineHeight"}
+    },
+    "markdownPropertyReferences": {
+      "color": {"selector": ".cm-content", "property": "color"},
+      "fontFamily": {"selector": ".cm-content", "property": "fontFamily"},
+      "fontSize": {"selector": ".cm-content", "property": "fontSize"},
+      "lineHeight": {"selector": ".cm-content", "property": "lineHeight"},
+      "paddingBottom": {"selector": ".markdown-editor__body", "property": "paddingBottom"},
+      "paddingLeft": {"selector": ".markdown-editor__body", "property": "paddingLeft"},
+      "paddingRight": {"selector": ".markdown-editor__body", "property": "paddingRight"},
+      "paddingTop": {"selector": ".markdown-editor__body", "property": "paddingTop"}
+    },
     "states": ["default", "focus", "readonly", "empty"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
     "styleProperties": ["backgroundColor", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
+    "comparisonProperties": ["backgroundColor", "color", "fontFamily", "fontSize", "lineHeight", "paddingLeft", "paddingRight", "paddingTop"],
     "geometry": ["width", "height", "contentLeft"],
     "fallbackVariables": ["--b3-theme-background", "--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -148,9 +165,9 @@
     "states": ["default"],
     "modes": ["source", "visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "fontFamily", "lineHeight", "overflowX", "overflowY"],
+    "styleProperties": ["backgroundColor", "overflowX", "overflowY"],
     "geometry": ["width", "height"],
-    "fallbackVariables": ["--b3-theme-background", "--b3-font-family-protyle"],
+    "fallbackVariables": ["--b3-theme-background"],
     "probe": false
   },
   {
@@ -325,17 +342,113 @@
     "probe": true
   },
   {
-    "id": "block.callout",
+    "id": "block.callout-note",
     "category": "native-equivalent",
-    "markdownSelector": ".cm-markra-callout",
-    "ownedSelectors": [".markra-callout", ".markra-callout-marker", ".markra-callout-type-select"],
-    "reference": {"kind": "native", "selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"]"},
+    "markdownSelector": ".cm-markra-callout[data-callout-type=\"note\"]",
+    "ownedSelectors": [".markra-callout", ".markra-callout-header", ".markra-callout-icon", ".markra-callout-marker", ".markra-callout-title", ".markra-callout-type-select"],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"NOTE\"]"},
+    "propertyReferences": {
+      "borderLeftColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"NOTE\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"NOTE\"] .callout-info", "property": "color"}
+    },
+    "markdownPropertyReferences": {
+      "borderLeftColor": {"selector": ".cm-markra-callout[data-callout-type=\"note\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".cm-markra-callout[data-callout-type=\"note\"] .markra-callout-header", "property": "color"}
+    },
     "states": ["default", "expanded", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "borderLeftColor", "borderRadius", "color", "fontFamily", "fontSize", "lineHeight", "paddingLeft"],
+    "styleProperties": ["backgroundColor", "borderLeftColor", "borderRadius", "boxShadow", "color", "fontFamily", "fontSize", "headerColor", "lineHeight", "paddingLeft"],
     "geometry": ["contentLeft", "height", "top", "width"],
-    "fallbackVariables": ["--b3-theme-surface", "--b3-theme-on-background", "--b3-theme-primary"],
+    "fallbackVariables": ["--b3-bq-background", "--b3-theme-on-surface", "--b3-callout-note"],
+    "probe": true
+  },
+  {
+    "id": "block.callout-tip",
+    "category": "native-equivalent",
+    "markdownSelector": ".cm-markra-callout[data-callout-type=\"tip\"]",
+    "ownedSelectors": [],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"TIP\"]"},
+    "propertyReferences": {
+      "borderLeftColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"TIP\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"TIP\"] .callout-info", "property": "color"}
+    },
+    "markdownPropertyReferences": {
+      "borderLeftColor": {"selector": ".cm-markra-callout[data-callout-type=\"tip\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".cm-markra-callout[data-callout-type=\"tip\"] .markra-callout-header", "property": "color"}
+    },
+    "states": ["default", "expanded", "selected"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "borderLeftColor", "borderRadius", "boxShadow", "color", "fontFamily", "fontSize", "headerColor", "lineHeight", "paddingLeft"],
+    "geometry": ["contentLeft", "height", "top", "width"],
+    "fallbackVariables": ["--b3-bq-background", "--b3-theme-on-surface", "--b3-callout-tip"],
+    "probe": true
+  },
+  {
+    "id": "block.callout-important",
+    "category": "native-equivalent",
+    "markdownSelector": ".cm-markra-callout[data-callout-type=\"important\"]",
+    "ownedSelectors": [],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"IMPORTANT\"]"},
+    "propertyReferences": {
+      "borderLeftColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"IMPORTANT\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"IMPORTANT\"] .callout-info", "property": "color"}
+    },
+    "markdownPropertyReferences": {
+      "borderLeftColor": {"selector": ".cm-markra-callout[data-callout-type=\"important\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".cm-markra-callout[data-callout-type=\"important\"] .markra-callout-header", "property": "color"}
+    },
+    "states": ["default", "expanded", "selected"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "borderLeftColor", "borderRadius", "boxShadow", "color", "fontFamily", "fontSize", "headerColor", "lineHeight", "paddingLeft"],
+    "geometry": ["contentLeft", "height", "top", "width"],
+    "fallbackVariables": ["--b3-bq-background", "--b3-theme-on-surface", "--b3-callout-important"],
+    "probe": true
+  },
+  {
+    "id": "block.callout-warning",
+    "category": "native-equivalent",
+    "markdownSelector": ".cm-markra-callout[data-callout-type=\"warning\"]",
+    "ownedSelectors": [],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"WARNING\"]"},
+    "propertyReferences": {
+      "borderLeftColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"WARNING\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"WARNING\"] .callout-info", "property": "color"}
+    },
+    "markdownPropertyReferences": {
+      "borderLeftColor": {"selector": ".cm-markra-callout[data-callout-type=\"warning\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".cm-markra-callout[data-callout-type=\"warning\"] .markra-callout-header", "property": "color"}
+    },
+    "states": ["default", "expanded", "selected"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "borderLeftColor", "borderRadius", "boxShadow", "color", "fontFamily", "fontSize", "headerColor", "lineHeight", "paddingLeft"],
+    "geometry": ["contentLeft", "height", "top", "width"],
+    "fallbackVariables": ["--b3-bq-background", "--b3-theme-on-surface", "--b3-callout-warning"],
+    "probe": true
+  },
+  {
+    "id": "block.callout-caution",
+    "category": "native-equivalent",
+    "markdownSelector": ".cm-markra-callout[data-callout-type=\"caution\"]",
+    "ownedSelectors": [],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"CAUTION\"]"},
+    "propertyReferences": {
+      "borderLeftColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"CAUTION\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".protyle-wysiwyg [data-type=\"NodeCallout\"][data-subtype=\"CAUTION\"] .callout-info", "property": "color"}
+    },
+    "markdownPropertyReferences": {
+      "borderLeftColor": {"selector": ".cm-markra-callout[data-callout-type=\"caution\"]", "property": "backgroundColor", "pseudo": "::before"},
+      "headerColor": {"selector": ".cm-markra-callout[data-callout-type=\"caution\"] .markra-callout-header", "property": "color"}
+    },
+    "states": ["default", "expanded", "selected"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "borderLeftColor", "borderRadius", "boxShadow", "color", "fontFamily", "fontSize", "headerColor", "lineHeight", "paddingLeft"],
+    "geometry": ["contentLeft", "height", "top", "width"],
+    "fallbackVariables": ["--b3-bq-background", "--b3-theme-on-surface", "--b3-callout-caution"],
     "probe": true
   },
   {
@@ -390,6 +503,7 @@
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
     "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "boxShadow", "color", "fontFamily", "fontSize", "lineHeight", "outerPaddingBottom", "outerPaddingLeft", "outerPaddingRight", "outerPaddingTop", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
+    "comparisonProperties": ["backgroundColor", "color", "fontFamily", "fontSize", "lineHeight"],
     "geometry": ["contentLeft", "controlRight", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-surface", "--b3-theme-on-background", "--b3-font-family-code"],
     "probe": true
@@ -560,35 +674,81 @@
     "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "fontFamily", "fontSize", "height", "paddingLeft", "paddingRight"],
     "geometry": ["left", "top", "width", "height"],
     "fallbackVariables": ["--b3-theme-on-surface", "--b3-theme-background"],
-    "probe": false
+    "probe": true
   },
   {
     "id": "control.code-actions",
     "category": "markdown-exclusive",
     "markdownSelector": ".cm-markra-code-actions",
-    "ownedSelectors": [".markra-code-copy-button", ".markra-code-more-button", ".markra-code-copy-icon", ".markra-code-copy-check-icon", ".markra-code-more-icon"],
-    "reference": {"kind": "component", "selector": ".protyle-action .protyle-icon"},
+    "ownedSelectors": [],
+    "reference": {"kind": "component", "selector": ".protyle-wysiwyg .code-block .protyle-action"},
+    "states": ["default", "hover", "focus", "disabled"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "opacity"],
+    "comparisonProperties": ["backgroundColor"],
+    "geometry": ["controlRight", "top"],
+    "fallbackVariables": ["--b3-theme-on-surface", "--b3-theme-background"],
+    "probe": true
+  },
+  {
+    "id": "control.code-copy",
+    "category": "markdown-exclusive",
+    "markdownSelector": ".markra-code-copy-button",
+    "ownedSelectors": [".markra-code-copy-icon", ".markra-code-copy-check-icon"],
+    "reference": {"kind": "component", "selector": ".protyle-wysiwyg .code-block .protyle-action__copy"},
     "states": ["default", "hover", "focus", "disabled"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
     "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "height", "opacity", "width"],
+    "comparisonProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "height", "width"],
     "geometry": ["controlRight", "top", "width", "height"],
     "fallbackVariables": ["--b3-theme-on-surface", "--b3-theme-background"],
-    "probe": false
+    "probe": true
+  },
+  {
+    "id": "control.code-more",
+    "category": "markdown-exclusive",
+    "markdownSelector": ".markra-code-more-button",
+    "ownedSelectors": [".markra-code-more-icon"],
+    "reference": {"kind": "component", "selector": ".protyle-wysiwyg .code-block .protyle-action__menu"},
+    "states": ["default", "hover", "focus", "disabled"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "height", "opacity", "width"],
+    "comparisonProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "height", "width"],
+    "geometry": ["controlRight", "top", "width", "height"],
+    "fallbackVariables": ["--b3-theme-on-surface", "--b3-theme-background"],
+    "probe": true
   },
   {
     "id": "control.table-toolbar",
     "category": "markdown-exclusive",
     "markdownSelector": ".markra-table-align-controls",
-    "ownedSelectors": [".markra-table-control", ".markra-table-control-group", ".markra-table-control-icon", ".markra-table-add-column", ".markra-table-add-row", ".markra-table-delete-control", ".markra-table-size-popover", ".markra-table-size-cell", ".markra-table-size-footer", ".markra-table-size-grid", ".markra-table-width-button", ".markra-table-fragment-merge", ".markra-table-fragment-merge-button", ".markra-table-fragment-merge-icon", ".markra-table-fragment-merge-label"],
+    "ownedSelectors": [".markra-table-control-group", ".markra-table-add-column", ".markra-table-add-row", ".markra-table-delete-control", ".markra-table-size-popover", ".markra-table-size-cell", ".markra-table-size-footer", ".markra-table-size-grid", ".markra-table-width-button", ".markra-table-fragment-merge", ".markra-table-fragment-merge-button", ".markra-table-fragment-merge-icon", ".markra-table-fragment-merge-label"],
+    "reference": {"kind": "component", "selector": ".block__icons"},
+    "states": ["default", "hover", "focus", "selected", "disabled"],
+    "modes": ["visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "boxShadow", "opacity"],
+    "comparisonProperties": ["backgroundColor", "borderColor", "borderRadius", "boxShadow"],
+    "geometry": ["controlRight", "top"],
+    "fallbackVariables": ["--b3-theme-background", "--b3-theme-on-surface", "--b3-theme-primary", "--b3-border-color"],
+    "probe": true
+  },
+  {
+    "id": "control.table-button",
+    "category": "markdown-exclusive",
+    "markdownSelector": ".markra-table-control",
+    "ownedSelectors": [".markra-table-control-icon"],
     "reference": {"kind": "component", "selector": ".block__icons .block__icon"},
     "states": ["default", "hover", "focus", "selected", "disabled"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "boxShadow", "color", "height", "opacity", "width"],
+    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "height", "opacity", "width"],
     "geometry": ["controlRight", "top", "width", "height"],
     "fallbackVariables": ["--b3-theme-background", "--b3-theme-on-surface", "--b3-theme-primary", "--b3-border-color"],
-    "probe": false
+    "probe": true
   },
   {
     "id": "control.fold",

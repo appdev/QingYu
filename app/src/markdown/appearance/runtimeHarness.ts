@@ -12,7 +12,12 @@ import {
 import {createSiyuanMarkraExtension} from "../markraExtension";
 import {MarkdownDocumentScrollController} from "../documentScroll";
 import {reconfigureSiyuanMarkraExtension} from "../markdownEditorExtension";
-import {listAppearanceContracts, type MarkdownAppearanceMode, type MarkdownAppearancePlatform} from "./contracts";
+import {
+    appearanceComparisonProperties,
+    listAppearanceContracts,
+    type MarkdownAppearanceMode,
+    type MarkdownAppearancePlatform,
+} from "./contracts";
 import {APPEARANCE_FIXTURE_MARKDOWN, createNativeAppearanceFixture} from "./fixture";
 import {acquireMarkdownAppearance, type MarkdownAppearanceHandle} from "./themeResolver";
 
@@ -39,9 +44,11 @@ export interface RuntimeHarnessOptions {
     width?: number;
 }
 
+export type RuntimeAppearanceTheme = "daylight" | "midnight" | "savor" | "standard-third-party";
+
 export interface RuntimeHarnessDependencies {
     adapterFactory?(app: App): MarkdownHostAdapter | Promise<MarkdownHostAdapter>;
-    loadThemeCss?(theme: "daylight" | "midnight"): Promise<string>;
+    loadThemeCss?(theme: Exclude<RuntimeAppearanceTheme, "standard-third-party">): Promise<string>;
     renderNative?(root: HTMLElement): void | Promise<void>;
 }
 
@@ -103,7 +110,7 @@ export interface MarkdownAppearanceRuntimeHarness {
     measureModeContinuity(): Promise<RuntimeModeContinuityReport>;
     mount(options?: RuntimeHarnessOptions): Promise<RuntimeAppearanceFixture>;
     setMode(mode: MarkdownAppearanceMode): Promise<void>;
-    setTheme(theme: "daylight" | "midnight" | "standard-third-party"): Promise<void>;
+    setTheme(theme: RuntimeAppearanceTheme): Promise<void>;
 }
 
 const trackedDataAttributes = ["data-dark-theme", "data-light-theme", "data-theme-mode"];
@@ -214,7 +221,7 @@ const markdownRect = (contractId: string, element: HTMLElement) => {
         const lines = collectContiguousLines(element, ".cm-markra-code-content-line");
         return lines.length > 0 ? unionRect(lines) : element.getBoundingClientRect();
     }
-    if (contractId === "block.callout") {
+    if (contractId.startsWith("block.callout-")) {
         const lines = collectContiguousLines(element, ".cm-markra-callout");
         return lines.length > 0 ? unionRect(lines) : element.getBoundingClientRect();
     }
@@ -231,8 +238,43 @@ const readNativeElement = (
         const reference = contract.propertyReferences?.[property];
         if (!reference) continue;
         const propertyElement = shell.querySelector<HTMLElement>(reference.selector);
-        const computed = propertyElement?.ownerDocument.defaultView?.getComputedStyle(propertyElement);
+        const computed = propertyElement?.ownerDocument.defaultView?.getComputedStyle(propertyElement, reference.pseudo);
         result.styles[property] = computed ? styleValue(computed, reference.property ?? property) : "";
+    }
+    return result;
+};
+
+const readMarkdownElement = (
+    shell: HTMLElement,
+    element: HTMLElement,
+    contract: ReturnType<typeof listAppearanceContracts>[number],
+) => {
+    const result = readElement(element, contract.styleProperties, markdownRect(contract.id, element));
+    for (const property of contract.styleProperties) {
+        const reference = contract.markdownPropertyReferences?.[property];
+        if (!reference) continue;
+        const propertyElement = shell.querySelector<HTMLElement>(reference.selector);
+        const computed = propertyElement?.ownerDocument.defaultView?.getComputedStyle(propertyElement, reference.pseudo);
+        result.styles[property] = computed ? styleValue(computed, reference.property) : "";
+    }
+    if (contract.id.startsWith("block.callout-") && contract.styleProperties.includes("borderRadius")) {
+        const lines = collectContiguousLines(element, ".cm-markra-callout");
+        const first = lines[0]?.ownerDocument.defaultView?.getComputedStyle(lines[0]);
+        const last = lines.at(-1)?.ownerDocument.defaultView?.getComputedStyle(lines.at(-1) as HTMLElement);
+        if (first && last) {
+            const radii = [
+                first.borderTopLeftRadius,
+                first.borderTopRightRadius,
+                last.borderBottomRightRadius,
+                last.borderBottomLeftRadius,
+            ];
+            result.styles.borderRadius = radii.every((radius) => radius === radii[0])
+                ? radii[0]
+                : radii.join(" ");
+        }
+        if (first && contract.styleProperties.includes("boxShadow")) {
+            result.styles.boxShadow = first.getPropertyValue("--markra-callout-shadow").trim();
+        }
     }
     return result;
 };
@@ -261,7 +303,7 @@ const createNativeShell = (document: Document, blockDOM: string, width: number) 
     const references = document.createElement("div");
     references.className = "markdown-appearance-runtime__references";
     references.style.cssText = "contain:layout style;left:-100000px;position:fixed;top:0;visibility:hidden";
-    references.innerHTML = "<div class=\"b3-typography\"></div><div class=\"b3-list\"></div><div class=\"b3-snackbar--error\"></div><div class=\"block__icons\"><button class=\"block__icon\"></button></div><div class=\"protyle-util\"></div><div class=\"b3-menu\"><input class=\"b3-text-field\"><button class=\"b3-list-item\"></button></div><div class=\"b3-progress\"></div><div class=\"viewer-container\"></div>";
+    references.innerHTML = "<div class=\"b3-typography\"></div><div class=\"b3-list\"></div><div class=\"b3-snackbar--error\"></div><div class=\"block__icons\"><button class=\"block__icon\"><svg></svg></button></div><div class=\"protyle-util\"></div><div class=\"b3-menu\"><input class=\"b3-text-field\"><button class=\"b3-list-item\"></button></div><div class=\"b3-progress\"></div><div class=\"viewer-container\"></div>";
     shell.append(references);
     return {nativeRoot, shell};
 };
@@ -416,14 +458,15 @@ export const installMarkdownAppearanceRuntimeHarness = (
         return fixture;
     };
 
-    const setTheme = async (theme: "daylight" | "midnight" | "standard-third-party") => {
+    const setTheme = async (theme: RuntimeAppearanceTheme) => {
         if (!active) throw new Error("Mount the Markdown appearance harness before setting a theme");
         active.themeStyle?.remove();
         const style = document.createElement("style");
         style.dataset.markdownAppearanceRuntimeTheme = theme;
-        const sourceTheme = theme === "midnight" ? "midnight" : "daylight";
-        const loadThemeCss = dependencies.loadThemeCss ?? (async (themeName: "daylight" | "midnight") => {
-            const response = await window.fetch(`/appearance/themes/${themeName}/theme.css`);
+        const sourceTheme = theme === "standard-third-party" ? "daylight" : theme;
+        const loadThemeCss = dependencies.loadThemeCss ?? (async (themeName: Exclude<RuntimeAppearanceTheme, "standard-third-party">) => {
+            const directory = themeName === "savor" ? "Savor" : themeName;
+            const response = await window.fetch(`/appearance/themes/${directory}/theme.css`);
             if (!response.ok) throw new Error(`Unable to load the SiYuan ${themeName} theme`);
             return response.text();
         });
@@ -434,6 +477,10 @@ export const installMarkdownAppearanceRuntimeHarness = (
         active.themeStyle = style;
         active.fixture.root.dataset.runtimeTheme = theme;
         active.appearanceHandle.refresh();
+        await waitForLayout(window);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
+        active.appearanceHandle.refresh();
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
         await waitForLayout(window);
     };
 
@@ -521,7 +568,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
                 const markdown = selectionElement && markdownElement === selectionElement
                     ? readPseudoElement(selectionElement, contract.styleProperties, "::selection")
                     : markdownElement
-                        ? readElement(markdownElement, contract.styleProperties, markdownRect(contract.id, markdownElement))
+                        ? readMarkdownElement(current.fixture.markdownRoot, markdownElement, contract)
                     : null;
                 const native = nativeElement ? readNativeElement(current.nativeShell, nativeElement, contract) : null;
                 const styleDiffs: AppearanceMeasurement["styleDiffs"] = {};
@@ -529,7 +576,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
                 if (markdown && native) {
                     const markdownContainer = serializeRect(current.fixture.markdownRoot.getBoundingClientRect());
                     const nativeContainer = serializeRect(current.nativeShell.getBoundingClientRect());
-                    contract.styleProperties.forEach((property) => {
+                    appearanceComparisonProperties(contract).forEach((property) => {
                         if (native.styles[property] !== markdown.styles[property]) {
                             styleDiffs[property] = {
                                 actual: markdown.styles[property] ?? "",

@@ -3,6 +3,7 @@ import {afterEach, beforeEach, test} from "node:test";
 import {Compartment} from "@codemirror/state";
 import {EditorView, minimalSetup} from "codemirror";
 import type {MarkdownHostAdapter} from "./markra-core/adapter";
+import {getMarkraSlashMenuState} from "./markra-core/codemirror";
 import {createSiyuanMarkraExtension} from "./markraExtension";
 import {reconfigureSiyuanMarkraExtension} from "./markdownEditorExtension";
 import {MarkdownDocumentScrollController} from "./documentScroll";
@@ -133,4 +134,63 @@ test("restores the semantic document anchor after reconfiguration", async () => 
     assert.equal(view.state.selection.main.anchor, 5);
     assert.equal(container.scrollTop, 140);
     scroll.destroy();
+});
+
+test("enables slash commands only in visual Markdown mode", () => {
+    Object.assign(window, {
+        siyuan: {
+            config: {editor: {}},
+            languages: {
+                callout: "Callout",
+                date: "Date",
+                heading2: "Heading 2",
+                paragraph: "Paragraph",
+                quote: "Blockquote",
+                table: "Table",
+                unorderedList: "Unordered List",
+            },
+        },
+    });
+    const adapter: MarkdownHostAdapter = {
+        createIcon: () => document.createElementNS("http://www.w3.org/2000/svg", "svg"),
+        notifyError: () => undefined,
+        openLink: () => undefined,
+        positionPopover: () => undefined,
+        renderMath: () => document.createElement("span"),
+        renderMermaid: async () => document.createElement("div"),
+        resolveImageSource: (source) => source,
+        saveClipboardAssets: async () => [],
+    };
+    const createModeView = (doc: string, mode: "source" | "visual") => new EditorView({
+        doc,
+        extensions: [minimalSetup, createSiyuanMarkraExtension({
+            adapter,
+            documentPath: () => "/test.md",
+            mode,
+        })],
+        parent: document.body,
+        selection: {anchor: doc.length},
+    });
+    const visual = createModeView("/h2", "visual");
+    const source = createModeView("/h2", "source");
+    const table = createModeView("/table", "visual");
+    const today = createModeView("/today", "visual");
+    const quote = createModeView("、quote", "visual");
+    const code = createModeView("```text\n/h2\n```", "visual");
+    code.dispatch({selection: {anchor: "```text\n/h2".length}});
+    try {
+        assert.deepEqual(getMarkraSlashMenuState(visual).actions.map((action) => action.command), ["block.heading.2"]);
+        assert.deepEqual(getMarkraSlashMenuState(table).actions.map((action) => action.command), ["block.table"]);
+        assert.deepEqual(getMarkraSlashMenuState(today).actions.map((action) => action.command), ["insert.today"]);
+        assert.deepEqual(getMarkraSlashMenuState(quote).actions.map((action) => action.command), ["block.quote"]);
+        assert.equal(getMarkraSlashMenuState(code).open, false);
+        assert.equal(getMarkraSlashMenuState(source).open, false);
+    } finally {
+        visual.destroy();
+        source.destroy();
+        table.destroy();
+        today.destroy();
+        quote.destroy();
+        code.destroy();
+    }
 });

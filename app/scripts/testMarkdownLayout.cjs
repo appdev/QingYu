@@ -7,7 +7,7 @@ app.commandLine.appendSwitch("disable-gpu");
 
 app.whenReady().then(async () => {
     const css = sass.compile(path.join(__dirname, "../src/assets/scss/base.scss")).css;
-    const nativeCodeBlockDOM = markdownToBlockDOM("```javascript\nconst nativeValue = 1;\n```")
+    const nativeCodeBlockDOM = markdownToBlockDOM("```javascript\nconst nativeValue = 1;\nreturn nativeValue;\n```")
         .replace("const nativeValue = 1;", "<span class=\"hljs-keyword\">const</span>&nbsp;nativeValue = 1;");
     const nativeParagraphDOM = markdownToBlockDOM("First paragraph\n\nSecond paragraph");
     const window = new BrowserWindow({
@@ -20,7 +20,7 @@ app.whenReady().then(async () => {
     const columns = Array.from({length: 8}, (_, index) => `<th>Column ${index + 1} with a long heading</th>`).join("");
     const cells = Array.from({length: 8}, (_, index) => `<td>Value ${index + 1} with content that keeps the table wide</td>`).join("");
     const longDocumentLines = Array.from({length: 80}, (_, index) => `<div class="cm-line">Paragraph ${index + 1}</div>`).join("");
-    const html = `<!doctype html><style>.syntax-token{color:rgb(224, 108, 117)}.hljs-keyword{color:rgb(197, 80, 90)}.toolbar-fixture .markra-table-control{opacity:1;pointer-events:auto}.parity-fixture .protyle-wysiwyg .code-block{background-color:rgb(24, 25, 26);border-radius:8px}${css}</style>
+    const html = `<!doctype html><style>.syntax-token{color:rgb(224, 108, 117)}.hljs-keyword{color:rgb(197, 80, 90)}.toolbar-fixture .markra-table-control{opacity:1;pointer-events:auto}.parity-fixture .protyle-wysiwyg .code-block{background-color:rgb(24, 25, 26);border-radius:8px}${css}.third-party-theme .protyle-wysiwyg span[data-type~="code"]{color:rgb(235,87,87)}.third-party-theme .protyle-wysiwyg span[data-type~="mark"]{color:rgb(110,60,170)}</style>
 <div class="protyle markdown-editor" style="--b3-theme-primary:rgb(66, 133, 244);height:600px;width:480px">
     <div class="protyle-content markdown-editor__content">
         <div class="markdown-editor__body">
@@ -34,13 +34,20 @@ app.whenReady().then(async () => {
         </div>
     </div>
 </div>
-<div class="protyle markdown-editor" id="visual-editor" style="--b3-editor-appearance-block-heading-1-color:rgb(120, 40, 160);--b3-editor-appearance-block-heading-1-font-size:36px;--b3-editor-appearance-inline-link-color:rgb(20, 110, 180);--b3-editor-appearance-shell-document-color:rgb(33, 33, 33);--b3-theme-on-background:rgb(33, 33, 33);--b3-theme-primary:rgb(66, 133, 244);height:200px;width:480px">
+<div class="protyle markdown-editor" id="visual-editor" style="--b3-editor-appearance-block-blockquote-padding-left:10px;--b3-editor-appearance-block-callout-note-border-radius:11px;--b3-editor-appearance-block-callout-note-box-shadow:inset 0 0 0 2px rgb(22, 92, 152);--b3-editor-appearance-block-callout-note-header-color:rgb(18, 88, 148);--b3-editor-appearance-block-heading-1-color:rgb(120, 40, 160);--b3-editor-appearance-block-heading-1-font-size:36px;--b3-editor-appearance-block-heading-1-margin-bottom:3px;--b3-editor-appearance-block-heading-1-margin-top:14px;--b3-editor-appearance-block-heading-1-padding-bottom:7px;--b3-editor-appearance-block-heading-1-padding-top:6px;--b3-editor-appearance-block-list-padding-left:0px;--b3-editor-appearance-inline-link-color:rgb(20, 110, 180);--b3-editor-appearance-shell-document-color:rgb(33, 33, 33);--b3-theme-on-background:rgb(33, 33, 33);--b3-theme-primary:rgb(66, 133, 244);height:200px;width:480px">
     <div class="cm-editor" data-markdown-mode="visual">
         <div class="cm-content">
             <div class="cm-line cm-markra-h1"><span class="syntax-token">Visual heading</span></div>
             <div class="cm-line"><span class="syntax-token cm-markra-link">Visual link</span></div>
+            <div class="cm-line cm-markra-list-item"><span>List item</span></div>
+            <div class="cm-line cm-markra-blockquote cm-markra-blockquote-first cm-markra-blockquote-last"><span>Quote</span></div>
+            <div class="cm-line cm-markra-callout markra-callout markra-callout-note markra-callout-first markra-callout-last" data-callout-type="note"><span class="markra-callout-header"><span class="markra-callout-title">Note</span></span></div>
         </div>
     </div>
+</div>
+<div class="protyle markdown-editor third-party-theme" id="inline-theme-editor" style="--b3-editor-appearance-inline-code-color:rgb(235,87,87);--b3-editor-appearance-inline-highlight-color:rgb(110,60,170);--b3-theme-on-background:rgb(33,33,33);width:480px">
+    <div class="protyle-wysiwyg"><div class="p"><div contenteditable="true"><span data-type="code">native code</span><span data-type="mark">native mark</span></div></div></div>
+    <div class="cm-editor" data-markdown-mode="visual"><div class="cm-content"><div class="cm-line cm-markra-paragraph"><span class="plain-inline-text">plain</span><span class="cm-markra-inline-code">markdown code</span><span class="cm-markra-highlight">markdown mark</span></div></div></div>
 </div>
 <div class="protyle markdown-editor" id="paragraph-spacing-editor" style="--b3-font-size-editor:16px;width:480px">
     <div class="protyle-wysiwyg" data-appearance-fixture="native">${nativeParagraphDOM}</div>
@@ -105,7 +112,7 @@ app.whenReady().then(async () => {
         </div>
     </div>
 </div>
-<div class="protyle markdown-editor toolbar-fixture" id="toolbar-editor" style="--b3-border-color:rgb(80, 80, 80);--b3-list-hover:rgb(55, 55, 55);--b3-theme-background:rgb(30, 30, 30);--b3-theme-error:rgb(240, 80, 80);--b3-theme-on-surface:rgb(180, 180, 180);--b3-theme-primary:rgb(66, 133, 244);width:320px">
+<div class="protyle markdown-editor toolbar-fixture" id="toolbar-editor" style="--b3-border-color:rgb(80, 80, 80);--b3-editor-appearance-control-table-button-height:24px;--b3-editor-appearance-control-table-button-width:24px;--b3-list-hover:rgb(55, 55, 55);--b3-theme-background:rgb(30, 30, 30);--b3-theme-error:rgb(240, 80, 80);--b3-theme-on-surface:rgb(180, 180, 180);--b3-theme-primary:rgb(66, 133, 244);width:320px">
     <div class="markdown-editor__surface b3-typography">
         <div class="cm-markra-table-wrap markra-table-controls-wrapper">
             <span class="markra-table-align-controls">
@@ -118,9 +125,9 @@ app.whenReady().then(async () => {
     </div>
 </div>
 </div>
-<div class="protyle markdown-editor parity-fixture" id="code-parity-editor" style="--b3-font-family-code:'Theme Code';--b3-editor-appearance-block-code-background-color:rgb(24, 25, 26);--b3-editor-appearance-block-code-border-radius:8px;--b3-editor-appearance-control-code-language-color:rgb(91, 92, 93);--b3-theme-on-surface:rgb(91, 92, 93);width:640px">
+<div class="protyle markdown-editor parity-fixture" id="code-parity-editor" style="--b3-font-family-code:'Theme Code';--b3-editor-appearance-block-code-background-color:rgb(24, 25, 26);--b3-editor-appearance-block-code-border-radius:8px;--b3-editor-appearance-control-code-copy-border-radius:8px 0 0 8px;--b3-editor-appearance-control-code-copy-color:rgb(41, 42, 43);--b3-editor-appearance-control-code-copy-opacity:0;--b3-editor-appearance-control-code-language-border-radius:3px;--b3-editor-appearance-control-code-language-color:rgb(91, 92, 93);--b3-editor-appearance-control-code-language-padding-left:8px;--b3-editor-appearance-control-code-language-padding-right:8px;--b3-editor-appearance-control-code-more-border-radius:0 8px 8px 0;--b3-editor-appearance-control-code-more-color:rgb(41, 42, 43);--b3-editor-appearance-control-code-more-opacity:0;--b3-theme-on-surface:rgb(91, 92, 93);width:640px">
     <div class="protyle-wysiwyg" data-appearance-fixture="native">${nativeCodeBlockDOM}</div>
-    <div class="cm-editor" data-markdown-mode="visual"><div class="cm-content"><div class="cm-line cm-markra-code-line cm-markra-code-opening-line"><span class="protyle-action cm-markra-code-actions"><button class="protyle-action--first protyle-action__language markra-code-language-control cm-markra-code-header markra-code-language-label">javascript</button><span class="fn__flex-1"></span><button class="protyle-icon protyle-action__copy markra-code-copy-button" data-copied="false"><svg class="markra-code-copy-icon"></svg><svg class="markra-code-copy-check-icon"></svg></button><button class="protyle-icon protyle-action__menu markra-code-more-button"><svg></svg></button></span></div><div class="cm-line cm-markra-code-line cm-markra-code-content-line cm-markra-code-content-first cm-markra-code-content-last"><span class="cm-markra-code-token hljs-keyword">const</span>&nbsp;markdownValue = 1;</div><div class="cm-line cm-markra-code-line cm-markra-code-closing-line"></div></div></div>
+    <div class="cm-editor" data-markdown-mode="visual"><div class="cm-content"><div class="cm-line cm-markra-code-line cm-markra-code-opening-line"><span class="protyle-action cm-markra-code-actions"><button class="protyle-action--first protyle-action__language markra-code-language-control cm-markra-code-header markra-code-language-label">javascript</button><span class="fn__flex-1"></span><button class="protyle-icon protyle-action__copy markra-code-copy-button" data-copied="false"><svg class="markra-code-copy-icon"></svg><svg class="markra-code-copy-check-icon"></svg></button><button class="protyle-icon protyle-action__menu markra-code-more-button"><svg></svg></button></span></div><div class="cm-line cm-markra-code-line cm-markra-code-content-line cm-markra-code-content-first"><span class="cm-markra-code-token hljs-keyword">const</span>&nbsp;markdownValue = 1;</div><div class="cm-line cm-markra-code-line cm-markra-code-content-line cm-markra-code-content-last">return markdownValue;</div><div class="cm-line cm-markra-code-line cm-markra-code-closing-line"></div></div></div>
 </div>
 `;
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
@@ -140,7 +147,18 @@ app.whenReady().then(async () => {
         const enlargedImageFrame = largeImageEditor.querySelector(".markra-image-frame");
         const enlargedImage = largeImageEditor.querySelector("img");
         const visualHeading = visualEditor.querySelector(".cm-markra-h1 span");
+        const visualHeadingLine = visualHeading.closest(".cm-markra-h1");
         const visualLink = visualEditor.querySelector(".cm-markra-link");
+        const visualList = visualEditor.querySelector(".cm-markra-list-item");
+        const visualBlockquote = visualEditor.querySelector(".cm-markra-blockquote");
+        const visualCalloutHeader = visualEditor.querySelector(".markra-callout-header");
+        const visualCallout = visualEditor.querySelector(".cm-markra-callout");
+        const inlineThemeEditor = document.querySelector("#inline-theme-editor");
+        const nativeInlineCode = inlineThemeEditor.querySelector('[data-type~="code"]');
+        const nativeInlineHighlight = inlineThemeEditor.querySelector('[data-type~="mark"]');
+        const markdownInlineCode = inlineThemeEditor.querySelector(".cm-markra-inline-code");
+        const markdownInlineHighlight = inlineThemeEditor.querySelector(".cm-markra-highlight");
+        const plainInlineText = inlineThemeEditor.querySelector(".plain-inline-text");
         const paragraphSpacingEditor = document.querySelector("#paragraph-spacing-editor");
         const nativeParagraphs = paragraphSpacingEditor.querySelectorAll(".protyle-wysiwyg > .p");
         const markdownParagraphs = paragraphSpacingEditor.querySelectorAll(".cm-markra-paragraph");
@@ -195,6 +213,7 @@ app.whenReady().then(async () => {
         const nativeCodeActions = codeParityEditor.querySelector(".code-block > .protyle-action");
         const nativeCopyButton = codeParityEditor.querySelector(".protyle-wysiwyg .protyle-action__copy");
         const markdownCode = codeParityEditor.querySelector(".cm-markra-code-content-first");
+        const markdownCodeLast = codeParityEditor.querySelector(".cm-markra-code-content-last");
         const markdownCodeContent = codeParityEditor.querySelector(".cm-markra-code-content-line");
         const markdownCodeActions = codeParityEditor.querySelector(".cm-markra-code-actions");
         const nativeCodeToken = codeParityEditor.querySelector(".protyle-wysiwyg .hljs-keyword");
@@ -229,10 +248,25 @@ app.whenReady().then(async () => {
             surfaceRight: surface.getBoundingClientRect().right,
             visualEditorColor: getComputedStyle(visualEditor.querySelector(".cm-editor")).color,
             visualHeadingColor: getComputedStyle(visualHeading).color,
-            visualHeadingFontSize: getComputedStyle(visualHeading.closest(".cm-markra-h1")).fontSize,
+            visualHeadingFontSize: getComputedStyle(visualHeadingLine).fontSize,
+            visualHeadingMarginBottom: getComputedStyle(visualHeadingLine).marginBottom,
+            visualHeadingMarginTop: getComputedStyle(visualHeadingLine).marginTop,
+            visualHeadingPaddingBottom: getComputedStyle(visualHeadingLine).paddingBottom,
+            visualHeadingPaddingTop: getComputedStyle(visualHeadingLine).paddingTop,
             visualLinkColor: getComputedStyle(visualLink).color,
+            visualListPaddingLeft: getComputedStyle(visualList).paddingLeft,
+            visualBlockquotePaddingLeft: getComputedStyle(visualBlockquote).paddingLeft,
+            visualCalloutHeaderColor: getComputedStyle(visualCalloutHeader).color,
+            visualCalloutRadius: getComputedStyle(visualCallout).borderRadius,
+            visualCalloutShadow: getComputedStyle(visualCallout).boxShadow,
             visualThemeHeadingColor: getComputedStyle(visualEditor).getPropertyValue("--b3-editor-appearance-block-heading-1-color").trim(),
             visualThemeLinkColor: getComputedStyle(visualEditor).getPropertyValue("--b3-editor-appearance-inline-link-color").trim(),
+            nativeInlineCodeColor: getComputedStyle(nativeInlineCode).color,
+            markdownInlineCodeColor: getComputedStyle(markdownInlineCode).color,
+            nativeInlineHighlightColor: getComputedStyle(nativeInlineHighlight).color,
+            markdownInlineHighlightColor: getComputedStyle(markdownInlineHighlight).color,
+            plainInlineTextColor: getComputedStyle(plainInlineText).color,
+            inlineThemeEditorColor: getComputedStyle(inlineThemeEditor.querySelector(".cm-editor")).color,
             nativeParagraphDistance: nativeParagraphs[1].getBoundingClientRect().top - nativeParagraphs[0].getBoundingClientRect().top,
             markdownParagraphDistance: markdownParagraphs[1].getBoundingClientRect().top - markdownParagraphs[0].getBoundingClientRect().top,
             enlargedImageFrameWidth: enlargedImageFrame.getBoundingClientRect().width,
@@ -292,10 +326,15 @@ app.whenReady().then(async () => {
             markdownCodeRadius: getComputedStyle(markdownCode).borderTopLeftRadius,
             markdownCodeFontFamily: getComputedStyle(markdownCodeContent).fontFamily,
             markdownCodeActionColor: getComputedStyle(markdownCodeAction).color,
+            markdownCodeActionBorderRadius: getComputedStyle(markdownCodeAction).borderRadius,
+            markdownCodeActionPaddingLeft: getComputedStyle(markdownCodeAction).paddingLeft,
+            markdownCodeActionPaddingRight: getComputedStyle(markdownCodeAction).paddingRight,
             nativeCodeTextOffset: nativeCodeToken.getBoundingClientRect().top - nativeCode.getBoundingClientRect().top,
             markdownCodeTextOffset: markdownCodeToken.getBoundingClientRect().top - markdownCode.getBoundingClientRect().top,
             nativeCodeHeight: nativeCode.getBoundingClientRect().height,
-            markdownCodeHeight: markdownCode.getBoundingClientRect().height,
+            markdownCodeHeight: markdownCodeLast.getBoundingClientRect().bottom - markdownCode.getBoundingClientRect().top,
+            markdownCodeMiddleRadius: getComputedStyle(markdownCodeLast).borderTopLeftRadius,
+            markdownCodeBottomRadius: getComputedStyle(markdownCodeLast).borderBottomLeftRadius,
             nativeCodeLanguageLeft: nativeCodeAction.getBoundingClientRect().left - nativeCode.getBoundingClientRect().left,
             markdownCodeLanguageLeft: markdownCodeAction.getBoundingClientRect().left - markdownCode.getBoundingClientRect().left,
             nativeCodeLanguageTop: nativeCodeAction.getBoundingClientRect().top - nativeCode.getBoundingClientRect().top,
@@ -309,6 +348,9 @@ app.whenReady().then(async () => {
             markdownCopyIconDisplay: getComputedStyle(markdownCopyIcon).display,
             markdownCopyCheckIconDisplay: getComputedStyle(markdownCopyCheckIcon).display,
             markdownCopyButtonWidth: markdownCopyButton.getBoundingClientRect().width,
+            markdownCopyButtonBorderRadius: getComputedStyle(markdownCopyButton).borderRadius,
+            markdownCopyButtonColor: getComputedStyle(markdownCopyButton).color,
+            markdownCopyButtonOpacity: getComputedStyle(markdownCopyButton).opacity,
             nativeCopyButtonWidth: nativeCopyButton.getBoundingClientRect().width,
         };
     })()`);
@@ -337,9 +379,28 @@ app.whenReady().then(async () => {
     const visualColorsMatch = metrics.visualEditorColor === "rgb(33, 33, 33)" &&
         metrics.visualHeadingColor === metrics.visualThemeHeadingColor &&
         metrics.visualHeadingFontSize === "36px" &&
+        metrics.visualHeadingMarginBottom === "3px" &&
+        metrics.visualHeadingMarginTop === "14px" &&
+        metrics.visualHeadingPaddingBottom === "7px" &&
+        metrics.visualHeadingPaddingTop === "6px" &&
         metrics.visualLinkColor === metrics.visualThemeLinkColor;
     if (!visualColorsMatch) {
         console.error("Markdown visual mode leaks source syntax colors", metrics);
+        app.exit(1);
+        return;
+    }
+    if (metrics.visualListPaddingLeft !== "0px" || metrics.visualBlockquotePaddingLeft !== "10px" ||
+        metrics.visualCalloutHeaderColor !== "rgb(18, 88, 148)" || metrics.visualCalloutRadius !== "11px" ||
+        metrics.visualCalloutShadow !== "rgb(22, 92, 152) 0px 0px 0px 2px inset") {
+        console.error("Markdown list or blockquote does not use native content padding", metrics);
+        app.exit(1);
+        return;
+    }
+    const inlineThemeColorsMatch = metrics.markdownInlineCodeColor === metrics.nativeInlineCodeColor &&
+        metrics.markdownInlineHighlightColor === metrics.nativeInlineHighlightColor &&
+        metrics.plainInlineTextColor === metrics.inlineThemeEditorColor;
+    if (!inlineThemeColorsMatch) {
+        console.error("Markdown semantic inline colors differ from the native third-party theme", metrics);
         app.exit(1);
         return;
     }
@@ -400,8 +461,8 @@ app.whenReady().then(async () => {
         metrics.toolbarGroupCount === 4 &&
         metrics.toolbarGroupTops.every((top) => Math.abs(top - metrics.toolbarGroupTops[0]) <= 0.5) &&
         metrics.toolbarGap === "8px" &&
-        metrics.toolbarButtonWidths.every((width) => Math.abs(width - 28) <= 0.5) &&
-        metrics.toolbarButtonHeights.every((height) => Math.abs(height - 28) <= 0.5) &&
+        metrics.toolbarButtonWidths.every((width) => Math.abs(width - 24) <= 0.5) &&
+        metrics.toolbarButtonHeights.every((height) => Math.abs(height - 24) <= 0.5) &&
         metrics.toolbarIconWidths.every((width) => Math.abs(width - 16) <= 0.5) &&
         metrics.toolbarIconHeights.every((height) => Math.abs(height - 16) <= 0.5) &&
         metrics.toolbarSelectedColor === metrics.toolbarThemePrimary &&
@@ -419,8 +480,13 @@ app.whenReady().then(async () => {
         metrics.markdownCodeRadius === metrics.nativeCodeRadius &&
         metrics.markdownCodeFontFamily === metrics.nativeCodeFontFamily &&
         metrics.markdownCodeActionColor === metrics.nativeCodeActionColor &&
+        metrics.markdownCodeActionBorderRadius === "3px" &&
+        metrics.markdownCodeActionPaddingLeft === "8px" &&
+        metrics.markdownCodeActionPaddingRight === "8px" &&
         Math.abs(metrics.markdownCodeTextOffset - metrics.nativeCodeTextOffset) <= 1 &&
         Math.abs(metrics.markdownCodeHeight - metrics.nativeCodeHeight) <= 1 &&
+        metrics.markdownCodeMiddleRadius === "0px" &&
+        metrics.markdownCodeBottomRadius === metrics.nativeCodeRadius &&
         Math.abs(metrics.markdownCodeLanguageLeft - metrics.nativeCodeLanguageLeft) <= 1 &&
         Math.abs(metrics.markdownCodeLanguageTop - metrics.nativeCodeLanguageTop) <= 1 &&
         Math.abs(metrics.markdownCodeActionRight - metrics.nativeCodeActionRight) <= 1 &&
@@ -428,6 +494,9 @@ app.whenReady().then(async () => {
         metrics.markdownCodeTokenColor === metrics.nativeCodeTokenColor &&
         metrics.markdownCopyIconDisplay !== "none" &&
         metrics.markdownCopyCheckIconDisplay === "none" &&
+        metrics.markdownCopyButtonBorderRadius === "8px 0px 0px 8px" &&
+        metrics.markdownCopyButtonColor === "rgb(41, 42, 43)" &&
+        metrics.markdownCopyButtonOpacity === "0" &&
         Math.abs(metrics.markdownCopyButtonWidth - metrics.nativeCopyButtonWidth) <= 1;
     if (!codeBlockUsesNativeTheme) {
         console.error("Markdown code block does not use the native theme", metrics);

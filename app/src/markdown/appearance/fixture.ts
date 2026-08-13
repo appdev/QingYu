@@ -13,7 +13,19 @@ Paragraph with **strong**, *emphasis*, ~~strike~~, ==mark==, \`inline code\`, [l
 > quote
 
 > [!NOTE]
-> Callout
+> Note callout
+
+> [!TIP]
+> Tip callout
+
+> [!IMPORTANT]
+> Important callout
+
+> [!WARNING]
+> Warning callout
+
+> [!CAUTION]
+> Caution callout
 
 ---
 
@@ -52,5 +64,33 @@ export const createNativeAppearanceFixture = (document: Document, blockDOM: stri
     root.className = "protyle-wysiwyg";
     root.dataset.appearanceFixture = "native";
     root.innerHTML = blockDOM;
+    root.querySelectorAll<HTMLElement>(".bq").forEach((blockquote) => {
+        const editable = blockquote.querySelector<HTMLElement>("[contenteditable=true]");
+        const match = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n?([\s\S]*)$/u.exec(editable?.textContent ?? "");
+        if (!editable || !match) return;
+        const callout = document.createElement("div");
+        callout.className = "callout";
+        callout.dataset.type = "NodeCallout";
+        callout.dataset.subtype = match[1];
+        const info = document.createElement("div");
+        info.className = "callout-info";
+        const icon = document.createElement("span");
+        icon.className = "callout-icon";
+        const title = document.createElement("span");
+        title.className = "callout-title";
+        title.textContent = match[1][0] + match[1].slice(1).toLowerCase();
+        info.append(icon, title);
+        const content = document.createElement("div");
+        content.className = "callout-content";
+        const paragraph = blockquote.querySelector<HTMLElement>(":scope > .p");
+        if (paragraph) {
+            editable.textContent = match[2];
+            content.append(paragraph);
+        }
+        const attributes = blockquote.querySelector<HTMLElement>(":scope > .protyle-attr");
+        callout.append(info, content);
+        if (attributes) callout.append(attributes);
+        blockquote.replaceWith(callout);
+    });
     return root;
 };

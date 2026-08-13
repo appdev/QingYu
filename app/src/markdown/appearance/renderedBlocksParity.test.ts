@@ -26,7 +26,11 @@ afterEach(() => {
 });
 
 for (const [id, states] of new Map<string, string[]>([
-    ["block.callout", ["default", "expanded", "selected"]],
+    ["block.callout-note", ["default", "expanded", "selected"]],
+    ["block.callout-tip", ["default", "expanded", "selected"]],
+    ["block.callout-important", ["default", "expanded", "selected"]],
+    ["block.callout-warning", ["default", "expanded", "selected"]],
+    ["block.callout-caution", ["default", "expanded", "selected"]],
     ["block.math", ["default", "focus", "error"]],
     ["block.mermaid", ["default", "focus", "error"]],
     ["block.raw-html", ["default", "focus", "error"]],

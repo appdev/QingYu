@@ -1,6 +1,7 @@
 import assert = require("node:assert/strict");
 import test from "node:test";
 import {
+    appearanceComparisonProperties,
     appearanceVariableName,
     getAppearanceContract,
     listAppearanceContracts,
@@ -30,7 +31,11 @@ const REQUIRED_CONTRACTS = [
     "block.list",
     "block.task",
     "block.blockquote",
-    "block.callout",
+    "block.callout-note",
+    "block.callout-tip",
+    "block.callout-important",
+    "block.callout-warning",
+    "block.callout-caution",
     "block.horizontal-rule",
     "block.table",
     "block.code",
@@ -47,7 +52,10 @@ const REQUIRED_CONTRACTS = [
     "media.image",
     "control.code-language",
     "control.code-actions",
+    "control.code-copy",
+    "control.code-more",
     "control.table-toolbar",
+    "control.table-button",
     "control.fold",
     "control.block-toolbar",
     "control.math-macro",
@@ -96,4 +104,44 @@ test("provides stable lookup and component-scoped variable names", () => {
         "--b3-editor-appearance-block-code-background-color",
     );
     assert.equal(getAppearanceContract("missing"), undefined);
+});
+
+test("measures composite controls by equivalent responsibility", () => {
+    assert.equal(getAppearanceContract("control.code-copy")?.markdownSelector, ".markra-code-copy-button");
+    assert.equal(getAppearanceContract("control.code-more")?.markdownSelector, ".markra-code-more-button");
+    assert.equal(getAppearanceContract("control.table-button")?.markdownSelector, ".markra-table-control");
+});
+
+test("probes every native callout subtype independently", () => {
+    for (const type of ["note", "tip", "important", "warning", "caution"]) {
+        const contract = getAppearanceContract(`block.callout-${type}`);
+        assert.equal(
+            contract?.reference.selector,
+            `.protyle-wysiwyg [data-type="NodeCallout"][data-subtype="${type.toUpperCase()}"]`,
+        );
+        assert.equal(contract?.markdownSelector, `.cm-markra-callout[data-callout-type="${type}"]`);
+    }
+});
+
+test("compares split code blocks through equivalent styles and aggregate geometry", () => {
+    const contract = getAppearanceContract("block.code");
+    assert.deepEqual(contract?.comparisonProperties, [
+        "backgroundColor",
+        "color",
+        "fontFamily",
+        "fontSize",
+        "lineHeight",
+    ]);
+    assert.ok(contract?.styleProperties.includes("outerPaddingTop"));
+    assert.equal(contract?.comparisonProperties.includes("outerPaddingTop"), false);
+    assert.equal(contract?.comparisonProperties.includes("paddingTop"), false);
+});
+
+test("only compares native equivalents or explicitly declared component properties", () => {
+    const paragraph = getAppearanceContract("block.paragraph");
+    const source = getAppearanceContract("editor.source");
+    const actions = getAppearanceContract("control.code-actions");
+    assert.deepEqual(appearanceComparisonProperties(paragraph), paragraph?.styleProperties);
+    assert.deepEqual(appearanceComparisonProperties(source), []);
+    assert.deepEqual(appearanceComparisonProperties(actions), ["backgroundColor"]);
 });

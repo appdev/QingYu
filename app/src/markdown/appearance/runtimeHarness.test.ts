@@ -73,17 +73,21 @@ test("runtime harness switches mode without replacing the EditorView", async () 
 });
 
 test("runtime harness scopes the real SiYuan theme without changing the application root", async () => {
+    const loadedThemes: string[] = [];
     const harness = installMarkdownAppearanceRuntimeHarness({plugins: []} as never, {
         adapterFactory: () => createTestHostAdapter(),
-        loadThemeCss: async () => `:root {
+        loadThemeCss: async (theme) => {
+            loadedThemes.push(theme);
+            return `:root {
             --b3-theme-background: #1e1e1e;
             --b3-theme-on-background: #dadada;
         }
-        .protyle-wysiwyg .code-block { background-color: #2c2c2c; }`,
+        .protyle-wysiwyg .code-block { background-color: #2c2c2c; }`;
+        },
         renderNative: () => undefined,
     });
     const fixture = await harness.mount({mode: "visual"});
-    await harness.setTheme("midnight");
+    await harness.setTheme("savor");
 
     const themeStyle = document.querySelector<HTMLStyleElement>("[data-markdown-appearance-runtime-theme]");
     assert.equal(fixture.root.style.color, "var(--b3-theme-on-background)");
@@ -91,6 +95,7 @@ test("runtime harness scopes the real SiYuan theme without changing the applicat
     assert.match(themeStyle?.textContent ?? "", /\[data-appearance-runtime="true"\] \.protyle-wysiwyg \.code-block/);
     assert.doesNotMatch(themeStyle?.textContent ?? "", /(^|\})\s*:root/u);
     assert.equal(document.documentElement.style.getPropertyValue("--b3-theme-background"), "");
+    assert.deepEqual(loadedThemes, ["savor"]);
     await harness.destroy();
 });
 

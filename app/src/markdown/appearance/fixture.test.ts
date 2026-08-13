@@ -30,20 +30,22 @@ test("uses the bundled Lute output as the complete native appearance fixture", (
     assert.equal(root.dataset.appearanceFixture, "native");
 });
 
-test("covers representative native content without replacing Lute structure", () => {
+test("covers representative native content and upgrades Markdown callouts to native probe nodes", () => {
     const blockDOM = markdownToBlockDOM(APPEARANCE_FIXTURE_MARKDOWN);
     const root = createNativeAppearanceFixture(document, blockDOM);
     const source = document.createElement("template");
     source.innerHTML = blockDOM;
-    assert.deepEqual(
-        [...root.children].map((element) => [element.className, element.getAttribute("data-type")]),
-        [...source.content.children].map((element) => [element.className, element.getAttribute("data-type")]),
-    );
+    assert.ok(root.children.length >= source.content.children.length);
     assert.ok(root.querySelector(".h1"));
     assert.ok(root.querySelector(".list"));
     assert.ok(root.querySelector(".li[data-subtype='t'] > .protyle-action--task"));
     assert.equal(root.querySelector(".li[data-subtype='t'] .p .protyle-action--task"), null);
     assert.ok(root.querySelector(".bq"));
+    assert.deepEqual(
+        [...root.querySelectorAll<HTMLElement>('[data-type="NodeCallout"]')]
+            .map((element) => element.dataset.subtype),
+        ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"],
+    );
     assert.ok(root.querySelector(".table"));
     assert.ok(root.querySelector(".hr"));
 });

@@ -45,8 +45,9 @@ import (
 var Mode = "prod"
 
 const (
-	Ver       = "1.0.0"
-	IsInsider = false
+	Ver                 = "1.0.1"
+	SiYuanCompatibleVer = "3.7.0"
+	IsInsider           = false
 )
 
 // IsReleaseVer 判断是否为正式版（不含 alpha、beta、rc 等预发布标识）。

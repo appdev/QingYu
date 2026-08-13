@@ -228,13 +228,16 @@ test("uses the intrinsic image width until the user resizes it", async () => {
     assert.equal(frame.classList.contains("markra-image-frame-sized"), false);
 });
 
-test("keeps Mod-A available for selecting the complete Markdown document", () => {
+test("selects the current Markdown line before the complete document", () => {
     const editor = createView("第一段\n\n第二段");
-    const handled = runScopeHandlers(editor, new KeyboardEvent("keydown", {
+    const event = () => new KeyboardEvent("keydown", {
         key: "a",
         metaKey: true,
-    }), "editor");
-    assert.equal(handled, true);
+    });
+    assert.equal(runScopeHandlers(editor, event(), "editor"), true);
+    assert.equal(editor.state.selection.main.from, 0);
+    assert.equal(editor.state.selection.main.to, 3);
+    assert.equal(runScopeHandlers(editor, event(), "editor"), true);
     assert.equal(editor.state.selection.main.from, 0);
     assert.equal(editor.state.selection.main.to, editor.state.doc.length);
 });

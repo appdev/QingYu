@@ -18,11 +18,13 @@ export interface MarkdownAppearanceContract {
         selector?: string;
         variable?: string;
     };
-    propertyReferences?: Record<string, {selector: string; property: string}>;
+    propertyReferences?: Record<string, {selector: string; property: string; pseudo?: string}>;
+    markdownPropertyReferences?: Record<string, {selector: string; property: string; pseudo?: string}>;
     states: MarkdownAppearanceState[];
     modes: MarkdownAppearanceMode[];
     platforms: MarkdownAppearancePlatform[];
     styleProperties: string[];
+    comparisonProperties?: string[];
     geometry: AppearanceGeometryMetric[];
     fallbackVariables: string[];
     probe: boolean;
@@ -77,8 +79,12 @@ const validateContracts = (value: unknown): readonly MarkdownAppearanceContract[
             throw new TypeError(`Missing Markdown appearance reference for ${contract.id}`);
         }
         if (contract.propertyReferences && Object.values(contract.propertyReferences).some((reference) =>
-            !reference.selector || !reference.property)) {
+            !reference.selector || !reference.property || (reference.pseudo && !reference.pseudo.startsWith("::")))) {
             throw new TypeError(`Invalid Markdown appearance property reference for ${contract.id}`);
+        }
+        if (contract.markdownPropertyReferences && Object.values(contract.markdownPropertyReferences).some((reference) =>
+            !reference.selector || !reference.property || (reference.pseudo && !reference.pseudo.startsWith("::")))) {
+            throw new TypeError(`Invalid Markdown appearance Markdown property reference for ${contract.id}`);
         }
         if (!Array.isArray(contract.ownedSelectors)) {
             throw new TypeError(`Missing Markdown appearance selector ownership for ${contract.id}`);
@@ -92,6 +98,9 @@ const validateContracts = (value: unknown): readonly MarkdownAppearanceContract[
         if (!contract.fallbackVariables?.every((name) => name.startsWith("--b3-"))) {
             throw new TypeError(`Invalid Markdown appearance fallback for ${contract.id}`);
         }
+        if (contract.comparisonProperties?.some((property) => !contract.styleProperties.includes(property))) {
+            throw new TypeError(`Invalid Markdown appearance comparison property for ${contract.id}`);
+        }
         ids.add(contract.id);
         return Object.freeze(contract);
     }));
@@ -102,6 +111,12 @@ const contracts = validateContracts(data);
 export const listAppearanceContracts = () => contracts;
 
 export const getAppearanceContract = (id: string) => contracts.find((contract) => contract.id === id);
+
+export const appearanceComparisonProperties = (contract: MarkdownAppearanceContract | undefined) => {
+    if (!contract) return [];
+    if (contract.comparisonProperties) return contract.comparisonProperties;
+    return contract.category === "native-equivalent" ? contract.styleProperties : [];
+};
 
 export const appearanceVariableName = (id: string, property: string) =>
     `--b3-editor-appearance-${id.replace(/\./gu, "-")}-${property.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`)}`;

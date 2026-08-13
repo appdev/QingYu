@@ -45,3 +45,33 @@ test("covers shell and editor foundation states", () => {
         assert.ok(getAppearanceContract(id), id);
     }
 });
+
+test("measures visual editor text and padding from their owning elements", () => {
+    const visual = getAppearanceContract("editor.visual");
+    assert.equal(visual?.markdownPropertyReferences?.fontFamily.selector, ".cm-content");
+    assert.equal(visual?.markdownPropertyReferences?.lineHeight.selector, ".cm-content");
+    assert.equal(visual?.markdownPropertyReferences?.paddingLeft.selector, ".markdown-editor__body");
+    assert.equal(visual?.markdownPropertyReferences?.paddingTop.selector, ".markdown-editor__body");
+
+    const scroller = getAppearanceContract("editor.scroller");
+    assert.equal(scroller?.styleProperties.includes("fontFamily"), false);
+    assert.equal(scroller?.styleProperties.includes("lineHeight"), false);
+});
+
+test("renders multi-line callout shadows from their outer edges", () => {
+    const source = require("node:fs").readFileSync(
+        require("node:path").resolve(process.cwd(), "src/assets/scss/business/_markdown.scss"),
+        "utf8",
+    );
+
+    assert.match(source, /box-shadow:\s*var\(--markra-callout-shadow-inline/u);
+    assert.match(source, /\.cm-line\.cm-markra-callout\s*\{[\s\S]*margin-block:\s*0;/u);
+    assert.match(source, /markra-callout-first\s*\{[\s\S]*margin-top:\s*2px;/u);
+    assert.match(source, /markra-callout-last\s*\{[\s\S]*margin-bottom:\s*2px;/u);
+    assert.match(source, /markra-callout-first[\s\S]*box-shadow:\s*var\(--markra-callout-shadow-first/u);
+    assert.match(source, /markra-callout-last[\s\S]*box-shadow:\s*var\(--markra-callout-shadow-last/u);
+    assert.match(
+        source,
+        /markra-callout-first\.markra-callout-last[\s\S]*box-shadow:\s*var\(--markra-callout-shadow/u,
+    );
+});
