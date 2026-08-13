@@ -9,6 +9,19 @@ extraMetadata:
   main: "electron/main.js"
 directories:
   output: "build"
+dmg:
+  contents:
+    - x: 130
+      y: 180
+    - x: 410
+      y: 180
+      type: "link"
+      path: "/Applications"
+    - x: 270
+      y: 310
+      type: "file"
+      path: "resources/macos/自动安装.command"
+      name: "自动安装.command"
 files:
   - "electron"
 afterPack: "./scripts/afterPack.js"
