@@ -120,7 +120,7 @@ const initMultiMenu = (selectItemElements: NodeListOf<Element>, app: App) => {
         submenu: [{
             id: "exportSiYuanZip",
             label: "QingYu .sy.zip",
-            icon: "iconSiYuan",
+            icon: "iconUpload",
             click: () => {
                 confirmEncryptedExport(notebookId, () => {
                     const msgId = showMessage(window.siyuan.languages.exporting, -1);
@@ -361,7 +361,7 @@ export const initNavigationMenu = (app: App, liElement: HTMLElement) => {
         submenu: [{
             id: "exportSiYuanZip",
             label: "QingYu .sy.zip",
-            icon: "iconSiYuan",
+            icon: "iconUpload",
             click: () => {
                 confirmEncryptedExport(notebookId, () => {
                     const msgId = showMessage(window.siyuan.languages.exporting, -1);
@@ -715,7 +715,7 @@ export const genImportMenu = (notebookId: string, pathString: string) => {
         submenu: [
             {
                 id: "importSiYuanZip",
-                icon: "iconSiYuan",
+                icon: "iconDownload",
                 label: 'QingYu .sy.zip<input class="b3-form__upload" type="file" accept="application/zip">',
                 bind: (element) => {
                     element.querySelector(".b3-form__upload").addEventListener("change", (event: InputEvent & {

@@ -1470,7 +1470,7 @@
 
   ```json
   {
-    "url": "https://b3log.org/siyuan/",
+    "url": "https://apkdv.com/",
     "method": "GET",
     "timeout": 7000,
     "contentType": "text/html",
@@ -1521,7 +1521,7 @@
       "headers": {
       },
       "status": 200,
-      "url": "https://b3log.org/siyuan"
+      "url": "https://apkdv.com/"
     }
   }
   ```

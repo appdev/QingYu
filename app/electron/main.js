@@ -17,6 +17,8 @@
 // 开发环境下隐藏 Electron 安全清单控制台提示 https://www.electronjs.org/docs/latest/tutorial/security
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = "true";
 
+const qingyuBrand = require("./qingyuBrand.js");
+
 const {
     net,
     app,
@@ -61,11 +63,9 @@ const systemShutdownNone = 0;
 const systemShutdownEnding = 1;
 const systemShutdownForced = 2;
 const systemShutdownExitTimeout = 30000;
-const updateKernelExitTimeout = 30000;
 const safeModeReasons = new Set(["abnormal-exit", "killed", "crashed", "oom", "memory-eviction"]);
 const noSafeModeReasons = new Set(["clean-exit", "launch-failed", "integrity-failure"]);
 const expectedRendererExitIds = new Set();
-const expectedKernelExitPorts = new Set();
 const handledCrashWebContents = new Set();
 const kernelProcesses = new Map();
 let bootWindow;
@@ -78,8 +78,6 @@ let openAsHidden = false;
 let systemShutdownState = systemShutdownNone;
 let gracefulSystemShutdownPromise;
 let keepAppOpenDuringSystemShutdown = false;
-let updateInstallPromise;
-let keepAppOpenDuringUpdate = false;
 const openDialogSingletons = new Set();
 const nativeMenuStates = new Map();
 const isOpenAsHidden = function () {
@@ -435,7 +433,7 @@ const exitApp = (port, errorWindowId) => {
             });
         } else {
             markExpectedRendererExit(mainWindow);
-            if (keepAppOpenDuringSystemShutdown || keepAppOpenDuringUpdate) {
+            if (keepAppOpenDuringSystemShutdown) {
                 mainWindow.destroy();
             } else {
                 app.exit();
@@ -472,238 +470,6 @@ const requestKernelExit = (port, options = {}, signal) => {
     }).catch((error) => {
         writeLog("shutdown kernel failed [port=" + port + "]: " + error);
     });
-};
-
-const waitForKernelProcessExit = (port, timeout) => {
-    const portKey = port.toString();
-    const kernelProcess = kernelProcesses.get(portKey);
-    if (!kernelProcess) {
-        return Promise.resolve(true);
-    }
-
-    return new Promise((resolve) => {
-        let timer;
-        const onClose = () => {
-            clearTimeout(timer);
-            resolve(true);
-        };
-        kernelProcess.once("close", onClose);
-        timer = setTimeout(() => {
-            kernelProcess.removeListener("close", onClose);
-            resolve(false);
-        }, timeout);
-    });
-};
-
-const requestUpdateKernelExit = async (port, options) => {
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), updateKernelExitTimeout);
-    try {
-        const response = await requestKernelExit(port, options, abortController.signal);
-        if (!response) {
-            return false;
-        }
-        const apiData = await response.json();
-        if (apiData.code === 0) {
-            writeLog("update kernel exit request succeeded [port=" + port + "]");
-            return apiData;
-        }
-        writeLog("update kernel exit request failed [port=" + port + ", code=" + apiData.code + "]");
-    } catch (error) {
-        writeLog("parse update kernel exit response failed [port=" + port + "]: " + error);
-    } finally {
-        clearTimeout(timeout);
-    }
-    return false;
-};
-
-const closeKernelForUpdate = async (port, initiatingPort, setCurrentWorkspace) => {
-    const isInitiatingKernel = port.toString() === initiatingPort.toString();
-    const exitResponse = await requestUpdateKernelExit(port, {
-        force: isInitiatingKernel,
-        setCurrentWorkspace: isInitiatingKernel && setCurrentWorkspace,
-        execInstallPkg: isInitiatingKernel ? 2 : 1,
-    });
-    if (exitResponse) {
-        return exitResponse;
-    }
-
-    writeLog("forcing kernel to exit for update [port=" + port + "]");
-    return requestUpdateKernelExit(port, {
-        force: true,
-        setCurrentWorkspace: isInitiatingKernel && setCurrentWorkspace,
-        execInstallPkg: isInitiatingKernel ? 2 : 1,
-    });
-};
-
-const validateUpdateInstallRequest = (event, data) => {
-    const workspace = workspaces.find((item) => item.webContentsId === event.sender.id);
-    if (!workspace || !workspace.workspaceDir || !data || !data.port ||
-        workspace.port.toString() !== data.port.toString()) {
-        writeLog("rejected update install request from an unknown workspace");
-        return;
-    }
-    if (process.platform !== "win32" && process.platform !== "darwin") {
-        writeLog("rejected update install request on unsupported platform [platform=" + process.platform + "]");
-        return;
-    }
-
-    return {
-        initiatingPort: workspace.port.toString(),
-        setCurrentWorkspace: data.setCurrentWorkspace !== false,
-        workspaceDir: workspace.workspaceDir,
-    };
-};
-
-const validateUpdateInstallPackage = (request, requestedInstallPkgPath) => {
-    if (!requestedInstallPkgPath) {
-        writeLog("the initiating kernel did not return an update install package");
-        return;
-    }
-
-    try {
-        const installDir = fs.realpathSync(path.join(request.workspaceDir, "temp", "install"));
-        const installPkgPath = fs.realpathSync(requestedInstallPkgPath);
-        const relativePkgPath = path.relative(installDir, installPkgPath);
-        if (!relativePkgPath || path.isAbsolute(relativePkgPath) || path.dirname(relativePkgPath) !== ".") {
-            writeLog("rejected update install package outside the workspace install directory [path=" + installPkgPath + "]");
-            return;
-        }
-
-        const packageName = path.basename(installPkgPath);
-        const validPackageName = process.platform === "win32"
-            ? /^siyuan-.+-win(?:-arm64)?\.exe$/i.test(packageName)
-            : /^siyuan-.+-mac(?:-arm64)?\.dmg$/i.test(packageName);
-        if (!validPackageName || !fs.statSync(installPkgPath).isFile()) {
-            writeLog("rejected invalid update install package [path=" + installPkgPath + "]");
-            return;
-        }
-        writeLog("validated update install package [path=" + installPkgPath + "]");
-        return installPkgPath;
-    } catch (error) {
-        writeLog("validate update install package failed: " + error);
-    }
-};
-
-const launchUpdateInstallPackage = (installPkgPath) => {
-    return new Promise((resolve, reject) => {
-        const command = process.platform === "darwin" ? "/usr/bin/open" : installPkgPath;
-        const args = process.platform === "darwin" ? [installPkgPath] : [];
-        const installProcess = childProcess.spawn(command, args, {
-            cwd: path.dirname(installPkgPath),
-            detached: true,
-            stdio: "ignore",
-        });
-        installProcess.once("error", reject);
-        installProcess.once("spawn", () => {
-            writeLog("launched update install package [pid=" + installProcess.pid + ", path=" + installPkgPath + "]");
-            installProcess.unref();
-            resolve();
-        });
-    });
-};
-
-const waitForUpdateKernelExits = async (ports) => {
-    if (ports.length === 0) {
-        return;
-    }
-
-    const exitResults = await Promise.all(ports.map(async (port) => {
-        return {
-            port,
-            exited: await waitForKernelProcessExit(port, updateKernelExitTimeout),
-        };
-    }));
-    const timedOutPorts = exitResults.filter((item) => !item.exited).map((item) => item.port);
-    if (timedOutPorts.length === 0) {
-        return;
-    }
-
-    writeLog("kernel exit timed out before update [ports=" + timedOutPorts.join(",") + "]");
-    timedOutPorts.forEach((port) => {
-        const kernelProcess = kernelProcesses.get(port);
-        if (kernelProcess) {
-            writeLog("terminating residual kernel before update [pid=" + kernelProcess.pid + ", port=" + port + "]");
-            kernelProcess.kill("SIGKILL");
-        }
-    });
-    await Promise.all(timedOutPorts.map((port) => waitForKernelProcessExit(port, 5000)));
-    const residualPorts = timedOutPorts.filter((port) => kernelProcesses.has(port));
-    if (residualPorts.length > 0) {
-        if (process.platform === "win32") {
-            writeLog("residual kernel processes will be terminated by the installer [ports=" + residualPorts.join(",") + "]");
-        } else {
-            throw new Error("failed to terminate residual kernel processes [ports=" + residualPorts.join(",") + "]");
-        }
-    }
-};
-
-const closeUpdateKernelStage = async (ports, request) => {
-    if (ports.length === 0) {
-        return [];
-    }
-
-    const exitResponses = await Promise.all(ports.map((port) => closeKernelForUpdate(port, request.initiatingPort,
-        request.setCurrentWorkspace)));
-    ports.forEach((port) => exitApp(port));
-    await waitForUpdateKernelExits(ports);
-    return exitResponses;
-};
-
-// 更新时先退出其他工作空间，再退出发起更新的工作空间，确保安装器启动前所有内核已经停止。
-// https://github.com/siyuan-note/siyuan/issues/18258
-const coordinateUpdateInstall = async (request) => {
-    const ports = Array.from(new Set(getSystemShutdownPorts().map((port) => port.toString())
-        .concat(Array.from(kernelProcesses.keys()), request.initiatingPort)));
-    ports.forEach((port) => expectedKernelExitPorts.add(port));
-    writeLog("coordinating update install [initiatingPort=" + request.initiatingPort + ", ports=" + ports.join(",") +
-        "]");
-
-    workspaces.forEach((workspace) => {
-        if (workspace.browserWindow && !workspace.browserWindow.isDestroyed()) {
-            workspace.browserWindow.hide();
-        }
-    });
-
-    const otherPorts = ports.filter((port) => port !== request.initiatingPort);
-    writeLog("closing other workspaces for update [ports=" + otherPorts.join(",") + "]");
-    await closeUpdateKernelStage(otherPorts, request);
-    writeLog("closing initiating workspace for update [port=" + request.initiatingPort + "]");
-    const [initiatingExitResponse] = await closeUpdateKernelStage([request.initiatingPort], request);
-    const installPkgPath = validateUpdateInstallPackage(request, initiatingExitResponse?.data?.installPkgPath);
-    if (!installPkgPath) {
-        throw new Error("the update install package returned by the kernel is invalid");
-    }
-
-    await launchUpdateInstallPackage(installPkgPath);
-    keepAppOpenDuringUpdate = false;
-    app.exit();
-};
-
-const beginUpdateInstall = (event, data) => {
-    if (updateInstallPromise) {
-        writeLog("ignored duplicate update install request");
-        return true;
-    }
-    if (systemShutdownState !== systemShutdownNone) {
-        writeLog("rejected update install request during system shutdown");
-        return false;
-    }
-
-    const request = validateUpdateInstallRequest(event, data);
-    if (!request) {
-        return false;
-    }
-
-    keepAppOpenDuringUpdate = true;
-    updateInstallPromise = coordinateUpdateInstall(request).catch((error) => {
-        writeLog("coordinate update install failed: " + error);
-        keepAppOpenDuringUpdate = false;
-        updateInstallPromise = undefined;
-        app.relaunch();
-        app.exit();
-    });
-    return true;
 };
 
 const getSystemShutdownPorts = () => {
@@ -1020,7 +786,7 @@ const initMainWindow = (currentKernelPort = kernelPort) => {
 
         if (-1 < details.url.toLowerCase().indexOf("youtube")) {
             // YouTube 设置 Referer https://github.com/siyuan-note/siyuan/issues/16319
-            details.requestHeaders["Referer"] = "https://b3log.org/siyuan/";
+            details.requestHeaders["Referer"] = qingyuBrand.websiteURL;
             cb({requestHeaders: details.requestHeaders});
             return;
         }
@@ -1223,7 +989,7 @@ const initKernel = (workspace, port, lang, safeMode) => {
                 if (kernelProcesses.get(kernelPortKey) === kernelProcess) {
                     kernelProcesses.delete(kernelPortKey);
                 }
-                const expectedExit = expectedKernelExitPorts.delete(kernelPortKey);
+                const expectedExit = code === 0;
                 writeLog(`kernel [pid=${kernelProcess.pid}, port=${currentKernelPort}] exited with code [${code}], signal [${signal}], expected [${expectedExit}]`);
                 if (0 !== code && !expectedExit) {
                     let errorWindowId;
@@ -1245,7 +1011,7 @@ const initKernel = (workspace, port, lang, safeMode) => {
                             errorWindowId = showErrorWindow("初始化工作空间失败", "Failed to create workspace directory", "<div>工作空间文件夹权限不足，请查看 工作空间/temp/siyuan.log 获取详细报错信息</div><div>Insufficient permissions for the workspace folder. Please check workspace/temp/siyuan.log for detailed error information.</div>");
                             break;
                         case 26:
-                            errorWindowId = showErrorWindow("已成功避免潜在的数据损坏", "Successfully avoid potential data corruption", "<div>工作空间下的文件正在被第三方软件（比如同步网盘、杀毒软件等）打开占用，继续使用会导致数据损坏，轻语内核已经安全退出。</div><div>请将工作空间移动到其他路径后再打开，停止同步盘同步工作空间，并将工作空间加入杀毒软件信任列表。如果以上步骤无法解决问题，请参考<a href=\"https://ld246.com/article/1684586140917\" target=\"_blank\">这里</a>或者<a href=\"https://ld246.com/article/1649901726096\" target=\"_blank\">发帖</a>寻求帮助。</div><div>The files in the workspace are being opened and occupied by third-party software (such as synchronized network disk, antivirus software, etc.), continuing to use it will cause data corruption, and the QingYu Kernel is already safe shutdown.</div><div>Move the workspace to another path and open it again, stop the network disk to sync the workspace, and add the workspace to the antivirus software trust list. If the above steps do not resolve the issue, please look for help or report bugs <a href=\"https://liuyun.io/article/1686530886208\" target=\"_blank\">here</a>.</div>", "🚒");
+                            errorWindowId = showErrorWindow("已成功避免潜在的数据损坏", "Successfully avoided potential data corruption", "<div>工作空间下的文件正在被第三方软件（例如同步网盘、杀毒软件）占用。继续使用可能导致数据损坏，轻语内核已安全退出。</div><div>请将工作空间移动到其他路径，停止第三方同步，并将工作空间加入安全软件信任列表。仍需帮助时，请联系 <a href=\"mailto:lengyue@apkdv.com\" target=\"_blank\">lengyue@apkdv.com</a>。</div><div>Files in the workspace are occupied by third-party software such as a sync client or antivirus. Continuing could corrupt data, so the QingYu Kernel exited safely.</div><div>Move the workspace, stop third-party synchronization, and add it to your security software allowlist. For help, contact <a href=\"mailto:lengyue@apkdv.com\" target=\"_blank\">lengyue@apkdv.com</a>.</div>", "🚒");
                             break;
                         case 0:
                             break;
@@ -1351,10 +1117,6 @@ app.whenReady().then(() => {
     // 渲染进程崩溃监听，只有工作空间主窗口的非预期崩溃才会触发安全模式。
     app.on("render-process-gone", (event, webContents, details) => {
         writeLog("Render process gone [reason=" + details.reason + ", exitCode=" + details.exitCode + "]");
-        if (updateInstallPromise) {
-            writeLog("ignore renderer exit during update [webContentsId=" + webContents.id + "]");
-            return;
-        }
         if (systemShutdownState !== systemShutdownNone) {
             writeLog("ignore renderer exit during system shutdown [webContentsId=" + webContents.id + "]");
             return;
@@ -1397,11 +1159,11 @@ app.whenReady().then(() => {
             },
         }, {
             label: lang.officialWebsite, click: () => {
-                shell.openExternal("https://b3log.org/siyuan/");
+                shell.openExternal(qingyuBrand.websiteURL);
             },
         }, {
             label: lang.openSource, click: () => {
-                shell.openExternal("https://github.com/siyuan-note/siyuan");
+                shell.openExternal(qingyuBrand.sourceURL);
             },
         }, {
             label: lang.resetWindow, type: "checkbox", click: v => {
@@ -1825,9 +1587,6 @@ app.whenReady().then(() => {
     ipcMain.on("siyuan-quit", (event, port) => {
         exitApp(port);
     });
-    ipcMain.handle("siyuan-install-update", (event, data) => {
-        return beginUpdateInstall(event, data);
-    });
     ipcMain.on("siyuan-show-window", (event) => {
         const mainWindow = getWindowByContentId(event.sender.id);
         if (!mainWindow) {
@@ -1887,10 +1646,6 @@ app.whenReady().then(() => {
         }
     });
     ipcMain.on("siyuan-open-workspace", (event, data) => {
-        if (updateInstallPromise) {
-            writeLog("ignored opening workspace while installing update");
-            return;
-        }
         const foundWorkspace = workspaces.find((item) => {
             if (item.workspaceDir === data.workspace) {
                 showWindow(item.browserWindow);
@@ -2226,10 +1981,6 @@ app.whenReady().then(() => {
 });
 
 app.on("open-url", async (event, url) => { // for macOS
-    if (updateInstallPromise) {
-        writeLog("ignored URL while installing update");
-        return;
-    }
     if (url.startsWith("qingyu://")) {
         let isBackground = true;
         if (workspaces.length === 0) {
@@ -2256,10 +2007,6 @@ app.on("open-url", async (event, url) => { // for macOS
 
 app.on("second-instance", (event, argv) => {
     writeLog("second-instance [" + argv + "]");
-    if (updateInstallPromise) {
-        writeLog("ignored second instance while installing update");
-        return;
-    }
     let workspace = argv.find((arg) => arg.startsWith("--workspace="));
     if (workspace) {
         workspace = workspace.split("=")[1];
@@ -2312,9 +2059,6 @@ app.on("second-instance", (event, argv) => {
 });
 
 app.on("activate", () => {
-    if (updateInstallPromise) {
-        return;
-    }
     if (workspaces.length > 0) {
         const mainWindow = (latestActiveWindow && !latestActiveWindow.isDestroyed()) ? latestActiveWindow : workspaces[0].browserWindow;
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2339,10 +2083,6 @@ app.on("web-contents-created", (webContentsCreatedEvent, contents) => {
 });
 
 app.on("before-quit", (event) => {
-    if (keepAppOpenDuringUpdate) {
-        event.preventDefault();
-        return;
-    }
     workspaces.forEach(item => {
         if (item.browserWindow && !item.browserWindow.isDestroyed()) {
             event.preventDefault();

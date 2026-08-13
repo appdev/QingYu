@@ -1479,7 +1479,7 @@ Note: To ensure data security, access to this interface is prohibited in Publish
 
   ```json
   {
-    "url": "https://b3log.org/siyuan/",
+    "url": "https://apkdv.com/",
     "method": "GET",
     "timeout": 7000,
     "contentType": "text/html",
@@ -1531,7 +1531,7 @@ Note: To ensure data security, access to this interface is prohibited in Publish
       "headers": {
       },
       "status": 200,
-      "url": "https://b3log.org/siyuan"
+      "url": "https://apkdv.com/"
     }
   }
   ```

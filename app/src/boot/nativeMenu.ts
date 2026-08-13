@@ -7,6 +7,7 @@ import {globalCommand} from "./globalEvent/command/global";
 import {commandPanel} from "./globalEvent/command/panel";
 import {mountHelp} from "../util/mount";
 import {selectActiveEditorContent} from "../markdown/keyboard";
+import {QINGYU_CONTACT_URL} from "../util/qingyuBrand";
 
 const NATIVE_MENU_COMMANDS = new Set([
     "config",
@@ -93,9 +94,7 @@ const executeNativeMenuCommand = (command: string) => {
     } else if (command === "userGuide") {
         mountHelp();
     } else if (command === "feedback") {
-        window.open(window.siyuan.config.lang === "zh-CN"
-            ? "https://ld246.com/article/1649901726096"
-            : "https://liuyun.io/article/1686530886208");
+        window.open(QINGYU_CONTACT_URL);
     } else if (command === "debug") {
         ipcRenderer.send(Constants.SIYUAN_CMD, "openDevTools");
     } else if (command === "selectAll") {

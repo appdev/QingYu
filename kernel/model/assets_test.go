@@ -37,7 +37,7 @@ func TestClearWorkspaceTempPreservesInstallPackages(t *testing.T) {
 	util.DataDir = filepath.Join(root, "data")
 	util.TempDir = filepath.Join(root, "temp")
 	util.WorkspaceDir = root
-	installPkgPath := filepath.Join(util.TempDir, "install", "siyuan-test-win.exe")
+	installPkgPath := filepath.Join(util.TempDir, "install", "qingyu-test-win.exe")
 	if err := os.MkdirAll(filepath.Dir(installPkgPath), 0755); err != nil {
 		t.Fatal(err)
 	}

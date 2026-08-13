@@ -496,7 +496,7 @@ export const exportMd = (id: string) => {
         }, {
             id: "exportSiYuanZip",
             label: "QingYu .sy.zip",
-            icon: "iconSiYuan",
+            icon: "iconUpload",
             click: () => {
                 const msgId = showMessage(window.siyuan.languages.exporting, -1);
                 fetchPost("/api/export/exportSY", {

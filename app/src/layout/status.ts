@@ -11,6 +11,7 @@ import {ipcRenderer} from "electron";
 import {MenuItem} from "../menus/Menu";
 import {Constants} from "../constants";
 import {updateHotkeyTip} from "../protyle/util/compatibility";
+import {QINGYU_CONTACT_URL, QINGYU_SOURCE_URL, QINGYU_WEBSITE_URL} from "../util/qingyuBrand";
 
 export const initStatus = (isWindow = false) => {
     /// #if !MOBILE
@@ -76,11 +77,7 @@ export const initStatus = (isWindow = false) => {
                     label: window.siyuan.languages.feedback,
                     icon: "iconFeedback",
                     click: () => {
-                        if ("zh-CN" === window.siyuan.config.lang || "zh-TW" === window.siyuan.config.lang) {
-                            window.open("https://ld246.com/article/1649901726096");
-                        } else {
-                            window.open("https://liuyun.io/article/1686530886208");
-                        }
+                        window.open(QINGYU_CONTACT_URL);
                     }
                 }).element);
                 /// #if !BROWSER
@@ -94,16 +91,16 @@ export const initStatus = (isWindow = false) => {
                 /// #endif
                 window.siyuan.menus.menu.append(new MenuItem({
                     label: window.siyuan.languages["_trayMenu"].officialWebsite,
-                    icon: "iconSiYuan",
+                    icon: "iconGlobe",
                     click: () => {
-                        window.open("https://b3log.org/siyuan");
+                        window.open(QINGYU_WEBSITE_URL);
                     }
                 }).element);
                 window.siyuan.menus.menu.append(new MenuItem({
                     label: window.siyuan.languages["_trayMenu"].openSource,
                     icon: "iconGithub",
                     click: () => {
-                        window.open("https://github.com/siyuan-note/siyuan");
+                        window.open(QINGYU_SOURCE_URL);
                     }
                 }).element);
                 const rect = target.getBoundingClientRect();

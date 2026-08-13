@@ -99,4 +99,6 @@ Bu temeli yıllar içinde mümkün kılan SiYuan ekibine, Lute'a, diğer üst ka
 
 QingYu, [GNU Affero General Public License v3.0](LICENSE) kapsamında açık kaynak olarak sunulur. Her türlü dağıtım ve değişiklik lisansa uymalı; özgün projenin ve katkıcılarının telif ve atıf bilgilerini korumaya devam etmelidir.
 
+Lütfen [değiştirilmiş sürüm ve marka bildirimini](NOTICE.md), [Gizlilik Politikasını](docs/legal/privacy.en.md) ve [Kullanıcı Sözleşmesini](docs/legal/terms.en.md) de inceleyin. QingYu web sitesi [apkdv.com](https://apkdv.com/), destek adresi [lengyue@apkdv.com](mailto:lengyue@apkdv.com) şeklindedir.
+
 Her satır biraz daha hafif, her düşünce usulca daha berrak olsun.

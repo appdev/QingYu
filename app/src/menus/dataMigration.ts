@@ -113,7 +113,7 @@ export const openDataMigration = (options: IDataMigrationOptions = {}) => {
     <div class="fn__hr"></div>
     <div class="b3-list b3-list--background">
         <label class="b3-list-item">
-            <svg class="b3-list-item__graphic"><use xlink:href="#iconSiYuan"></use></svg>
+            <svg class="b3-list-item__graphic"><use xlink:href="#iconDownload"></use></svg>
             <span class="b3-list-item__text">QingYu .sy.zip</span>
             <input class="b3-form__upload" data-type="siyuan" type="file" accept="application/zip">
         </label>

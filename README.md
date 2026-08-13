@@ -55,7 +55,7 @@ QingYu keeps your content in a local workspace of your choosing. Where your data
 - Local repository snapshots, history, and recovery help safeguard work accumulated over time.
 - Sync through S3, WebDAV, or the local file system lets you choose and manage where copies are stored.
 - The essentials work without a QingYu cloud account or any official cloud-sync service.
-- QingYu does not proactively transmit usage activity, diagnostics, installation events, device identifiers, or similar telemetry.
+- The current code review found no QingYu developer-operated telemetry backend; optional network features and third-party extensions may transmit data to services you choose.
 - Export to Markdown, PDF, Word, HTML, and other formats keeps your writing from being locked inside a single interface.
 
 Privacy is not a line of copy. It is a lasting discipline, shaping every decision about accounts, networking, storage, and features.
@@ -98,5 +98,7 @@ Our thanks go to the SiYuan team, Lute and the other upstream projects, and ever
 ## Open source and acknowledgements
 
 QingYu is open source under the [GNU Affero General Public License v3.0](LICENSE). Any distribution or modification must continue to honor the license and preserve the copyright and attribution of the original project and its contributors.
+
+See the [modified-version and brand notice](NOTICE.md), [Privacy Policy](docs/legal/privacy.en.md), and [User Agreement](docs/legal/terms.en.md). QingYu's website is [apkdv.com](https://apkdv.com/), and support is available at [lengyue@apkdv.com](mailto:lengyue@apkdv.com).
 
 May every note rest a little lighter, and every thought come gently into focus.

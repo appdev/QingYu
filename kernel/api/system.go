@@ -1074,13 +1074,13 @@ func setDownloadInstallPkg(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
 
-	arg, ok := util.JsonArg(c, ret)
+	_, ok := util.JsonArg(c, ret)
 	if !ok {
 		return
 	}
 
-	downloadInstallPkg := arg["downloadInstallPkg"].(bool)
-	model.Conf.System.DownloadInstallPkg = downloadInstallPkg
+	// 轻语自有更新服务上线前，保留请求兼容性但不允许旧客户端重新启用应用更新。
+	model.Conf.System.DownloadInstallPkg = false
 	model.Conf.Save()
 }
 

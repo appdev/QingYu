@@ -25,6 +25,7 @@ import {openRecentDocs} from "../business/openRecentDocs";
 import * as dayjs from "dayjs";
 import {upDownHint} from "../util/upDownHint";
 import {openDataMigration} from "./dataMigration";
+import {QINGYU_CONTACT_URL} from "../util/qingyuBrand";
 
 const editLayout = (layoutName?: string) => {
     const dialog = new Dialog({
@@ -500,11 +501,7 @@ export const workspaceMenu = (app: App, rect: DOMRect) => {
             label: window.siyuan.languages.feedback,
             icon: "iconFeedback",
             click: () => {
-                if ("zh-CN" === window.siyuan.config.lang || "zh-TW" === window.siyuan.config.lang) {
-                    window.open("https://ld246.com/article/1649901726096");
-                } else {
-                    window.open("https://liuyun.io/article/1686530886208");
-                }
+                window.open(QINGYU_CONTACT_URL);
             }
         }).element);
         /// #if !BROWSER

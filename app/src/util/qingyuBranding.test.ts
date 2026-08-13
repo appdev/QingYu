@@ -3,6 +3,7 @@ import {createHash} from "node:crypto";
 import {readFile} from "node:fs/promises";
 import {join} from "node:path";
 import test from "node:test";
+import sharp from "sharp";
 
 const repositoryRoot = join(__dirname, "../../..");
 const readRepositoryFile = (path: string) => readFile(join(repositoryRoot, path));
@@ -25,6 +26,16 @@ test("QingYu desktop branding uses the product icon everywhere", async () => {
     assert.equal(hash(stagedIcon), hash(desktopIcon));
     assert.equal(hash(stagedLargeIcon), hash(desktopIcon));
     assert.equal(hash(linuxIcon), hash(desktopIcon));
+
+    const rootLogo = await readRepositoryFile("logo.png");
+    const expectedDesktopIcon = await sharp(rootLogo).resize(512, 512).png().toBuffer();
+    assert.equal(hash(desktopIcon), hash(expectedDesktopIcon));
+
+    for (const size of [16, 32, 48, 64, 128, 256, 512]) {
+        const actual = await readRepositoryFile(`app/src/assets/icon/${size}x${size}.png`);
+        const expected = await sharp(rootLogo).resize(size, size).png().toBuffer();
+        assert.equal(hash(actual), hash(expected), `${size}x${size}`);
+    }
 });
 
 test("QingYu startup surfaces do not fall back to SiYuan branding", async () => {
@@ -138,12 +149,12 @@ test("QingYu packaging launches the renamed kernel", async () => {
     assert.doesNotMatch(buildSource, /SiYuan-Kernel/);
 });
 
-test("QingYu keeps the official updater unchanged behind one migration marker", async () => {
+test("QingYu application updater cannot use SiYuan release services", async () => {
     const updaterSource = (await readRepositoryFile("kernel/model/updater.go")).toString();
-    assert.equal(updaterSource.match(/TODO\(QingYu\)/g)?.length, 1);
-    assert.match(updaterSource, /util\.GetRhyResult/);
-    assert.match(updaterSource, /"siyuan-" \+ ver/);
-    assert.match(updaterSource, /github\.com\/siyuan-note\/siyuan\/releases/);
+    assert.doesNotMatch(updaterSource, /util\.GetRhyResult/);
+    assert.doesNotMatch(updaterSource, /"siyuan-" \+ ver/);
+    assert.doesNotMatch(updaterSource, /github\.com\/siyuan-note\/siyuan\/releases/);
+    assert.doesNotMatch(updaterSource, /release\.(?:b3log|liuyun)\.(?:org|io)/);
 });
 
 test("QingYu brand voice is consistent across application and README surfaces", async () => {
@@ -219,7 +230,7 @@ test("QingYu brand voice is consistent across application and README surfaces", 
         author?: {name?: string, email?: string};
     };
     assert.equal(packageMetadata.homepage, "https://apkdv.com/");
-    assert.equal(packageMetadata.author?.name, "QingYu Project");
+    assert.equal(packageMetadata.author?.name, "appdev");
     assert.equal(packageMetadata.author?.email, "lengyue@apkdv.com");
 
     const manifest = JSON.parse(manifestSource) as {description: string};
