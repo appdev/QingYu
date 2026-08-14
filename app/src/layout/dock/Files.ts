@@ -6,7 +6,8 @@ import {getDockByType} from "../tabUtil";
 import {Constants} from "../../constants";
 import {getDocDisplayName, pathPosix, setNoteBook} from "../../util/pathName";
 import {newFileInTree} from "../../util/newFile";
-import {openNewFileMenu} from "../../markdown/fileActions";
+import {newMarkdownFile} from "../../markdown/fileActions";
+import {createMarkdownFromFileTreeAction, getMarkdownFileTreeNames} from "../../markdown/fileTree";
 import {initFileMenu, initNavigationMenu, sortMenu} from "../../menus/navigation";
 import {MenuItem} from "../../menus/Menu";
 import {showMessage} from "../../dialog/message";
@@ -298,11 +299,7 @@ export class Files extends Model {
                         const pathString = target.parentElement.getAttribute("data-path");
                         if (!window.siyuan.config.readonly) {
                             if (type === "new") {
-                                openNewFileMenu(options.app, {
-                                    notebookId,
-                                    currentPath: pathString,
-                                    position: {x: event.clientX, y: event.clientY},
-                                });
+                                createMarkdownFromFileTreeAction(options.app, target, newMarkdownFile);
                             } else if (type === "more-root") {
                                 initNavigationMenu(options.app, target.parentElement).popup({
                                     x: event.clientX,
@@ -1614,8 +1611,9 @@ data-type="navigation-root" data-path="/" data-count="${item.subFileCount || 0}"
 
     private genFileHTML(item: IFile) {
         if (item.docType === "markdown") {
+            const names = getMarkdownFileTreeNames(item.name);
             const paddingLeft = (item.path.split("/").length - 1) * 18;
-            return `<li data-name="${Lute.EscapeHTMLStr(item.name)}" data-doc-type="markdown" data-count="0"
+            return `<li data-name="${Lute.EscapeHTMLStr(names.dataName)}" data-doc-type="markdown" data-count="0"
 data-type="navigation-file" data-path="${Lute.EscapeHTMLStr(item.path)}"
 style="--file-toggle-width:${paddingLeft + 18}px;--file-action-offset:${paddingLeft + 20}px"
 class="b3-list-item b3-list-item--hide-action">
@@ -1624,7 +1622,7 @@ class="b3-list-item b3-list-item--hide-action">
     </span>
     <span class="b3-list-item__icon"><svg><use xlink:href="#iconMarkdown"></use></svg></span>
     <span class="b3-list-item__text ariaLabel" data-delay="200" data-position="parentE"
-aria-label="${escapeAriaLabel(item.name)}">${escapeHtml(item.name)}</span>
+aria-label="${escapeAriaLabel(names.dataName)}">${escapeHtml(names.displayName)}</span>
     <span data-type="more-file" class="b3-list-item__action b3-tooltips b3-tooltips__nw" aria-label="${window.siyuan.languages.more}">
         <svg><use xlink:href="#iconMore"></use></svg>
     </span>

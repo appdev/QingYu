@@ -150,11 +150,17 @@ test("QingYu packaging launches the renamed kernel", async () => {
 });
 
 test("QingYu application updater cannot use SiYuan release services", async () => {
-    const updaterSource = (await readRepositoryFile("kernel/model/updater.go")).toString();
+    const [updaterSource, aboutSource, brandSource] = await Promise.all([
+        readRepositoryFile("kernel/model/updater.go"),
+        readRepositoryFile("app/src/config/tabs/aboutTab.ts"),
+        readRepositoryFile("app/src/util/qingyuBrand.ts"),
+    ]).then((files) => files.map((file) => file.toString()));
     assert.doesNotMatch(updaterSource, /util\.GetRhyResult/);
     assert.doesNotMatch(updaterSource, /"siyuan-" \+ ver/);
     assert.doesNotMatch(updaterSource, /github\.com\/siyuan-note\/siyuan\/releases/);
     assert.doesNotMatch(updaterSource, /release\.(?:b3log|liuyun)\.(?:org|io)/);
+    assert.match(brandSource, /QINGYU_LATEST_RELEASE_URL = `\$\{QINGYU_SOURCE_URL\}\/releases\/latest`/);
+    assert.match(aboutSource, /href="\$\{QINGYU_LATEST_RELEASE_URL\}"/);
 });
 
 test("QingYu brand voice is consistent across application and README surfaces", async () => {

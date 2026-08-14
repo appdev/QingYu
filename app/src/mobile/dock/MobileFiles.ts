@@ -22,7 +22,8 @@ import {refreshFileTree} from "../../dialog/processSystem";
 import {setStorageVal} from "../../protyle/util/compatibility";
 import {showMessage} from "../../dialog/message";
 import {dragOverScroll, stopScrollAnimation} from "../../boot/globalEvent/dragover";
-import {openNewFileMenu} from "../../markdown/fileActions";
+import {newMarkdownFile} from "../../markdown/fileActions";
+import {createMarkdownFromFileTreeAction, getMarkdownFileTreeNames} from "../../markdown/fileTree";
 import {
     cancelFileTreeCollapse,
     collapseFileTree,
@@ -206,11 +207,7 @@ export class MobileFiles extends Model {
                         const notebookId = ulElement.getAttribute("data-url");
                         if (!window.siyuan.config.readonly) {
                             if (type === "new") {
-                                openNewFileMenu(app, {
-                                    notebookId,
-                                    currentPath: pathString,
-                                    mobile: true,
-                                });
+                                createMarkdownFromFileTreeAction(app, target, newMarkdownFile);
                             } else if (type === "more-root") {
                                 initNavigationMenu(app, target.parentElement);
                                 window.siyuan.menus.menu.fullscreen("bottom");
@@ -1208,14 +1205,15 @@ export class MobileFiles extends Model {
 
     private genFileHTML = (item: IFile) => {
         if (item.docType === "markdown") {
+            const names = getMarkdownFileTreeNames(item.name);
             const paddingLeft = (item.path.split("/").length - 1) * 20;
-            return `<li data-name="${Lute.EscapeHTMLStr(item.name)}" data-doc-type="markdown" data-count="0"
+            return `<li data-name="${Lute.EscapeHTMLStr(names.dataName)}" data-doc-type="markdown" data-count="0"
 class="b3-list-item" data-path="${item.path}" style="--file-toggle-width:${paddingLeft + 20}px">
     <span style="padding-left: ${paddingLeft}px" class="b3-list-item__toggle fn__hidden">
         <svg class="b3-list-item__arrow"><use xlink:href="#iconRight"></use></svg>
     </span>
     <span class="b3-list-item__icon"><svg><use xlink:href="#iconMarkdown"></use></svg></span>
-    <span class="b3-list-item__text">${escapeHtml(item.name)}</span>
+    <span class="b3-list-item__text">${escapeHtml(names.displayName)}</span>
     <span data-type="more-file" class="b3-list-item__action b3-tooltips b3-tooltips__nw" aria-label="${window.siyuan.languages.more}">
         <svg><use xlink:href="#iconMore"></use></svg>
     </span>

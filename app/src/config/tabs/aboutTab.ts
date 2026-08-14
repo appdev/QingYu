@@ -1,6 +1,11 @@
 import type {SettingTabBuilder} from "../setting/builder";
 import {Constants} from "../../constants";
-import {getQingYuLegalURL, QINGYU_SOURCE_URL, QINGYU_WEBSITE_URL} from "../../util/qingyuBrand";
+import {
+    getQingYuLegalURL,
+    QINGYU_LATEST_RELEASE_URL,
+    QINGYU_SOURCE_URL,
+    QINGYU_WEBSITE_URL,
+} from "../../util/qingyuBrand";
 
 const getLegalLabels = () => {
     if (window.siyuan.config.lang === "zh-CN") {
@@ -23,6 +28,7 @@ const registerAboutVersionGroup = (tab: SettingTabBuilder) => {
         keywords: [
             window.siyuan.languages.currentVer,
             window.siyuan.languages.isMsStoreVerTip,
+            window.siyuan.languages.checkUpdate,
         ],
         html: genAboutVersionHtml,
         afterMount: mountAboutVersionSlot,
@@ -41,6 +47,12 @@ const genAboutVersionHtml = (): string => {
     return `<div class="fn__flex b3-label config-item config-wrap">
     <div class="fn__flex-1">
         <div class="config-name">${window.siyuan.languages.currentVer} v${Constants.SIYUAN_VERSION}<span id="isInsider"></span></div>
+    </div>
+    <div class="fn__space"></div>
+    <div class="fn__flex-center fn__size200">
+        <a href="${QINGYU_LATEST_RELEASE_URL}" target="_blank" class="b3-button b3-button--outline fn__block">
+            <svg><use xlink:href="#iconRefresh"></use></svg>${window.siyuan.languages.checkUpdate}
+        </a>
     </div>
 </div>`;
 };

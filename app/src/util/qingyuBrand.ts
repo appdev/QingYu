@@ -1,5 +1,6 @@
 export const QINGYU_WEBSITE_URL = "https://apkdv.com/";
 export const QINGYU_SOURCE_URL = "https://github.com/appdev/QingYu";
+export const QINGYU_LATEST_RELEASE_URL = `${QINGYU_SOURCE_URL}/releases/latest`;
 export const QINGYU_CONTACT_URL = "mailto:lengyue@apkdv.com";
 
 export const getQingYuLegalURL = (kind: "privacy" | "terms", language: string) => {
