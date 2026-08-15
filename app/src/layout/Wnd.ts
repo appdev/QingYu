@@ -52,7 +52,8 @@ import {setStorageVal} from "../protyle/util/compatibility";
 import {setTitle} from "../util/processTitle";
 import {dragOverScroll} from "../boot/globalEvent/dragover";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
-import {openNewFileMenu} from "../markdown/fileActions";
+import {newMarkdownFile} from "../markdown/fileActions";
+import {createMarkdownFromTabBarAction} from "../markdown/tabBarCreate";
 
 export class Wnd {
     private app: App;
@@ -134,9 +135,8 @@ export class Wnd {
         this.headersElement.parentElement.addEventListener("click", (event) => {
             let target = event.target as HTMLElement;
             while (target && !target.isEqualNode(this.headersElement)) {
-                if (target.classList.contains("block__icon") && target.getAttribute("data-type") === "new") {
+                if (createMarkdownFromTabBarAction(app, target, newMarkdownFile)) {
                     setPanelFocus(this.headersElement.parentElement.parentElement);
-                    openNewFileMenu(app, {position: {x: event.clientX, y: event.clientY}});
                     break;
                 } else if (target.classList.contains("block__icon") && target.getAttribute("data-type") === "more") {
                     this.renderTabList(target);

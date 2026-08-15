@@ -20,8 +20,8 @@ dmg:
     - x: 270
       y: 310
       type: "file"
-      path: "resources/macos/自动安装.command"
-      name: "自动安装.command"
+      path: "resources/macos/自动安装.sh"
+      name: "自动安装.sh"
 files:
   - "electron"
 afterPack: "./scripts/afterPack.js"

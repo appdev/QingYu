@@ -32,6 +32,19 @@ import {exportMarkdownZip} from "../protyle/export/exportMd";
 import {addFilesToDatabase} from "../protyle/render/av/addToDatabase";
 import {openEmojiPanel} from "../emoji";
 import {newMarkdownFile, removeMarkdownFile, renameMarkdownFile} from "../markdown/fileActions";
+import {getDocumentCreateMenuItems} from "../markdown/documentCreateMenu";
+
+const appendDocumentCreateMenuItems = (app: App, notebookId: string, parentPath: string) => {
+    getDocumentCreateMenuItems({
+        app,
+        notebookId,
+        parentPath,
+        newFileLabel: window.siyuan.languages.newFile,
+        encrypted: isEncryptedBox(notebookId),
+        createNative: newFileInTree,
+        createMarkdown: newMarkdownFile,
+    }).forEach((item) => window.siyuan.menus.menu.append(new MenuItem(item).element));
+};
 
 const confirmEncryptedExport = (notebookId: string, callback: () => void) => {
     if (!isEncryptedBox(notebookId)) {
@@ -195,14 +208,7 @@ export const initNavigationMenu = (app: App, liElement: HTMLElement) => {
     }
     /// #endif
     if (!window.siyuan.config.readonly) {
-        if (!isEncryptedBox(notebookId)) {
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "newMarkdown",
-                label: `${window.siyuan.languages.newFile} Markdown`,
-                icon: "iconMarkdown",
-                click: () => newMarkdownFile(app, notebookId, "/"),
-            }).element);
-        }
+        appendDocumentCreateMenuItems(app, notebookId, "/");
         window.siyuan.menus.menu.append(new MenuItem({
             id: "changeIcon",
             label: window.siyuan.languages.changeIcon,
@@ -467,14 +473,7 @@ export const initFileMenu = (app: App, notebookId: string, pathString: string, l
     }
     /// #endif
     if (!window.siyuan.config.readonly) {
-        if (!isEncryptedBox(notebookId)) {
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "newMarkdown",
-                label: `${window.siyuan.languages.newFile} Markdown`,
-                icon: "iconMarkdown",
-                click: () => newMarkdownFile(app, notebookId, pathString),
-            }).element);
-        }
+        appendDocumentCreateMenuItems(app, notebookId, pathString);
         const topElement = hasTopClosestByTag(liElement, "UL");
         if (window.siyuan.config.fileTree.sort === 6 || (topElement && topElement.dataset.sortmode === "6")) {
             window.siyuan.menus.menu.append(new MenuItem({

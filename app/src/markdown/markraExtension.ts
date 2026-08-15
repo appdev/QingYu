@@ -180,7 +180,7 @@ export const createSiyuanMarkraExtension = ({
                 footnotePreviewPlugin(),
                 foldTogglePlugin(),
                 formattingPlugin({keybindings: false}),
-                frontmatterHiddenPlugin(),
+                frontmatterHiddenPlugin(window.siyuan?.languages?.emptyPlaceholder ?? ""),
                 horizontalRulePlugin(),
                 imageAtomicEditingPlugin(),
                 imagePreviewPlugin(imageOptions),

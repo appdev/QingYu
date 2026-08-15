@@ -7,7 +7,12 @@ const test = require("node:test");
 const YAML = require("yaml");
 
 const appRoot = path.join(__dirname, "..");
-const installerPath = path.join(appRoot, "resources", "macos", "自动安装.command");
+const installerPath = path.join(appRoot, "resources", "macos", "自动安装.sh");
+
+test("macOS installer uses only the terminal-oriented .sh filename", () => {
+    assert.equal(fs.existsSync(installerPath), true);
+    assert.equal(fs.existsSync(path.join(appRoot, "resources", "macos", "自动安装.command")), false);
+});
 
 test("macOS installer has valid Bash syntax and is executable", () => {
     const result = spawnSync("/bin/bash", ["-n", installerPath], {encoding: "utf8"});
@@ -17,7 +22,7 @@ test("macOS installer has valid Bash syntax and is executable", () => {
 
 test("macOS installer rejects a missing source application", {skip: process.platform !== "darwin"}, (t) => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "qingyu-installer-"));
-    const fixtureInstaller = path.join(fixtureRoot, "自动安装.command");
+    const fixtureInstaller = path.join(fixtureRoot, "自动安装.sh");
     t.after(() => fs.rmSync(fixtureRoot, {recursive: true, force: true}));
     fs.copyFileSync(installerPath, fixtureInstaller);
     fs.chmodSync(fixtureInstaller, 0o755);
@@ -33,7 +38,7 @@ test("macOS installer rejects a missing source application", {skip: process.plat
 
 test("macOS installer rejects an invalid source application bundle", {skip: process.platform !== "darwin"}, (t) => {
     const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "qingyu-installer-"));
-    const fixtureInstaller = path.join(fixtureRoot, "自动安装.command");
+    const fixtureInstaller = path.join(fixtureRoot, "自动安装.sh");
     t.after(() => fs.rmSync(fixtureRoot, {recursive: true, force: true}));
     fs.copyFileSync(installerPath, fixtureInstaller);
     fs.chmodSync(fixtureInstaller, 0o755);
@@ -107,8 +112,8 @@ test("both macOS DMGs contain the application, Applications link, and shared ins
             x: 270,
             y: 310,
             type: "file",
-            path: "resources/macos/自动安装.command",
-            name: "自动安装.command",
+            path: "resources/macos/自动安装.sh",
+            name: "自动安装.sh",
         },
     ];
 

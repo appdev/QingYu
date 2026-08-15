@@ -32,6 +32,8 @@ import {fetchCoverData, renderCoverPicker} from "../protyle/header/coverData";
 import {openTagMenu} from "../protyle/header/tagMenu";
 import {MarkdownDocumentScrollController} from "./documentScroll";
 import {MarkdownSlashMenuController} from "./markdownSlashMenu";
+import {initialVisualMarkdownSelection} from "./markra-core/codemirror/frontmatter-preview";
+import {renderMarkdownBreadcrumb} from "./breadcrumb";
 
 interface IMarkdownDocument {
     path: string;
@@ -415,6 +417,7 @@ export class MarkdownEditor extends Model {
         });
         this.view = new EditorView({
             doc: document.content,
+            selection: {anchor: initialVisualMarkdownSelection(document.content)},
             extensions: [
                 minimalSetup,
                 this.modeCompartment.of(createSiyuanMarkraExtension({
@@ -712,10 +715,7 @@ export class MarkdownEditor extends Model {
     private renderBreadcrumb() {
         const notebook = window.siyuan.notebooks.find((item) => item.id === this.notebookId);
         const parts = [notebook?.name || this.notebookId, ...this.path.split("/").filter(Boolean)];
-        this.element.querySelector(".protyle-breadcrumb__bar").innerHTML = parts.map((item, index) => `<span class="protyle-breadcrumb__item${index === parts.length - 1 ? " protyle-breadcrumb__item--active" : ""}">
-    <span class="protyle-breadcrumb__text">${escapeHtml(item)}</span>
-    ${index === parts.length - 1 ? "" : '<svg class="protyle-breadcrumb__arrow"><use xlink:href="#iconRight"></use></svg>'}
-</span>`).join("");
+        this.element.querySelector(".protyle-breadcrumb__bar").innerHTML = renderMarkdownBreadcrumb(parts);
     }
 
     private setStatus(status: "saved" | "saving" | "dirty" | "conflict" | "error") {
