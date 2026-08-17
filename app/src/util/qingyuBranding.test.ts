@@ -51,7 +51,7 @@ test("QingYu startup surfaces do not fall back to SiYuan branding", async () => 
         ]).then((files) => files.map((file) => file.toString()));
 
     assert.match(mainSource, /app\.dock\.setIcon\(path\.join\(appDir, "stage", "icon-large\.png"\)\)/);
-    assert.match(bootSource, /\.\.\/stage\/icon-large\.png/);
+    assert.match(bootSource, /\.\.\/\.\.\/stage\/icon-large\.png/);
     assert.doesNotMatch(bootSource, /#d23f31|#3b3e43/);
     assert.equal(stagedLoadingSource, loadingSource);
     assert.doesNotMatch(loadingSource, /#d23f31|#3b3e43/);
@@ -59,6 +59,25 @@ test("QingYu startup surfaces do not fall back to SiYuan branding", async () => 
         assert.match(template, /\.\.\/\.\.\/icon\.png/);
         assert.doesNotMatch(template, /icon\.svg/);
     }
+});
+
+test("macOS package localizes the application display name", async () => {
+    const [darwinConfig, arm64Config, simplifiedChinese, traditionalChinese] = await Promise.all([
+        readRepositoryFile("app/electron-builder-darwin.yml"),
+        readRepositoryFile("app/electron-builder-darwin-arm64.yml"),
+        readRepositoryFile("app/resources/macos/zh_CN.lproj/InfoPlist.strings"),
+        readRepositoryFile("app/resources/macos/zh_TW.lproj/InfoPlist.strings"),
+    ]).then((files) => files.map((file) => file.toString()));
+
+    for (const config of [darwinConfig, arm64Config]) {
+        assert.match(config, /LSHasLocalizedDisplayName: true/);
+        assert.match(config, /from: "resources\/macos\/zh_CN\.lproj"[\s\S]*to: "zh_CN\.lproj"/);
+        assert.match(config, /from: "resources\/macos\/zh_TW\.lproj"[\s\S]*to: "zh_TW\.lproj"/);
+    }
+    assert.match(simplifiedChinese, /"CFBundleDisplayName" = "轻语";/);
+    assert.match(simplifiedChinese, /"CFBundleName" = "轻语";/);
+    assert.match(traditionalChinese, /"CFBundleDisplayName" = "輕語";/);
+    assert.match(traditionalChinese, /"CFBundleName" = "輕語";/);
 });
 
 test("QingYu runtime identity is isolated from SiYuan", async () => {
