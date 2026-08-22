@@ -17,8 +17,11 @@ class HorizontalRuleWidget extends WidgetType {
   }
 
   toDOM(view: CodeMirrorView) {
-    const rule = view.dom.ownerDocument.createElement("hr");
+    const rule = view.dom.ownerDocument.createElement("span");
     rule.className = "cm-markra-horizontal-rule";
+    const line = view.dom.ownerDocument.createElement("span");
+    line.className = "cm-markra-horizontal-rule__line";
+    rule.append(line);
     rule.addEventListener("mousedown", (event) => {
       if (event.button !== 0 || event.ctrlKey) return;
       event.preventDefault();

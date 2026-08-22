@@ -95,6 +95,12 @@ export interface RuntimeDocumentBehaviorReport {
     titleLeavesViewport: boolean;
 }
 
+export interface RuntimeCoordinateMappingReport {
+    blockTopDifference: number;
+    hitLineNumber: number;
+    targetLineNumber: number;
+}
+
 export interface RuntimeModeContinuityReport {
     anchorOffsetDifference: number;
     anchorPositionAfter: number;
@@ -106,6 +112,7 @@ export interface MarkdownAppearanceRuntimeHarness {
     destroy(): Promise<void>;
     interact(state: string): Promise<void>;
     measure(): RuntimeAppearanceReport;
+    measureCoordinateMapping(position: number): Promise<RuntimeCoordinateMappingReport>;
     measureDocumentBehavior(): Promise<RuntimeDocumentBehaviorReport>;
     measureModeContinuity(): Promise<RuntimeModeContinuityReport>;
     mount(options?: RuntimeHarnessOptions): Promise<RuntimeAppearanceFixture>;
@@ -216,6 +223,19 @@ const collectContiguousLines = (element: HTMLElement, selector: string) => {
     return lines;
 };
 
+const contentBlockRect = (element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    const computed = element.ownerDocument.defaultView?.getComputedStyle(element);
+    const top = Number.parseFloat(computed?.borderTopWidth ?? "") || 0;
+    const bottom = Number.parseFloat(computed?.borderBottomWidth ?? "") || 0;
+    return DOMRect.fromRect({
+        height: Math.max(0, rect.height - top - bottom),
+        width: rect.width,
+        x: rect.left,
+        y: rect.top + top,
+    });
+};
+
 const markdownRect = (contractId: string, element: HTMLElement) => {
     if (contractId === "block.code") {
         const lines = collectContiguousLines(element, ".cm-markra-code-content-line");
@@ -224,6 +244,9 @@ const markdownRect = (contractId: string, element: HTMLElement) => {
     if (contractId.startsWith("block.callout-")) {
         const lines = collectContiguousLines(element, ".cm-markra-callout");
         return lines.length > 0 ? unionRect(lines) : element.getBoundingClientRect();
+    }
+    if (contractId === "block.paragraph" || contractId === "block.list" || contractId.startsWith("block.heading-")) {
+        return contentBlockRect(element);
     }
     return element.getBoundingClientRect();
 };
@@ -289,6 +312,21 @@ const geometryValue = (
     if (metric === "top") return rect.top - container.top;
     if (metric === "bottom") return rect.bottom - container.top;
     return rect[metric] ?? 0;
+};
+
+const equivalentStyleValue = (
+    contract: ReturnType<typeof listAppearanceContracts>[number],
+    property: string,
+    actual: string | undefined,
+    expected: string | undefined,
+) => {
+    if (actual === expected) return true;
+    const markdownProperty = contract.markdownPropertyReferences?.[property]?.property;
+    if (!["borderBottomWidth", "borderTopWidth"].includes(markdownProperty ?? "")) return false;
+    const actualPixels = Number.parseFloat(actual ?? "");
+    const expectedPixels = Number.parseFloat(expected ?? "");
+    return Number.isFinite(actualPixels) && Number.isFinite(expectedPixels) &&
+        Math.abs(actualPixels - expectedPixels) <= .5;
 };
 
 const createNativeShell = (document: Document, blockDOM: string, width: number) => {
@@ -577,7 +615,12 @@ export const installMarkdownAppearanceRuntimeHarness = (
                     const markdownContainer = serializeRect(current.fixture.markdownRoot.getBoundingClientRect());
                     const nativeContainer = serializeRect(current.nativeShell.getBoundingClientRect());
                     appearanceComparisonProperties(contract).forEach((property) => {
-                        if (native.styles[property] !== markdown.styles[property]) {
+                        if (!equivalentStyleValue(
+                            contract,
+                            property,
+                            markdown.styles[property],
+                            native.styles[property],
+                        )) {
                             styleDiffs[property] = {
                                 actual: markdown.styles[property] ?? "",
                                 expected: native.styles[property] ?? "",
@@ -650,6 +693,33 @@ export const installMarkdownAppearanceRuntimeHarness = (
         return report;
     };
 
+    const measureCoordinateMapping = async (position: number): Promise<RuntimeCoordinateMappingReport> => {
+        if (!active) throw new Error("Mount the Markdown appearance harness before measuring coordinate mapping");
+        const view = active.fixture.view;
+        if (position < 0 || position > view.state.doc.length) {
+            throw new RangeError(`Markdown coordinate position is outside the document: ${position}`);
+        }
+        view.dispatch({selection: {anchor: position}, scrollIntoView: true});
+        await waitForLayout(window);
+        const coordinates = view.coordsAtPos(position);
+        if (!coordinates) throw new Error("CodeMirror did not render the coordinate mapping target");
+        const hit = view.posAtCoords({
+            x: coordinates.left + 1,
+            y: (coordinates.top + coordinates.bottom) / 2,
+        }, false);
+        if (hit === null) throw new Error("CodeMirror did not resolve its rendered target coordinates");
+        const lineBlock = view.lineBlockAt(position);
+        const lineNode = view.domAtPos(view.state.doc.lineAt(position).from).node;
+        const lineElement = (lineNode instanceof HTMLElement ? lineNode : lineNode.parentElement)
+            ?.closest<HTMLElement>(".cm-line");
+        if (!lineElement) throw new Error("CodeMirror did not expose the coordinate mapping target line");
+        return {
+            blockTopDifference: Math.abs(lineElement.getBoundingClientRect().top - (lineBlock.top + view.documentTop)),
+            hitLineNumber: view.state.doc.lineAt(hit).number,
+            targetLineNumber: view.state.doc.lineAt(position).number,
+        };
+    };
+
     const measureModeContinuity = async (): Promise<RuntimeModeContinuityReport> => {
         if (!active) throw new Error("Mount the Markdown appearance harness before measuring mode continuity");
         const current = active;
@@ -689,6 +759,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         destroy,
         interact,
         measure,
+        measureCoordinateMapping,
         measureDocumentBehavior,
         measureModeContinuity,
         mount,

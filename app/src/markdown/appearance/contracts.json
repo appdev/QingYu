@@ -204,6 +204,10 @@
     "markdownSelector": ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .p"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -218,6 +222,10 @@
     "markdownSelector": ".cm-markra-h1",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h1"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-h1", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-h1", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -232,6 +240,10 @@
     "markdownSelector": ".cm-markra-h2",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h2"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-h2", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-h2", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -246,6 +258,10 @@
     "markdownSelector": ".cm-markra-h3",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h3"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-h3", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-h3", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -260,6 +276,10 @@
     "markdownSelector": ".cm-markra-h4",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h4"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-h4", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-h4", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -274,6 +294,10 @@
     "markdownSelector": ".cm-markra-h5",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h5"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-h5", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-h5", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -288,6 +312,10 @@
     "markdownSelector": ".cm-markra-h6",
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h6"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-h6", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-h6", "property": "borderTopWidth"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -302,6 +330,10 @@
     "markdownSelector": ".cm-markra-list-item",
     "ownedSelectors": [".cm-markra-list-marker"],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .list"},
+    "markdownPropertyReferences": {
+      "marginBottom": {"selector": ".cm-markra-list-item", "property": "borderBottomWidth"},
+      "marginTop": {"selector": ".cm-markra-list-item", "property": "borderTopWidth"}
+    },
     "states": ["default", "hover", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -455,12 +487,24 @@
     "id": "block.horizontal-rule",
     "category": "native-equivalent",
     "markdownSelector": ".cm-markra-horizontal-rule",
-    "ownedSelectors": [],
-    "reference": {"kind": "native", "selector": ".protyle-wysiwyg .hr"},
+    "ownedSelectors": [".cm-markra-horizontal-rule__line"],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg .hr > div"},
+    "propertyReferences": {
+      "background": {"selector": ".protyle-wysiwyg .hr > div", "property": "background", "pseudo": "::after"},
+      "backgroundColor": {"selector": ".protyle-wysiwyg .hr > div", "property": "backgroundColor", "pseudo": "::after"},
+      "lineHeight": {"selector": ".protyle-wysiwyg .hr > div", "property": "height", "pseudo": "::after"},
+      "lineTop": {"selector": ".protyle-wysiwyg .hr > div", "property": "top", "pseudo": "::after"}
+    },
+    "markdownPropertyReferences": {
+      "background": {"selector": ".cm-markra-horizontal-rule__line", "property": "background"},
+      "backgroundColor": {"selector": ".cm-markra-horizontal-rule__line", "property": "backgroundColor"},
+      "lineHeight": {"selector": ".cm-markra-horizontal-rule__line", "property": "height"},
+      "lineTop": {"selector": ".cm-markra-horizontal-rule__line", "property": "top"}
+    },
     "states": ["default", "hover", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "color", "height", "marginBottom", "marginTop"],
+    "styleProperties": ["background", "backgroundColor", "color", "height", "lineHeight", "lineTop", "marginBottom", "marginTop"],
     "geometry": ["height", "top", "width"],
     "fallbackVariables": ["--b3-theme-background-light"],
     "probe": true

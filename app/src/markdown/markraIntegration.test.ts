@@ -136,6 +136,34 @@ test("adds safe SiYuan semantic aliases to rendered Markdown", async () => {
     assert.equal(editor.dom.querySelector("[data-node-id]"), null);
 });
 
+test("reveals heading source at the clicked line while preserving selectable text", async () => {
+    const editor = createView("## 可复制标题\n\n正文");
+    editor.focus();
+    editor.dispatch({selection: {anchor: 5}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const heading = editor.dom.querySelector(".cm-markra-h2");
+    assert.equal(heading?.textContent, "## 可复制标题");
+
+    editor.dispatch({selection: {anchor: 3, head: 8}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(heading?.textContent, "可复制标题");
+    assert.equal(editor.state.sliceDoc(
+        editor.state.selection.main.from,
+        editor.state.selection.main.to,
+    ), "可复制标题");
+});
+
+test("renders horizontal rules as inline native-style containers", async () => {
+    const editor = createView("上文\n\n---\n\n下文");
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const rule = editor.dom.querySelector<HTMLElement>(".cm-markra-horizontal-rule");
+    assert.equal(rule?.tagName, "SPAN");
+    assert.ok(rule?.querySelector(".cm-markra-horizontal-rule__line"));
+});
+
 test("uses SiYuan sprite icons for every visual table toolbar action", async () => {
     const editor = createView("引言\n\n| 版本 | 作者 |\n| --- | --- |\n| v1.0 | 架构组 |");
     editor.dispatch({selection: {anchor: 0}});

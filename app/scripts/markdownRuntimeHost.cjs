@@ -3,13 +3,14 @@ const remote = require("@electron/remote/main");
 
 const debugPort = process.env.QINGYU_MARKDOWN_DEBUG_PORT || "9222";
 const kernelPort = process.env.QINGYU_MARKDOWN_KERNEL_PORT || "9806";
+const showWindow = process.env.QINGYU_MARKDOWN_SHOW === "1";
 app.commandLine.appendSwitch("remote-debugging-port", debugPort);
 remote.initialize();
 
 app.whenReady().then(async () => {
     const window = new BrowserWindow({
         height: 800,
-        show: false,
+        show: showWindow,
         webPreferences: {
             contextIsolation: false,
             nodeIntegration: true,

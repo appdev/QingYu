@@ -3,8 +3,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+const debugPort = process.env.QINGYU_MARKDOWN_DEBUG_PORT || "9222";
+
 const connect = async () => {
-    const targets = await fetch("http://127.0.0.1:9222/json/list").then((response) => response.json());
+    const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((response) => response.json());
     const target = targets.find((item) => item.type === "page" && /QingYu|轻语/u.test(item.title));
     assert.ok(target?.webSocketDebuggerUrl, "A running QingYu page with remote debugging is required");
     const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -71,6 +73,7 @@ const main = async () => {
     const {call, socket} = await connect();
     const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "qingyu-markdown-appearance-"));
     const reports = [];
+    let coordinateMapping = null;
     let emptyReport = null;
     try {
         await call("Page.enable");
@@ -190,6 +193,26 @@ const main = async () => {
             );
             await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
         }
+        const coordinateMarkdown = `${Array.from({length: 40}, (_, index) =>
+            `Paragraph ${index + 1} keeps enough rendered lines above the target.`).join("\n\n")}\n\n---\n\n## Coordinate mapping heading\n\nBody`;
+        const coordinatePosition = coordinateMarkdown.indexOf("Coordinate mapping heading") + 4;
+        const coordinateOptions = {...matrix[0], markdown: coordinateMarkdown, theme: "savor", width: 900};
+        await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(coordinateOptions)}).then(() => true)`);
+        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.setTheme(\"savor\")");
+        coordinateMapping = await evaluate(
+            call,
+            `window.__siyuanMarkdownAppearanceTest.measureCoordinateMapping(${coordinatePosition})`,
+        );
+        assert.equal(
+            coordinateMapping.hitLineNumber,
+            coordinateMapping.targetLineNumber,
+            "Rendered Markdown coordinates must resolve to their visual source line",
+        );
+        assert.ok(
+            coordinateMapping.blockTopDifference <= 1,
+            `CodeMirror line geometry differs from the rendered line by ${coordinateMapping.blockTopDifference}px`,
+        );
+        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
         const emptyOptions = {...matrix[0], markdown: ""};
         await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(emptyOptions)}).then(() => true)`);
         await evaluate(call, `window.__siyuanMarkdownAppearanceTest.setTheme(${JSON.stringify(matrix[0].theme)})`);
@@ -233,6 +256,7 @@ const main = async () => {
         .map(({report}) => report));
     const summary = {
         contractCount,
+        coordinateMapping,
         matrixRows: reports.length,
         maximumGeometryDifference: Math.max(...parityReports.map((report) => report.maximumGeometryDifference)),
         outputDirectory,

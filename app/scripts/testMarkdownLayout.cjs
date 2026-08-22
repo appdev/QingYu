@@ -248,6 +248,8 @@ app.whenReady().then(async () => {
             surfaceRight: surface.getBoundingClientRect().right,
             visualEditorColor: getComputedStyle(visualEditor.querySelector(".cm-editor")).color,
             visualHeadingColor: getComputedStyle(visualHeading).color,
+            visualHeadingBorderBottomWidth: getComputedStyle(visualHeadingLine).borderBottomWidth,
+            visualHeadingBorderTopWidth: getComputedStyle(visualHeadingLine).borderTopWidth,
             visualHeadingFontSize: getComputedStyle(visualHeadingLine).fontSize,
             visualHeadingMarginBottom: getComputedStyle(visualHeadingLine).marginBottom,
             visualHeadingMarginTop: getComputedStyle(visualHeadingLine).marginTop,
@@ -379,8 +381,10 @@ app.whenReady().then(async () => {
     const visualColorsMatch = metrics.visualEditorColor === "rgb(33, 33, 33)" &&
         metrics.visualHeadingColor === metrics.visualThemeHeadingColor &&
         metrics.visualHeadingFontSize === "36px" &&
-        metrics.visualHeadingMarginBottom === "3px" &&
-        metrics.visualHeadingMarginTop === "14px" &&
+        metrics.visualHeadingBorderBottomWidth === "3px" &&
+        metrics.visualHeadingBorderTopWidth === "14px" &&
+        metrics.visualHeadingMarginBottom === "0px" &&
+        metrics.visualHeadingMarginTop === "0px" &&
         metrics.visualHeadingPaddingBottom === "7px" &&
         metrics.visualHeadingPaddingTop === "6px" &&
         metrics.visualLinkColor === metrics.visualThemeLinkColor;

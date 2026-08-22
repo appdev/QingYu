@@ -64,6 +64,40 @@ test("probes native code and block control components", () => {
     assert.equal(snapshot.values["--b3-editor-appearance-control-table-button-height"], "24px");
 });
 
+test("resolves the horizontal rule texture and geometry from the native line pseudo-element", () => {
+    Object.assign(window, {
+        Lute: {
+            New: () => ({
+                Md2BlockDOM: () => "<div class=\"hr\" data-type=\"NodeThematicBreak\"><div></div></div>",
+            }),
+        },
+    });
+    const readComputedStyle = window.getComputedStyle.bind(window);
+    window.getComputedStyle = ((element: Element, pseudo?: string | null) => {
+        if (pseudo === "::after" && element.matches(".protyle-wysiwyg .hr > div")) {
+            return {
+                background: "repeating-linear-gradient(90deg, rgb(12, 34, 56), rgb(56, 34, 12) 2px)",
+                backgroundColor: "rgb(12, 34, 56)",
+                height: "2px",
+                top: "13px",
+            } as CSSStyleDeclaration;
+        }
+        return readComputedStyle(element);
+    }) as typeof window.getComputedStyle;
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    assert.equal(
+        snapshot.values["--b3-editor-appearance-block-horizontal-rule-background"],
+        "repeating-linear-gradient(90deg, rgb(12, 34, 56), rgb(56, 34, 12) 2px)",
+    );
+    assert.equal(
+        snapshot.values["--b3-editor-appearance-block-horizontal-rule-background-color"],
+        "rgb(12, 34, 56)",
+    );
+    assert.equal(snapshot.values["--b3-editor-appearance-block-horizontal-rule-line-height"], "2px");
+    assert.equal(snapshot.values["--b3-editor-appearance-block-horizontal-rule-line-top"], "13px");
+});
+
 test("decomposes inset callout rings into continuous line-edge shadows", () => {
     const readComputedStyle = window.getComputedStyle.bind(window);
     window.getComputedStyle = ((element: Element) => readComputedStyle(element)) as typeof window.getComputedStyle;

@@ -123,6 +123,48 @@ test("probes every native callout subtype independently", () => {
     }
 });
 
+test("maps the native horizontal rule container and textured line independently", () => {
+    const contract = getAppearanceContract("block.horizontal-rule");
+    assert.equal(contract?.reference.selector, ".protyle-wysiwyg .hr > div");
+    assert.deepEqual(contract?.propertyReferences?.background, {
+        selector: ".protyle-wysiwyg .hr > div",
+        property: "background",
+        pseudo: "::after",
+    });
+    assert.deepEqual(contract?.propertyReferences?.backgroundColor, {
+        selector: ".protyle-wysiwyg .hr > div",
+        property: "backgroundColor",
+        pseudo: "::after",
+    });
+    assert.deepEqual(contract?.propertyReferences?.lineHeight, {
+        selector: ".protyle-wysiwyg .hr > div",
+        property: "height",
+        pseudo: "::after",
+    });
+    assert.deepEqual(contract?.propertyReferences?.lineTop, {
+        selector: ".protyle-wysiwyg .hr > div",
+        property: "top",
+        pseudo: "::after",
+    });
+    assert.deepEqual(contract?.ownedSelectors, [".cm-markra-horizontal-rule__line"]);
+});
+
+test("compares heading spacing through CodeMirror-safe transparent borders", () => {
+    for (let level = 1; level <= 6; level++) {
+        const contract = getAppearanceContract(`block.heading-${level}`);
+        assert.equal(contract?.markdownPropertyReferences?.marginTop.property, "borderTopWidth");
+        assert.equal(contract?.markdownPropertyReferences?.marginBottom.property, "borderBottomWidth");
+    }
+});
+
+test("compares paragraph and list spacing through CodeMirror-safe transparent borders", () => {
+    for (const id of ["block.paragraph", "block.list"]) {
+        const contract = getAppearanceContract(id);
+        assert.equal(contract?.markdownPropertyReferences?.marginTop.property, "borderTopWidth");
+        assert.equal(contract?.markdownPropertyReferences?.marginBottom.property, "borderBottomWidth");
+    }
+});
+
 test("compares split code blocks through equivalent styles and aggregate geometry", () => {
     const contract = getAppearanceContract("block.code");
     assert.deepEqual(contract?.comparisonProperties, [

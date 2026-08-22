@@ -13,6 +13,14 @@
   padding: 4px;
 }
 
+@mixin editor-codemirror-block-box {
+  border-block: 2px solid transparent;
+  border-radius: var(--b3-border-radius);
+  line-height: 1.625;
+  margin: 0;
+  padding: 4px;
+}
+
 @mixin editor-focus-ring {
   outline: 1px solid var(--b3-theme-primary);
   outline-offset: 1px;
@@ -24,7 +32,7 @@
   pointer-events: none;
 }
 
-@mixin editor-heading($level, $size) {
+@mixin editor-heading($level, $size, $codemirror: false) {
   color: var(--b3-editor-appearance-block-heading-#{$level}-color, inherit);
   font-family: var(--b3-editor-appearance-block-heading-#{$level}-font-family, inherit);
   font-size: var(--b3-editor-appearance-block-heading-#{$level}-font-size, $size);
@@ -32,8 +40,14 @@
   font-weight: var(--b3-editor-appearance-block-heading-#{$level}-font-weight, 600);
   letter-spacing: var(--b3-editor-appearance-block-heading-#{$level}-letter-spacing, normal);
   line-height: var(--b3-editor-appearance-block-heading-#{$level}-line-height, 1.625);
-  margin-bottom: var(--b3-editor-appearance-block-heading-#{$level}-margin-bottom, 2px);
-  margin-top: var(--b3-editor-appearance-block-heading-#{$level}-margin-top, 2px);
+  @if $codemirror {
+    border-bottom-width: var(--b3-editor-appearance-block-heading-#{$level}-margin-bottom, 2px);
+    border-top-width: var(--b3-editor-appearance-block-heading-#{$level}-margin-top, 2px);
+    margin-block: 0;
+  } @else {
+    margin-bottom: var(--b3-editor-appearance-block-heading-#{$level}-margin-bottom, 2px);
+    margin-top: var(--b3-editor-appearance-block-heading-#{$level}-margin-top, 2px);
+  }
   padding-bottom: var(--b3-editor-appearance-block-heading-#{$level}-padding-bottom, 4px);
   padding-top: var(--b3-editor-appearance-block-heading-#{$level}-padding-top, 4px);
 }
@@ -101,21 +115,14 @@
 }
 
 @mixin editor-horizontal-rule {
-  background-color: transparent;
-  background-image: linear-gradient(
-    var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light)),
-    var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light))
-  );
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: calc(100% - 8px) 1px;
   border: 0;
-  box-sizing: content-box;
-  color: var(--b3-editor-appearance-block-horizontal-rule-color, var(--b3-theme-on-background));
-  display: block;
+  box-sizing: border-box;
+  display: inline-block;
   height: var(--b3-editor-appearance-block-horizontal-rule-height, 1.625em);
-  margin: 2px 0;
-  padding: 4px;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  vertical-align: top;
   width: 100%;
 }
 

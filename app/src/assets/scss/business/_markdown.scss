@@ -152,6 +152,7 @@
     min-height: 100%;
     min-width: 0;
     padding-bottom: 50vh;
+    user-select: text;
   }
 
   // CodeMirror 使用零宽图片保护控件两侧的光标位置，不能让思源正文图片规则把它改成块级图片。
@@ -186,50 +187,62 @@
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line:not(.cm-markra-code-line) {
-    @include editorAppearance.editor-block-box;
+    @include editorAppearance.editor-codemirror-block-box;
     position: relative;
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-empty-line {
+    border-block-width: 0;
     line-height: 0;
     margin-block: 0;
     min-height: 0;
     padding-block: 0;
 
     &.cm-markra-empty-body-line {
+      border-block-width: 2px;
       line-height: 1.625;
-      margin-block: 2px;
       min-height: auto;
       padding-block: 4px;
     }
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-list-item {
+    border-bottom-width: var(--b3-editor-appearance-block-list-margin-bottom, 2px);
+    border-top-width: var(--b3-editor-appearance-block-list-margin-top, 2px);
     padding-left: var(--b3-editor-appearance-block-list-padding-left, 4px);
   }
 
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-paragraph.p:not(
+    .cm-markra-blockquote,
+    .cm-markra-list-item,
+    .cm-markra-image-line
+  ) {
+    border-bottom-width: var(--b3-editor-appearance-block-paragraph-margin-bottom, 2px);
+    border-top-width: var(--b3-editor-appearance-block-paragraph-margin-top, 2px);
+  }
+
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h1 {
-    @include editorAppearance.editor-heading(1, 1.75em);
+    @include editorAppearance.editor-heading(1, 1.75em, true);
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h2 {
-    @include editorAppearance.editor-heading(2, 1.55em);
+    @include editorAppearance.editor-heading(2, 1.55em, true);
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h3 {
-    @include editorAppearance.editor-heading(3, 1.38em);
+    @include editorAppearance.editor-heading(3, 1.38em, true);
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h4 {
-    @include editorAppearance.editor-heading(4, 1.25em);
+    @include editorAppearance.editor-heading(4, 1.25em, true);
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h5 {
-    @include editorAppearance.editor-heading(5, 1.13em);
+    @include editorAppearance.editor-heading(5, 1.13em, true);
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h6 {
-    @include editorAppearance.editor-heading(6, 1em);
+    @include editorAppearance.editor-heading(6, 1em, true);
   }
 
   .cm-markra-strong {
@@ -313,6 +326,8 @@
     font-family: var(--b3-font-family-protyle);
     font-size: var(--b3-font-size-editor);
     line-height: 1.625;
+    background-clip: padding-box;
+    border-block-width: 0;
     margin-block: 0;
     padding-left: calc(.25em + 6px) !important;
     position: relative;
@@ -354,9 +369,9 @@
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.markra-callout-first {
+    border-top-width: 2px;
     border-radius: var(--markra-callout-radius) var(--markra-callout-radius) 0 0;
     box-shadow: var(--markra-callout-shadow-first);
-    margin-top: 2px;
 
     &::before {
       border-radius: var(--b3-border-radius) var(--b3-border-radius) 0 0;
@@ -365,9 +380,9 @@
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.markra-callout-last {
+    border-bottom-width: 2px;
     border-radius: 0 0 var(--markra-callout-radius) var(--markra-callout-radius);
     box-shadow: var(--markra-callout-shadow-last);
-    margin-bottom: 2px;
 
     &::before {
       border-radius: 0 0 var(--b3-border-radius) var(--b3-border-radius);
@@ -688,6 +703,19 @@
   .cm-markra-horizontal-rule {
     @include editorAppearance.editor-horizontal-rule;
     cursor: pointer;
+
+    &__line {
+      background: var(
+        --b3-editor-appearance-block-horizontal-rule-background,
+        var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light))
+      );
+      display: block;
+      height: var(--b3-editor-appearance-block-horizontal-rule-line-height, calc(1em / 16));
+      left: 0;
+      position: absolute;
+      top: var(--b3-editor-appearance-block-horizontal-rule-line-top, calc(1.625em / 2));
+      width: calc(100% - 1px);
+    }
   }
 
   .cm-markra-table-wrap {
