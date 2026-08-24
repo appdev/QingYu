@@ -21,7 +21,9 @@ test("Linux packages advertise Markdown and pass all selected files", () => {
         const linux = readYaml(name).linux;
         assert.deepEqual(linux.mimeTypes, ["text/markdown"]);
         assert.equal(linux.desktop.entry.MimeType, "text/markdown;");
-        assert.equal(linux.desktop.entry.Exec, "qingyu %F");
+        assert.equal(linux.executableName, "qingyu");
+        assert.deepEqual(linux.executableArgs, ["%F"]);
+        assert.equal(linux.desktop.entry.Exec, undefined);
     }
 });
 

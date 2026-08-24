@@ -22,14 +22,15 @@ linux:
   mimeTypes:
     - "text/markdown"
   executableName: "qingyu"
+  executableArgs:
+    - "%F"
   desktop: {
     entry: {
       Name: "QingYu",
       Comment: "QingYu · Clear windows, a quiet desk, words softly spoken.",
       Type: "Application",
       Categories: "Utility;",
-      MimeType: "text/markdown;",
-      Exec: "qingyu %F"
+      MimeType: "text/markdown;"
     }
   }
   extraResources:
