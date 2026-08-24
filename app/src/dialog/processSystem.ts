@@ -5,7 +5,7 @@ import {exportLayout} from "../layout/util";
 import {getDockByType} from "../layout/tabUtil";
 import {Files} from "../layout/dock/Files";
 /// #endif
-import {getAllEditor} from "../layout/getAll";
+import {getAllEditor, getAllModels} from "../layout/getAll";
 /// #if !BROWSER
 import {ipcRenderer} from "electron";
 /// #endif
@@ -18,6 +18,7 @@ import {App} from "../index";
 import {saveScroll} from "../protyle/scroll/saveScroll";
 import {isInAndroid, isInHarmony, isInIOS, setStorageVal} from "../protyle/util/compatibility";
 import {Plugin} from "../plugin";
+import {discardAllExternalMarkdownChanges, prepareExternalMarkdownEditorsForExit} from "../markdown/externalMarkdownClose";
 
 export const setRefDynamicText = (data: {
     "blockID": string,
@@ -148,6 +149,22 @@ export const forceQuit = () => {
 };
 
 export const exitSiYuan = async (setCurrentWorkspace = true) => {
+    const externalMarkdownEditors = getAllModels().markdown.filter((editor) => editor.externalCapabilityId);
+    if (!await prepareExternalMarkdownEditorsForExit(externalMarkdownEditors)) {
+        const dialog = new Dialog({
+            title: window.siyuan.languages.externalMarkdown,
+            content: `<div class="b3-dialog__content">${window.siyuan.languages.externalMarkdownUnsavedTip}</div>
+<div class="b3-dialog__action"><button class="b3-button b3-button--cancel" data-action="return">${window.siyuan.languages.externalMarkdownReturnEditing}</button><div class="fn__space"></div><button class="b3-button b3-button--text" data-action="discard">${window.siyuan.languages.externalMarkdownDiscardExit}</button></div>`,
+            width: "520px",
+        });
+        dialog.element.querySelector('[data-action="return"]')?.addEventListener("click", () => dialog.destroy());
+        dialog.element.querySelector('[data-action="discard"]')?.addEventListener("click", () => {
+            discardAllExternalMarkdownChanges(externalMarkdownEditors);
+            dialog.destroy();
+            void exitSiYuan(setCurrentWorkspace);
+        });
+        return;
+    }
     hideAllElements(["util"]);
     /// #if MOBILE
     if (window.siyuan.mobile.editor) {

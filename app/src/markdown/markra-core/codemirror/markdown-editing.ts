@@ -1,4 +1,4 @@
-import { syntaxTree } from "@codemirror/language";
+import {indentUnit, syntaxTree} from "@codemirror/language";
 import {
   EditorSelection,
   EditorState,
@@ -7,10 +7,10 @@ import {
   type SelectionRange,
   type Transaction,
 } from "@codemirror/state";
-import { keymap, type EditorView } from "@codemirror/view";
+import {EditorView, keymap, type ViewUpdate} from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin";
+import {focusVisualTableBoundary} from "./table";
 
-const indentation = "  ";
 const listMarkerPattern = /^((?:[\t ]*>[\t ]*)*)([\t ]*)(?:[-+*]|\d+[.)])[\t ]+/u;
 const quotePrefixPattern = /^([\t ]*(?:>[\t ]*)+)/u;
 const incompleteInlineDestinationPattern =
@@ -60,6 +60,7 @@ function indentList(view: EditorView, outdent: boolean) {
   if (matches.some((match) => !match)) return false;
 
   const changes: ChangeSpec[] = [];
+  const indentation = view.state.facet(indentUnit);
   lines.forEach((line, index) => {
     const match = matches[index];
     if (!match) return;
@@ -78,6 +79,7 @@ function indentList(view: EditorView, outdent: boolean) {
 
 function insertPlainIndentation(view: EditorView) {
   if (!isEditable(view)) return false;
+  const indentation = view.state.facet(indentUnit);
   const changes = view.state.selection.ranges.map((range) => ({
     from: range.to,
     insert: indentation,
@@ -91,6 +93,54 @@ function handleTab(view: EditorView) {
 
 function handleShiftTab(view: EditorView) {
   return indentList(view, true);
+}
+
+function selectTripleClickedLine(view: EditorView, event: MouseEvent) {
+  if (event.button !== 0 || event.detail < 3) return null;
+  const clicked = view.posAtCoords({x: event.clientX, y: event.clientY});
+  if (clicked === null) return null;
+  let start = clicked;
+  let initial = view.state.selection;
+  return {
+    get(currentEvent: MouseEvent, extend: boolean, multiple: boolean) {
+      const head = view.posAtCoords({x: currentEvent.clientX, y: currentEvent.clientY});
+      if (head === null) return initial;
+      const anchor = extend ? initial.main.anchor : start;
+      const anchorLine = view.state.doc.lineAt(anchor);
+      const headLine = view.state.doc.lineAt(head);
+      // 三击选中行内容但不包含换行，替换时不会意外合并相邻行。
+      const range = head >= anchor
+        ? EditorSelection.range(anchorLine.from, headLine.to)
+        : EditorSelection.range(anchorLine.to, headLine.from);
+      return multiple ? initial.addRange(range) : EditorSelection.create([range]);
+    },
+    update(update: ViewUpdate) {
+      start = update.changes.mapPos(start);
+      initial = initial.map(update.changes);
+    },
+  };
+}
+
+function selectLinesWithoutTrailingBreak(view: EditorView) {
+  const blocks: Array<{from: number; to: number}> = [];
+  let coveredThroughLine = -1;
+  for (const range of view.state.selection.ranges) {
+    const startLine = view.state.doc.lineAt(range.from);
+    let endLine = view.state.doc.lineAt(range.to);
+    if (!range.empty && range.to === endLine.from) endLine = view.state.doc.lineAt(range.to - 1);
+    if (coveredThroughLine >= startLine.number) {
+      const previous = blocks[blocks.length - 1];
+      if (previous) previous.to = Math.max(previous.to, endLine.to);
+    } else {
+      blocks.push({from: startLine.from, to: endLine.to});
+    }
+    coveredThroughLine = Math.max(coveredThroughLine, endLine.number + 1);
+  }
+  view.dispatch({
+    selection: EditorSelection.create(blocks.map(({from, to}) => EditorSelection.range(from, to))),
+    userEvent: "select",
+  });
+  return true;
 }
 
 function keepJoinedLineCaretsAfterText(transaction: Transaction) {
@@ -233,17 +283,88 @@ function insertContextualHardBreak(view: EditorView) {
   return true;
 }
 
+function adjacentVisualSelection(
+  view: EditorView,
+  range: SelectionRange,
+  forward: boolean,
+) {
+  let target = view.moveVertically(range, forward);
+  const visited = new Set<number>();
+  while (
+    target.empty &&
+    view.state.doc.lineAt(target.head).length === 0 &&
+    !visited.has(target.head)
+  ) {
+    visited.add(target.head);
+    const next = view.moveVertically(target, forward);
+    if (next.head === target.head) break;
+    target = next;
+  }
+  return target;
+}
+
+function tableAtPosition(view: EditorView, position: number) {
+  let node: ReturnType<typeof syntaxTree>["topNode"] | null =
+    syntaxTree(view.state).resolveInner(position, forwardSide(position, view.state.doc.length));
+  while (node) {
+    if (node.name === "Table") return node;
+    node = node.parent;
+  }
+  return null;
+}
+
+function forwardSide(position: number, documentLength: number) {
+  return position < documentLength ? 1 : -1;
+}
+
+function moveAcrossVisualBlockBoundary(view: EditorView, forward: boolean) {
+  const {ranges} = view.state.selection;
+  if (ranges.length !== 1 || !ranges[0]?.empty) return false;
+
+  const range = ranges[0];
+  const target = adjacentVisualSelection(view, range, forward);
+  if (target.head === range.head) return false;
+  const targetLine = view.state.doc.lineAt(target.head);
+  if (targetLine.length === 0) return false;
+
+  const table = tableAtPosition(view, target.head);
+  const crossedStructuralBlank = Math.abs(
+    targetLine.number - view.state.doc.lineAt(range.head).number,
+  ) > 1;
+  if (!table && !crossedStructuralBlank) return false;
+
+  const horizontalPosition = view.coordsAtPos(range.head)?.left ?? null;
+  view.dispatch({
+    selection: EditorSelection.cursor(
+      target.head,
+      target.assoc,
+      target.bidiLevel ?? undefined,
+      target.goalColumn ?? undefined,
+    ),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  if (table) {
+    focusVisualTableBoundary(view, table.from, forward, horizontalPosition);
+  }
+  return true;
+}
+
 export function markdownEditingPlugin() {
   return defineMarkraPlugin({
     id: "markra.markdown-editing",
     extension: [
+      EditorView.mouseSelectionStyle.of(selectTripleClickedLine),
       EditorState.transactionFilter.of(keepJoinedLineCaretsAfterText),
       Prec.high(keymap.of([
+        {key: "ArrowDown", run: (view) => moveAcrossVisualBlockBoundary(view, true)},
+        {key: "ArrowUp", run: (view) => moveAcrossVisualBlockBoundary(view, false)},
         { key: "Backspace", run: removeLeadingEmptyLineBackward },
         {
           key: "Enter",
           run: confirmIncompleteInlineDestination,
         },
+        {key: "Alt-l", mac: "Ctrl-l", run: selectLinesWithoutTrailingBreak},
         { key: "Tab", run: handleTab, shift: handleShiftTab },
         { key: "Shift-Enter", run: insertContextualHardBreak },
       ])),

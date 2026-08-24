@@ -15,6 +15,7 @@ import {getEditorRange} from "../util/selection";
 /// #if !MOBILE
 import {openFileById} from "../../editor/util";
 import {saveLayout} from "../../layout/util";
+import {openOutline} from "../../layout/dock/util";
 /// #endif
 /// #if !BROWSER
 import {ipcRenderer} from "electron";
@@ -42,6 +43,10 @@ export class Breadcrumb {
         const element = document.createElement("div");
         element.className = "protyle-breadcrumb";
         let padHTML = "";
+        let outlineHTML = "";
+        /// #if !MOBILE
+        outlineHTML = `<button class="block__icon fn__flex-center ariaLabel" data-type="outline" aria-label="${window.siyuan.languages.outline}"><svg><use xlink:href="#iconOutline"></use></svg></button>`;
+        /// #endif
         /// #if BROWSER && !MOBILE
         if (isIPad() || isInAndroid() || isInHarmony()) {
             padHTML = `<button class="block__icon fn__flex-center ariaLabel" disabled aria-label="${window.siyuan.languages.undo}" data-type="undo"><svg><use xlink:href="#iconUndo"></use></svg></button>
@@ -58,6 +63,7 @@ export class Breadcrumb {
 ${padHTML}
 <button class="block__icon fn__flex-center ariaLabel${window.siyuan.config.readonly ? " fn__none" : ""}" aria-label="${window.siyuan.languages.lockEdit}" data-type="readonly" data-subtype="unlock"><svg><use xlink:href="#iconUnlock"></use></svg></button>
 <button class="block__icon fn__flex-center ariaLabel" data-type="doc" aria-label="${isMac() ? window.siyuan.languages.gutterTip2 : window.siyuan.languages.gutterTip2.replace("⇧", "Shift+")}"><svg><use xlink:href="#iconFile"></use></svg></button>
+${outlineHTML}
 <button class="block__icon fn__flex-center ariaLabel" data-type="more" aria-label="${window.siyuan.languages.more}"><svg><use xlink:href="#iconMore"></use></svg></button>
 <button class="block__icon fn__flex-center fn__none ariaLabel" data-type="context" aria-label="${window.siyuan.languages.context}"><svg><use xlink:href="#iconAlignCenter"></use></svg></button>`;
         this.element = element.firstElementChild as HTMLElement;
@@ -101,6 +107,19 @@ ${padHTML}
                         const targetRect = target.getBoundingClientRect();
                         openTitleMenu(protyle, {x: targetRect.right, y: targetRect.bottom, isLeft: true}, Constants.MENU_FROM_TITLE_BREADCRUMB);
                     }
+                    event.stopPropagation();
+                    event.preventDefault();
+                    break;
+                } else if (type === "outline") {
+                    /// #if !MOBILE
+                    void openOutline({
+                        app: protyle.app,
+                        rootId: protyle.block.rootID,
+                        title: protyle.options.render.title ?
+                            (protyle.title.editElement.textContent || window.siyuan.languages.untitled) : "",
+                        isPreview: !protyle.preview.element.classList.contains("fn__none"),
+                    });
+                    /// #endif
                     event.stopPropagation();
                     event.preventDefault();
                     break;

@@ -25,6 +25,7 @@ import {fetchPost} from "../util/fetch";
 import {isWindow} from "../util/functions";
 import {Wnd} from "./Wnd";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {MarkdownOutline} from "../markdown/MarkdownOutline";
 
 export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
     const isWindowMode = isWindow();
@@ -371,8 +372,21 @@ export const copyTab = (app: App, tab: Tab) => {
                 model = new MarkdownEditor({
                     app,
                     tab: newTab,
-                    notebookId: tab.model.notebookId,
-                    path: tab.model.path,
+                    sessionState: tab.model.getSessionState(),
+                    ...(tab.model.externalCapabilityId ? {
+                        externalCapabilityId: tab.model.externalCapabilityId,
+                    } : {
+                        notebookId: tab.model.notebookId,
+                        path: tab.model.path,
+                    }),
+                });
+            } else if (tab.model instanceof MarkdownOutline) {
+                const sourceKey = tab.model.sourceKey;
+                model = new MarkdownOutline({
+                    app,
+                    tab: newTab,
+                    sourceKey,
+                    editor: () => getAllModels().markdown.find((editor) => editor.sourceKey === sourceKey),
                 });
             } else if (tab.model instanceof Asset) {
                 model = new Asset({
@@ -451,30 +465,40 @@ const pushRootID = (rootIDs: string[], item: Tab) => {
     }
 };
 
-export const closeTabByType = (tab: Tab, type: "closeOthers" | "closeAll" | "other", tabs?: Tab[]) => {
+export const closeTabByType = async (tab: Tab, type: "closeOthers" | "closeAll" | "other", tabs?: Tab[]) => {
     const rootIDs: string[] = [];
     if (type === "closeOthers") {
         for (let index = 0; index < tab.parent.children.length; index++) {
             const item = tab.parent.children[index];
             if (item.id !== tab.id && !item.headElement.classList.contains("item--pin")) {
-                pushRootID(rootIDs, item);
-                item.parent.removeTab(item.id, true, false);
-                index--;
+                const itemRootIDs: string[] = [];
+                pushRootID(itemRootIDs, item);
+                if (await item.parent.removeTab(item.id, true, false)) {
+                    rootIDs.push(...itemRootIDs);
+                    index--;
+                } else {
+                    break;
+                }
             }
         }
     } else if (type === "closeAll") {
         for (let index = 0; index < tab.parent.children.length; index++) {
             const item = tab.parent.children[index];
             if (!item.headElement.classList.contains("item--pin")) {
-                pushRootID(rootIDs, item);
-                item.parent.removeTab(item.id, true);
-                index--;
+                const itemRootIDs: string[] = [];
+                pushRootID(itemRootIDs, item);
+                if (await item.parent.removeTab(item.id, true)) {
+                    rootIDs.push(...itemRootIDs);
+                    index--;
+                } else {
+                    break;
+                }
             }
         }
     } else if (tabs.length > 0) {
         for (let index = 0; index < tabs.length; index++) {
             if (!tabs[index].headElement.classList.contains("item--pin")) {
-                tabs[index].parent.removeTab(tabs[index].id);
+                if (!await tabs[index].parent.removeTab(tabs[index].id)) break;
             }
         }
     }

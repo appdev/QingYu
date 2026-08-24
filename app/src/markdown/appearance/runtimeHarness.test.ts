@@ -72,6 +72,32 @@ test("runtime harness switches mode without replacing the EditorView", async () 
     await harness.destroy();
 });
 
+test("runtime harness measures one semantic rail for a compound blockquote", async () => {
+    const markdown = `### Q04-标题空行列表复合引用
+
+> **复合引用标题**：
+>
+> - 第一项包含 \`inlineCode\`
+>
+> - 第二项包含 **粗体**
+>
+> - 第三项用于验证连续轨道末端`;
+    const harness = installMarkdownAppearanceRuntimeHarness({plugins: []} as never, {
+        adapterFactory: () => createTestHostAdapter(),
+        renderNative: () => undefined,
+    });
+    await harness.mount({markdown, mode: "visual"});
+    const report = await harness.measureCompoundTopology(markdown.indexOf("Q04-"));
+
+    assert.equal(report.quoteRailCount, 1);
+    assert.equal(report.calloutRailCount, 0);
+    assert.ok(report.quoteRailHeight > 0);
+    assert.ok(report.quoteSourceFrom > markdown.indexOf("Q04-"));
+    assert.equal(report.quoteSourceTo, markdown.length);
+    assert.equal(report.roundedInternalSegmentCount, 0);
+    await harness.destroy();
+});
+
 test("runtime harness scopes the real SiYuan theme without changing the application root", async () => {
     const loadedThemes: string[] = [];
     const harness = installMarkdownAppearanceRuntimeHarness({plugins: []} as never, {

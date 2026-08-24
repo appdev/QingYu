@@ -45,7 +45,7 @@ import (
 var Mode = "prod"
 
 const (
-	Ver                 = "1.0.3"
+	Ver                 = "1.0.4"
 	SiYuanCompatibleVer = "3.7.0"
 	IsInsider           = false
 )

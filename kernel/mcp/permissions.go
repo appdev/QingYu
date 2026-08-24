@@ -29,6 +29,7 @@ var readOnlyActions = map[string]map[string]bool{
 	"export":    actionSet("md", "html", "preview"),
 	"file":      actionSet("list", "read", "grep", "find", "stat"),
 	"history":   actionSet("list", "search", "get"),
+	"markdown":  actionSet("get"),
 	"notebook":  actionSet("list"),
 	"outline":   actionSet("get"),
 	"ref":       actionSet("backlinks", "mentions"),

@@ -4,7 +4,10 @@ interface IMobileMarkdownEditor {
     flush: () => Promise<boolean>;
     notebookId: string;
     path: string;
+    duplicate?: () => Promise<import("../markdown/documentSource").MarkdownDocument | null>;
+    move?: (toNotebook: string, toParentPath: string) => Promise<boolean>;
     rename: (name: string) => Promise<boolean>;
+    refreshEditorConfig?: () => void;
 }
 
 interface IHiddenMobileElement {
@@ -30,4 +33,14 @@ export const closeMobileMarkdownEditor = () => {
     editor = undefined;
     hiddenElements.forEach((item) => item.classList.remove("fn__none"));
     hiddenElements = [];
+};
+
+export const refreshMobileMarkdownReadOnly = () => {
+    editor?.refreshEditorConfig?.();
+};
+
+export const closeMobileMarkdownEditorForNotebook = (notebookId: string) => {
+    if (!editor || editor.notebookId !== notebookId) return false;
+    closeMobileMarkdownEditor();
+    return true;
 };

@@ -79,6 +79,20 @@ FunctionEnd
     ${EndIf}
 !macroend
 
+!macro RegisterMarkdownAssociation Root
+    WriteRegStr ${Root} "Software\Classes\QingYu.Markdown" "" "Markdown document"
+    WriteRegStr ${Root} "Software\Classes\QingYu.Markdown\DefaultIcon" "" '"$INSTDIR\QingYu.exe",0'
+    WriteRegStr ${Root} "Software\Classes\QingYu.Markdown\shell\open\command" "" '"$INSTDIR\QingYu.exe" "%1"'
+    WriteRegStr ${Root} "Software\Classes\.md\OpenWithProgids" "QingYu.Markdown" ""
+    WriteRegStr ${Root} "Software\Classes\.markdown\OpenWithProgids" "QingYu.Markdown" ""
+!macroend
+
+!macro UnregisterMarkdownAssociation Root
+    DeleteRegValue ${Root} "Software\Classes\.md\OpenWithProgids" "QingYu.Markdown"
+    DeleteRegValue ${Root} "Software\Classes\.markdown\OpenWithProgids" "QingYu.Markdown"
+    DeleteRegKey ${Root} "Software\Classes\QingYu.Markdown"
+!macroend
+
 !macro customInstall
     !insertmacro WriteInstallLog "payload-extracted version=${VERSION} target=$INSTDIR"
     RMDir /r "$PROFILE\AppData\Local\qingyu-updater"
@@ -88,6 +102,12 @@ FunctionEnd
     ${Else}
         nsExec::ExecToLog 'powershell -NoProfile -Command "$k=\"$INSTDIR\resources\kernel\";$p=[Environment]::GetEnvironmentVariable(\"Path\",\"User\");if((-not $p) -or -not ($p.Split(\";\") -contains $k)){$p=\"$k;$p\";[Environment]::SetEnvironmentVariable(\"Path\",$p,\"User\")}else{Write-Host \"already in PATH\"}"'
     ${EndIf}
+    ${If} $installMode == "all"
+        !insertmacro RegisterMarkdownAssociation HKLM
+    ${Else}
+        !insertmacro RegisterMarkdownAssociation HKCU
+    ${EndIf}
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
     !insertmacro WriteInstallLog "install-complete version=${VERSION} target=$INSTDIR"
 !macroend
 
@@ -120,6 +140,12 @@ FunctionEnd
     ${Else}
         nsExec::ExecToLog 'powershell -NoProfile -Command "$k=\"$INSTDIR\resources\kernel\";$p=[Environment]::GetEnvironmentVariable(\"Path\",\"User\");if($p){$a=$p.Split(\";\") | ?{$_ -and ($_ -ne $k)};$p=[string]::Join(\";\",$a);[Environment]::SetEnvironmentVariable(\"Path\",$p,\"User\")}"'
     ${EndIf}
+    ${If} $installMode == "all"
+        !insertmacro UnregisterMarkdownAssociation HKLM
+    ${Else}
+        !insertmacro UnregisterMarkdownAssociation HKCU
+    ${EndIf}
+    System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
 
 # https://nsis.sourceforge.io/FindIt:_Simple_search_for_file_/_directory

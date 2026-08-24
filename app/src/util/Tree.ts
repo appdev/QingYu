@@ -63,6 +63,11 @@ export class Tree {
         }
     }
 
+    public setItemExtensions(blockExtHTML?: string, topExtHTML?: string) {
+        this.blockExtHTML = blockExtHTML;
+        this.topExtHTML = topExtHTML;
+    }
+
     private genHTML(data: (IBlockTree & { folded?: boolean })[]) {
         const isM = isMobile();
         let html = `<ul${data[0].depth === 0 ? " class='b3-list b3-list--background'" : ""}>`;

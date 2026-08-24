@@ -1,5 +1,9 @@
 import {appearanceVariableName, listAppearanceContracts, type MarkdownAppearanceContract} from "./contracts";
-import {APPEARANCE_FIXTURE_MARKDOWN, createNativeAppearanceFixture} from "./fixture";
+import {
+    APPEARANCE_FIXTURE_MARKDOWN,
+    createNativeAppearanceFixture,
+    createNativeHeadingContextFixtures,
+} from "./fixture";
 import {createStaticProtyleLute} from "../../protyle/render/setLute";
 
 export interface MarkdownAppearanceSnapshot {
@@ -83,7 +87,9 @@ const createProbe = (document: Document) => {
     }
     const references = document.createElement("div");
     references.innerHTML = "<div class=\"block__icons\"><button class=\"block__icon\"><svg></svg></button></div>";
-    probe.append(nativeRoot, references);
+    probe.append(nativeRoot);
+    if (lute) probe.append(createNativeHeadingContextFixtures(document, lute));
+    probe.append(references);
     return probe;
 };
 
@@ -125,9 +131,8 @@ const decomposeInsetRing = (boxShadow: string) => {
 const resolveValues = (
     document: Document,
     probe: HTMLElement,
-    previous: Readonly<Record<string, string>>,
 ) => {
-    const values: Record<string, string> = {...previous};
+    const values: Record<string, string> = {};
     for (const contract of listAppearanceContracts()) {
         for (const property of contract.styleProperties) {
             const computed = probeReference(document, probe, contract, property);
@@ -166,6 +171,7 @@ class MarkdownAppearanceResolver {
     private readonly observer: MutationObserver;
     private readonly roots = new Map<HTMLElement, number>();
     private snapshot: MarkdownAppearanceSnapshot = {revision: 0, values: Object.freeze({})};
+    private readonly appliedVariables = new Map<HTMLElement, Set<string>>();
     private frame = 0;
     private disposed = false;
     private readonly onLoad = (event: Event) => {
@@ -213,7 +219,7 @@ class MarkdownAppearanceResolver {
 
     public refresh() {
         if (this.disposed) return;
-        const values = resolveValues(this.document, this.probe, this.snapshot.values);
+        const values = resolveValues(this.document, this.probe);
         if (!recordsEqual(values, this.snapshot.values)) {
             this.snapshot = {
                 revision: this.snapshot.revision + 1,
@@ -224,7 +230,12 @@ class MarkdownAppearanceResolver {
     }
 
     private apply(root: HTMLElement) {
+        const previous = this.appliedVariables.get(root) ?? new Set<string>();
+        previous.forEach((name) => {
+            if (!(name in this.snapshot.values)) root.style.removeProperty(name);
+        });
         Object.entries(this.snapshot.values).forEach(([name, value]) => root.style.setProperty(name, value));
+        this.appliedVariables.set(root, new Set(Object.keys(this.snapshot.values)));
         root.dataset.markdownAppearanceRevision = String(this.snapshot.revision);
     }
 
@@ -235,7 +246,9 @@ class MarkdownAppearanceResolver {
             return;
         }
         this.roots.delete(root);
-        Object.keys(this.snapshot.values).forEach((name) => root.style.removeProperty(name));
+        (this.appliedVariables.get(root) ?? new Set(Object.keys(this.snapshot.values)))
+            .forEach((name) => root.style.removeProperty(name));
+        this.appliedVariables.delete(root);
         delete root.dataset.markdownAppearanceRevision;
         if (this.roots.size > 0) return;
         this.dispose();
@@ -263,7 +276,7 @@ class MarkdownAppearanceResolver {
         try {
             return {
                 revision: 1,
-                values: Object.freeze(resolveValues(document, probe, {})),
+                values: Object.freeze(resolveValues(document, probe)),
             };
         } finally {
             probe.remove();

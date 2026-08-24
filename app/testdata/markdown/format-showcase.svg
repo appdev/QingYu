@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120" role="img" aria-labelledby="title description">
+  <title id="title">QingYu Markdown format test image</title>
+  <desc id="description">A deterministic offline image used by the Markdown format regression corpus.</desc>
+  <rect x="2" y="2" width="236" height="116" rx="18" fill="#f5f2e8" stroke="#c9a227" stroke-width="4"/>
+  <circle cx="48" cy="60" r="22" fill="#c9a227" opacity="0.82"/>
+  <polyline points="82,78 106,42 132,68 154,48 178,76" fill="none" stroke="#675b36" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="120" y="104" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="14" fill="#403b2c">QingYu Markdown</text>
+</svg>

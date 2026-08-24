@@ -13,12 +13,16 @@ import {
 import {createSiyuanMarkdownIcon} from "./markra-core/shared";
 import {convertSiyuanClipboardHtmlToMarkdown} from "./luteHtmlConverter";
 import {mountSiyuanMarkdownPopover} from "./siyuanMarkdownPopover";
+import {applyMarkdownAdapterOverrides, type MarkdownAdapterOverrides} from "./siyuanAdapterOverrides";
 
 export {mountSiyuanMarkdownPopover} from "./siyuanMarkdownPopover";
 
 export interface SiyuanMarkdownAdapterOptions {
     app: App;
     documentPath(): string;
+    openLink?: MarkdownAdapterOverrides["openLink"];
+    resolveImageSource?: MarkdownAdapterOverrides["resolveImageSource"];
+    saveClipboardAssets?: MarkdownAdapterOverrides["saveClipboardAssets"];
 }
 
 const normalizeCodeLanguages = (value: unknown) => [...new Set((Array.isArray(value) ? value : [])
@@ -39,6 +43,9 @@ const emitCodeLanguageUpdate = (app: App, detail: CodeLanguageFilterDetail) => {
 };
 
 const iconName = (name: MarkdownIconName) => {
+    if (name === "dot") {
+        return "dot" as const;
+    }
     if (name === "trash") {
         return "trash" as const;
     }
@@ -109,7 +116,7 @@ const renderWithSiyuan = (source: string, subtype: "math" | "mermaid", context: 
 
 export const createSiyuanMarkdownAdapter = (
     options: SiyuanMarkdownAdapterOptions,
-): MarkdownHostAdapter => ({
+): MarkdownHostAdapter => applyMarkdownAdapterOverrides({
     convertHtmlToMarkdown: convertSiyuanClipboardHtmlToMarkdown,
     createIcon(name, className, ownerDocument) {
         return createSiyuanMarkdownIcon(ownerDocument, iconName(name), className);
@@ -165,4 +172,8 @@ export const createSiyuanMarkdownAdapter = (
     updateCodeLanguages(detail) {
         return emitCodeLanguageUpdate(options.app, detail);
     },
+}, {
+    ...(options.openLink ? {openLink: options.openLink} : {}),
+    ...(options.resolveImageSource ? {resolveImageSource: options.resolveImageSource} : {}),
+    ...(options.saveClipboardAssets ? {saveClipboardAssets: options.saveClipboardAssets} : {}),
 });

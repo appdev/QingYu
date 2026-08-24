@@ -1,10 +1,11 @@
-export type SiyuanMarkdownIcon = "add" | "alignCenter" | "alignLeft" | "alignRight" | "remove" | "table" | "trash" | "width";
+export type SiyuanMarkdownIcon = "add" | "alignCenter" | "alignLeft" | "alignRight" | "dot" | "remove" | "table" | "trash" | "width";
 
 const iconSymbols: Record<SiyuanMarkdownIcon, string> = {
     add: "iconAdd",
     alignCenter: "iconAlignCenter",
     alignLeft: "iconAlignLeft",
     alignRight: "iconAlignRight",
+    dot: "iconDot",
     remove: "iconClose",
     table: "iconTable",
     trash: "iconTrashcan",

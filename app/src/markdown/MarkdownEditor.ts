@@ -1,16 +1,21 @@
 import {EditorView, minimalSetup} from "codemirror";
-import {Compartment} from "@codemirror/state";
+import {Compartment, EditorState} from "@codemirror/state";
+import {indentUnit} from "@codemirror/language";
+/// #if !BROWSER
+import {ipcRenderer} from "electron";
+/// #endif
 import {Model} from "../layout/Model";
 import {Tab} from "../layout/Tab";
 import {App} from "../index";
-import {fetchSyncPost} from "../util/fetch";
+import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {confirmDialog} from "../dialog/confirmDialog";
 import {escapeHtml} from "../util/escape";
-import {saveLayout, setPanelFocus} from "../layout/util";
+import {fixWndFlex1, saveLayout, setPanelFocus} from "../layout/util";
 import {createSiyuanMarkraExtension} from "./markraExtension";
 import {
     createSiyuanMarkdownAdapter,
     resolveMarkdownCoverSource,
+    resolveMarkdownImageSource,
     uploadMarkdownAssets,
 } from "./siyuanAdapter";
 import {trackMarkdownFlush} from "./saveBarrier";
@@ -24,30 +29,84 @@ import {
 } from "./markra-core/markdown/frontmatter";
 import {Dialog} from "../dialog";
 import {getRandom, isMobile} from "../util/functions";
+import {genUUID} from "../util/genID";
 import {openEmojiPanel, unicode2Emoji} from "../emoji";
 import {runMarkdownTitleTransaction} from "./titleTransaction";
+import {
+    MarkdownTitleComposition,
+    syncMarkdownTitleEditable,
+    syncMarkdownTitleElement,
+} from "./titleEditing";
 import {Constants} from "../constants";
 import {assetPickerMenu} from "../menus/protyle";
+import {MenuItem} from "../menus/Menu";
 import {fetchCoverData, renderCoverPicker} from "../protyle/header/coverData";
+import {addStyle} from "../protyle/util/addStyle";
 import {openTagMenu} from "../protyle/header/tagMenu";
 import {MarkdownDocumentScrollController} from "./documentScroll";
 import {MarkdownSlashMenuController} from "./markdownSlashMenu";
 import {initialVisualMarkdownSelection} from "./markra-core/codemirror/frontmatter-preview";
 import {renderMarkdownBreadcrumb} from "./breadcrumb";
+import type {MarkdownDocument, MarkdownDocumentSource} from "./documentSource";
+import {createWorkspaceMarkdownDocumentSource} from "./documentSource";
+import {shouldInitializeMarkdownTitle} from "./initialMetadata";
+import {applyMarkdownEditorShellPreferences, getMarkdownFontZoomSize, readMarkdownEditorPreferences} from "./editorPreferences";
+import {
+    DEFAULT_MARKDOWN_TYPEWRITER_MODE,
+    normalizeMarkdownEditorSessionState,
+    restoreMarkdownEditorSession,
+    type MarkdownEditorSessionState,
+} from "./sessionState";
+import {MarkdownOutlinePublisher} from "./outlinePublisher";
+import {isMarkdownStatisticsOwnerEligible} from "./statusbarOwnership";
+import type {MarkdownOutlineItemWithPosition} from "./outlineModel";
+import {
+    codeMirrorTypewriterMode,
+    restoreMarkdownTableAppearances,
+    showCodeMirrorLocationCue,
+} from "./markra-core/codemirror";
+import {MarkdownSearchController} from "./searchController";
+import {countMarkdownStatistics} from "./statistics";
+import {
+    claimMarkdownStatusbarCounter,
+    clearMarkdownStatusbarCounter,
+    renderMarkdownStatusbarCounter,
+} from "../layout/status";
+import {executeMarkdownEditorCommand, isMarkdownTypewriterShortcut, routeMarkdownShortcut} from "./editorCommands";
+import {fullscreen} from "../protyle/breadcrumb/action";
+import {getMarkdownOutlineBySourceKey, MarkdownOutline} from "./MarkdownOutline";
+import {matchHotKey} from "../protyle/util/hotKey";
+import {editorConfigApi} from "../config/tabs/editorRuntime";
+import {isMac} from "../protyle/util/compatibility";
+import {MarkdownEditorRegistration, markdownEditorRegistry} from "./markdownEditorRegistry";
+import {MarkdownTableAppearanceController} from "./markdownTableAppearance";
+import {createMarkdownMoreMenuItems, syncMarkdownModeToggle} from "./markdownToolbar";
+import {getAllModels} from "../layout/getAll";
+import {
+    abortMarkdownMutationAcrossRenderers,
+    commitMarkdownMutationAcrossRenderers,
+    isMarkdownManagementPrepareActive,
+    markdownCoordinatorEditor,
+    MarkdownManagementIPC,
+    prepareMarkdownMutationAcrossRenderers,
+} from "./managementCoordinator";
+/// #if !BROWSER
+import {createExternalMarkdownDocumentSource} from "./externalDocumentSource";
+import {openExternalMarkdownConflictDialog} from "./externalConflictDialog";
+import {ExternalEditorRegistry} from "./externalEditorRegistry";
 
-interface IMarkdownDocument {
-    path: string;
-    name: string;
-    content: string;
-    revision: string;
-    mtime: number;
-}
+const externalEditors = new ExternalEditorRegistry<MarkdownEditor>();
+/// #endif
+
+export const getMarkdownEditorBySourceKey = (sourceKey: string) => markdownEditorRegistry.get(sourceKey) as MarkdownEditor;
 
 export class MarkdownEditor extends Model {
+    public readonly managementID = `markdown-editor-${genUUID()}`;
     public element: HTMLElement;
     public headElement: HTMLElement;
     public notebookId: string;
     public path: string;
+    public externalCapabilityId?: string;
     public view: EditorView;
     private revision: string;
     private saveTimer: number;
@@ -57,9 +116,14 @@ export class MarkdownEditor extends Model {
     private savePromise: Promise<boolean>;
     private titlePromise: Promise<boolean> = Promise.resolve(true);
     private titleTimer: number;
+    private readonly titleComposition = new MarkdownTitleComposition();
     private preview = true;
     private destroyed = false;
     private modeCompartment = new Compartment();
+    private readOnlyCompartment = new Compartment();
+    private indentationCompartment = new Compartment();
+    private typewriterCompartment = new Compartment();
+    private contentAttributesCompartment = new Compartment();
     private titleElement: HTMLElement;
     private contentElement: HTMLElement;
     private metadataElement: HTMLElement;
@@ -72,26 +136,235 @@ export class MarkdownEditor extends Model {
     private resizeObserver: ResizeObserver;
     private documentScroll: MarkdownDocumentScrollController;
     private slashMenu?: MarkdownSlashMenuController;
+    private source: MarkdownDocumentSource;
+    private readonly tableAppearance: MarkdownTableAppearanceController;
+    private tableAppearanceSubscription?: () => void;
+    private discarded = false;
+    private closing = false;
+    private pendingSessionState?: MarkdownEditorSessionState;
+    private searchController?: MarkdownSearchController;
+    private readonly outlinePublisher = new MarkdownOutlinePublisher(() => this.view?.state.doc.toString());
+    private fontZoomTimer: number;
+    private statisticsTimer: number;
+    private recentViewTimer: number;
+    private readonly statisticsOwner = {};
+    private readonly registryRegistration = new MarkdownEditorRegistration(markdownEditorRegistry, this);
+    private readonly restoredLayout: boolean;
+    private typewriterMode = DEFAULT_MARKDOWN_TYPEWRITER_MODE;
+    private typewriterModeConfigured = false;
+    private outlineOpen = false;
 
-    constructor(options: {app: App, tab?: Tab, element?: HTMLElement, notebookId: string, path: string}) {
+    constructor(options: {
+        app: App,
+        tab?: Tab,
+        element?: HTMLElement,
+        notebookId?: string,
+        path?: string,
+        externalCapabilityId?: string,
+        externalName?: string,
+        externalDisplayPath?: string,
+        sessionState?: MarkdownEditorSessionState,
+        restoredLayout?: boolean,
+    }) {
         super({app: options.app});
         this.element = options.tab?.panelElement || options.element;
         this.headElement = options.tab?.headElement;
-        this.notebookId = options.notebookId;
-        this.path = options.path;
+        this.notebookId = options.notebookId || "";
+        this.externalCapabilityId = options.externalCapabilityId;
+        this.path = options.externalDisplayPath || options.path || options.externalName || "";
+        this.pendingSessionState = options.sessionState;
+        this.restoredLayout = options.restoredLayout === true;
+        if (options.externalCapabilityId) {
+            /// #if !BROWSER
+            this.source = createExternalMarkdownDocumentSource({
+                capabilityId: options.externalCapabilityId,
+                readOnly: () => window.siyuan.config.readonly || window.siyuan.config.editor.readOnly,
+                invoke: (channel, payload) => ipcRenderer.invoke(channel, payload),
+            });
+            /// #else
+            throw new Error("External Markdown files are available only in the desktop app");
+            /// #endif
+        } else {
+            this.source = this.createWorkspaceSource(options.notebookId, options.path);
+        }
+        this.tableAppearance = new MarkdownTableAppearanceController({
+            documentKey: this.source.key,
+            legacyDocumentKey: this.path,
+            setExternalAppearanceRetention: async (retained) => {
+                if (!this.externalCapabilityId) return;
+                /// #if !BROWSER
+                await ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+                    action: "retainAppearance",
+                    capabilityId: this.externalCapabilityId,
+                    retained,
+                });
+                /// #endif
+            },
+        });
         if (!this.element) {
             throw new Error("Markdown editor element is required");
         }
+        addStyle(`${Constants.PROTYLE_CDN}/js/katex/katex.min.css?v=0.16.9`, "protyleKatexStyle");
         if (this.headElement && window.siyuan.config.fileTree.openFilesUseCurrentTab) {
             this.headElement.classList.add("item--unupdate");
         }
         this.renderShell();
         this.appearanceHandle = acquireMarkdownAppearance(this.element);
-        this.load();
+        void this.initialize();
+    }
+
+    private createWorkspaceSource(notebookId: string, path: string) {
+        let ipc: MarkdownManagementIPC | undefined;
+        /// #if BROWSER
+        ipc = undefined;
+        /// #else
+        ipc = ipcRenderer;
+        /// #endif
+        return createWorkspaceMarkdownDocumentSource({
+            notebookId,
+            path,
+            readOnly: () => window.siyuan.config.readonly || window.siyuan.config.editor.readOnly,
+            request: async (url, body) => {
+                if (this.restoredLayout && url === "/api/markdown/get" && !this.view) {
+                    const response = await fetch(url, {method: "POST", body: JSON.stringify(body)});
+                    return response.json() as Promise<{code: number, data?: Record<string, unknown>}>;
+                }
+                return fetchSyncPost(url, body) as Promise<{code: number, data?: Record<string, unknown>}>;
+            },
+            resolveImageSource: resolveMarkdownImageSource,
+            saveAssets: async (files) => uploadMarkdownAssets({files: [...files], insertionOffset: 0}),
+            isPrepareActive: isMarkdownManagementPrepareActive,
+            prepareMutation: (ref, operationID, revision) => prepareMarkdownMutationAcrossRenderers(
+                ipc,
+                window.location.origin,
+                ref,
+                getAllModels().markdown.map(markdownCoordinatorEditor),
+                operationID,
+                {expectedRevision: revision, excludedEditorID: this.managementID},
+            ),
+            commitMutation: (operationID, lease, mutation) => commitMarkdownMutationAcrossRenderers(
+                ipc,
+                window.location.origin,
+                operationID,
+                lease,
+                mutation,
+                getAllModels().markdown.map(markdownCoordinatorEditor),
+            ),
+            abortMutation: (operationID, lease) => abortMarkdownMutationAcrossRenderers(
+                ipc,
+                window.location.origin,
+                operationID,
+                lease,
+            ),
+        });
+    }
+
+    private async initialize() {
+        if (this.externalCapabilityId) {
+            /// #if !BROWSER
+            const existing = externalEditors.claim(this.externalCapabilityId, this);
+            if (existing) {
+                existing.focusExternalEditor();
+                window.setTimeout(() => this.parent?.parent.removeTab(this.parent.id));
+                return;
+            }
+            const retained = await ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+                action: "retain",
+                capabilityId: this.externalCapabilityId,
+            });
+            if (retained?.status === "focused") {
+                externalEditors.release(this.externalCapabilityId, this);
+                window.setTimeout(() => this.parent?.parent.removeTab(this.parent.id));
+                return;
+            }
+            if (retained?.status !== "ok") {
+                externalEditors.release(this.externalCapabilityId, this);
+                this.setStatus("error");
+                return;
+            }
+            /// #endif
+        }
+        const firstWorkspaceEditor = this.source.kind === "workspace" && !getMarkdownEditorBySourceKey(this.sourceKey);
+        this.registerSourceKey();
+        await this.load();
+        if (firstWorkspaceEditor && this.view) {
+            fetchPost("/api/storage/updateRecentDocOpenTime", {
+                kind: "markdown",
+                notebook: this.notebookId,
+                path: this.path,
+            });
+        }
+    }
+
+    private focusExternalEditor() {
+        this.parent?.parent.switchTab(this.parent.headElement);
+        this.parent?.parent.showHeading();
     }
 
     public save() {
         return this.flush();
+    }
+
+    public async close() {
+        if (!this.parent?.parent) return;
+        await this.parent.parent.removeTab(this.parent.id);
+    }
+
+    public async prepareClose() {
+        if (this.source.kind !== "external" || this.discarded) return true;
+        const saved = await this.flushForExit();
+        if (saved) return true;
+        return new Promise<boolean>((resolve) => {
+            let settled = false;
+            const settle = (result: boolean) => {
+                if (settled) return;
+                settled = true;
+                if (result) this.discardChanges();
+                dialog.destroy();
+                resolve(result);
+            };
+            const dialog = new Dialog({
+                title: window.siyuan.languages.externalMarkdown,
+                content: `<div class="b3-dialog__content">${window.siyuan.languages.externalMarkdownUnsavedTip}</div>
+<div class="b3-dialog__action"><button class="b3-button b3-button--cancel" data-action="return">${window.siyuan.languages.externalMarkdownReturnEditing}</button><div class="fn__space"></div><button class="b3-button b3-button--text" data-action="discard">${window.siyuan.languages.externalMarkdownDiscardClose}</button></div>`,
+                width: "520px",
+                destroyCallback: () => {
+                    if (!settled) resolve(false);
+                },
+            });
+            dialog.element.querySelector('[data-action="return"]')?.addEventListener("click", () => settle(false));
+            dialog.element.querySelector('[data-action="discard"]')?.addEventListener("click", () => settle(true));
+        });
+    }
+
+    public async flushForExit() {
+        this.closing = true;
+        try {
+            return await this.flush();
+        } finally {
+            this.closing = false;
+        }
+    }
+
+    public discardChanges() {
+        this.discarded = true;
+        this.dirty = false;
+    }
+
+    public async releaseExternalCapability() {
+        /// #if !BROWSER
+        if (!this.externalCapabilityId || !externalEditors.release(this.externalCapabilityId, this)) return;
+        try {
+            const result = await ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+                action: "release",
+                capabilityId: this.externalCapabilityId,
+            });
+            if (result?.status !== "ok") throw new Error(result?.code || "RELEASE_FAILED");
+        } catch (error) {
+            externalEditors.claim(this.externalCapabilityId, this);
+            throw error;
+        }
+        /// #endif
     }
 
     public refreshEditorConfig() {
@@ -100,26 +373,194 @@ export class MarkdownEditor extends Model {
             return;
         }
         this.slashMenu?.close();
-        reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
-            adapter: createSiyuanMarkdownAdapter({
-                app: this.app,
+        const preferences = readMarkdownEditorPreferences();
+        applyMarkdownEditorShellPreferences(this.element, this.titleElement, preferences);
+        const anchor = this.documentScroll?.captureAnchor();
+        this.view.dispatch({effects: [
+            this.readOnlyCompartment.reconfigure(EditorState.readOnly.of(this.source.readOnly)),
+            this.indentationCompartment.reconfigure(indentUnit.of(preferences.codeIndentation)),
+            this.typewriterCompartment.reconfigure(codeMirrorTypewriterMode({
+                enabled: this.typewriterMode,
+                getScrollContainer: () => this.contentElement,
+            })),
+            this.contentAttributesCompartment.reconfigure(EditorView.contentAttributes.of({
+                spellcheck: String(preferences.spellcheck),
+            })),
+            this.modeCompartment.reconfigure(createSiyuanMarkraExtension({
+                adapter: this.createAdapter(),
                 documentPath: () => this.path,
-            }),
-            documentPath: () => this.path,
-            getScrollContainer: () => this.contentElement,
-            mode: this.preview ? "visual" : "source",
-        }, this.documentScroll);
+                getScrollContainer: () => this.contentElement,
+                mode: this.preview ? "visual" : "source",
+                tableAppearance: this.tableAppearance.pluginOptions(),
+            })),
+        ]});
+        if (anchor) this.documentScroll.restoreAnchor(anchor);
         this.slashMenu?.update();
     }
 
     public flush() {
         window.clearTimeout(this.saveTimer);
         if (!this.savePromise) {
-            this.savePromise = this.flushDirty().finally(() => {
+            this.savePromise = Promise.all([this.flushDirty(), this.tableAppearance.flush()]).then(([saved]) => saved).finally(() => {
                 this.savePromise = undefined;
             });
         }
         return trackMarkdownFlush(this.savePromise);
+    }
+
+    public get sourceKey() {
+        return this.externalCapabilityId ? `external:${this.externalCapabilityId}` : `workspace:${this.notebookId}:${this.path}`;
+    }
+
+    public getRevision() {
+        return this.revision;
+    }
+
+    public applyWorkspaceDocumentReference(notebookId: string, path: string, revision: string) {
+        if (this.source.kind !== "workspace") return;
+        this.notebookId = notebookId;
+        this.path = path;
+        this.revision = revision;
+        this.source = this.createWorkspaceSource(notebookId, path);
+        this.registerSourceKey();
+        syncMarkdownTitleElement(this.titleElement, this.fileStem());
+        this.updateTitle(this.fileName());
+        this.renderBreadcrumb();
+        this.setPreview(this.preview, false);
+        saveLayout();
+    }
+
+    public hasUnsavedChanges() {
+        return this.dirty || this.saving || this.lastSaveStatus !== "saved";
+    }
+
+    public getSessionState(): MarkdownEditorSessionState {
+        const selection = this.view?.state.selection.main || {anchor: 0, head: 0};
+        return {
+            mode: this.preview ? "visual" : "source",
+            selection: {anchor: selection.anchor, head: selection.head},
+            scroll: this.documentScroll?.captureAnchor() || null,
+            typewriterMode: this.typewriterMode,
+            typewriterModeConfigured: this.typewriterModeConfigured,
+        };
+    }
+
+    public captureScrollAnchor() {
+        this.documentScroll?.captureAnchor();
+    }
+
+    public focusPosition(position: number, cue = true) {
+        if (!this.view || !Number.isFinite(position)) return;
+        const clamped = Math.max(0, Math.min(this.view.state.doc.length, Math.trunc(position)));
+        this.view.dispatch({selection: {anchor: clamped}, effects: EditorView.scrollIntoView(clamped, {y: "center"})});
+        if (cue) showCodeMirrorLocationCue(this.view, clamped);
+        this.view.focus();
+    }
+
+    public subscribeOutline(listener: (items: readonly MarkdownOutlineItemWithPosition[]) => void) {
+        return this.outlinePublisher.subscribe(listener);
+    }
+
+    public setOutlineOpen(open: boolean) {
+        this.outlineOpen = open;
+    }
+
+    public isOutlineOpen() {
+        return this.outlineOpen;
+    }
+
+    public openSearch(replace: boolean) {
+        this.searchController?.open(replace);
+    }
+
+    public setMode(mode: "source" | "visual") {
+        this.setPreview(mode === "visual");
+    }
+
+    public isReadOnly() {
+        return this.source.readOnly;
+    }
+
+    public recordRecentView() {
+        if (this.source.kind !== "workspace") return;
+        window.clearTimeout(this.recentViewTimer);
+        this.recentViewTimer = window.setTimeout(() => fetchPost("/api/storage/updateRecentDocViewTime", {
+            kind: "markdown",
+            notebook: this.notebookId,
+            path: this.path,
+        }), Constants.TIMEOUT_LOAD);
+    }
+
+    public toggleFullscreen() {
+        fullscreen(this.element);
+    }
+
+    public toggleTypewriterMode() {
+        this.typewriterMode = !this.typewriterMode;
+        this.typewriterModeConfigured = true;
+        this.refreshEditorConfig();
+        saveLayout();
+    }
+
+    public updateEditorPreference(key: "justify" | "rtl", value: boolean) {
+        void editorConfigApi.patch(`editor.${key}`, value);
+    }
+
+    public handleShortcut(event: KeyboardEvent) {
+        return routeMarkdownShortcut(this, event, window.siyuan.config.keymap, matchHotKey);
+    }
+
+    public openOutline() {
+        const existing = getMarkdownOutlineBySourceKey(this.sourceKey);
+        if (existing) {
+            existing.close();
+            return;
+        }
+        this.outlineOpen = true;
+        this.restoreOutline();
+    }
+
+    public restoreOutline() {
+        if (!this.outlineOpen || getMarkdownOutlineBySourceKey(this.sourceKey)) return;
+        if (!this.parent?.parent) return;
+        const wnd = this.parent.parent.split("lr");
+        wnd.element.style.width = "200px";
+        wnd.element.classList.remove("fn__flex-1");
+        fixWndFlex1(wnd.parent);
+        wnd.addTab(new Tab({
+            icon: "iconOutline",
+            title: window.siyuan.languages.outline,
+            callback: (tab) => tab.addModel(new MarkdownOutline({
+                app: this.app,
+                editor: this,
+                sourceKey: this.sourceKey,
+                tab,
+            })),
+        }), false, true);
+    }
+
+    public hideOutline(preserveState = true, isSaveLayout = false) {
+        const existing = getMarkdownOutlineBySourceKey(this.sourceKey);
+        if (!preserveState) this.outlineOpen = false;
+        existing?.close(preserveState, isSaveLayout);
+    }
+
+    private openMoreMenu(button: HTMLElement) {
+        const preferences = readMarkdownEditorPreferences();
+        window.siyuan.menus.menu.remove();
+        createMarkdownMoreMenuItems({
+            justify: preferences.justify,
+            rtl: preferences.rtl,
+            typewriterMode: this.typewriterMode,
+        }, {
+            justify: window.siyuan.languages.justify,
+            rtl: window.siyuan.languages.rtl,
+            typewriterMode: window.siyuan.languages.typewriterMode,
+        }, (command) => executeMarkdownEditorCommand(this, command)).forEach((item) => {
+            window.siyuan.menus.menu.append(new MenuItem(item).element);
+        });
+        const rect = button.getBoundingClientRect();
+        window.siyuan.menus.menu.popup({x: rect.right, y: rect.bottom, isLeft: true});
     }
 
     private async flushDirty() {
@@ -131,7 +572,7 @@ export class MarkdownEditor extends Model {
         return this.lastSaveStatus === "saved";
     }
 
-    private async saveOnce() {
+    private async saveOnce(overwriteRevision?: string) {
         const view = this.view;
         if (!this.dirty) {
             return true;
@@ -141,14 +582,13 @@ export class MarkdownEditor extends Model {
         }
         this.saving = true;
         this.setStatus("saving");
-        const content = view.state.doc.toString();
-        let response: IWebSocketData;
+        const content = view.state.sliceDoc();
+        let response;
         try {
-            response = await fetchSyncPost("/api/markdown/save", {
-                notebook: this.notebookId,
-                path: this.path,
+            response = await this.source.save({
                 content,
                 revision: this.revision,
+                ...(overwriteRevision ? {overwriteRevision} : {}),
             });
         } catch {
             this.saving = false;
@@ -157,27 +597,39 @@ export class MarkdownEditor extends Model {
             return false;
         }
         this.saving = false;
-        if (response.code === 0) {
-            const document = response.data as IMarkdownDocument;
+        if (response.status === "ok") {
+            const document = response.document;
             this.revision = document.revision;
-            this.dirty = view.state.doc.toString() !== content;
+            this.path = document.displayPath;
+            if (this.source.kind === "external") {
+                this.registerSourceKey();
+            }
+            this.dirty = view.state.sliceDoc() !== content;
             this.lastSaveStatus = "saved";
             if (!this.destroyed) {
                 this.setStatus(this.dirty ? "dirty" : "saved");
             }
             return true;
-        } else if (response.code === 409) {
+        } else if (response.status === "conflict") {
             this.lastSaveStatus = "conflict";
             if (!this.destroyed) {
                 this.setStatus("conflict");
-                confirmDialog(window.siyuan.languages.conflict, window.siyuan.languages.refresh, () => {
-                    this.dirty = false;
-                    this.slashMenu?.destroy();
-                    this.slashMenu = undefined;
-                    this.view.destroy();
-                    this.surfaceElement.innerHTML = "";
-                    void this.load();
-                });
+                if (this.source.kind === "external") {
+                    /// #if !BROWSER
+                    if (!this.closing) {
+                        void openExternalMarkdownConflictDialog(response.revision, {
+                            reload: () => this.reloadExternalDocument(),
+                            overwrite: (revision) => this.saveOnce(revision).then(() => undefined),
+                            cancel: () => undefined,
+                        });
+                    }
+                    /// #endif
+                } else {
+                    confirmDialog(window.siyuan.languages.conflict, window.siyuan.languages.refresh, () => {
+                        this.dirty = false;
+                        void this.reloadDocument();
+                    });
+                }
             }
         } else {
             this.lastSaveStatus = "error";
@@ -186,15 +638,72 @@ export class MarkdownEditor extends Model {
         return false;
     }
 
+    private async reloadExternalDocument() {
+        this.dirty = false;
+        await this.reloadDocument();
+        if (this.view) this.lastSaveStatus = "saved";
+    }
+
+    private async reloadDocument() {
+        this.slashMenu?.destroy();
+        this.searchController?.destroy();
+        this.slashMenu = undefined;
+        this.tableAppearanceSubscription?.();
+        this.tableAppearanceSubscription = undefined;
+        this.view?.destroy();
+        this.view = undefined;
+        this.surfaceElement.innerHTML = "";
+        await this.load();
+    }
+
     public async rename(name: string) {
         return this.queueTitleTransaction(name, false);
     }
 
+    public async duplicate() {
+        if (!this.source.duplicate || !await this.flush()) return null;
+        const response = await this.source.duplicate(this.revision);
+        return response.status === "ok" ? response.document : null;
+    }
+
+    public async move(toNotebook: string, toParentPath: string) {
+        if (!this.source.move || !await this.flush()) return false;
+        const response = await this.source.move({
+            revision: this.revision,
+            toNotebook,
+            toParentPath,
+        });
+        if (response.status !== "ok") return false;
+        const document = response.document;
+        if (this.source.kind === "external") {
+            this.notebookId = toNotebook;
+            this.path = document.displayPath;
+            this.registerSourceKey();
+            this.revision = document.revision;
+            this.updateTitle(document.name);
+            this.renderBreadcrumb();
+            this.setPreview(this.preview, false);
+            saveLayout();
+        }
+        return true;
+    }
+
+    private scheduleTitleInput() {
+        if (!this.metadataEditable()) return;
+        const title = this.normalizedTitle(this.titleElement.innerText || this.titleElement.textContent);
+        if (!title) return;
+        window.clearTimeout(this.titleTimer);
+        this.titleTimer = window.setTimeout(() => {
+            void this.queueTitleTransaction(title);
+        }, 256);
+    }
+
     private queueTitleTransaction(name: string, preserveExtension = true) {
         window.clearTimeout(this.titleTimer);
+        window.clearTimeout(this.fontZoomTimer);
         const normalized = this.normalizedTitle(name);
         if (!normalized) {
-            this.titleElement.textContent = this.fileStem();
+            syncMarkdownTitleElement(this.titleElement, this.fileStem());
             return Promise.resolve(false);
         }
         this.titlePromise = this.titlePromise.catch(() => false)
@@ -204,7 +713,7 @@ export class MarkdownEditor extends Model {
 
     private async commitTitle(title: string, preserveExtension: boolean) {
         if (!this.metadataEditable()) {
-            this.titleElement.textContent = this.fileStem();
+            syncMarkdownTitleElement(this.titleElement, this.fileStem());
             return false;
         }
         const previousTitle = this.fileStem();
@@ -217,7 +726,7 @@ export class MarkdownEditor extends Model {
             ? title
             : requestedName.slice(0, -requestedExtension.length);
         if (!metadataTitle) {
-            this.titleElement.textContent = previousTitle;
+            syncMarkdownTitleElement(this.titleElement, previousTitle);
             return false;
         }
         const success = await runMarkdownTitleTransaction({
@@ -226,25 +735,27 @@ export class MarkdownEditor extends Model {
             metadataTitle,
             previousTitle,
             rename: async () => {
-                const response = await fetchSyncPost("/api/markdown/rename", {
-                    notebook: this.notebookId,
-                    path: this.path,
+                const response = await this.source.rename({
                     name: requestedName,
+                    revision: this.revision,
                 });
-                if (response.code !== 0) return false;
-                const document = response.data as IMarkdownDocument;
-                this.path = document.path;
-                this.revision = document.revision;
-                this.titleElement.textContent = this.fileStem();
-                this.updateTitle(document.name);
-                this.renderBreadcrumb();
-                saveLayout();
+                if (response.status !== "ok") return false;
+                const document = response.document;
+                if (this.source.kind === "external") {
+                    this.path = document.displayPath;
+                    this.registerSourceKey();
+                    this.revision = document.revision;
+                    syncMarkdownTitleElement(this.titleElement, this.fileStem());
+                    this.updateTitle(document.name);
+                    this.renderBreadcrumb();
+                    saveLayout();
+                }
                 return true;
             },
             renameRequired: requestedName !== this.fileName(),
         });
         if (!success) {
-            this.titleElement.textContent = previousTitle;
+            syncMarkdownTitleElement(this.titleElement, previousTitle);
         }
         return success;
     }
@@ -252,16 +763,47 @@ export class MarkdownEditor extends Model {
     public destroy() {
         window.clearTimeout(this.saveTimer);
         window.clearTimeout(this.titleTimer);
-        if (this.dirty) {
+        window.clearTimeout(this.fontZoomTimer);
+        window.clearTimeout(this.statisticsTimer);
+        window.clearTimeout(this.recentViewTimer);
+        clearMarkdownStatusbarCounter(this.statisticsOwner);
+        this.hideOutline(false, false);
+        if (this.dirty && !this.discarded && this.source.kind !== "external") {
             void this.flush();
         }
+        if (this.externalCapabilityId) {
+            /// #if !BROWSER
+            const owned = externalEditors.release(this.externalCapabilityId, this);
+            if (owned) {
+                void ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+                    action: "release",
+                    capabilityId: this.externalCapabilityId,
+                }).catch(() => undefined);
+            }
+            /// #endif
+        }
         this.destroyed = true;
+        if (!this.parent && this.source.kind === "workspace") {
+            fetchPost("/api/storage/updateRecentDocCloseTime", {
+                kind: "markdown",
+                notebook: this.notebookId,
+                path: this.path,
+            });
+        }
+        this.registryRegistration.destroy();
         this.slashMenu?.destroy();
         this.slashMenu = undefined;
+        this.tableAppearanceSubscription?.();
+        this.tableAppearanceSubscription = undefined;
+        this.searchController?.destroy();
+        this.searchController = undefined;
+        this.outlinePublisher.destroy();
+        const appearanceFlush = this.tableAppearance.flush();
         this.view?.destroy();
         this.documentScroll?.destroy();
         this.resizeObserver?.disconnect();
         this.appearanceHandle?.release();
+        void appearanceFlush.finally(() => this.tableAppearance.destroy());
         if (process.env.NODE_ENV === "development") {
             delete (this.element as HTMLElement & {__markdownEditorView?: EditorView}).__markdownEditorView;
         }
@@ -271,8 +813,10 @@ export class MarkdownEditor extends Model {
         this.element.innerHTML = `<div class="protyle-breadcrumb markdown-editor__breadcrumb">
     <div class="protyle-breadcrumb__bar"></div>
     <span class="protyle-breadcrumb__space"></span>
-    <button class="block__icon fn__flex-center ariaLabel" data-type="markdown-source" aria-label="Markdown"><svg><use xlink:href="#iconEdit"></use></svg></button>
-    <button class="block__icon block__icon--active fn__flex-center ariaLabel" data-type="markdown-preview" aria-label="${escapeHtml(window.siyuan.languages.wysiwyg)}"><svg><use xlink:href="#iconPreview"></use></svg></button>
+    <button class="block__icon fn__flex-center ariaLabel" data-type="markdown-mode" aria-label="Markdown"><svg><use xlink:href="#iconEdit"></use></svg></button>
+    <button class="block__icon fn__flex-center ariaLabel" data-type="markdown-outline" aria-label="${escapeHtml(window.siyuan.languages.outline)}"><svg><use xlink:href="#iconOutline"></use></svg></button>
+    <button class="block__icon fn__flex-center ariaLabel" data-type="markdown-fullscreen" aria-label="${escapeHtml(window.siyuan.languages.fullscreen)}"><svg><use xlink:href="#iconFullscreen"></use></svg></button>
+    <button class="block__icon fn__flex-center ariaLabel" data-type="markdown-more" aria-label="${escapeHtml(window.siyuan.languages.more)}"><svg><use xlink:href="#iconMore"></use></svg></button>
     <span class="markdown-editor__status" aria-live="polite"></span>
 </div>
 <div class="protyle-content markdown-editor__content">
@@ -328,10 +872,16 @@ export class MarkdownEditor extends Model {
             const target = event.target as HTMLElement;
             const button = target.closest("button");
             const action = button || target.closest<HTMLElement>("[data-type]");
-            if (action?.dataset.type === "markdown-source") {
-                this.setPreview(false);
-            } else if (action?.dataset.type === "markdown-preview") {
-                this.setPreview(true);
+            if (action?.dataset.type === "markdown-mode") {
+                this.setPreview(!this.preview);
+            } else if (action?.dataset.type === "markdown-outline") {
+                this.openOutline();
+            } else if (action?.dataset.type === "markdown-fullscreen") {
+                executeMarkdownEditorCommand(this, "toggle-fullscreen");
+            } else if (action?.dataset.type === "markdown-more") {
+                this.openMoreMenu(action);
+                event.stopPropagation();
+                event.preventDefault();
             } else if (action?.dataset.type === "markdown-tag") {
                 this.openTagDialog(action);
             } else if (action?.dataset.type === "markdown-icon") {
@@ -357,13 +907,35 @@ export class MarkdownEditor extends Model {
             }
         });
         this.element.addEventListener("keydown", (event: KeyboardEvent) => {
-            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+            if (this.handleShortcut(event)) return;
+            if (isMarkdownTypewriterShortcut(event) &&
+                (event.target === this.view?.contentDOM || this.view?.contentDOM.contains(event.target as Node))) {
+                event.preventDefault();
+                event.stopPropagation();
+                executeMarkdownEditorCommand(this, "toggle-typewriter");
+            } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
                 event.preventDefault();
                 event.stopPropagation();
                 void this.save();
+            } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "v") {
+                if (executeMarkdownEditorCommand(this, "paste-plain-text", event.target)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
             }
         });
+        this.contentElement.addEventListener("wheel", (event: WheelEvent) => {
+            const fontSize = getMarkdownFontZoomSize(event, window.siyuan.config.editor.fontSize,
+                window.siyuan.config.editor.fontSizeScrollZoom, isMac());
+            if (fontSize === null) return;
+            event.preventDefault();
+            event.stopPropagation();
+            editorConfigApi.apply({...window.siyuan.config.editor, fontSize});
+            window.clearTimeout(this.fontZoomTimer);
+            this.fontZoomTimer = window.setTimeout(() => editorConfigApi.patch("editor.fontSize", fontSize), Constants.TIMEOUT_LOAD);
+        }, {passive: false});
         this.titleElement.addEventListener("keydown", (event: KeyboardEvent) => {
+            if (!this.titleComposition.acceptsKeydown(event)) return;
             if (isMarkdownSelectAll(event)) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -373,58 +945,74 @@ export class MarkdownEditor extends Model {
                 this.titleElement.blur();
             }
         });
-        this.titleElement.addEventListener("input", () => {
-            if (!this.metadataEditable()) return;
-            const title = this.normalizedTitle(this.titleElement.innerText || this.titleElement.textContent);
-            if (!title) return;
-            this.applyMetadata({title});
-            window.clearTimeout(this.titleTimer);
-            this.titleTimer = window.setTimeout(() => {
-                void this.queueTitleTransaction(title);
-            }, 256);
+        this.titleElement.addEventListener("compositionstart", () => {
+            this.titleComposition.start();
+        });
+        this.titleElement.addEventListener("compositionend", () => {
+            this.titleComposition.end();
+            this.scheduleTitleInput();
+        });
+        this.titleElement.addEventListener("input", (event: InputEvent) => {
+            if (this.titleComposition.acceptsInput(event)) this.scheduleTitleInput();
         });
         this.titleElement.addEventListener("blur", () => {
+            this.titleComposition.end();
             const title = this.normalizedTitle(this.titleElement.innerText || this.titleElement.textContent);
             if (title && title !== this.fileStem()) {
                 void this.queueTitleTransaction(title);
             } else {
-                this.titleElement.textContent = this.fileStem();
+                syncMarkdownTitleElement(this.titleElement, this.fileStem());
             }
         });
     }
 
     private async load() {
-        const response = await fetchSyncPost("/api/markdown/get", {
-            notebook: this.notebookId,
-            path: this.path,
-        });
-        if (response.code !== 0) {
+        let document: MarkdownDocument;
+        try {
+            document = await this.source.load();
+        } catch {
             this.setStatus("error");
             return;
         }
-        const document = response.data as IMarkdownDocument;
         if (this.destroyed) {
             return;
         }
-        this.path = document.path;
+        this.path = document.displayPath;
         this.revision = document.revision;
-        this.titleElement.textContent = this.fileStem();
+        await this.tableAppearance.load();
+        if (this.destroyed) return;
+        syncMarkdownTitleElement(this.titleElement, this.fileStem());
         this.updateTitle(document.name);
         this.renderBreadcrumb();
-        const adapter = createSiyuanMarkdownAdapter({
-            app: this.app,
-            documentPath: () => this.path,
-        });
+        const adapter = this.createAdapter();
+        const restored = normalizeMarkdownEditorSessionState(this.pendingSessionState, document.content.length);
+        const hasRestoredSession = Boolean(this.pendingSessionState);
+        this.pendingSessionState = undefined;
+        this.preview = restored.mode === "visual";
+        this.typewriterMode = restored.typewriterMode;
+        this.typewriterModeConfigured = restored.typewriterModeConfigured === true;
+        const preferences = readMarkdownEditorPreferences();
         this.view = new EditorView({
             doc: document.content,
-            selection: {anchor: initialVisualMarkdownSelection(document.content)},
+            selection: hasRestoredSession ? restored.selection : {anchor: initialVisualMarkdownSelection(document.content)},
             extensions: [
                 minimalSetup,
+                EditorState.lineSeparator.of(document.lineEnding),
+                this.readOnlyCompartment.of(EditorState.readOnly.of(this.source.readOnly)),
+                this.indentationCompartment.of(indentUnit.of(preferences.codeIndentation)),
+                this.typewriterCompartment.of(codeMirrorTypewriterMode({
+                    enabled: this.typewriterMode,
+                    getScrollContainer: () => this.contentElement,
+                })),
                 this.modeCompartment.of(createSiyuanMarkraExtension({
                     adapter,
                     documentPath: () => this.path,
                     getScrollContainer: () => this.contentElement,
-                    mode: "visual",
+                    mode: this.preview ? "visual" : "source",
+                    tableAppearance: this.tableAppearance.pluginOptions(),
+                })),
+                this.contentAttributesCompartment.of(EditorView.contentAttributes.of({
+                    spellcheck: String(preferences.spellcheck),
                 })),
                 EditorView.updateListener.of((update) => {
                     if (update.docChanged) {
@@ -435,13 +1023,22 @@ export class MarkdownEditor extends Model {
                             this.scheduleSourceTitleSync();
                         }
                         this.scheduleSave();
+                        this.outlinePublisher.publish();
                     }
+                    this.searchController?.refreshAfterViewUpdate(update);
+                    if (update.docChanged || update.selectionSet || update.focusChanged) this.scheduleStatistics();
                     this.slashMenu?.update();
                 }),
             ],
             parent: this.surfaceElement,
         });
+        this.tableAppearanceSubscription?.();
+        this.tableAppearanceSubscription = this.tableAppearance.subscribe((records) => {
+            this.view?.dispatch({effects: restoreMarkdownTableAppearances.of(records)});
+        });
+        this.registerSourceKey();
         this.slashMenu = new MarkdownSlashMenuController(this.view, this.contentElement);
+        this.searchController = new MarkdownSearchController(this.view, this.element.querySelector(".markdown-editor__breadcrumb"));
         this.slashMenu.update();
         this.documentScroll = new MarkdownDocumentScrollController(() => this.view, this.contentElement);
         if (process.env.NODE_ENV === "development") {
@@ -452,11 +1049,57 @@ export class MarkdownEditor extends Model {
         }
         this.setStatus("saved");
         this.renderMetadata();
-        this.setPreview(true, false);
+        restoreMarkdownEditorSession(restored, {
+            configure: () => {
+                this.setPreview(this.preview, false);
+                this.refreshEditorConfig();
+            },
+            cue: (position) => showCodeMirrorLocationCue(this.view, position),
+            restoreScroll: (anchor) => this.documentScroll.restoreAnchor(anchor),
+        });
+        this.outlinePublisher.publish();
+        this.scheduleStatistics();
         const metadata = readMarkdownFrontmatter(this.view.state.doc.toString());
-        if (metadata.status === "none" || metadata.status === "valid" && metadata.title !== this.fileStem()) {
+        if (shouldInitializeMarkdownTitle(this.source.kind, metadata, this.fileStem())) {
             this.applyMetadata({title: this.fileStem()});
         }
+    }
+
+    private createAdapter() {
+        return createSiyuanMarkdownAdapter({
+            app: this.app,
+            documentPath: () => this.path,
+            ...(this.source.kind === "external" ? {
+                openLink: (target: string) => void this.source.openLink(target),
+                resolveImageSource: (source: string) => this.source.resolveImageSource(source),
+                saveClipboardAssets: ({files}) => this.source.saveAssets(files),
+            } : {}),
+        });
+    }
+
+    private registerSourceKey() {
+        this.registryRegistration.register(this.sourceKey);
+        void this.tableAppearance.migrate(this.sourceKey);
+    }
+
+    private scheduleStatistics() {
+        window.clearTimeout(this.statisticsTimer);
+        if (!isMarkdownStatisticsOwnerEligible(this.view, this.element) || !document.querySelector("#status .status__counter")) {
+            clearMarkdownStatusbarCounter(this.statisticsOwner);
+            return;
+        }
+        const token = claimMarkdownStatusbarCounter(this.statisticsOwner);
+        this.statisticsTimer = window.setTimeout(() => {
+            if (!isMarkdownStatisticsOwnerEligible(this.view, this.element)) {
+                clearMarkdownStatusbarCounter(this.statisticsOwner);
+                return;
+            }
+            const selection = this.view.state.selection.main;
+            const text = selection.empty
+                ? this.view.state.doc.toString()
+                : this.view.state.sliceDoc(selection.from, selection.to);
+            renderMarkdownStatusbarCounter(this.statisticsOwner, token, countMarkdownStatistics(text));
+        }, Constants.TIMEOUT_COUNT);
     }
 
     private scheduleSave() {
@@ -485,15 +1128,14 @@ export class MarkdownEditor extends Model {
 
     private setPreview(preview: boolean, focus = true) {
         this.preview = preview;
-        this.element.querySelector('[data-type="markdown-source"]')?.classList.toggle("block__icon--active", !preview);
-        this.element.querySelector('[data-type="markdown-preview"]')?.classList.toggle("block__icon--active", preview);
+        syncMarkdownModeToggle(this.element, preview, {
+            markdown: "Markdown",
+            wysiwyg: window.siyuan.languages.wysiwyg,
+        });
         if (this.view) {
             this.slashMenu?.close();
             reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
-                adapter: createSiyuanMarkdownAdapter({
-                    app: this.app,
-                    documentPath: () => this.path,
-                }),
+                adapter: this.createAdapter(),
                 documentPath: () => this.path,
                 getScrollContainer: () => this.contentElement,
                 mode: preview ? "visual" : "source",
@@ -531,9 +1173,9 @@ export class MarkdownEditor extends Model {
         const metadata = readMarkdownFrontmatter(this.view.state.doc.toString());
         const editable = this.metadataEditable() && metadata.status !== "malformed";
         this.metadataElement.classList.toggle("protyle-background--enable", editable);
-        this.titleElement.setAttribute("contenteditable", editable ? "true" : "false");
+        syncMarkdownTitleEditable(this.titleElement, editable);
         if (document.activeElement !== this.titleElement) {
-            this.titleElement.textContent = metadata.status === "valid" && metadata.title || this.fileStem();
+            syncMarkdownTitleElement(this.titleElement, metadata.status === "valid" && metadata.title || this.fileStem());
         }
         const tags = metadata.status === "valid" ? metadata.tags : [];
         this.tagsElement.innerHTML = tags.map((tag) => `<span class="b3-chip b3-chip--middle b3-chip--pointer">${escapeHtml(tag)}${editable ? `<svg class="b3-chip__close" data-type="markdown-tag-remove" data-value="${escapeHtml(tag)}"><use xlink:href="#iconClose"></use></svg>` : ""}</span>`).join("");
@@ -542,7 +1184,7 @@ export class MarkdownEditor extends Model {
         this.iconElement.textContent = icon || "";
         this.iconElement.classList.toggle("fn__none", !icon);
         const cover = metadata.status === "valid" ? metadata.cover : null;
-        const resolvedCover = cover ? resolveMarkdownCoverSource(cover) : null;
+        const resolvedCover = cover ? this.resolveCoverSource(cover) : null;
         this.coverElement.classList.toggle("fn__none", !resolvedCover);
         const image = this.coverElement.querySelector("img") as HTMLImageElement;
         if (resolvedCover) image.src = resolvedCover;
@@ -595,7 +1237,7 @@ export class MarkdownEditor extends Model {
     private async uploadCoverFiles(files: File[]) {
         if (!this.metadataEditable()) return;
         try {
-            const [saved] = await uploadMarkdownAssets({files, insertionOffset: 0});
+            const [saved] = await this.source.saveAssets(files);
             if (saved) this.applyMetadata({cover: saved.markdownDestination});
         } catch {
             this.setStatus("error");
@@ -669,13 +1311,17 @@ export class MarkdownEditor extends Model {
         buttons[0].addEventListener("click", () => dialog.destroy());
         buttons[1].addEventListener("click", () => {
             const cover = input.value.trim();
-            if (cover && resolveMarkdownCoverSource(cover) && this.applyMetadata({cover})) dialog.destroy();
+            if (cover && this.resolveCoverSource(cover) && this.applyMetadata({cover})) dialog.destroy();
         });
         input.focus();
     }
 
     private normalizedTitle(title: string) {
         return title.replace(/[\r\n]+/gu, " ").trim();
+    }
+
+    private resolveCoverSource(source: string) {
+        return this.source.kind === "external" ? this.source.resolveImageSource(source) : resolveMarkdownCoverSource(source);
     }
 
     private updateLayout() {
@@ -714,7 +1360,9 @@ export class MarkdownEditor extends Model {
 
     private renderBreadcrumb() {
         const notebook = window.siyuan.notebooks.find((item) => item.id === this.notebookId);
-        const parts = [notebook?.name || this.notebookId, ...this.path.split("/").filter(Boolean)];
+        const parts = this.source.kind === "external"
+            ? [window.siyuan.languages.externalMarkdown, ...this.path.split(/[\\/]/).filter(Boolean)]
+            : [notebook?.name || this.notebookId, ...this.path.split("/").filter(Boolean)];
         this.element.querySelector(".protyle-breadcrumb__bar").innerHTML = renderMarkdownBreadcrumb(parts);
     }
 

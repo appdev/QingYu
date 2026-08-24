@@ -77,6 +77,36 @@ test("refreshes native code settings without changing Markdown content or select
     assert.equal(line?.hasAttribute("data-code-line-number"), false);
 });
 
+test("allows an independent content-attributes compartment to hot-update body spellcheck", () => {
+    const modeCompartment = new Compartment();
+    const contentAttributes = new Compartment();
+    const adapter: MarkdownHostAdapter = {
+        createIcon: () => document.createElementNS("http://www.w3.org/2000/svg", "svg"),
+        notifyError: () => undefined,
+        openLink: () => undefined,
+        positionPopover: () => undefined,
+        renderMath: () => document.createElement("span"),
+        renderMermaid: async () => document.createElement("div"),
+        resolveImageSource: (source) => source,
+        saveClipboardAssets: async () => [],
+    };
+    view = new EditorView({
+        doc: "spellcheck",
+        extensions: [
+            contentAttributes.of(EditorView.contentAttributes.of({spellcheck: "false"})),
+            modeCompartment.of(createSiyuanMarkraExtension({adapter, documentPath: () => "/test.md", mode: "visual"})),
+        ],
+        parent: document.body,
+    });
+    view.dispatch({effects: contentAttributes.reconfigure(EditorView.contentAttributes.of({spellcheck: "true"}))});
+    view.dispatch({effects: modeCompartment.reconfigure(createSiyuanMarkraExtension({
+        adapter,
+        documentPath: () => "/test.md",
+        mode: "source",
+    }))});
+    assert.equal(view.contentDOM.getAttribute("spellcheck"), "true");
+});
+
 test("restores the semantic document anchor after reconfiguration", async () => {
     const modeCompartment = new Compartment();
     const container = document.body.appendChild(document.createElement("div"));

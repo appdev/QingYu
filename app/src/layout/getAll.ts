@@ -12,6 +12,7 @@ import {Bookmark} from "./dock/Bookmark";
 import {Tag} from "./dock/Tag";
 import {Custom} from "./dock/Custom";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {MarkdownOutline} from "../markdown/MarkdownOutline";
 import {Wnd} from "./Wnd";
 /// #endif
 
@@ -71,6 +72,7 @@ export const getAllModels = () => {
         tag: [],
         custom: [],
         markdown: [],
+        markdownOutline: [],
     };
     /// #if !MOBILE
     const getTabs = (layout: Layout) => {
@@ -98,6 +100,8 @@ export const getAllModels = () => {
                     models.custom.push(model);
                 } else if (model instanceof MarkdownEditor) {
                     models.markdown.push(model);
+                } else if (model instanceof MarkdownOutline) {
+                    models.markdownOutline.push(model);
                 }
             } else {
                 getTabs(item as Layout);
@@ -152,6 +156,8 @@ export const getAllTabs = (type?: TTab | string) => {
                 } else if (model instanceof Outline && type === "Outline") {
                     tabs.push(item);
                 } else if (model instanceof Custom && model.type === type) {
+                    tabs.push(item);
+                } else if (model instanceof MarkdownEditor && type === "MarkdownEditor") {
                     tabs.push(item);
                 }
                 continue;

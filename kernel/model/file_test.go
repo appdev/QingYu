@@ -18,10 +18,12 @@ package model
 
 import (
 	"errors"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/88250/lute/parse"
 	"github.com/siyuan-note/siyuan/kernel/cache"
@@ -43,12 +45,21 @@ func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
 	originalConf := Conf
 	originalDataDir := util.DataDir
 	originalBlockTreeDBPath := util.BlockTreeDBPath
+	originalTimeLangs := util.TimeLangs
 	tempDir := t.TempDir()
 	util.DataDir = filepath.Join(tempDir, "data")
 	util.BlockTreeDBPath = filepath.Join(tempDir, "blocktree.db")
 	Conf = NewAppConf()
+	Conf.Lang = "en"
+	Conf.Sync = conf.NewSync()
 	Conf.FileTree = conf.NewFileTree()
 	Conf.NotebookCrypto = conf.NewNotebookCrypto()
+	util.TimeLangs = map[string]map[string]any{"en": {
+		"albl": "ago", "blbl": "from now", "now": "now", "1s": "1 second", "xs": "%d seconds",
+		"1m": "1 minute", "xh": "%d hours", "1h": "1 hour", "1d": "1 day", "xd": "%d days",
+		"1w": "1 week", "xw": "%d weeks", "1M": "1 month", "xM": "%d months", "1y": "1 year",
+		"2y": "2 years", "xy": "%d years", "max": "long ago",
+	}}
 
 	box := &Box{ID: "20260718000000-abcdefg"}
 	boxConf := conf.NewBoxConf()
@@ -79,6 +90,7 @@ func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
 		Conf = originalConf
 		util.DataDir = originalDataDir
 		util.BlockTreeDBPath = originalBlockTreeDBPath
+		util.TimeLangs = originalTimeLangs
 		if "" != originalBlockTreeDBPath {
 			treenode.InitBlockTree(false)
 		}
@@ -90,6 +102,36 @@ func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
 		targetPath: targetPath,
 		sourceID:   sourceTree.ID,
 		childID:    sourceTree.Root.FirstChild.ID,
+	}
+}
+
+func TestListDocTreeRunsMarkdownRecoveryGate(t *testing.T) {
+	box := setupMarkdownTest(t)
+	created, err := CreateMarkdown(box.ID, "/", "recovery-gate.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHook := markdownTransactionCrashHook
+	markdownTransactionCrashHook = func(kind, phase string) error {
+		if kind == "save" && phase == "staged" {
+			return ErrMarkdownSimulatedCrash
+		}
+		return nil
+	}
+	if _, err = SaveMarkdown(box.ID, created.Path, "recovered", created.Revision); !errors.Is(err, ErrMarkdownSimulatedCrash) {
+		t.Fatalf("expected simulated crash, got %v", err)
+	}
+	markdownTransactionCrashHook = originalHook
+	t.Cleanup(func() { markdownTransactionCrashHook = originalHook })
+	if _, _, err = ListDocTree(box.ID, "/", util.SortModeNameASC, false, 100); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(util.DataDir, box.ID, "recovery-gate.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "" {
+		t.Fatalf("first list committed a pre-installed transaction: %q", data)
 	}
 }
 
@@ -166,6 +208,113 @@ func TestSortSearchDocResults(t *testing.T) {
 		if hPath != results[i].data["hPath"] {
 			t.Fatalf("unexpected search result order at %d: got %q, want %q", i, results[i].data["hPath"], hPath)
 		}
+	}
+}
+
+func TestChangeFileTreeSortKeepsMarkdownPathsSeparateFromBlockIDs(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	markdownPath := "/notes.md"
+	if err := os.WriteFile(filepath.Join(util.DataDir, fixture.box.ID, "notes.md"), []byte("notes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ChangeFileTreeSort(fixture.box.ID, []string{fixture.sourcePath, markdownPath})
+	conf, err := readSortConfMap(filepath.Join(util.DataDir, fixture.box.ID, ".siyuan", "sort.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf[fixture.sourceID] != 1 || conf["markdown:/notes.md"] != 2 {
+		t.Fatalf("unexpected sort map: %#v", conf)
+	}
+}
+
+func TestChangeFileTreeSortPublishesMarkdownDirectoryEvent(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	markdownPath := "/notes.md"
+	if err := os.WriteFile(filepath.Join(util.DataDir, fixture.box.ID, "notes.md"), []byte("notes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var events []*util.Result
+	originalPushEvent := markdownPushEvent
+	markdownPushEvent = func(event *util.Result) { events = append(events, event) }
+	t.Cleanup(func() { markdownPushEvent = originalPushEvent })
+
+	ChangeFileTreeSort(fixture.box.ID, []string{fixture.sourcePath, markdownPath}, "sort-client")
+
+	if len(events) != 1 || events[0].Cmd != "sortMarkdown" {
+		t.Fatalf("unexpected Markdown sort events: %#v", events)
+	}
+	data := events[0].Data.(map[string]any)
+	if data["kind"] != "markdown" || data["box"] != fixture.box.ID || data["path"] != markdownPath ||
+		data["operationID"] != "sort-client" {
+		t.Fatalf("incomplete Markdown sort envelope: %#v", data)
+	}
+}
+
+func TestChangeFileTreeSortSerializesWithMarkdownCreation(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	if err := os.WriteFile(filepath.Join(util.DataDir, fixture.box.ID, "a.md"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	originalHook := markdownBeforeChangeSortCommit
+	markdownBeforeChangeSortCommit = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { markdownBeforeChangeSortCommit = originalHook })
+	sortDone := make(chan error, 1)
+	go func() {
+		_, err := ChangeFileTreeSortWithOperationID(fixture.box.ID, []string{"/a.md"}, "sort-client")
+		sortDone <- err
+	}()
+	<-entered
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := CreateMarkdown(fixture.box.ID, "/", "b.md")
+		createDone <- err
+	}()
+	select {
+	case err := <-createDone:
+		t.Fatalf("Markdown creation was not serialized with sort: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-sortDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-createDone; err != nil {
+		t.Fatal(err)
+	}
+	sorts, err := readSortConfMap(filepath.Join(util.DataDir, fixture.box.ID, ".siyuan", "sort.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sorts["markdown:/b.md"] == 0 {
+		t.Fatalf("concurrent Markdown sort entry was lost: %#v", sorts)
+	}
+}
+
+func TestListDocTreeUsesMixedCustomSortKeys(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	if err := os.WriteFile(filepath.Join(util.DataDir, fixture.box.ID, "notes.md"), []byte("notes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	confPath := filepath.Join(util.DataDir, fixture.box.ID, ".siyuan", "sort.json")
+	if err := writeSortConfMap(confPath, map[string]int{
+		fixture.sourceID:                   1,
+		"markdown:/notes.md":               2,
+		util.GetTreeID(fixture.targetPath): 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, _, err := ListDocTree(fixture.box.ID, "/", util.SortModeCustom, false, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) < 2 || docs[0].ID != fixture.sourceID || docs[1].Path != "/notes.md" {
+		t.Fatalf("unexpected mixed custom order: %#v", docs)
 	}
 }
 

@@ -30,7 +30,8 @@ import {
 } from "./dialog/processSystem";
 import {initMessage, showMessage} from "./dialog/message";
 import {getAllModels, getAllTabs} from "./layout/getAll";
-import {getLocalStorage, isChromeBrowser, isInMobileApp} from "./protyle/util/compatibility";
+import {refreshMarkdownEditorsForConfigMessage} from "./markdown/configMessageRefresh";
+import {getLocalStorage, isChromeBrowser, isInMobileApp, setStorageVal} from "./protyle/util/compatibility";
 import {isBrowser} from "./util/functions";
 import {checkPublishServiceClosed} from "./util/processMessage";
 import {hideAllElements} from "./protyle/ui/hideElements";
@@ -49,6 +50,38 @@ import {reloadSync} from "./util/reloadSync";
 import {setTitle} from "./util/processTitle";
 import {handleMarkdownSaveBarrier} from "./markdown/saveBarrier";
 import {installMarkdownAppearanceRuntimeHarness} from "./markdown/appearance/runtimeHarness";
+import {
+    createMarkdownManagementRuntimeEventController,
+    markdownReferenceFromInitData,
+    markdownManagementEventFromWebSocket,
+} from "./markdown/documentManagement";
+import {installMarkdownManagementRendererCoordinator, markdownCoordinatorEditor} from "./markdown/managementCoordinator";
+import {applyMarkdownTableAppearanceEvent} from "./markdown/markdownTableAppearance";
+
+const markdownManagementEvents = createMarkdownManagementRuntimeEventController(() => {
+    const closedTabs = window.siyuan.storage[Constants.LOCAL_CLOSED_TABS] || [];
+    const lazyEditors = getAllTabs("MarkdownEditor").flatMap((tab) => {
+        if (tab.model) return [];
+        const reference = markdownReferenceFromInitData(tab.headElement?.getAttribute("data-initdata"));
+        return reference ? [{
+            notebookId: reference.notebook,
+            path: reference.path,
+            close: () => tab.parent.removeTab(tab.id).then(() => undefined),
+        }] : [];
+    });
+    return {
+        editors: [...getAllModels().markdown.map((editor) => ({
+            get notebookId() { return editor.notebookId; },
+            get path() { return editor.path; },
+            getRevision: () => editor.getRevision(),
+            applyWorkspaceDocumentReference: (notebook: string, path: string, revision: string) =>
+                editor.applyWorkspaceDocumentReference(notebook, path, revision),
+            close: () => editor.parent.parent.removeTab(editor.parent.id).then(() => undefined),
+        })), ...lazyEditors],
+        closedTabs,
+        persistClosedTabs: (layouts: readonly unknown[]) => setStorageVal(Constants.LOCAL_CLOSED_TABS, layouts),
+    };
+});
 
 export class App {
     public plugins: import("./plugin").Plugin[] = [];
@@ -109,12 +142,29 @@ export class App {
                         case "flushMarkdownForAssetScan":
                             void handleMarkdownSaveBarrier(data.data, mainWs.sessionId, getAllModels().markdown);
                             break;
+                        case "markdownTableAppearance":
+                            applyMarkdownTableAppearanceEvent(data.data);
+                            break;
                         case "readonly":
                             window.siyuan.config.editor.readOnly = data.data;
+                            refreshMarkdownEditorsForConfigMessage(data.cmd, getAllModels().markdown);
+                            /// #if !BROWSER
+                            void ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+                                action: "setReadOnly",
+                                readOnly: window.siyuan.config.readonly || data.data,
+                            });
+                            /// #endif
                             hideAllElements(["util"]);
                             break;
                         case "setConf":
                             window.siyuan.config = data.data;
+                            refreshMarkdownEditorsForConfigMessage(data.cmd, getAllModels().markdown);
+                            /// #if !BROWSER
+                            void ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+                                action: "setReadOnly",
+                                readOnly: window.siyuan.config.readonly || window.siyuan.config.editor.readOnly,
+                            });
+                            /// #endif
                             break;
                         case "setPublish":
                             window.siyuan.config.publish = data.data;
@@ -162,6 +212,15 @@ export class App {
                                 }
                             });
                             break;
+                        case "createMarkdown":
+                        case "saveMarkdown":
+                        case "renameMarkdown":
+                        case "removeMarkdown":
+                        case "sortMarkdown":
+                        case "purgeMarkdown": {
+                            markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
+                            break;
+                        }
                         case "closeBox":
                         case "removeBox":
                             getAllTabs().forEach((tab) => {
@@ -286,6 +345,11 @@ export class App {
 }
 
 const siyuanApp = new App();
+
+/// #if !BROWSER
+installMarkdownManagementRendererCoordinator(ipcRenderer, window.location.origin,
+    () => getAllModels().markdown.map(markdownCoordinatorEditor));
+/// #endif
 
 if (process.env.NODE_ENV === "development") {
     installMarkdownAppearanceRuntimeHarness(siyuanApp);

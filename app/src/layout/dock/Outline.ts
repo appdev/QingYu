@@ -30,6 +30,8 @@ import {genEmptyElement} from "../../block/util";
 import {focusBlock, focusByWbr} from "../../protyle/util/selection";
 import {dragOverScroll, stopScrollAnimation} from "../../boot/globalEvent/dragover";
 import {getDocDisplayName} from "../../util/pathName";
+import type {RegisteredMarkdownEditor} from "../../markdown/markdownEditorRegistry";
+import {buildMarkdownOutlineTreeData, getMarkdownOutlinePosition} from "../../markdown/outlineModel";
 
 export class Outline extends Model {
     public tree: Tree;
@@ -40,13 +42,16 @@ export class Outline extends Model {
     public isPreview: boolean;
     public protyle: IProtyle;
     private preFilterExpandIds: string[] | null = null;
+    private markdownEditor?: RegisteredMarkdownEditor;
+    private unsubscribeMarkdownOutline?: () => void;
 
     constructor(options: {
         app: App,
         tab: Tab,
         blockId: string,
         type: "pin" | "local",
-        isPreview: boolean
+        isPreview: boolean,
+        markdownEditor?: RegisteredMarkdownEditor,
     }) {
         super({app: options.app});
         this.connect({
@@ -125,6 +130,11 @@ export class Outline extends Model {
                     }
                 }
                 const id = element.getAttribute("data-node-id");
+                if (this.markdownEditor) {
+                    const position = getMarkdownOutlinePosition(id);
+                    if (position !== undefined) this.markdownEditor.focusPosition(position);
+                    return;
+                }
                 if (this.isPreview) {
                     const headElement = document.getElementById(id);
                     if (headElement) {
@@ -159,6 +169,11 @@ export class Outline extends Model {
                     return;
                 }
                 const id = element.getAttribute("data-node-id");
+                if (this.markdownEditor) {
+                    const position = getMarkdownOutlinePosition(id);
+                    if (position !== undefined) this.markdownEditor.focusPosition(position);
+                    return;
+                }
                 openFileById({
                     app: options.app,
                     id,
@@ -174,6 +189,7 @@ export class Outline extends Model {
                 }
             },
             rightClick: (element: HTMLElement, event: MouseEvent) => {
+                if (this.markdownEditor) return;
                 this.showContextMenu(element, event);
             },
             toggleClick: (liElement) => {
@@ -299,6 +315,11 @@ export class Outline extends Model {
         });
         this.bindSort();
 
+        if (options.markdownEditor) {
+            this.bindMarkdownEditor(options.markdownEditor);
+            return;
+        }
+
         const outlineParam: IObject = {
             id: this.blockId,
             preview: this.isPreview
@@ -315,11 +336,50 @@ export class Outline extends Model {
             outlineParam.notebook = notebookId;
         }
         fetchPost("/api/outline/getDocOutline", outlineParam, response => {
+            if (this.markdownEditor) return;
             this.update(response);
             if (this.blockId) {
                 this.updateDocTitle((options.tab.model as Editor)?.editor?.protyle?.background?.ial, response.data?.length || 0);
             }
         });
+    }
+
+    public bindMarkdownEditor(editor: RegisteredMarkdownEditor) {
+        if (this.markdownEditor === editor && this.unsubscribeMarkdownOutline) return;
+        this.unsubscribeMarkdownOutline?.();
+        this.markdownEditor = editor;
+        this.blockId = "";
+        this.isPreview = false;
+        this.updateDocTitle();
+        this.tree.setItemExtensions();
+        this.unsubscribeMarkdownOutline = editor.subscribeOutline((items) => {
+            const scrollTop = this.element.scrollTop;
+            this.tree.updateData(buildMarkdownOutlineTreeData(items));
+            if ((this.headerElement.querySelector("input.b3-text-field.search__label") as HTMLInputElement).value) {
+                this.setFilter();
+            }
+            this.element.scrollTop = scrollTop;
+        });
+    }
+
+    public bindNativeDocument() {
+        if (!this.markdownEditor && !this.unsubscribeMarkdownOutline) return;
+        const wasMarkdown = Boolean(this.markdownEditor);
+        this.unsubscribeMarkdownOutline?.();
+        this.unsubscribeMarkdownOutline = undefined;
+        this.markdownEditor = undefined;
+        const itemAction = window.siyuan.config.readonly
+            ? undefined
+            : '<span class="b3-list-item__action"><svg><use xlink:href="#iconMore"></use></svg></span>';
+        this.tree.setItemExtensions(itemAction, itemAction);
+        if (wasMarkdown) {
+            this.tree.updateData([]);
+            this.updateDocTitle();
+        }
+    }
+
+    public isMarkdownSource() {
+        return Boolean(this.markdownEditor);
     }
 
     private handleCallback() {
@@ -370,6 +430,7 @@ export class Outline extends Model {
 
     private bindSort() {
         this.element.addEventListener("mousedown", (event: MouseEvent) => {
+            if (this.markdownEditor) return;
             const item = hasClosestByClassName(event.target as HTMLElement, "b3-list-item");
             if (!item || item.tagName !== "LI" || this.element.getAttribute("data-loading") === "true") {
                 return;
@@ -702,6 +763,7 @@ export class Outline extends Model {
     }
 
     public update(data: IWebSocketData, callbackId?: string) {
+        if (this.markdownEditor) return;
         let currentElement = this.element.querySelector(".b3-list-item--focus");
         let currentId;
         if (currentElement) {
@@ -734,6 +796,7 @@ export class Outline extends Model {
     }
 
     public saveExpendIds() {
+        if (this.markdownEditor) return;
         if (window.siyuan.config.readonly || window.siyuan.isPublish) {
             return;
         }
@@ -944,8 +1007,8 @@ export class Outline extends Model {
      * 显示右键菜单
      */
     private showContextMenu(element: HTMLElement, event: MouseEvent) {
-        if (this.isPreview) {
-            return; // 预览模式下不显示右键菜单
+        if (this.markdownEditor || this.isPreview) {
+            return; // Markdown 大纲和预览模式不显示右键菜单
         }
         const currentLevel = this.getHeadingLevel(element);
         window.siyuan.menus.menu.remove();

@@ -10,6 +10,7 @@ import {resize} from "../util/resize";
 import {disabledProtyle, enableProtyle} from "../util/onGet";
 import {isWindow} from "../../util/functions";
 import {Wnd} from "../../layout/Wnd";
+import {syncMarkdownFullscreenButton, syncMarkdownFullscreenModels} from "../../markdown/fullscreenState";
 
 export const net2LocalAssets = (protyle: IProtyle, type: "Assets" | "Img") => {
     if (protyle.element.querySelector(".wysiwygLoading")) {
@@ -99,7 +100,9 @@ export const fullscreen = (element: Element, btnElement?: Element) => {
             }
         }
     });
+    syncMarkdownFullscreenModels(getAllModels().markdown, element, element.classList.contains("fullscreen"));
     /// #endif
+    syncMarkdownFullscreenButton(element, element.classList.contains("fullscreen"));
 };
 
 export const updateReadonly = (target: Element, protyle: IProtyle) => {

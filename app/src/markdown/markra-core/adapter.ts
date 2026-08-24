@@ -1,6 +1,6 @@
 import {Facet, type EditorState} from "@codemirror/state";
 
-export type MarkdownIconName = "add" | "remove" | "trash" | "zoomIn" | "zoomOut" | "open";
+export type MarkdownIconName = "add" | "dot" | "remove" | "trash" | "zoomIn" | "zoomOut" | "open";
 
 export interface MarkdownSavedAsset {
     markdownDestination: string;
@@ -73,8 +73,10 @@ export const markdownHostAdapterFacet = Facet.define<MarkdownHostAdapter, Markdo
 
 export const markdownHostAdapter = (adapter: MarkdownHostAdapter) => markdownHostAdapterFacet.of(adapter);
 
+export const readOptionalMarkdownHostAdapter = (state: EditorState) => state.facet(markdownHostAdapterFacet);
+
 export const readMarkdownHostAdapter = (state: EditorState) => {
-    const adapter = state.facet(markdownHostAdapterFacet);
+    const adapter = readOptionalMarkdownHostAdapter(state);
     if (!adapter) {
         throw new Error("Markdown editor host adapter is not configured");
     }

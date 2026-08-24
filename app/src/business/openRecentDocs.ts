@@ -9,32 +9,56 @@ import {Dialog} from "../dialog";
 import {focusByRange} from "../protyle/util/selection";
 import {hasClosestByClassName} from "../protyle/util/hasClosest";
 import {hideElements} from "../protyle/ui/hideElements";
+import {openMarkdownFile} from "../editor/util";
+import {openRecentDocument, RecentDocumentItem, renderRecentDocumentItems} from "../markdown/recentDocuments";
+import type {App} from "../index";
+import {getAllModels, getAllWnds} from "../layout/getAll";
+import type {Wnd} from "../layout/Wnd";
 
-const renderRecentDocsContent = async (data: {
-    rootID: string,
-    icon: string,
-    title: string,
-    viewedAt?: number,
-    closedAt?: number,
-    openAt?: number,
-}[], element: Element, key?: string) => {
-    let tabHtml = "";
-    let index = 0;
-    data.forEach((item) => {
-        if (!key || item.title.toLowerCase().includes(key.toLowerCase())) {
-            tabHtml += `<li data-index="${index}" data-node-id="${item.rootID}" class="b3-list-item${index === 0 ? " b3-list-item--focus" : ""}">
-    ${unicode2Emoji(item.icon || window.siyuan.storage[Constants.LOCAL_IMAGES].file, "b3-list-item__graphic", true)}
-    <span class="b3-list-item__text">${escapeHtml(item.title)}</span>
-</li>`;
-            index++;
-        }
-    });
+const recentDocumentsApp = (app?: App) => {
+    if (app) return app;
+    const modelApp = getAllModels().markdown[0]?.app || getAllModels().editor[0]?.app;
+    if (modelApp) return modelApp;
+    const wnds: Wnd[] = [];
+    if (window.siyuan.layout.centerLayout) getAllWnds(window.siyuan.layout.centerLayout, wnds);
+    return (wnds[0] as unknown as {app?: App})?.app;
+};
+
+const recentDocumentItems = (data: Record<string, unknown>[]): RecentDocumentItem[] => data.map((item) => item.kind === "markdown" ? {
+    kind: "markdown",
+    notebook: item.notebook as string,
+    path: item.path as string,
+    title: item.title as string,
+    icon: item.icon as string,
+    viewedAt: item.viewedAt as number,
+    closedAt: item.closedAt as number,
+    openAt: item.openAt as number,
+    updated: item.updated as number,
+} : {
+    kind: "native",
+    rootID: item.rootID as string,
+    title: item.title as string,
+    icon: item.icon as string,
+    viewedAt: item.viewedAt as number,
+    closedAt: item.closedAt as number,
+    openAt: item.openAt as number,
+    updated: item.updated as number,
+});
+
+const renderRecentDocsContent = async (data: Record<string, unknown>[], element: Element, key?: string) => {
+    const items = recentDocumentItems(data).filter((item) => !key || item.title.toLowerCase().includes(key.toLowerCase()));
+    const tabHtml = renderRecentDocumentItems(items).replaceAll('<span class="b3-list-item__text">',
+        `${unicode2Emoji(window.siyuan.storage[Constants.LOCAL_IMAGES].file, "b3-list-item__graphic", true)}<span class="b3-list-item__text">`);
     let switchPath = "";
     if (tabHtml) {
-        const pathResponse = await fetchSyncPost("/api/filetree/getFullHPathByID", {
-            id: data[0].rootID // 过滤后的第一个文档 ID
-        });
-        switchPath = escapeHtml(pathResponse.data);
+        const firstItem = items[0];
+        if (firstItem.kind === "markdown") {
+            const notebook = window.siyuan.notebooks.find((item) => item.id === firstItem.notebook);
+            switchPath = escapeHtml(`${notebook?.name || firstItem.notebook}${firstItem.path}`);
+        } else {
+            const pathResponse = await fetchSyncPost("/api/filetree/getFullHPathByID", {id: firstItem.rootID});
+            switchPath = escapeHtml(pathResponse.data);
+        }
     }
     let dockHtml = "";
     if (!isWindow()) {
@@ -63,7 +87,7 @@ const renderRecentDocsContent = async (data: {
 </div>`;
 };
 
-export const openRecentDocs = () => {
+export const openRecentDocs = (app?: App) => {
     const openRecentDocsDialog = window.siyuan.dialogs.find(item => {
         if (item.element.getAttribute("data-key") === Constants.DIALOG_RECENTDOCS) {
             return true;
@@ -125,10 +149,46 @@ export const openRecentDocs = () => {
             if (liElement) {
                 dialog.element.querySelector(".b3-list-item--focus").classList.remove("b3-list-item--focus");
                 liElement.classList.add("b3-list-item--focus");
-                window.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter"}));
+                if (liElement.dataset.markdownPath) {
+                    const currentApp = recentDocumentsApp(app);
+                    if (currentApp) void openRecentDocument(currentApp, {
+                        kind: "markdown",
+                        notebook: liElement.dataset.markdownNotebook,
+                        path: liElement.dataset.markdownPath,
+                        title: liElement.querySelector(".b3-list-item__text").textContent,
+                    }, {openMarkdown: openMarkdownFile, openNative: async () => undefined});
+                    hideElements(["dialog"]);
+                } else {
+                    window.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter"}));
+                }
                 event.stopPropagation();
                 event.preventDefault();
             }
+        });
+        dialog.element.addEventListener("keydown", (event: KeyboardEvent) => {
+            if (event.key.startsWith("Arrow")) {
+                window.setTimeout(() => {
+                    const item = dialog.element.querySelector<HTMLElement>(".b3-list-item--focus[data-markdown-path]");
+                    if (!item) return;
+                    const notebook = window.siyuan.notebooks.find((notebook) => notebook.id === item.dataset.markdownNotebook);
+                    dialog.element.querySelector(".switch-doc__path").textContent =
+                        `${notebook?.name || item.dataset.markdownNotebook}${item.dataset.markdownPath}`;
+                });
+                return;
+            }
+            if (event.key !== "Enter") return;
+            const item = dialog.element.querySelector<HTMLElement>(".b3-list-item--focus[data-markdown-path]");
+            if (!item) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const currentApp = recentDocumentsApp(app);
+            if (currentApp) void openRecentDocument(currentApp, {
+                kind: "markdown",
+                notebook: item.dataset.markdownNotebook,
+                path: item.dataset.markdownPath,
+                title: item.querySelector(".b3-list-item__text").textContent,
+            }, {openMarkdown: openMarkdownFile, openNative: async () => undefined});
+            hideElements(["dialog"]);
         });
 
         // 添加排序下拉框事件监听

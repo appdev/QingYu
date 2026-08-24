@@ -6,7 +6,10 @@ import {runScopeHandlers} from "@codemirror/view";
 import type {MarkdownHostAdapter} from "./markra-core/adapter";
 import {convertCodeMirrorClipboardHtml} from "./markra-core/codemirror";
 import {createSiyuanMarkraExtension} from "./markraExtension";
+import {focusVisualTableCell} from "./markra-core/codemirror/table";
+import {handlePendingPlainTextPasteEvent, markNextPlainTextPaste} from "./markra-core/plain-text-paste";
 import {installMarkdownTestDom} from "./markraTestDom";
+import {renderMarkraMathToString} from "./markra-core/math-render";
 
 const adapter: MarkdownHostAdapter = {
     createIcon(_name, className, ownerDocument) {
@@ -34,6 +37,13 @@ const adapter: MarkdownHostAdapter = {
 let cleanup: () => void;
 let view: EditorView | undefined;
 
+test("renders math once using the same HTML-only topology as the native editor", () => {
+    const html = renderMarkraMathToString(String.raw`E=mc^2`, "inline");
+
+    assert.match(html, /class="katex-html"/u);
+    assert.doesNotMatch(html, /class="katex-mathml"/u);
+});
+
 beforeEach(() => {
     cleanup = installMarkdownTestDom();
 });
@@ -44,7 +54,7 @@ afterEach(() => {
     cleanup();
 });
 
-const createView = (doc: string) => {
+const createView = (doc: string, mode: "source" | "visual" = "visual") => {
     view = new EditorView({
         parent: document.body,
         state: EditorState.create({
@@ -54,13 +64,21 @@ const createView = (doc: string) => {
                 createSiyuanMarkraExtension({
                     adapter,
                     documentPath: () => "/test.md",
-                    mode: "visual",
+                    mode,
                 }),
             ],
         }),
     });
     return view;
 };
+
+test("renders Markdown source without a line-number gutter", () => {
+    const editor = createView("# Heading\n\nBody", "source");
+    assert.equal(editor.dom.getAttribute("data-markdown-mode"), "source");
+    assert.equal(editor.dom.querySelector(".cm-gutters"), null);
+    assert.ok(editor.dom.querySelector(".cm-activeLine"));
+    assert.equal(editor.state.doc.toString(), "# Heading\n\nBody");
+});
 
 test("converts copied rich tables to complete GFM Markdown", () => {
     const result = convertCodeMirrorClipboardHtml(`
@@ -86,6 +104,177 @@ test("renders tables through the Markra visual core without changing source", as
     assert.equal(editor.dom.querySelectorAll(".cm-gutter").length, 0);
     assert.ok(editor.dom.querySelector("table"));
     assert.equal(editor.dom.querySelectorAll("tbody tr").length, 1);
+});
+
+test("moves down from a heading into the visual table without breaking its source", async () => {
+    Object.assign(globalThis, {
+        HTMLTableCellElement: window.HTMLTableCellElement,
+        InputEvent: window.InputEvent,
+        NodeFilter: window.NodeFilter,
+    });
+    const source = "## 推送通知端到端技术方案\n\n| 项目 | 内容 |\n| --- | --- |\n| 文档版本 | v1.7 |";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("端到端")}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const handled = runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor");
+    await Promise.resolve();
+
+    assert.equal(handled, true);
+    const selectionNode = document.getSelection()?.anchorNode;
+    const selectionElement = selectionNode instanceof Element ? selectionNode : selectionNode?.parentElement;
+    const cell = selectionElement?.closest<HTMLTableCellElement>("th, td");
+    assert.equal(cell?.dataset.tableHeader, "true");
+
+    cell.textContent = `X${cell.textContent}`;
+    cell.dispatchEvent(new InputEvent("input", {bubbles: true, data: "X", inputType: "insertText"}));
+    await Promise.resolve();
+
+    assert.match(editor.state.doc.toString(), /\| X项目 \| 内容 \|/u);
+    assert.ok(editor.dom.querySelector(".cm-markra-table"));
+});
+
+test("moves up from following text into the last visual table row", async () => {
+    Object.assign(globalThis, {
+        HTMLTableCellElement: window.HTMLTableCellElement,
+        InputEvent: window.InputEvent,
+        NodeFilter: window.NodeFilter,
+    });
+    const source = "| 项目 | 内容 |\n| --- | --- |\n| 文档版本 | v1.7 |\n\n下方正文";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("下方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const handled = runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+    }), "editor");
+    await Promise.resolve();
+
+    assert.equal(handled, true);
+    const selectionNode = document.getSelection()?.anchorNode;
+    const selectionElement = selectionNode instanceof Element ? selectionNode : selectionNode?.parentElement;
+    const cell = selectionElement?.closest<HTMLTableCellElement>("th, td");
+    assert.equal(cell?.dataset.tableRow, "0");
+    assert.equal(cell?.dataset.tableHeader, "false");
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("moves visual table focus on Tab without inserting indentation", async () => {
+    const source = "| Alpha | Beta |\n| --- | --- |\n| one | two |";
+    const editor = createView(source);
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    Object.assign(globalThis, {
+        HTMLTableCellElement: window.HTMLTableCellElement,
+        InputEvent: window.InputEvent,
+        NodeFilter: window.NodeFilter,
+    });
+    focusVisualTableCell(editor, 0, -1, 0, true, 0);
+    await Promise.resolve();
+    const table = editor.dom.querySelector("table");
+    const tab = new KeyboardEvent("keydown", {bubbles: true, cancelable: true, key: "Tab"});
+    table.dispatchEvent(tab);
+    assert.equal(tab.defaultPrevented, true);
+    const activeCell = document.getSelection()?.anchorNode?.parentElement?.closest("th, td");
+    assert.equal(activeCell?.getAttribute("data-table-column"), "1");
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("keeps a cross-cell plain-text paste inside the starting visual table cell", async () => {
+    Object.assign(globalThis, {
+        HTMLTableCellElement: window.HTMLTableCellElement,
+        InputEvent: window.InputEvent,
+        NodeFilter: window.NodeFilter,
+    });
+    const editor = createView("| Alpha | Beta |\n| --- | --- |\n| one | two |");
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    const cells = editor.dom.querySelectorAll<HTMLTableCellElement>("tbody td");
+    const selection = document.getSelection();
+    const range = document.createRange();
+    range.setStart(cells[0].firstChild, 1);
+    range.setEnd(cells[1].firstChild, 2);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    markNextPlainTextPaste(editor.contentDOM, "use-native-text");
+    const paste = new Event("paste", {bubbles: true, cancelable: true});
+    Object.defineProperty(paste, "clipboardData", {value: {getData: () => "# literal"}});
+    Object.defineProperty(paste, "target", {value: cells[0]});
+    assert.equal(handlePendingPlainTextPasteEvent(paste as ClipboardEvent, editor.contentDOM), true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(paste.defaultPrevented, true);
+    assert.match(editor.state.doc.toString(), /\| o\\# literalne \| two \|/u);
+});
+
+test("gives only the selected authored blank line an active empty-line row", async () => {
+    const source = "# 目标\n\n身高：175 cm";
+    const editor = createView(source);
+    const blankLinePosition = source.indexOf("\n") + 1;
+
+    editor.focus();
+    editor.dispatch({selection: {anchor: blankLinePosition}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const emptyLine = editor.dom.querySelector(".cm-markra-empty-line");
+    assert.ok(emptyLine);
+    assert.equal(emptyLine.classList.contains("cm-markra-active-empty-line"), true);
+
+    editor.dispatch({selection: {anchor: source.length}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(editor.dom.querySelector(".cm-markra-active-empty-line"), null);
+});
+
+test("replaces an empty heading marker when pasting structured Markdown", () => {
+    const editor = createView("###### ");
+    editor.dispatch({selection: {anchor: editor.state.doc.length}});
+    const event = new Event("paste", {bubbles: true, cancelable: true});
+    Object.defineProperty(event, "clipboardData", {
+        value: {
+            files: [],
+            getData(type: string) {
+                if (type === "text/html") return "<h2>目标</h2><ul><li>身高：175 cm</li></ul>";
+                return type === "text/plain" ? "## 目标\n\n- 身高：175 cm" : "";
+            },
+        },
+    });
+
+    editor.contentDOM.dispatchEvent(event);
+
+    assert.equal(editor.state.doc.toString(), "## 目标\n\n-   身高：175 cm");
+});
+
+test("replaces an empty heading marker when pasting plain Markdown", () => {
+    const editor = createView("###### ");
+    editor.dispatch({selection: {anchor: editor.state.doc.length}});
+    const event = new Event("paste", {bubbles: true, cancelable: true});
+    Object.defineProperty(event, "clipboardData", {
+        value: {
+            files: [],
+            getData(type: string) {
+                return type === "text/plain" ? "# 减脂要点\n\n## 目标" : "";
+            },
+        },
+    });
+
+    editor.contentDOM.dispatchEvent(event);
+
+    assert.equal(editor.state.doc.toString(), "# 减脂要点\n\n## 目标");
+});
+
+test("labels the heading-level control with the active heading level", async () => {
+    const editor = createView("###### 目标");
+    editor.focus();
+    editor.dispatch({selection: {anchor: editor.state.doc.length}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const button = editor.dom.querySelector<HTMLButtonElement>(".markra-heading-level-button");
+    assert.ok(button);
+    assert.equal(button.textContent, "H6");
 });
 
 test("keeps following text outside an unfinished code fence until Enter closes it", async () => {
@@ -136,6 +325,134 @@ test("adds safe SiYuan semantic aliases to rendered Markdown", async () => {
     assert.equal(editor.dom.querySelector("[data-node-id]"), null);
 });
 
+test("maps native list roles through nested blockquotes without changing Markdown", async () => {
+    const source = `- 顶层
+  1. 嵌套
+- [x] 已完成
+
+> **引用**
+>
+> - 无序
+>
+> 1. 有序
+>
+> - [ ] 任务`;
+    const editor = createView(source);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const listLines = Array.from(editor.dom.querySelectorAll<HTMLElement>(".cm-markra-list-item"));
+    assert.equal(listLines.length, 6);
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-blockquote.cm-markra-list-item").length, 3);
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-list-marker--bullet").length, 2);
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-list-marker--ordered").length, 2);
+    assert.equal(editor.dom.querySelector(".cm-markra-list-marker--ordered")?.textContent, "1.");
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-task-checkbox").length, 2);
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-task-done").length, 1);
+    assert.equal(listLines[1].style.getPropertyValue("--markra-list-indent"), "34px");
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("draws one semantic rail for a compound blockquote", async () => {
+    const source = `> **复合引用标题**：
+>
+> - 第一项包含 \`inlineCode\`
+>
+> - 第二项包含 **粗体**
+>
+> - 第三项用于验证连续轨道末端`;
+    const editor = createView(source);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const rails = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote-rail");
+    assert.equal(rails.length, 1);
+    assert.equal(rails[0].dataset.from, "0");
+    assert.equal(rails[0].dataset.to, String(source.length));
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("draws nested quote rails while keeping callouts isolated", async () => {
+    const nestedSource = `> 外层引用开始
+>
+> > 内层引用
+> >
+> > - 内层列表
+>
+> 外层引用结束`;
+    let editor = createView(nestedSource);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const nestedRails = Array.from(editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote-rail"));
+    assert.equal(nestedRails.length, 2);
+    assert.deepEqual(nestedRails.map((rail) => rail.style.getPropertyValue("--markra-blockquote-depth")), ["0", "1"]);
+    assert.equal(editor.state.doc.toString(), nestedSource);
+
+    editor.destroy();
+    const calloutSource = "> [!NOTE]\n> Callout 内容";
+    editor = createView(calloutSource);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-blockquote-rail").length, 0);
+    assert.ok(editor.dom.querySelector(".cm-markra-callout"));
+    assert.equal(editor.state.doc.toString(), calloutSource);
+});
+
+test("keeps unsupported Setext syntax literal while collapsing structural quote lines", async () => {
+    const source = `标题
+===
+
+> 引用
+>
+> - 列表`;
+    const editor = createView(source);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const sourceLines = source.split("\n");
+    const renderedLines = Array.from(editor.dom.querySelectorAll<HTMLElement>(".cm-line"));
+    const titleLine = renderedLines[sourceLines.indexOf("标题")];
+    const setextLine = renderedLines[sourceLines.indexOf("===")];
+    const quoteLine = renderedLines[sourceLines.indexOf(">")];
+    assert.equal(titleLine.classList.contains("cm-markra-h1"), false);
+    assert.equal(setextLine.classList.contains("cm-markra-setext-marker-line"), false);
+    assert.equal(setextLine.classList.contains("cm-markra-structural-line"), false);
+    assert.ok(quoteLine.classList.contains("cm-markra-structural-line"));
+    assert.equal(quoteLine.classList.contains("cm-markra-active-structural-line"), false);
+
+    editor.focus();
+    editor.dispatch({selection: {anchor: editor.state.doc.line(sourceLines.indexOf(">") + 1).from}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    assert.ok(renderedLines[sourceLines.indexOf(">")].classList.contains("cm-markra-active-structural-line"));
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("renders valid indented code blocks with the native code surface", async () => {
+    const source = "    function indented() {\n        return true;\n    }";
+    const editor = createView(source);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const lines = editor.dom.querySelectorAll(".cm-markra-indented-code-line");
+    assert.equal(lines.length, 3);
+    assert.equal(lines[0].classList.contains("cm-markra-code-content-first"), true);
+    assert.equal(lines[2].classList.contains("cm-markra-code-content-last"), true);
+    assert.equal(editor.dom.querySelector(".cm-markra-code-actions"), null);
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("shows Markdown list source instead of duplicating the native marker on the active line", async () => {
+    const source = "- 可编辑列表";
+    const editor = createView(source);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    assert.ok(editor.dom.querySelector(".cm-markra-list-marker--bullet"));
+
+    editor.focus();
+    editor.dispatch({selection: {anchor: 1}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const line = editor.dom.querySelector<HTMLElement>(".cm-markra-list-item");
+    assert.equal(line?.dataset.markraListSource, "visible");
+    assert.equal(line?.querySelector(".cm-markra-list-marker"), null);
+    assert.ok(line?.textContent?.includes("- 可编辑列表"));
+});
+
 test("reveals heading source at the clicked line while preserving selectable text", async () => {
     const editor = createView("## 可复制标题\n\n正文");
     editor.focus();
@@ -143,25 +460,46 @@ test("reveals heading source at the clicked line while preserving selectable tex
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
     const heading = editor.dom.querySelector(".cm-markra-h2");
-    assert.equal(heading?.textContent, "## 可复制标题");
+    assert.ok(heading?.textContent?.endsWith("## 可复制标题"));
 
     editor.dispatch({selection: {anchor: 3, head: 8}});
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
-    assert.equal(heading?.textContent, "可复制标题");
+    assert.ok(heading?.textContent?.endsWith("可复制标题"));
     assert.equal(editor.state.sliceDoc(
         editor.state.selection.main.from,
         editor.state.selection.main.to,
     ), "可复制标题");
 });
 
-test("renders horizontal rules as inline native-style containers", async () => {
+test("renders horizontal rules as semantic containers with a stable paint surface", async () => {
     const editor = createView("上文\n\n---\n\n下文");
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
     const rule = editor.dom.querySelector<HTMLElement>(".cm-markra-horizontal-rule");
-    assert.equal(rule?.tagName, "SPAN");
-    assert.ok(rule?.querySelector(".cm-markra-horizontal-rule__line"));
+    assert.equal(rule?.tagName, "HR");
+    assert.equal(rule?.childElementCount, 0);
+});
+
+test("keeps safe details interactive without losing HTML source editing", async () => {
+    const editor = createView("前文\n\n<details>\n<summary>可展开的安全 HTML</summary>\n<p>块级 HTML 内容。</p>\n</details>");
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const summary = editor.dom.querySelector<HTMLElement>(".markra-html-node summary");
+    const details = summary?.closest("details") as HTMLDetailsElement | null;
+    assert.ok(summary);
+    assert.equal(details?.open, false);
+    summary.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true}));
+    summary.click();
+    assert.equal(details?.open, true);
+    assert.ok(editor.dom.querySelector(".markra-html-node"));
+
+    editor.dom.querySelector<HTMLElement>(".markra-html-node p")?.dispatchEvent(
+        new MouseEvent("mousedown", {bubbles: true, cancelable: true}),
+    );
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    assert.equal(editor.dom.querySelector(".markra-html-node"), null);
+    assert.ok(editor.state.selection.main.from > editor.state.doc.toString().indexOf("<details>"));
 });
 
 test("uses SiYuan sprite icons for every visual table toolbar action", async () => {
@@ -229,6 +567,65 @@ test("keeps the table size picker inside the CodeMirror theme scope", async () =
     assert.equal(popover.querySelectorAll(".markra-table-size-cell").length, 80);
 });
 
+test("keeps every table toolbar bound to its own table after document positions shift", async () => {
+    const first = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const second = "| X | Y |\n| --- | --- |\n| 3 | 4 |";
+    const source = `前文\n\n${first}\n\n中间\n\n${second}\n\n后文`;
+    const editor = createView(source);
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    editor.dispatch({changes: {from: 0, insert: "新增前缀\n\n"}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers.length, 2);
+    wrappers[0].querySelector<HTMLButtonElement>(".markra-table-align-center")?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const updated = editor.state.doc.toString();
+    assert.match(updated, /\| A \| B \|\n\| :---: \| :---: \|/u);
+    assert.match(updated, /\| X \| Y \|\n\| --- \| --- \|/u);
+});
+
+test("keeps column width mode scoped to its table while positions and content change", async () => {
+    const first = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const second = "| X | Y |\n| --- | --- |\n| 3 | 4 |";
+    const editor = createView(`${first}\n\n${second}`);
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    let wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    wrappers[0].querySelector<HTMLButtonElement>(".markra-table-width-button")?.click();
+    assert.equal(wrappers[0].dataset.widthMode, "even");
+    assert.equal(wrappers[1].dataset.widthMode, "auto");
+
+    editor.dispatch({changes: {from: 0, insert: "前文\n\n"}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].dataset.widthMode, "even");
+    assert.equal(wrappers[1].dataset.widthMode, "auto");
+
+    const firstCell = editor.state.doc.toString().indexOf("1");
+    editor.dispatch({changes: {from: firstCell, to: firstCell + 1, insert: "11"}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].dataset.widthMode, "even");
+    assert.equal(wrappers[1].dataset.widthMode, "auto");
+
+    wrappers[0].querySelector<HTMLButtonElement>(".markra-table-align-center")?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].dataset.widthMode, "even");
+    assert.equal(wrappers[1].dataset.widthMode, "auto");
+
+    const firstTableEnd = editor.state.doc.toString().indexOf("\n\n", 4);
+    editor.dispatch({changes: {from: 0, to: firstTableEnd + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers.length, 1);
+    assert.equal(wrappers[0].dataset.widthMode, "auto");
+});
+
 test("uses SiYuan native image wrapper and resize handle", async () => {
     const editor = createView("引言\n\n![架构图](assets/architecture.png)");
     editor.dispatch({selection: {anchor: 0}});
@@ -238,6 +635,20 @@ test("uses SiYuan native image wrapper and resize handle", async () => {
     assert.ok(editor.dom.querySelector(".img .protyle-action__drag"));
     assert.equal(editor.dom.querySelector(".markra-image-resize-handle"), null);
     assert.equal(editor.dom.querySelector(".markra-image-viewer-button"), null);
+});
+
+test("renders a titled local image as one complete widget", async () => {
+    const source = "![本地测试图片](assets/format-showcase.svg \"本地测试图片\")";
+    const editor = createView(source);
+    editor.dispatch({selection: {anchor: source.length}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const image = editor.dom.querySelector<HTMLImageElement>(".markra-image-frame img");
+    assert.ok(image);
+    assert.equal(image.getAttribute("src"), "assets/format-showcase.svg");
+    assert.equal(image.title, "本地测试图片");
+    assert.equal(editor.dom.querySelector(".cm-line")?.textContent, "");
+    assert.equal(editor.state.doc.toString(), source);
 });
 
 test("uses the intrinsic image width until the user resizes it", async () => {

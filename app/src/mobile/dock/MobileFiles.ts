@@ -22,8 +22,18 @@ import {refreshFileTree} from "../../dialog/processSystem";
 import {setStorageVal} from "../../protyle/util/compatibility";
 import {showMessage} from "../../dialog/message";
 import {dragOverScroll, stopScrollAnimation} from "../../boot/globalEvent/dragover";
-import {newMarkdownFile} from "../../markdown/fileActions";
+import {moveMarkdownFileTo, newMarkdownFile} from "../../markdown/fileActions";
 import {createMarkdownFromFileTreeAction, getMarkdownFileTreeNames} from "../../markdown/fileTree";
+import {
+    applyMarkdownManagementEvent,
+    beginMarkdownManagementOperation,
+    cancelMarkdownManagementOperation,
+    completeMarkdownManagementOperation,
+    createMarkdownManagementOperationID,
+    createMarkdownManagementEventState,
+    markdownManagementEventFromWebSocket,
+    routeMarkdownFileTreeDrop,
+} from "../../markdown/documentManagement";
 import {
     cancelFileTreeCollapse,
     collapseFileTree,
@@ -36,6 +46,7 @@ export class MobileFiles extends Model {
     private actionsElement: HTMLElement;
     private closeElement: HTMLElement;
     private reloadNotebookInfoTimeout: number;
+    private markdownManagementEventState = createMarkdownManagementEventState();
     private touchDragState: {
         selectedElement: HTMLElement;
         startX: number;
@@ -384,6 +395,71 @@ export class MobileFiles extends Model {
                     selectFileElements.push(state.selectedElement);
                 }
 
+                const markdownSources = selectFileElements.map((item) => {
+                    const sourceList = hasTopClosestByTag(item, "UL");
+                    return {
+                        kind: item.getAttribute("data-doc-type") === "markdown" ? "markdown" as const : "native" as const,
+                        notebook: sourceList ? sourceList.getAttribute("data-url") : "",
+                        path: item.getAttribute("data-path"),
+                    };
+                });
+                if (markdownSources.some((item) => item.kind === "markdown") || newElement.getAttribute("data-doc-type") === "markdown") {
+                    const sibling = newElement.classList.contains("dragover__top") || newElement.classList.contains("dragover__bottom");
+                    const targetDirectory = sibling ? pathPosix().dirname(toPath) : toPath;
+                    const selectedPaths = new Set(markdownSources.map((item) => item.path));
+                    const siblingPaths = Array.from(newElement.parentElement.children)
+                        .filter((item) => item.tagName === "LI")
+                        .map((item) => item.getAttribute("data-path"));
+                    const selectedInOrder = siblingPaths.filter((item) => selectedPaths.has(item));
+                    const orderedPaths = siblingPaths.filter((item) => !selectedPaths.has(item));
+                    const targetIndex = orderedPaths.indexOf(toPath);
+                    orderedPaths.splice(targetIndex + (newElement.classList.contains("dragover__bottom") ? 1 : 0), 0, ...selectedInOrder);
+                    const dropResult = await routeMarkdownFileTreeDrop({
+                        sources: markdownSources,
+                        target: {
+                            kind: newElement.getAttribute("data-doc-type") === "markdown" ? "markdown" : "native",
+                            notebook: toURL,
+                            directory: targetDirectory,
+                            mode: sibling ? "sibling" : "child",
+                        },
+                        orderedPaths,
+                    }, {
+                        sort: async (notebook, paths) => {
+                            const operationID = createMarkdownManagementOperationID();
+                            beginMarkdownManagementOperation(operationID);
+                            const response = await fetchSyncPost("/api/filetree/changeSort", {notebook, paths, operationID});
+                            if (response.code === 0 && response.data?.operationID === operationID) {
+                                completeMarkdownManagementOperation(operationID);
+                                return true;
+                            }
+                            cancelMarkdownManagementOperation(operationID);
+                            return false;
+                        },
+                        moveNative: async (paths, notebook, directory) => (await fetchSyncPost("/api/filetree/moveDocs", {
+                            toNotebook: notebook,
+                            fromPaths: paths,
+                            toPath: directory,
+                            callback: Constants.CB_MOVE_NOLIST,
+                        })).code === 0,
+                        moveMarkdown: (source, notebook, directory) => moveMarkdownFileTo(source.notebook, source.path, notebook, directory),
+                        refresh: async (notebook, directory) => {
+                            const response = await fetchSyncPost("/api/filetree/listDocsByPath", {
+                                notebook,
+                                path: directory === "/" || directory.endsWith(".sy") ? directory : `${directory}.sy`,
+                                app: Constants.SIYUAN_APPID,
+                            });
+                            if (response.code === 0) this.onLsHTML(response.data, oldScrollTop);
+                        },
+                    });
+                    if (!dropResult.ok) {
+                        showMessage(dropResult.reason === "unsafe-mixed" ? window.siyuan.languages.notSupport1 :
+                            window.siyuan.languages.transactionError, 6000, "error");
+                    }
+                    this.clearDragIndicators();
+                    this.touchDragState = null;
+                    return;
+                }
+
                 if (newElement.classList.contains("dragover")) {
                     fetchPost("/api/filetree/moveDocs", {
                         toNotebook: toURL,
@@ -579,25 +655,41 @@ export class MobileFiles extends Model {
                     this.onRename(data.data);
                     break;
                 case "createMarkdown":
-                    this.refreshMarkdownPath(data.data.box, data.data.path, "create");
-                    break;
                 case "saveMarkdown":
-                    this.refreshMarkdownPath(data.data.box, data.data.path, "save");
-                    break;
                 case "renameMarkdown":
-                    this.refreshMarkdownPath(data.data.box, data.data.path, "rename");
-                    if (data.data.oldPath) {
-                        this.refreshMarkdownPath(data.data.box, data.data.oldPath, "rename");
-                    }
-                    break;
                 case "removeMarkdown":
-                    this.refreshMarkdownPath(data.data.box, data.data.path, "remove");
+                case "sortMarkdown":
+                case "purgeMarkdown":
+                    this.applyMarkdownManagementTreeEvent(data);
                     break;
             }
         }
     }
 
-    private refreshMarkdownPath(notebookId: string, filePath: string, operation: "create" | "save" | "rename" | "remove") {
+    private applyMarkdownManagementTreeEvent(data: IWebSocketData) {
+        const event = markdownManagementEventFromWebSocket(data);
+        const result = applyMarkdownManagementEvent(this.markdownManagementEventState, event, {
+            consumeInitiatingOperation: true,
+        });
+        this.markdownManagementEventState = result.state;
+        if (!result.applied) return;
+        if (event.cmd === "purgeMarkdown") return;
+        if (event.cmd === "renameMarkdown" && event.oldBox && event.oldPath) {
+            const oldDirectory = pathPosix().dirname(event.oldPath);
+            const newDirectory = pathPosix().dirname(event.path);
+            if (event.oldBox === event.box && oldDirectory === newDirectory) {
+                this.refreshMarkdownPath(event.box, event.path, "save");
+            } else {
+                this.refreshMarkdownPath(event.oldBox, event.oldPath, "remove");
+                this.refreshMarkdownPath(event.box, event.path, "create");
+            }
+            return;
+        }
+        const operation = event.cmd === "createMarkdown" ? "create" : event.cmd === "removeMarkdown" ? "remove" : "save";
+        this.refreshMarkdownPath(event.box, event.path, operation);
+    }
+
+    private refreshMarkdownPath(notebookId: string, filePath: string, operation: "create" | "save" | "remove") {
         const treeElement = this.element.querySelector(`[data-url="${notebookId}"]`);
         if (!treeElement) {
             return;
@@ -980,11 +1072,15 @@ export class MobileFiles extends Model {
     }
 
     private onLsHTML(data: { files: IFile[], box: string, path: string }, scrollTop?: number) {
-        if (data.files.length === 0) {
-            return;
-        }
         const liElement = this.element.querySelector(`ul[data-url="${data.box}"] li[data-path="${data.path}"]`);
         if (!liElement) {
+            return;
+        }
+        if (data.files.length === 0) {
+            if (liElement.nextElementSibling?.tagName === "UL") liElement.nextElementSibling.remove();
+            liElement.querySelector(".b3-list-item__arrow")?.classList.remove("b3-list-item__arrow--open");
+            liElement.querySelector(".b3-list-item__toggle")?.classList.add("fn__hidden");
+            liElement.setAttribute("data-count", "0");
             return;
         }
         let fileHTML = "";

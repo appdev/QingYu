@@ -8,6 +8,8 @@ import {fetchSyncPost} from "../util/fetch";
 import {showMessage} from "../dialog/message";
 import {getDisplayName, pathPosix} from "../util/pathName";
 import {getSearch} from "../util/functions";
+import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {prepareExternalMarkdownEditorTransfer} from "../markdown/externalMarkdownClose";
 
 interface windowOptions {
     position?: {
@@ -19,9 +21,13 @@ interface windowOptions {
     alwaysOnTop?: boolean,
 }
 
-export const openNewWindow = (tab: Tab, options: windowOptions = {}) => {
+export const openNewWindow = async (tab: Tab, options: windowOptions = {}) => {
     const json = {};
     layoutToJSON(tab, json);
+    if (tab.model instanceof MarkdownEditor && tab.model.externalCapabilityId) {
+        if (!await prepareExternalMarkdownEditorTransfer(tab.model)) return;
+        if (!await tab.parent.removeTab(tab.id)) return;
+    }
     /// #if !BROWSER
     ipcRenderer.send(Constants.SIYUAN_OPEN_WINDOW, {
         position: options.position,
@@ -32,7 +38,9 @@ export const openNewWindow = (tab: Tab, options: windowOptions = {}) => {
         url: `${window.location.protocol}//${window.location.host}/stage/build/app/window.html?v=${Constants.SIYUAN_VERSION}&json=${encodeURIComponent(JSON.stringify([json]))}`
     });
     /// #endif
-    tab.parent.removeTab(tab.id);
+    if (!(tab.model instanceof MarkdownEditor && tab.model.externalCapabilityId)) {
+        tab.parent.removeTab(tab.id);
+    }
 };
 
 export const openNewWindowById = async (id: string | string[], options: windowOptions = {}) => {
@@ -71,6 +79,30 @@ export const openNewWindowById = async (id: string | string[], options: windowOp
         height: options.height,
         alwaysOnTop: !!options.alwaysOnTop,
         url: `${window.location.protocol}//${window.location.host}/stage/build/app/window.html?v=${Constants.SIYUAN_VERSION}&json=${encodeURIComponent(JSON.stringify(json))}`
+    });
+    /// #endif
+};
+
+export const openNewWindowByMarkdown = (notebookId: string, markdownPath: string, name: string, options: windowOptions = {}) => {
+    /// #if !BROWSER
+    ipcRenderer.send(Constants.SIYUAN_OPEN_WINDOW, {
+        position: options.position,
+        width: options.width,
+        height: options.height,
+        alwaysOnTop: !!options.alwaysOnTop,
+        url: `${window.location.protocol}//${window.location.host}/stage/build/app/window.html?v=${Constants.SIYUAN_VERSION}&json=${encodeURIComponent(JSON.stringify([{
+            title: name,
+            docIcon: "iconMarkdown",
+            pin: false,
+            active: true,
+            instance: "Tab",
+            action: "Tab",
+            children: {
+                notebookId,
+                path: markdownPath,
+                instance: "MarkdownEditor",
+            },
+        }]))}`,
     });
     /// #endif
 };

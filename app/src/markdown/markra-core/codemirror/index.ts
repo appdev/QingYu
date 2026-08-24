@@ -21,6 +21,7 @@ export type {
   BlocksPluginOptions,
 } from "./blocks";
 export { blocksPlugin } from "./blocks";
+export {blockquoteRailExtension, BlockquoteRailMarker} from "./blockquote-rail";
 export type {
   CodeMirrorBlockDragLabels,
   CodeMirrorBlockDragPluginOptions,
@@ -222,9 +223,27 @@ export type {
   TablePreviewPluginOptions,
 } from "./table";
 export { readCodeMirrorTableShape, tablePreviewPlugin } from "./table";
+export type {
+  MarkdownTableAppearanceAttributes,
+  MarkdownTableAppearancePluginOptions,
+  MarkdownTableAppearanceSnapshot,
+  MarkdownTableAppearanceStructure,
+  MarkdownTableWidthMode,
+  PersistedMarkdownTableAppearance,
+} from "./table-appearance";
+export {
+  matchMarkdownTableAppearances,
+  readMarkdownTableDescriptors,
+  restoreMarkdownTableAppearances,
+} from "./table-appearance";
 export { trailingSpacePlugin } from "./trailing-space";
 export type { CodeMirrorTypewriterModeOptions } from "./typewriter";
 export { codeMirrorTypewriterMode } from "./typewriter";
+export {
+  clearCodeMirrorLocationCue,
+  codeMirrorLocationCue,
+  showCodeMirrorLocationCue,
+} from "./location-cue";
 export type { CodeMirrorVimLabels } from "./vim";
 export { reconfigureCodeMirrorVimMode } from "./vim";
 
@@ -235,7 +254,7 @@ export interface LiveMarkdownConfig extends LivePreviewConfig {
 }
 
 export const markraLanguage = markdown({
-  extensions: [GFM, imageAttributesMarkdown, markraHighlight],
+  extensions: [{ remove: ["SetextHeading"] }, GFM, imageAttributesMarkdown, markraHighlight],
 });
 
 export function liveMarkdown(config: LiveMarkdownConfig = {}): Extension {
@@ -248,7 +267,7 @@ export function liveMarkdown(config: LiveMarkdownConfig = {}): Extension {
   return [
     highlight
       ? markraLanguage
-      : markdown({ extensions: [GFM, imageAttributesMarkdown] }),
+      : markdown({ extensions: [{ remove: ["SetextHeading"] }, GFM, imageAttributesMarkdown] }),
     markdownSyntaxHighlighting,
     codeFolding(),
     livePreview(previewConfig),

@@ -91,7 +91,7 @@ export const openOutline = async (options: {
     if (!wnd) {
         wnd = getWndByLayout(window.siyuan.layout.centerLayout);
     }
-    const newWnd = wnd.split("lr", false);
+    const newWnd = wnd.split("lr");
 
     if (!options.title) {
         const response = await fetchSyncPost("/api/block/getDocInfo", {id: options.rootId});
@@ -152,6 +152,7 @@ export const clearOB = () => {
     const models = getAllModels();
     models.outline.find(item => {
         if (item.type === "pin") {
+            item.bindNativeDocument();
             if ("" === item.blockId) {
                 return;
             }

@@ -23,7 +23,7 @@ func TestMCPServerBoundary(t *testing.T) {
 	if !foundPost {
 		t.Fatal("POST /mcp must remain registered")
 	}
-	for _, preserved := range []string{"notebook", "document", "block", "database", "search", "sync"} {
+	for _, preserved := range []string{"notebook", "document", "markdown", "block", "database", "search", "sync"} {
 		if tools.LookupTool(preserved) == nil {
 			t.Fatalf("preserved MCP tool is missing: %s", preserved)
 		}

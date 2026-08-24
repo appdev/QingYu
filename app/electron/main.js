@@ -35,7 +35,8 @@ const {
     Tray,
     dialog,
     systemPreferences,
-    powerMonitor
+    powerMonitor,
+    protocol
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -49,6 +50,18 @@ const {
     sanitizeNativeMenuState,
 } = require("./nativeMenu");
 const {shouldSpawnKernel} = require("./devKernel");
+const {ExternalMarkdownService} = require("./externalMarkdownService");
+const {
+    createExternalMarkdownWindowTabs,
+    createExternalMarkdownOpenCoordinator,
+    extractExternalMarkdownPaths,
+    redactExternalMarkdownArgs,
+} = require("./externalMarkdownOpen");
+const {createExternalMarkdownWindowLifecycle} = require("./externalMarkdownWindowLifecycle");
+const {
+    createMarkdownManagementCoordinator,
+    shouldUnregisterMarkdownRendererNavigation,
+} = require("./markdownManagementCoordinator");
 
 process.noAsar = true;
 const appDir = path.dirname(app.getAppPath());
@@ -70,6 +83,7 @@ const handledCrashWebContents = new Set();
 const kernelProcesses = new Map();
 let bootWindow;
 let latestActiveWindow;
+let externalMarkdownWindow;
 let firstOpen = false;
 let workspaces = []; // workspaceDir, id, port, webContentsId, browserWindow, tray, hideShortcut
 let kernelPort = 9806;
@@ -80,6 +94,9 @@ let gracefulSystemShutdownPromise;
 let keepAppOpenDuringSystemShutdown = false;
 const openDialogSingletons = new Set();
 const nativeMenuStates = new Map();
+const externalMarkdownReadOnly = new Map();
+const externalMarkdownWindows = new Set();
+const markdownManagementCoordinator = createMarkdownManagementCoordinator();
 const isOpenAsHidden = function () {
     return 1 === workspaces.length && openAsHidden;
 };
@@ -88,6 +105,38 @@ remote.initialize();
 
 // Electron 用户数据使用独立目录，避免与原版轻语共享单实例锁、缓存和会话状态。
 app.setPath("userData", path.join(app.getPath("appData"), "QingYu-Electron"));
+
+const initialExternalMarkdownPaths = extractExternalMarkdownPaths(process.argv, {
+    appIsPackaged: app.isPackaged,
+    defaultApp: process.defaultApp,
+    workingDirectory: process.cwd(),
+});
+const externalMarkdownLifecycle = createExternalMarkdownWindowLifecycle({
+    initialExternalRequest: initialExternalMarkdownPaths.length > 0,
+});
+const externalMarkdownServicePromise = ExternalMarkdownService.create({
+    registryPath: path.join(app.getPath("userData"), "external-markdown.json"),
+});
+const externalMarkdownOpen = createExternalMarkdownOpenCoordinator({
+    grant: async (filePath) => (await externalMarkdownServicePromise).grantFromSystem(filePath),
+    findOwner: (capabilityId) => externalMarkdownServicePromise.then((service) => service.findCapabilityOwner(capabilityId)),
+    selectWindow: (readyIds) => {
+        if (!externalMarkdownWindow || externalMarkdownWindow.isDestroyed()) return;
+        const webContentsId = externalMarkdownWindow.webContents.id;
+        return readyIds.includes(webContentsId) ? webContentsId : undefined;
+    },
+    focusOwner: (webContentsId, capabilityId) => {
+        const target = BrowserWindow.getAllWindows().find((window) => window.webContents.id === webContentsId);
+        showWindow(target);
+        target?.webContents.send("siyuan-focus-external-markdown", capabilityId);
+    },
+    send: (webContentsId, payload) => {
+        const target = BrowserWindow.getAllWindows().find((window) => window.webContents.id === webContentsId);
+        target?.webContents.send("siyuan-open-external-markdown", payload);
+    },
+    createWindow: (payload) => createExternalMarkdownDocumentWindow(payload),
+    onError: (payload) => writeLog("open external Markdown failed [" + payload.code + "]"),
+});
 
 if (process.platform === "win32") {
     // Windows 需要设置 AppUserModelId 才能正确显示应用名称和应用图标 https://github.com/siyuan-note/siyuan/issues/17022
@@ -98,6 +147,12 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
     return;
 }
+
+app.on("open-file", (event, filePath) => {
+    event.preventDefault();
+    if (!app.isReady()) externalMarkdownLifecycle.noteExternalRequestBeforeReady();
+    externalMarkdownOpen.enqueue([filePath]);
+});
 
 // 开发环境下 Windows 需显式传入 Electron 可执行文件路径和 main.js 路径，否则 qingyu:// 会被当作相对路径
 if (isDevEnv && process.defaultApp && process.argv.length >= 2) {
@@ -120,8 +175,10 @@ app.commandLine.appendSwitch("xdg-portal-required-version", "4");
 // 本地 HTTPS 页面加载 HTTP 外链图时，禁止自动升级为 HTTPS
 app.commandLine.appendSwitch("disable-features", "AutoupgradeMixedContent");
 
+externalMarkdownOpen.enqueue(initialExternalMarkdownPaths);
+
 // Support set Chromium command line arguments on the desktop https://github.com/siyuan-note/siyuan/issues/9696
-writeLog("app is packaged [" + app.isPackaged + "], command line args [" + process.argv.join(", ") + "]");
+writeLog("app is packaged [" + app.isPackaged + "], command line args [" + redactExternalMarkdownArgs(process.argv).join(", ") + "]");
 let argStart = 1;
 if (!app.isPackaged) {
     argStart = 2;
@@ -135,6 +192,14 @@ for (let i = argStart; i < process.argv.length; i++) {
             openAsHidden = true;
             writeLog("open as hidden");
         }
+        continue;
+    }
+
+    if (extractExternalMarkdownPaths([process.execPath, arg], {
+        appIsPackaged: true,
+        defaultApp: false,
+        workingDirectory: process.cwd(),
+    }).length > 0) {
         continue;
     }
 
@@ -737,6 +802,7 @@ const initMainWindow = (currentKernelPort = kernelPort) => {
         titleBarStyle: "hidden",
         icon: path.join(appDir, "stage", "icon-large.png"),
     });
+    externalMarkdownWindows.add(currentWindow.webContents.id);
     remote.enable(currentWindow.webContents);
 
     if (resetToCenter) {
@@ -844,6 +910,13 @@ const initMainWindow = (currentKernelPort = kernelPort) => {
     // 当前页面链接使用浏览器打开
     windowNavigate(currentWindow, "app");
     currentWindow.on("close", (event) => {
+        if (systemShutdownState === systemShutdownNone && externalMarkdownWindow &&
+            !externalMarkdownWindow.isDestroyed()) {
+            externalMarkdownLifecycle.deferMainClose();
+            currentWindow.hide();
+            event.preventDefault();
+            return;
+        }
         if (currentWindow && !currentWindow.isDestroyed()) {
             currentWindow.webContents.send("siyuan-save-close", false);
         }
@@ -854,33 +927,49 @@ const initMainWindow = (currentKernelPort = kernelPort) => {
         webContentsId: currentWindow.webContents.id,
         port: currentKernelPort,
     });
-    // loadURL 后设置超时兜底：前端 app bundle 加载或初始化异常导致 siyuan-ready-to-show 迟迟不发时，
-    // 强制销毁 boot 窗口并显示主窗口，避免永久卡在启动页
-    const readyToShowTimeout = setTimeout(() => {
-        if (bootWindow && !bootWindow.isDestroyed()) {
-            if (!currentWindow.isDestroyed()) {
-                writeLog("siyuan-ready-to-show timeout, force showing main window");
-                currentWindow.show();
-            }
-            bootWindow.destroy();
-        }
-    }, 60000);
-    ipcMain.once("siyuan-ready-to-show", () => {
-        clearTimeout(readyToShowTimeout); // 正常收到信号则取消超时兜底
-        if (isOpenAsHidden()) {
-            currentWindow.minimize();
-        } else {
-            currentWindow.show();
-            if (windowState.isMaximized) {
-                currentWindow.maximize();
-            } else {
-                currentWindow.unmaximize();
-            }
-        }
-        if (bootWindow && !bootWindow.isDestroyed()) {
-            bootWindow.destroy();
-        }
+    void externalMarkdownOpen.drain();
+    const externalMarkdownWebContentsId = currentWindow.webContents.id;
+    currentWindow.webContents.once("destroyed", () => {
+        externalMarkdownReadOnly.delete(externalMarkdownWebContentsId);
+        externalMarkdownWindows.delete(externalMarkdownWebContentsId);
+        externalMarkdownOpen.removeWindow(externalMarkdownWebContentsId);
+        void externalMarkdownServicePromise.then((service) => service.releaseWindowCapabilities(externalMarkdownWebContentsId));
     });
+    let mainWindowStartupFinished = false;
+    const finishMainWindowStartup = (timedOut = false) => {
+        if (mainWindowStartupFinished) return;
+        mainWindowStartupFinished = true;
+        if (!currentWindow.isDestroyed() && externalMarkdownLifecycle.shouldShowStartupWindows()) {
+            if (timedOut) writeLog("siyuan-ready-to-show timeout, force showing main window");
+            if (isOpenAsHidden()) {
+                currentWindow.minimize();
+            } else {
+                currentWindow.show();
+                if (windowState.isMaximized) {
+                    currentWindow.maximize();
+                } else {
+                    currentWindow.unmaximize();
+                }
+            }
+        }
+        if (bootWindow && !bootWindow.isDestroyed()) {
+            bootWindow.destroy();
+        }
+        void externalMarkdownOpen.drain();
+    };
+    const onMainWindowReady = (event) => {
+        if (event.sender.id !== currentWindow.webContents.id) return;
+        clearTimeout(readyToShowTimeout);
+        ipcMain.removeListener("siyuan-ready-to-show", onMainWindowReady);
+        finishMainWindowStartup();
+    };
+    // loadURL 后设置超时兜底：前端 app bundle 加载或初始化异常导致 siyuan-ready-to-show 迟迟不发时，
+    // 普通启动显示主窗口，外部文件启动保持主窗口隐藏。
+    const readyToShowTimeout = setTimeout(() => {
+        ipcMain.removeListener("siyuan-ready-to-show", onMainWindowReady);
+        finishMainWindowStartup(true);
+    }, 60000);
+    ipcMain.on("siyuan-ready-to-show", onMainWindowReady);
 };
 
 const showWindow = (wnd) => {
@@ -892,6 +981,70 @@ const showWindow = (wnd) => {
         wnd.restore();
     }
     wnd.show();
+};
+
+const createExternalMarkdownDocumentWindow = (payload) => {
+    if (externalMarkdownWindow && !externalMarkdownWindow.isDestroyed()) return false;
+    const workspace = workspaces.find((item) => item.browserWindow && !item.browserWindow.isDestroyed());
+    if (!workspace) return false;
+
+    const mainBounds = workspace.browserWindow.getBounds();
+    const mainScreen = screen.getDisplayNearestPoint({x: mainBounds.x, y: mainBounds.y});
+    const win = new BrowserWindow({
+        title: "QingYu",
+        show: true,
+        trafficLightPosition: {x: 8, y: 13},
+        width: Math.floor(mainScreen.size.width * 0.7),
+        height: Math.floor(mainScreen.size.height * 0.9),
+        minWidth: 493,
+        minHeight: 376,
+        fullscreenable: true,
+        frame: "darwin" === process.platform,
+        icon: path.join(appDir, "stage", "icon-large.png"),
+        titleBarStyle: "hidden",
+        webPreferences: {
+            contextIsolation: false,
+            nodeIntegration: true,
+            webviewTag: true,
+            webSecurity: false,
+            autoplayPolicy: "user-gesture-required"
+        },
+    });
+    externalMarkdownWindow = win;
+    externalMarkdownWindows.add(win.webContents.id);
+    remote.enable(win.webContents);
+    win.center();
+    win.webContents.userAgent = "QingYu/" + appVer + " Electron " + win.webContents.userAgent;
+    win.webContents.session.setSpellCheckerLanguages(["en-US"]);
+    const tabs = createExternalMarkdownWindowTabs(payload.descriptor);
+    const url = getServer(workspace.port) + "/stage/build/app/window.html?v=" + appVer +
+        "&json=" + encodeURIComponent(JSON.stringify(tabs));
+    win.loadURL(url);
+    windowNavigate(win, "window");
+
+    const webContentsId = win.webContents.id;
+    win.webContents.once("destroyed", () => {
+        if (externalMarkdownWindow === win) {
+            externalMarkdownWindow = undefined;
+        }
+        externalMarkdownReadOnly.delete(webContentsId);
+        externalMarkdownWindows.delete(webContentsId);
+        externalMarkdownOpen.removeWindow(webContentsId);
+        void externalMarkdownServicePromise.then((service) => service.releaseWindowCapabilities(webContentsId));
+        const shouldExit = externalMarkdownLifecycle.shouldExitAfterLastExternalWindow() ||
+            externalMarkdownLifecycle.consumeDeferredMainClose();
+        if (shouldExit && systemShutdownState === systemShutdownNone) {
+            const workspace = workspaces.find((item) => item.browserWindow && !item.browserWindow.isDestroyed());
+            workspace?.browserWindow.webContents.send("siyuan-save-close", true);
+        }
+    });
+    win.on("close", (event) => {
+        if (win && !win.isDestroyed()) {
+            win.webContents.send("siyuan-save-close");
+        }
+        event.preventDefault();
+    });
+    return true;
 };
 
 const initKernel = (workspace, port, lang, safeMode) => {
@@ -913,10 +1066,12 @@ const initKernel = (workspace, port, lang, safeMode) => {
             bootIndex = path.join(appDir, "electron", "boot.html");
         }
         bootWindow.loadFile(bootIndex, {query: {v: appVer, port: kernelPort}});
-        if (openAsHidden) {
-            bootWindow.minimize();
-        } else {
-            bootWindow.show();
+        if (externalMarkdownLifecycle.shouldShowStartupWindows()) {
+            if (openAsHidden) {
+                bootWindow.minimize();
+            } else {
+                bootWindow.show();
+            }
         }
 
         const kernelName = "win32" === process.platform ? "QingYu-Kernel.exe" : "QingYu-Kernel";
@@ -1114,8 +1269,32 @@ app.whenReady().then(() => {
         }
     });
 
+    protocol.handle("qingyu-external-resource", async (request) => {
+        try {
+            const url = new URL(request.url);
+            const [capabilityPart, tokenPart, ...relativeParts] = url.pathname.replace(/^\//, "").split("/");
+            const capabilityId = decodeURIComponent(capabilityPart);
+            const resourceToken = decodeURIComponent(tokenPart);
+            const service = await externalMarkdownServicePromise;
+            if (!service.verifyResourceToken(capabilityId, resourceToken)) {
+                return new Response("Forbidden", {status: 403});
+            }
+            const resource = await service.resolveResource(capabilityId, relativeParts.join("/"));
+            return new Response(await fs.promises.readFile(resource.path), {
+                headers: {
+                    "Cache-Control": "no-store",
+                    "Content-Type": resource.mimeType,
+                    "X-Content-Type-Options": "nosniff",
+                },
+            });
+        } catch {
+            return new Response("Not found", {status: 404});
+        }
+    });
+
     // 渲染进程崩溃监听，只有工作空间主窗口的非预期崩溃才会触发安全模式。
     app.on("render-process-gone", (event, webContents, details) => {
+        markdownManagementCoordinator.unregister(webContents.id);
         writeLog("Render process gone [reason=" + details.reason + ", exitCode=" + details.exitCode + "]");
         if (systemShutdownState !== systemShutdownNone) {
             writeLog("ignore renderer exit during system shutdown [webContentsId=" + webContents.id + "]");
@@ -1220,6 +1399,99 @@ app.whenReady().then(() => {
     const getWindowByContentId = (id) => {
         return BrowserWindow.getAllWindows().find((win) => win.webContents.id === id);
     };
+    ipcMain.handle("siyuan-external-markdown", async (event, data) => {
+        const currentWindow = BrowserWindow.fromWebContents(event.sender);
+        if (!currentWindow || currentWindow.isDestroyed() || !externalMarkdownWindows.has(event.sender.id) ||
+            !data || typeof data.action !== "string") {
+            return {status: "error", code: "UNAUTHORIZED"};
+        }
+        const service = await externalMarkdownServicePromise;
+        try {
+            if (data.action === "ready") {
+                externalMarkdownReadOnly.set(event.sender.id, Boolean(data.readOnly));
+                externalMarkdownOpen.markReady(event.sender.id);
+                return {status: "ok"};
+            }
+            if (data.action === "setReadOnly") {
+                externalMarkdownReadOnly.set(event.sender.id, Boolean(data.readOnly));
+                return {status: "ok"};
+            }
+            if (data.action === "retain") {
+                try {
+                    await service.retainCapability(data.capabilityId, event.sender.id);
+                    return {status: "ok", descriptor: service.getDescriptor(data.capabilityId)};
+                } catch (error) {
+                    if (error.code !== "CAPABILITY_IN_USE") throw error;
+                    const owner = service.findCapabilityOwner(data.capabilityId);
+                    const ownerWindow = getWindowByContentId(owner);
+                    showWindow(ownerWindow);
+                    ownerWindow?.webContents.send("siyuan-focus-external-markdown", data.capabilityId);
+                    return {status: "focused"};
+                }
+            }
+            if (data.action === "release") {
+                await service.releaseCapability(data.capabilityId, event.sender.id);
+                return {status: "ok"};
+            }
+            if (data.action === "layout") {
+                const workspace = getWorkspaceByWebContentsId(event.sender.id);
+                if (!workspace?.workspaceDir) return {status: "error", code: "WORKSPACE_NOT_READY"};
+                await service.setWorkspaceLayoutReferences(workspace.workspaceDir, Array.isArray(data.capabilityIds) ? data.capabilityIds : []);
+                return {status: "ok"};
+            }
+            if (data.action === "retainAppearance") {
+                if (service.findCapabilityOwner(data.capabilityId) !== event.sender.id) {
+                    return {status: "error", code: "UNAUTHORIZED"};
+                }
+                await service.setAppearanceReference(data.capabilityId, data.retained === true);
+                return {status: "ok"};
+            }
+            if (service.findCapabilityOwner(data.capabilityId) !== event.sender.id) {
+                return {status: "error", code: "UNAUTHORIZED"};
+            }
+            if (data.action === "read") {
+                return {
+                    status: "ok",
+                    document: {
+                        ...await service.read(data.capabilityId),
+                        resourceToken: service.getResourceToken(data.capabilityId, event.sender.id),
+                    },
+                };
+            }
+            if (["save", "rename", "saveAssets"].includes(data.action) && externalMarkdownReadOnly.get(event.sender.id) !== false) {
+                return {status: "error", code: "READ_ONLY"};
+            }
+            if (data.action === "save") return service.save(data.capabilityId, data.request || {});
+            if (data.action === "rename") return service.rename(data.capabilityId, data.request || {});
+            if (data.action === "saveAssets") return service.saveAssets(data.capabilityId, data.assets || []);
+            if (data.action === "openLink") {
+                let descriptor;
+                try {
+                    descriptor = await service.grantRelativeMarkdown(data.capabilityId, data.target);
+                } catch (error) {
+                    if (error.code !== "UNSUPPORTED_TYPE") throw error;
+                }
+                if (descriptor) {
+                    const owner = service.findCapabilityOwner(descriptor.capabilityId);
+                    if (owner !== undefined) {
+                        const ownerWindow = getWindowByContentId(owner);
+                        showWindow(ownerWindow);
+                        ownerWindow?.webContents.send("siyuan-focus-external-markdown", descriptor.capabilityId);
+                    } else {
+                        event.sender.send("siyuan-open-external-markdown", {status: "ok", descriptor});
+                    }
+                } else {
+                    const target = await service.resolveRelativeFile(data.capabilityId, data.target);
+                    const openError = await shell.openPath(target);
+                    if (openError) return {status: "error", code: "OPEN_FAILED"};
+                }
+                return {status: "ok"};
+            }
+            return {status: "error", code: "UNSUPPORTED_ACTION"};
+        } catch (error) {
+            return {status: "error", code: error.code || "EXTERNAL_MARKDOWN_FAILED"};
+        }
+    });
     ipcMain.on("siyuan-context-menu", (event, langs) => {
         const template = [new MenuItem({
             role: "undo", label: langs.undo
@@ -1254,6 +1526,65 @@ app.whenReady().then(() => {
         if (currentWindow && currentWindow.isFocused()) {
             installApplicationMenu(currentWindow);
         }
+    });
+    ipcMain.on("siyuan-markdown-management-register", (event, data) => {
+        let workspace;
+        try {
+            workspace = new URL(event.sender.getURL()).origin;
+        } catch {
+            return;
+        }
+        if (!data || data.workspace !== workspace) return;
+        markdownManagementCoordinator.register(event.sender.id, workspace, (payload) => {
+            if (!event.sender.isDestroyed()) event.sender.send("siyuan-markdown-management-prepare", payload);
+        });
+        event.sender.once("destroyed", () => markdownManagementCoordinator.unregister(event.sender.id));
+    });
+    ipcMain.handle("siyuan-markdown-management-invoke", (event, data) => {
+        let workspace;
+        try {
+            workspace = new URL(event.sender.getURL()).origin;
+        } catch {
+            return {ok: false, matches: 0};
+        }
+        if (!data || data.workspace !== workspace || typeof data.operationID !== "string" || !data.operationID ||
+            data.operationID.length > 128 || !["prepare", "commit", "abort"].includes(data.action)) {
+            return {ok: false, matches: 0};
+        }
+        if (data.action === "prepare") {
+            const validRef = data.mode === "barrier" || data.ref?.kind === "markdown" &&
+                typeof data.ref.notebook === "string" && typeof data.ref.path === "string";
+            if (!["flush", "presence", "barrier"].includes(data.mode) || !validRef ||
+                data.expectedRevision !== undefined && typeof data.expectedRevision !== "string" ||
+                data.excludedEditorID !== undefined && typeof data.excludedEditorID !== "string") {
+                return {ok: false, matches: 0};
+            }
+            return markdownManagementCoordinator.prepare(event.sender.id, data);
+        }
+        if (data.action === "commit") {
+            if (typeof data.lease !== "string" || !data.lease || !data.mutation ||
+                typeof data.mutation.kind !== "string") return {ok: false};
+            return markdownManagementCoordinator.commit(event.sender.id, data);
+        }
+        markdownManagementCoordinator.abort(event.sender.id, data);
+        return {ok: true};
+    });
+    ipcMain.on("siyuan-markdown-management-ack", (event, data) => {
+        let workspace;
+        try {
+            workspace = new URL(event.sender.getURL()).origin;
+        } catch {
+            return;
+        }
+        const validBase = data && typeof data.operationID === "string" && data.operationID &&
+            ["prepare", "commit"].includes(data.phase) && Number.isSafeInteger(data.generation) &&
+            data.workspace === workspace && typeof data.ok === "boolean";
+        const validPrepare = data?.phase !== "prepare" || ["flush", "presence", "barrier"].includes(data.mode) &&
+            typeof data.matched === "boolean" &&
+            Number.isSafeInteger(data.matches) && data.matches >= 0 &&
+            (!data.ok || !data.matched || typeof data.revision === "string" && data.revision.length > 0);
+        if (!validBase || !validPrepare) return;
+        markdownManagementCoordinator.ack(event.sender.id, workspace, data);
     });
     ipcMain.on("siyuan-confirm-dialog", (event, options) => {
         event.returnValue = dialog.showMessageBoxSync(BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow(), options);
@@ -1622,6 +1953,7 @@ app.whenReady().then(() => {
                 autoplayPolicy: "user-gesture-required" // 桌面端禁止自动播放多媒体 https://github.com/siyuan-note/siyuan/issues/7587
             },
         });
+        externalMarkdownWindows.add(win.webContents.id);
         remote.enable(win.webContents);
 
         if (data.position) {
@@ -1634,6 +1966,13 @@ app.whenReady().then(() => {
         win.webContents.session.setSpellCheckerLanguages(["en-US"]);
         win.loadURL(data.url);
         windowNavigate(win, "window");
+        const externalMarkdownWebContentsId = win.webContents.id;
+        win.webContents.once("destroyed", () => {
+            externalMarkdownReadOnly.delete(externalMarkdownWebContentsId);
+            externalMarkdownWindows.delete(externalMarkdownWebContentsId);
+            externalMarkdownOpen.removeWindow(externalMarkdownWebContentsId);
+            void externalMarkdownServicePromise.then((service) => service.releaseWindowCapabilities(externalMarkdownWebContentsId));
+        });
         win.on("close", (event) => {
             if (win && !win.isDestroyed()) {
                 win.webContents.send("siyuan-save-close");
@@ -2005,8 +2344,15 @@ app.on("open-url", async (event, url) => { // for macOS
     }
 });
 
-app.on("second-instance", (event, argv) => {
-    writeLog("second-instance [" + argv + "]");
+app.on("second-instance", (event, argv, workingDirectory) => {
+    writeLog("second-instance [" + redactExternalMarkdownArgs(argv) + "]");
+    const externalMarkdownPaths = extractExternalMarkdownPaths(argv, {
+        appIsPackaged: app.isPackaged,
+        defaultApp: process.defaultApp,
+        workingDirectory,
+    });
+    externalMarkdownOpen.enqueue(externalMarkdownPaths);
+    if (externalMarkdownPaths.length === 0) externalMarkdownLifecycle.promote();
     let workspace = argv.find((arg) => arg.startsWith("--workspace="));
     if (workspace) {
         workspace = workspace.split("=")[1];
@@ -2053,12 +2399,13 @@ app.on("second-instance", (event, argv) => {
         }
     });
 
-    if (!siyuanURL && 0 < workspaces.length) {
+    if (!siyuanURL && externalMarkdownPaths.length === 0 && 0 < workspaces.length) {
         showWindow(workspaces[0].browserWindow);
     }
 });
 
 app.on("activate", () => {
+    externalMarkdownLifecycle.promote();
     if (workspaces.length > 0) {
         const mainWindow = (latestActiveWindow && !latestActiveWindow.isDestroyed()) ? latestActiveWindow : workspaces[0].browserWindow;
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2071,6 +2418,12 @@ app.on("activate", () => {
 });
 
 app.on("web-contents-created", (webContentsCreatedEvent, contents) => {
+    contents.on("did-start-navigation", (_event, _url, _isInPlace, isMainFrame) => {
+        if (shouldUnregisterMarkdownRendererNavigation(_isInPlace, isMainFrame)) {
+            markdownManagementCoordinator.unregister(contents.id);
+        }
+    });
+    contents.on("did-finish-load", () => contents.send("siyuan-markdown-management-ready"));
     contents.setWindowOpenHandler((details) => {
         // https://github.com/siyuan-note/siyuan/issues/10567
         if (details.url.startsWith("file:///") && details.disposition === "foreground-tab") {

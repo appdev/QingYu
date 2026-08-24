@@ -72,6 +72,7 @@ function configureMermaid(renderer: MermaidRenderer, theme: MarkraMermaidTheme) 
     },
     securityLevel: "antiscript",
     startOnLoad: false,
+    suppressErrorRendering: true,
     theme
   });
   configuredTheme = theme;

@@ -286,20 +286,185 @@ func setCriteria(criteria []*Criterion) (err error) {
 }
 
 type RecentDoc struct {
-	RootID   string `json:"rootID"`
+	RootID   string `json:"rootID,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Notebook string `json:"notebook,omitempty"`
+	Path     string `json:"path,omitempty"`
 	Icon     string `json:"icon,omitempty"`
 	Title    string `json:"title,omitempty"`
+	Updated  int64  `json:"updated,omitempty"`
 	ViewedAt int64  `json:"viewedAt,omitempty"` // 浏览时间字段
 	ClosedAt int64  `json:"closedAt,omitempty"` // 关闭时间字段
 	OpenAt   int64  `json:"openAt,omitempty"`   // 文档第一次从文档树加载到页签的时间
 }
 
+func recentDocKey(doc *RecentDoc) string {
+	if doc.Kind == "markdown" {
+		return MarkdownRecentKey(MarkdownDocumentRef{Notebook: doc.Notebook, Path: doc.Path})
+	}
+	return "native:" + doc.RootID
+}
+
 var recentDocLock = sync.Mutex{}
+var markdownRecentWriteDocs = setRecentDocs
 
 func GetRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 	recentDocLock.Lock()
 	defer recentDocLock.Unlock()
 	return getRecentDocs(sortBy)
+}
+
+func UpdateRecentMarkdownOpenTime(ref MarkdownDocumentRef) error {
+	return updateRecentMarkdownTime(ref, func(doc *RecentDoc, now int64) {
+		doc.OpenAt = now
+		doc.ViewedAt = now
+		doc.ClosedAt = 0
+	})
+}
+
+func UpdateRecentMarkdownViewTime(ref MarkdownDocumentRef) error {
+	return updateRecentMarkdownTime(ref, func(doc *RecentDoc, now int64) {
+		doc.ViewedAt = now
+		doc.ClosedAt = 0
+	})
+}
+
+func UpdateRecentMarkdownCloseTime(ref MarkdownDocumentRef) error {
+	return updateRecentMarkdownTime(ref, func(doc *RecentDoc, now int64) {
+		doc.ClosedAt = now
+	})
+}
+
+func updateRecentMarkdownTime(ref MarkdownDocumentRef, update func(*RecentDoc, int64)) error {
+	canonicalRef, err := CanonicalMarkdownRef(ref.Notebook, ref.Path)
+	if err != nil {
+		return err
+	}
+	recentDocLock.Lock()
+	defer recentDocLock.Unlock()
+	recentDocs, err := loadRecentDocsRaw()
+	if err != nil {
+		return err
+	}
+	key := MarkdownRecentKey(canonicalRef)
+	var recentDoc *RecentDoc
+	for _, doc := range recentDocs {
+		if recentDocKey(doc) == key {
+			recentDoc = doc
+			break
+		}
+	}
+	if recentDoc == nil {
+		recentDoc = &RecentDoc{Kind: "markdown", Notebook: canonicalRef.Notebook, Path: canonicalRef.Path}
+		recentDocs = append([]*RecentDoc{recentDoc}, recentDocs...)
+	}
+	update(recentDoc, time.Now().Unix())
+	return markdownRecentWriteDocs(recentDocs)
+}
+
+func MoveRecentMarkdown(from, to MarkdownDocumentRef) error {
+	from, err := CanonicalMarkdownRef(from.Notebook, from.Path)
+	if err != nil {
+		return err
+	}
+	to, err = CanonicalMarkdownRef(to.Notebook, to.Path)
+	if err != nil {
+		return err
+	}
+	recentDocLock.Lock()
+	defer recentDocLock.Unlock()
+	return moveRecentMarkdownLocked(from, to)
+}
+
+func moveRecentMarkdownLocked(from, to MarkdownDocumentRef) error {
+	recentDocs, err := loadRecentDocsRaw()
+	if err != nil {
+		return err
+	}
+	fromKey, toKey := MarkdownRecentKey(from), MarkdownRecentKey(to)
+	var fromDoc, toDoc *RecentDoc
+	for _, doc := range recentDocs {
+		switch recentDocKey(doc) {
+		case fromKey:
+			fromDoc = doc
+		case toKey:
+			toDoc = doc
+		}
+	}
+	if fromDoc == nil || fromKey == toKey {
+		return nil
+	}
+	if toDoc == nil {
+		toDoc = fromDoc
+		toDoc.Notebook = to.Notebook
+		toDoc.Path = to.Path
+		toDoc.Title = ""
+		toDoc.Updated = 0
+	} else {
+		mergeRecentDocTimes(toDoc, fromDoc)
+	}
+	filtered := make([]*RecentDoc, 0, len(recentDocs))
+	for _, doc := range recentDocs {
+		if doc != fromDoc || doc == toDoc {
+			filtered = append(filtered, doc)
+		}
+	}
+	return markdownRecentWriteDocs(filtered)
+}
+
+func RemoveRecentMarkdown(ref MarkdownDocumentRef) error {
+	ref, err := CanonicalMarkdownRef(ref.Notebook, ref.Path)
+	if err != nil {
+		return err
+	}
+	recentDocLock.Lock()
+	defer recentDocLock.Unlock()
+	return removeRecentMarkdownLocked(ref)
+}
+
+func removeRecentMarkdownLocked(ref MarkdownDocumentRef) error {
+	recentDocs, err := loadRecentDocsRaw()
+	if err != nil {
+		return err
+	}
+	key := MarkdownRecentKey(ref)
+	filtered := make([]*RecentDoc, 0, len(recentDocs))
+	changed := false
+	for _, doc := range recentDocs {
+		if recentDocKey(doc) == key {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, doc)
+	}
+	if !changed {
+		return nil
+	}
+	return markdownRecentWriteDocs(filtered)
+}
+
+func mergeRecentDocTimes(to, from *RecentDoc) {
+	if from.ViewedAt > to.ViewedAt {
+		to.ViewedAt = from.ViewedAt
+	}
+	if from.OpenAt > to.OpenAt {
+		to.OpenAt = from.OpenAt
+	}
+	if from.ClosedAt > to.ClosedAt {
+		to.ClosedAt = from.ClosedAt
+	}
+}
+
+func cloneRecentDocs(docs []*RecentDoc) []*RecentDoc {
+	ret := make([]*RecentDoc, 0, len(docs))
+	for _, doc := range docs {
+		if doc == nil {
+			continue
+		}
+		cloned := *doc
+		ret = append(ret, &cloned)
+	}
+	return ret
 }
 
 // UpdateRecentDocOpenTime 更新文档打开时间（只在第一次从文档树加载到页签时调用）
@@ -465,16 +630,53 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 		return
 	}
 
-	IDs := make([]string, 0, len(recentDocs))
+	nativeRecentDocs := make([]*RecentDoc, 0, len(recentDocs))
+	markdownDocs := make(map[string]*RecentDoc)
+	changed := false
 	for _, doc := range recentDocs {
+		if doc.Kind == "markdown" {
+			ref, refErr := CanonicalMarkdownRef(doc.Notebook, doc.Path)
+			if refErr != nil {
+				changed = true
+				continue
+			}
+			_, absPath, pathErr := markdownFilePath(ref.Notebook, ref.Path)
+			info, statErr := os.Stat(absPath)
+			if pathErr != nil || statErr != nil || info.IsDir() {
+				changed = true
+				continue
+			}
+			if doc.Notebook != ref.Notebook || doc.Path != ref.Path {
+				changed = true
+				doc.Notebook, doc.Path = ref.Notebook, ref.Path
+			}
+			doc.Title = path.Base(ref.Path)
+			doc.Updated = info.ModTime().Unix()
+			key := MarkdownRecentKey(ref)
+			if merged, ok := markdownDocs[key]; ok {
+				mergeRecentDocTimes(merged, doc)
+				changed = true
+			} else {
+				markdownDocs[key] = doc
+			}
+			continue
+		}
+		if doc.Kind != "" || doc.RootID == "" {
+			changed = true
+			continue
+		}
+		nativeRecentDocs = append(nativeRecentDocs, doc)
+	}
+
+	IDs := make([]string, 0, len(nativeRecentDocs))
+	for _, doc := range nativeRecentDocs {
 		IDs = append(IDs, doc.RootID)
 	}
 	bts := treenode.GetBlockTrees(IDs)
-	mergedDocs := make(map[string]*RecentDoc, len(recentDocs))
-	rootIDs := make([]string, 0, len(recentDocs))
-	changed := false
+	mergedDocs := make(map[string]*RecentDoc, len(nativeRecentDocs))
+	rootIDs := make([]string, 0, len(nativeRecentDocs))
 
-	for _, doc := range recentDocs {
+	for _, doc := range nativeRecentDocs {
 		bt := bts[doc.RootID]
 		if nil == bt {
 			changed = true
@@ -514,6 +716,9 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 		}
 		ret = append(ret, doc)
 	}
+	for _, doc := range markdownDocs {
+		ret = append(ret, doc)
+	}
 
 	if changed {
 		if errSet := setRecentDocs(ret); errSet != nil {
@@ -523,6 +728,10 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 	if !IsBoxDocEnabled() {
 		filtered := make([]*RecentDoc, 0, len(ret))
 		for _, doc := range ret {
+			if doc.Kind == "markdown" {
+				filtered = append(filtered, doc)
+				continue
+			}
 			bt := bts[doc.RootID]
 			if nil == bt || !IsBoxDoc(bt.BoxID, bt.RootID) {
 				filtered = append(filtered, doc)
@@ -534,6 +743,12 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 	// 根据排序参数进行排序
 	switch sortBy {
 	case "updated": // 按更新时间排序
+		markdownUpdated := make([]*RecentDoc, 0, len(markdownDocs))
+		for _, doc := range ret {
+			if doc.Kind == "markdown" {
+				markdownUpdated = append(markdownUpdated, doc)
+			}
+		}
 		// 从数据库查询最近修改的文档
 		boxDocFilter, boxDocArgs := buildRootIDExclusionFilter(hiddenBoxDocRootIDs())
 		var sqlBlocks []*sql.Block
@@ -545,9 +760,6 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 			sqlBlocks = sql.SelectBlocksRawStmtArgs(stmt, boxDocArgs, Conf.FileTree.RecentDocsMaxListCount)
 		}
 		ret = []*RecentDoc{}
-		if 1 > len(sqlBlocks) {
-			return
-		}
 
 		// 获取文档树信息
 		var rootIDs []string
@@ -582,7 +794,17 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 				Icon:   icon,
 				Title:  title,
 			}
+			if updated, parseErr := time.ParseInLocation("20060102150405", sqlBlock.Updated, time.Local); parseErr == nil {
+				doc.Updated = updated.Unix()
+			}
 			ret = append(ret, doc)
+		}
+		ret = append(ret, markdownUpdated...)
+		sort.Slice(ret, func(i, j int) bool {
+			return ret[i].Updated > ret[j].Updated
+		})
+		if maxCount := Conf.FileTree.RecentDocsMaxListCount; maxCount > 0 && len(ret) > maxCount {
+			ret = ret[:maxCount]
 		}
 	case "closedAt": // 按关闭时间排序
 		filtered := make([]*RecentDoc, 0, len(ret))
@@ -637,8 +859,9 @@ func normalizeRecentDocs(recentDocs []*RecentDoc) []*RecentDoc {
 	seen := make(map[string]struct{}, len(recentDocs))
 	deduplicated := make([]*RecentDoc, 0, len(recentDocs))
 	for _, doc := range recentDocs {
-		if _, ok := seen[doc.RootID]; !ok {
-			seen[doc.RootID] = struct{}{}
+		key := recentDocKey(doc)
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
 			deduplicated = append(deduplicated, doc)
 		}
 	}
@@ -687,16 +910,18 @@ func normalizeRecentDocs(recentDocs []*RecentDoc) []*RecentDoc {
 	// 合并三类记录
 	docMap := make(map[string]*RecentDoc, maxCount*2)
 	for _, doc := range viewedDocs {
-		docMap[doc.RootID] = doc
+		docMap[recentDocKey(doc)] = doc
 	}
 	for _, doc := range openedDocs {
-		if _, ok := docMap[doc.RootID]; !ok {
-			docMap[doc.RootID] = doc
+		key := recentDocKey(doc)
+		if _, ok := docMap[key]; !ok {
+			docMap[key] = doc
 		}
 	}
 	for _, doc := range closedDocs {
-		if _, ok := docMap[doc.RootID]; !ok {
-			docMap[doc.RootID] = doc
+		key := recentDocKey(doc)
+		if _, ok := docMap[key]; !ok {
+			docMap[key] = doc
 		}
 	}
 

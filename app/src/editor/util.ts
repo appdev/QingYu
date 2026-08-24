@@ -110,6 +110,12 @@ export const openMarkdownFile = (app: App, notebookId: string, path: string, nam
     });
 };
 
+export const openExternalMarkdownFile = (
+    app: App,
+    descriptor: {capabilityId: string, name: string, displayPath: string},
+    position?: string,
+) => openFile({app, externalMarkdown: descriptor, position, removeCurrentTab: false});
+
 export const openFile = async (options: IOpenFileOptions) => {
     if (typeof options.removeCurrentTab === "undefined") {
         options.removeCurrentTab = true;
@@ -124,9 +130,11 @@ export const openFile = async (options: IOpenFileOptions) => {
     }
     const allModels = getAllModels();
     // 文档已打开
-    if (options.markdown) {
+    if (options.markdown || options.externalMarkdown) {
         clearOB();
-        const markdownEditor = allModels.markdown.find((item) => item.notebookId === options.markdown.notebookId && item.path === options.markdown.path);
+        const markdownEditor = allModels.markdown.find((item) => options.externalMarkdown
+            ? item.externalCapabilityId === options.externalMarkdown.capabilityId
+            : item.notebookId === options.markdown.notebookId && item.path === options.markdown.path);
         if (markdownEditor) {
             markdownEditor.parent.parent.switchTab(markdownEditor.parent.headElement);
             markdownEditor.parent.parent.showHeading();
@@ -365,8 +373,9 @@ const getUnInitTab = (options: IOpenFileOptions) => {
         const initData = item.headElement?.getAttribute("data-initdata");
         if (initData) {
             const initObj = JSON.parse(initData);
-            if (initObj.instance === "MarkdownEditor" && options.markdown &&
-                initObj.notebookId === options.markdown.notebookId && initObj.path === options.markdown.path) {
+            if (initObj.instance === "MarkdownEditor" && (options.externalMarkdown
+                ? initObj.externalCapabilityId === options.externalMarkdown.capabilityId
+                : options.markdown && initObj.notebookId === options.markdown.notebookId && initObj.path === options.markdown.path)) {
                 item.parent.switchTab(item.headElement);
                 return true;
             } else if (initObj.instance === "Editor" &&
@@ -486,16 +495,22 @@ const switchEditor = (editor: Editor, options: IOpenFileOptions, allModels: IMod
 
 const newTab = (options: IOpenFileOptions) => {
     let tab: Tab;
-    if (options.markdown) {
+    if (options.markdown || options.externalMarkdown) {
         tab = new Tab({
             icon: "iconMarkdown",
-            title: options.markdown.name,
+            title: options.externalMarkdown?.name || options.markdown.name,
             callback(tab) {
                 tab.addModel(new MarkdownEditor({
                     app: options.app,
                     tab,
-                    notebookId: options.markdown.notebookId,
-                    path: options.markdown.path,
+                    ...(options.externalMarkdown ? {
+                        externalCapabilityId: options.externalMarkdown.capabilityId,
+                        externalName: options.externalMarkdown.name,
+                        externalDisplayPath: options.externalMarkdown.displayPath,
+                    } : {
+                        notebookId: options.markdown.notebookId,
+                        path: options.markdown.path,
+                    }),
                 }));
                 setPanelFocus(tab.panelElement.parentElement.parentElement);
             },
@@ -645,8 +660,16 @@ export const updatePanelByEditor = (options: {
     }
     // 切换页签或关闭所有页签时，需更新对应的面板
     const models = getAllModels();
+    models.outline.forEach((item) => item.bindNativeDocument());
     updateOutline(models, options.protyle, options.reload);
     updateBacklink(models, options.protyle);
+};
+
+export const updatePanelByMarkdownEditor = (editor: MarkdownEditor) => {
+    const models = getAllModels();
+    models.outline.forEach((item) => {
+        if (item.type === "pin") item.bindMarkdownEditor(editor);
+    });
 };
 
 export const isCurrentEditor = (blockId: string) => {
@@ -691,6 +714,7 @@ export const updateOutline = (models: IModels, protyle: IProtyle, reload = false
                 outlineParam.notebook = protyle.notebookId;
             }
             fetchPost("/api/outline/getDocOutline", outlineParam, response => {
+                if (item.isMarkdownSource()) return;
                 if (!reload && (!isCurrentEditor(blockId) || item.blockId === blockId) &&
                     item.isPreview !== protyle.preview.element.classList.contains("fn__none")) {
                     return;

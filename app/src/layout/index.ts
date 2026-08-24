@@ -87,7 +87,8 @@ export class Layout {
                         item.element.querySelectorAll(".protyle-content").forEach((element: HTMLElement) => {
                             if (!element.parentElement.classList.contains("fn__none")) {
                                 element.classList.remove("protyle-content--transition");
-                                (element.querySelector(".protyle-wysiwyg") as HTMLElement).style.padding = "";
+                                const wysiwygElement = element.querySelector<HTMLElement>(".protyle-wysiwyg");
+                                if (wysiwygElement) wysiwygElement.style.padding = "";
                                 element.classList.add("protyle-content--transition");
                             }
                         });

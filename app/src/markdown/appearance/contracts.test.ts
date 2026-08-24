@@ -125,7 +125,15 @@ test("probes every native callout subtype independently", () => {
 
 test("maps the native horizontal rule container and textured line independently", () => {
     const contract = getAppearanceContract("block.horizontal-rule");
-    assert.equal(contract?.reference.selector, ".protyle-wysiwyg .hr > div");
+    assert.equal(contract?.reference.selector, ".protyle-wysiwyg .hr");
+    assert.deepEqual(contract?.geometryReferences, {
+        native: {selector: ".protyle-wysiwyg .hr", box: "margin"},
+        markdown: {
+            selector: ".cm-markra-horizontal-rule",
+            closest: ".cm-line",
+            box: "border",
+        },
+    });
     assert.deepEqual(contract?.propertyReferences?.background, {
         selector: ".protyle-wysiwyg .hr > div",
         property: "background",
@@ -146,7 +154,48 @@ test("maps the native horizontal rule container and textured line independently"
         property: "top",
         pseudo: "::after",
     });
-    assert.deepEqual(contract?.ownedSelectors, [".cm-markra-horizontal-rule__line"]);
+    assert.deepEqual(contract?.markdownPropertyReferences?.background, {
+        selector: ".cm-markra-horizontal-rule",
+        property: "background",
+        pseudo: "::after",
+    });
+    assert.deepEqual(contract?.ownedSelectors, []);
+});
+
+test("maps the native blockquote pseudo-element to one Markdown semantic rail", () => {
+    const contract = getAppearanceContract("block.blockquote");
+    assert.deepEqual(contract?.propertyReferences?.borderLeftColor, {
+        selector: ".protyle-wysiwyg .bq",
+        property: "backgroundColor",
+        pseudo: "::before",
+    });
+    assert.deepEqual(contract?.propertyReferences?.borderLeftWidth, {
+        selector: ".protyle-wysiwyg .bq",
+        property: "width",
+        pseudo: "::before",
+    });
+    assert.deepEqual(contract?.markdownPropertyReferences?.borderLeftColor, {
+        selector: ".cm-markra-blockquote-rail",
+        property: "backgroundColor",
+    });
+    assert.deepEqual(contract?.markdownPropertyReferences?.borderLeftWidth, {
+        selector: ".cm-markra-blockquote-rail",
+        property: "width",
+    });
+    assert.ok(contract?.ownedSelectors.includes(".cm-markra-blockquote-rail"));
+});
+
+test("models native outer geometry separately from visual paint probes", () => {
+    assert.deepEqual(getAppearanceContract("block.paragraph")?.geometryReferences, {
+        native: {selector: ".protyle-wysiwyg .p", box: "margin"},
+        markdown: {
+            selector: ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)",
+            box: "border",
+        },
+    });
+    assert.equal(getAppearanceContract("block.heading-2")?.geometryReferences?.native.box, "margin");
+    assert.equal(getAppearanceContract("block.list")?.geometryReferences?.markdown.aggregate, "contiguous-lines");
+    assert.equal(getAppearanceContract("block.blockquote")?.geometryReferences?.markdown.aggregate, "contiguous-lines");
 });
 
 test("compares heading spacing through CodeMirror-safe transparent borders", () => {
@@ -154,7 +203,17 @@ test("compares heading spacing through CodeMirror-safe transparent borders", () 
         const contract = getAppearanceContract(`block.heading-${level}`);
         assert.equal(contract?.markdownPropertyReferences?.marginTop.property, "borderTopWidth");
         assert.equal(contract?.markdownPropertyReferences?.marginBottom.property, "borderBottomWidth");
+        assert.equal(contract?.propertyReferences?.firstMarginTop.property, "marginTop");
+        assert.equal(contract?.markdownPropertyReferences?.firstMarginTop.property, "borderTopWidth");
     }
+});
+
+test("derives blockquote geometry from its native outer box and inner paragraph", () => {
+    const contract = getAppearanceContract("block.blockquote");
+    assert.equal(contract?.propertyReferences?.outerMarginTop.selector, ".protyle-wysiwyg .bq");
+    assert.equal(contract?.propertyReferences?.innerMarginTop.selector, ".protyle-wysiwyg .bq > .p");
+    assert.equal(contract?.propertyReferences?.outerPaddingBottom.property, "paddingBottom");
+    assert.equal(contract?.propertyReferences?.innerPaddingBottom.property, "paddingBottom");
 });
 
 test("compares paragraph and list spacing through CodeMirror-safe transparent borders", () => {

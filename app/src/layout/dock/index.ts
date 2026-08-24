@@ -19,6 +19,7 @@ import {Plugin} from "../../plugin";
 import {Custom} from "./Custom";
 import {clearBeforeResizeTop, recordBeforeResizeTop} from "../../protyle/util/resize";
 import {Constants} from "../../constants";
+import {MarkdownEditor} from "../../markdown/MarkdownEditor";
 
 const TYPES = ["file", "outline", "bookmark", "tag", "backlink"];
 
@@ -494,6 +495,14 @@ export class Dock {
             if (!target.getAttribute("data-id")) {
                 let editor: Protyle;
                 const models = getAllModels();
+                let markdownEditor: MarkdownEditor;
+                models.markdown.find((item) => {
+                    if (item.parent.headElement.classList.contains("item--focus") &&
+                        item.parent.parent.element.classList.contains("layout__wnd--active")) {
+                        markdownEditor = item;
+                        return true;
+                    }
+                });
                 models.editor.find((item) => {
                     if (item.parent.headElement.classList.contains("item--focus") && item.editor?.protyle?.path) {
                         editor = item.editor;
@@ -531,7 +540,8 @@ export class Dock {
                                     type: "pin",
                                     tab,
                                     blockId: editor?.protyle?.block?.rootID,
-                                    isPreview: editor?.protyle?.preview ? !editor.protyle.preview.element.classList.contains("fn__none") : false
+                                    isPreview: editor?.protyle?.preview ? !editor.protyle.preview.element.classList.contains("fn__none") : false,
+                                    markdownEditor,
                                 });
                                 if (editor?.protyle?.block?.rootID) {
                                     outline.updateDocTitle(editor?.protyle?.background?.ial);

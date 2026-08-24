@@ -1,16 +1,30 @@
-export const APPEARANCE_FIXTURE_MARKDOWN = `# Heading 1
+export const APPEARANCE_FIXTURE_MARKDOWN = `Appearance context paragraph.
+
+# Heading 1
 ## Heading 2
 ### Heading 3
 #### Heading 4
 ##### Heading 5
 ###### Heading 6
 
+Setext heading
+--------------
+
 Paragraph with **strong**, *emphasis*, ~~strike~~, ==mark==, \`inline code\`, [link](https://example.com), and $x^2$.
 
 - list item
+  1. ordered child
 - [x] completed task
 
 > quote
+
+> **Quoted list**
+>
+> - quoted item
+>
+> 1. quoted ordered item
+>
+> - [ ] quoted task
 
 > [!NOTE]
 > Note callout
@@ -93,4 +107,21 @@ export const createNativeAppearanceFixture = (document: Document, blockDOM: stri
         blockquote.replaceWith(callout);
     });
     return root;
+};
+
+export const createNativeHeadingContextFixtures = (
+    document: Document,
+    lute: {Md2BlockDOM(markdown: string): string},
+) => {
+    const contexts = document.createElement("div");
+    contexts.className = "markdown-appearance-heading-contexts";
+    for (let level = 1; level <= 6; level++) {
+        const root = createNativeAppearanceFixture(
+            document,
+            lute.Md2BlockDOM(`${"#".repeat(level)} First heading ${level}`),
+        );
+        root.dataset.markdownAppearanceContext = `heading-${level}-first`;
+        contexts.append(root);
+    }
+    return contexts;
 };

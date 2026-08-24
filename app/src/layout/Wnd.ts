@@ -26,7 +26,7 @@ import {setModelsHash} from "../window/setHeader";
 /// #endif
 import {Search} from "../search";
 import {showMessage} from "../dialog/message";
-import {openFileById, updatePanelByEditor} from "../editor/util";
+import {openFileById, updatePanelByEditor, updatePanelByMarkdownEditor} from "../editor/util";
 import {scrollCenter} from "../util/highlightById";
 import {fetchPost} from "../util/fetch";
 import {getAllModels} from "./getAll";
@@ -52,8 +52,22 @@ import {setStorageVal} from "../protyle/util/compatibility";
 import {setTitle} from "../util/processTitle";
 import {dragOverScroll} from "../boot/globalEvent/dragover";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {MarkdownOutline} from "../markdown/MarkdownOutline";
 import {newMarkdownFile} from "../markdown/fileActions";
 import {createMarkdownFromTabBarAction} from "../markdown/tabBarCreate";
+import {
+    countMarkdownPresenceAcrossRenderers,
+    MarkdownManagementIPC,
+    markdownCoordinatorEditor,
+} from "../markdown/managementCoordinator";
+import {createMarkdownManagementOperationID} from "../markdown/documentManagement";
+
+let markdownManagementIPC: MarkdownManagementIPC | undefined;
+/// #if BROWSER
+markdownManagementIPC = undefined;
+/// #else
+markdownManagementIPC = ipcRenderer;
+/// #endif
 
 export class Wnd {
     private app: App;
@@ -465,6 +479,10 @@ export class Wnd {
     public switchTab(target: HTMLElement, pushBack = false, update = true, resize = true, isSaveLayout = true) {
         let currentTab: Tab;
         let isInitActive = false;
+        const activeTab = this.children.find((item) => item.headElement?.classList.contains("item--focus"));
+        if (activeTab?.headElement !== target && activeTab?.model instanceof MarkdownEditor) {
+            activeTab.model.captureScrollAnchor();
+        }
         this.children.forEach((item) => {
             if (target === item.headElement) {
                 if (item.headElement && item.headElement.classList.contains("fn__none")) {
@@ -480,6 +498,8 @@ export class Wnd {
                             // 更新文档浏览时间
                             if (item.model instanceof Editor) {
                                 fetchPost("/api/storage/updateRecentDocViewTime", {rootID: item.model.editor.protyle.block.rootID});
+                            } else if (item.model instanceof MarkdownEditor) {
+                                item.model.recordRecentView();
                             }
                         }
                     }
@@ -503,6 +523,13 @@ export class Wnd {
             if (initData) {
                 currentTab.addModel(newModelByInitData(this.app, currentTab, JSON.parse(initData)));
                 currentTab.headElement.removeAttribute("data-initdata");
+                if (currentTab.model instanceof MarkdownEditor) {
+                    getAllModels().markdown.forEach((item) => {
+                        if (item !== currentTab.model) item.hideOutline(true, false);
+                    });
+                    updatePanelByMarkdownEditor(currentTab.model);
+                    currentTab.model.restoreOutline();
+                }
                 if (isSaveLayout) {
                     saveLayout();
                 }
@@ -515,6 +542,12 @@ export class Wnd {
                 // https://github.com/siyuan-note/siyuan/issues/5655
                 currentTab.model.pdfObject.pdfViewer.container.focus();
             }
+        }
+
+        if (currentTab?.model instanceof Editor || currentTab?.model instanceof MarkdownEditor) {
+            getAllModels().markdown.forEach((item) => {
+                if (item !== currentTab.model) item.hideOutline(true, false);
+            });
         }
 
         if (currentTab && currentTab.model instanceof Editor) {
@@ -559,7 +592,11 @@ export class Wnd {
                 fullscreen(currentTab.model.editor.protyle.element);
                 setPadding(currentTab.model.editor.protyle);
             }
+        } else if (currentTab?.model instanceof MarkdownEditor) {
+            updatePanelByMarkdownEditor(currentTab.model);
+            currentTab.model.restoreOutline();
         } else {
+            getAllModels().markdown.forEach((item) => item.hideOutline(true, false));
             clearOB();
         }
         if (isSaveLayout) {
@@ -623,6 +660,15 @@ export class Wnd {
         tab.parent = this;
         if (tab.callback) {
             tab.callback(tab);
+        }
+        if (!keepCursor && (tab.model instanceof Editor || tab.model instanceof MarkdownEditor)) {
+            getAllModels().markdown.forEach((item) => {
+                if (item !== tab.model) item.hideOutline(true, false);
+            });
+            if (tab.model instanceof MarkdownEditor) {
+                updatePanelByMarkdownEditor(tab.model);
+                tab.model.restoreOutline();
+            }
         }
 
         // 移除 centerLayout 中的 empty
@@ -705,7 +751,7 @@ export class Wnd {
         });
     }
 
-    private removeOverCounter(isSaveLayout = false) {
+    private async removeOverCounter(isSaveLayout = false) {
         let removeId: string;
         let openTime: string;
         let removeCount = 0;
@@ -726,11 +772,11 @@ export class Wnd {
             }
         });
         if (removeId) {
-            this.removeTab(removeId, false, false, isSaveLayout);
+            if (!await this.removeTab(removeId, false, false, isSaveLayout)) return;
             removeCount--;
         }
         if (removeCount > 0 && this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
-            this.removeOverCounter(isSaveLayout);
+            await this.removeOverCounter(isSaveLayout);
         }
     }
 
@@ -758,6 +804,10 @@ export class Wnd {
             }
         }
         if (model instanceof MarkdownEditor) {
+            model.destroy();
+            return;
+        }
+        if (model instanceof MarkdownOutline) {
             model.destroy();
             return;
         }
@@ -792,6 +842,25 @@ export class Wnd {
                 if (!isBatchClose) {
                     fetchPost("/api/storage/updateRecentDocCloseTime", {rootID: item.model.editor.protyle.block.rootID});
                 }
+            } else if (item.model instanceof MarkdownEditor && !item.model.externalCapabilityId && !isBatchClose) {
+                const markdownModel = item.model;
+                const reference = {kind: "markdown" as const, notebook: markdownModel.notebookId, path: markdownModel.path};
+                setTimeout(() => {
+                    void countMarkdownPresenceAcrossRenderers(
+                        markdownManagementIPC,
+                        window.location.origin,
+                        reference,
+                        getAllModels().markdown.map(markdownCoordinatorEditor),
+                        createMarkdownManagementOperationID(),
+                    ).then((matches) => {
+                        if (matches !== 0) return;
+                        fetchPost("/api/storage/updateRecentDocCloseTime", {
+                            kind: "markdown",
+                            notebook: markdownModel.notebookId,
+                            path: markdownModel.path,
+                        });
+                    });
+                }, 0);
             }
             if (this.children.length === 1) {
                 this.destroyModel(this.children[0].model);
@@ -885,22 +954,26 @@ export class Wnd {
         /// #endif
     };
 
-    public removeTab(id: string, isBatchClose = false, animate = true, isSaveLayout = true) {
+    public async removeTab(id: string, isBatchClose = false, animate = true, isSaveLayout = true) {
         for (let index = 0; index < this.children.length; index++) {
             const item = this.children[index];
             if (item.id === id) {
+                if (item.model instanceof MarkdownEditor && !await item.model.prepareClose()) {
+                    return false;
+                }
                 if ((item.model instanceof Editor) && item.model.editor?.protyle) {
                     if (item.model.editor.protyle.upload.isUploading) {
                         showMessage(window.siyuan.languages.uploading);
-                        return;
+                        return false;
                     }
                     this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
                 } else {
                     this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
                 }
-                return;
+                return true;
             }
         }
+        return false;
     }
 
     public moveTab(tab: Tab, nextId?: string) {

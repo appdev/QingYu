@@ -19,13 +19,17 @@ extraFiles:
 linux:
   icon: "src/assets/icon/"
   category: "Utility"
+  mimeTypes:
+    - "text/markdown"
   executableName: "qingyu"
   desktop: {
     entry: {
       Name: "QingYu",
       Comment: "QingYu · Clear windows, a quiet desk, words softly spoken.",
       Type: "Application",
-      Categories: "Utility;"
+      Categories: "Utility;",
+      MimeType: "text/markdown;",
+      Exec: "qingyu %F"
     }
   }
   extraResources:

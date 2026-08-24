@@ -1,21 +1,20 @@
 import {fetchPost} from "../../util/fetch";
 import {unicode2Emoji} from "../../emoji";
 import {Constants} from "../../constants";
-import {escapeHtml} from "../../util/escape";
 import {hasClosestByClassName} from "../../protyle/util/hasClosest";
 import {openModel} from "./model";
 import {openMobileFileById} from "../editor";
 import {App} from "../../index";
+import {openMobileMarkdownFile} from "../markdown";
+import {openRecentDocument, RecentDocumentItem, renderRecentDocumentItems} from "../../markdown/recentDocuments";
 
 export const getRecentDocs = (app: App) => {
     fetchPost("/api/storage/getRecentDocs", {sortBy: "viewedAt"}, (response) => {
-        let html = "";
-        response.data.forEach((item: any, index: number) => {
-            html += `<li data-index="${index}" data-node-id="${item.rootID}" class="b3-list-item${index === 0 ? " b3-list-item--focus" : ""}">
-${unicode2Emoji(item.icon || window.siyuan.storage[Constants.LOCAL_IMAGES].file, "b3-list-item__graphic", true)}
-<span class="b3-list-item__text">${escapeHtml(item.title)}</span>
-</li>`;
-        });
+        const items: RecentDocumentItem[] = response.data.map((item: Record<string, unknown>) => item.kind === "markdown" ? {
+            kind: "markdown", notebook: item.notebook as string, path: item.path as string, title: item.title as string,
+        } : {kind: "native", rootID: item.rootID as string, title: item.title as string});
+        const html = renderRecentDocumentItems(items).replaceAll('<span class="b3-list-item__text">',
+            `${unicode2Emoji(window.siyuan.storage[Constants.LOCAL_IMAGES].file, "b3-list-item__graphic", true)}<span class="b3-list-item__text">`);
         openModel({
             title: window.siyuan.languages.recentDocs,
             icon: "iconList",
@@ -24,7 +23,22 @@ ${unicode2Emoji(item.icon || window.siyuan.storage[Constants.LOCAL_IMAGES].file,
                 element.firstElementChild.addEventListener("click", (event) => {
                     const liElement = hasClosestByClassName(event.target as HTMLElement, "b3-list-item");
                     if (liElement) {
-                        openMobileFileById(app, liElement.dataset.nodeId, [Constants.CB_GET_SCROLL]);
+                        const item: RecentDocumentItem = liElement.dataset.markdownPath ? {
+                            kind: "markdown",
+                            notebook: liElement.dataset.markdownNotebook,
+                            path: liElement.dataset.markdownPath,
+                            title: liElement.querySelector(".b3-list-item__text").textContent,
+                        } : {
+                            kind: "native",
+                            rootID: liElement.dataset.nodeId,
+                            title: liElement.querySelector(".b3-list-item__text").textContent,
+                        };
+                        void openRecentDocument(app, item, {
+                            openMarkdown: openMobileMarkdownFile,
+                            openNative: async (currentApp, rootID) => {
+                                openMobileFileById(currentApp, rootID, [Constants.CB_GET_SCROLL]);
+                            },
+                        });
                     }
                 });
             }

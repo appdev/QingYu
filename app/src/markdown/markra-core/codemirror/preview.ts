@@ -1,5 +1,5 @@
 import { syntaxTree } from "@codemirror/language";
-import type { Extension, Range, Text } from "@codemirror/state";
+import type { Extension, Line, Range, Text } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -31,6 +31,8 @@ import {
 import { createTaskDecoration } from "./tasks";
 import { isInsidePreformattedBlock } from "./blank-lines";
 import { syntaxTreeChanged, updateOnlyInsertsPlainText } from "./changes";
+import { readOptionalMarkdownHostAdapter } from "../adapter";
+import {blockquoteRailExtension} from "./blockquote-rail";
 
 const HEADING_CLASSES: Readonly<Record<string, string>> = {
   ATXHeading1: "cm-markra-h1 h1",
@@ -109,12 +111,12 @@ const LIST_ITEM_PATTERN = /^([\t ]*)([-+*]|\d+[.)])[\t ]+(\[[ xX]\](?:[\t ]+|$))
 const EMPTY_TASK_ITEM_PATTERN =
   /^([\t ]*)([-+*]|\d+[.)])([\t ]+)(\[[ xX]\])[\t ]*$/u;
 
-function listLineAttributes(source: string) {
-  const match = LIST_ITEM_PATTERN.exec(source);
+function listLineAttributes(source: string, markerOffset = 0) {
+  const match = LIST_ITEM_PATTERN.exec(source.slice(markerOffset));
   if (!match) return null;
 
   const sourceMarker = match[2] ?? "-";
-  const kind = match[3]
+  const kind: "bullet" | "ordered" | "task" = match[3]
     ? "task"
     : /^\d/u.test(sourceMarker)
       ? "ordered"
@@ -123,16 +125,31 @@ function listLineAttributes(source: string) {
   return {
     kind,
     marker: kind === "ordered" ? sourceMarker : "•",
+    markerFrom: markerOffset + (match[1]?.length ?? 0),
+    taskChecked: kind === "task" && /\[[xX]\]/u.test(match[3] ?? ""),
   };
 }
 
-function rangeSelectionIncludesPosition(
+function listItemLineAttributes(
+  state: EditorView["state"],
+  node: MarkraSyntaxNode,
+) {
+  const line = state.doc.lineAt(node.from);
+  const listMark = node.getChild("ListMark");
+  if (!listMark) return null;
+
+  const attributes = listLineAttributes(line.text, listMark.from - line.from);
+  return attributes ? { attributes, line, listMark } : null;
+}
+
+function rangeSelectionIntersects(
   view: EditorView,
-  position: number,
+  from: number,
+  to: number,
 ) {
   return view.state.selection.ranges.some(
     (selection) =>
-      !selection.empty && selection.from <= position && selection.to > position,
+      !selection.empty && selection.from < to && selection.to > from,
   );
 }
 
@@ -141,26 +158,28 @@ function buildListMarkerSelectionDecorations(view: EditorView) {
   const decoratedLines = new Set<number>();
 
   for (const visibleRange of view.visibleRanges) {
-    const firstLine = view.state.doc.lineAt(visibleRange.from).number;
-    const lastLine = view.state.doc.lineAt(visibleRange.to).number;
+    syntaxTree(view.state).iterate({
+      from: visibleRange.from,
+      to: visibleRange.to,
+      enter(node) {
+        if (node.name !== "ListItem") return;
+        const item = listItemLineAttributes(view.state, node.node as MarkraSyntaxNode);
+        if (
+          !item ||
+          decoratedLines.has(item.line.from) ||
+          !rangeSelectionIntersects(view, item.listMark.from, item.listMark.to)
+        ) {
+          return;
+        }
 
-    for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber += 1) {
-      const line = view.state.doc.line(lineNumber);
-      if (
-        decoratedLines.has(line.from) ||
-        !listLineAttributes(line.text) ||
-        !rangeSelectionIncludesPosition(view, line.from)
-      ) {
-        continue;
-      }
-
-      decoratedLines.add(line.from);
-      ranges.push(
-        Decoration.line({
-          attributes: { "data-markra-list-marker-selected": "true" },
-        }).range(line.from),
-      );
-    }
+        decoratedLines.add(item.line.from);
+        ranges.push(
+          Decoration.line({
+            attributes: { "data-markra-list-marker-selected": "true" },
+          }).range(item.line.from),
+        );
+      },
+    });
   }
 
   return Decoration.set(ranges, true);
@@ -190,11 +209,12 @@ const listMarkerSelectionPlugin = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations },
 );
 
-function emptyTaskMarkerRange(source: string) {
-  const match = EMPTY_TASK_ITEM_PATTERN.exec(source);
+function emptyTaskMarkerRange(source: string, markerOffset = 0) {
+  const match = EMPTY_TASK_ITEM_PATTERN.exec(source.slice(markerOffset));
   if (!match) return null;
 
   const markerFrom =
+    markerOffset +
     (match[1]?.length ?? 0) +
     (match[2]?.length ?? 0) +
     (match[3]?.length ?? 0);
@@ -202,6 +222,58 @@ function emptyTaskMarkerRange(source: string) {
     from: markerFrom,
     to: markerFrom + (match[4]?.length ?? 0),
   };
+}
+
+class ListMarkerWidget extends WidgetType {
+  constructor(
+    readonly kind: "bullet" | "ordered",
+    readonly marker: string,
+  ) {
+    super();
+  }
+
+  eq(other: ListMarkerWidget) {
+    return other.kind === this.kind && other.marker === this.marker;
+  }
+
+  toDOM(view: EditorView) {
+    const marker = view.dom.ownerDocument.createElement("span");
+    marker.className = `cm-markra-list-marker cm-markra-list-marker--${this.kind}`;
+    marker.contentEditable = "false";
+    marker.setAttribute("aria-hidden", "true");
+    if (this.kind === "bullet") {
+      const adapter = readOptionalMarkdownHostAdapter(view.state);
+      if (adapter) {
+        marker.append(adapter.createIcon("dot", "cm-markra-list-marker-icon", view.dom.ownerDocument));
+      } else {
+        marker.textContent = "•";
+      }
+    } else {
+      marker.textContent = this.marker;
+    }
+    return marker;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function markerWidgetPosition(state: EditorView["state"], listMark: MarkraSyntaxNode) {
+  let position = listMark.to;
+  while (position < state.doc.length && state.sliceDoc(position, position + 1) === " ") {
+    position += 1;
+  }
+  return position;
+}
+
+function lineContainsSelection(view: EditorView, line: Line) {
+  return view.state.selection.ranges.some((selection) =>
+    selection.head >= line.from && selection.head <= line.to);
+}
+
+function isQuoteOnlyLine(source: string) {
+  return /^(?:[\t ]*>[\t ]*)+$/u.test(source);
 }
 
 function listDepth(node: MarkraSyntaxNode) {
@@ -412,13 +484,12 @@ function buildDecorations(
           listDepth(node.node as MarkraSyntaxNode) === 0
         ) {
           const endLine = state.doc.lineAt(node.to - 1).number;
-          const nextLine = endLine + 1;
-          // A source blank already owns a stable block-gap widget. Paragraph
-          // padding is only needed for directly adjacent Markdown blocks.
-          if (
-            nextLine <= state.doc.lines &&
-            state.doc.line(nextLine).text.trim().length > 0
-          ) {
+          let nextContentLine = endLine + 1;
+          while (nextContentLine <= state.doc.lines && state.doc.line(nextContentLine).text.trim().length === 0) {
+            nextContentLine += 1;
+          }
+          // 保留空白行的可编辑高度，并在后续仍有内容块时维持段落间距。
+          if (nextContentLine <= state.doc.lines) {
             paragraphEndLine = endLine;
           }
         }
@@ -431,6 +502,12 @@ function buildDecorations(
             if (lineNumber === paragraphEndLine) lineClasses.push("cm-markra-paragraph-end");
             if (lineNumber === blockquoteFirstLine) lineClasses.push("cm-markra-blockquote-first");
             if (lineNumber === blockquoteLastLine) lineClasses.push("cm-markra-blockquote-last");
+            if (node.name === "Blockquote" && isQuoteOnlyLine(line.text)) {
+              lineClasses.push("cm-markra-structural-line");
+              if (lineContainsSelection(view, line)) {
+                lineClasses.push("cm-markra-active-structural-line");
+              }
+            }
             const className = lineClasses.join(" ");
             ranges.push(Decoration.line({ class: className }).range(line.from));
           }
@@ -485,9 +562,10 @@ function buildDecorations(
     }
 
     if (node.name === "ListItem") {
-      const line = state.doc.lineAt(node.from);
-      const listAttributes = listLineAttributes(line.text);
-      const listMark = node.node.getChild("ListMark");
+      const item = listItemLineAttributes(state, node.node as MarkraSyntaxNode);
+      const line = item?.line ?? state.doc.lineAt(node.from);
+      const listAttributes = item?.attributes ?? null;
+      const listMark = item?.listMark ?? null;
       const sourceVisible = isRevealed({
         view,
         state,
@@ -507,13 +585,22 @@ function buildDecorations(
               "data-list-kind": listAttributes.kind,
               "data-list-marker": listAttributes.marker,
               "data-markra-list-source": sourceVisible ? "visible" : "hidden",
+              style: `--markra-list-indent: ${listDepth(node.node as MarkraSyntaxNode) * 34}px`,
             },
-            class: "cm-markra-list-item",
+            class: `cm-markra-list-item${listAttributes.taskChecked ? " cm-markra-task-done" : ""}`,
           }).range(line.from),
         );
+        if (!sourceVisible && listAttributes.kind !== "task" && listMark) {
+          ranges.push(
+            Decoration.widget({
+              side: -1,
+              widget: new ListMarkerWidget(listAttributes.kind, listAttributes.marker),
+            }).range(markerWidgetPosition(state, listMark)),
+          );
+        }
       }
 
-      const emptyTask = emptyTaskMarkerRange(line.text);
+      const emptyTask = emptyTaskMarkerRange(line.text, listAttributes?.markerFrom ?? 0);
       if (emptyTask) {
         if (taskCheckboxes) {
           const taskFrom = line.from + emptyTask.from;
@@ -562,6 +649,26 @@ function buildDecorations(
             class: headingClass,
           }).range(line.from),
         );
+      }
+      if (node.name.startsWith("Setext")) {
+        const markerLine = state.doc.lineAt(Math.max(node.from, node.to - 1));
+        if (markerLine.from !== line.from) {
+          const headingRevealed = isRevealed({
+            view,
+            state,
+            from: node.from,
+            to: node.to,
+            nodeName: node.name,
+            scope: "heading",
+          });
+          ranges.push(
+            Decoration.line({
+              class: `cm-markra-structural-line cm-markra-setext-marker-line${
+                headingRevealed ? " cm-markra-active-structural-line" : ""
+              }`,
+            }).range(markerLine.from),
+          );
+        }
       }
     }
 
@@ -674,7 +781,10 @@ function buildDecorations(
     const taskSourceRemainsVisible =
       node.name === "ListMark" &&
       !taskCheckboxes &&
-      listLineAttributes(state.doc.lineAt(node.from).text)?.kind === "task";
+      listLineAttributes(
+        state.doc.lineAt(node.from).text,
+        node.from - state.doc.lineAt(node.from).from,
+      )?.kind === "task";
     const isReferenceLinkLabel =
       node.name === "LinkLabel" && parentName === "Link";
     const isReferenceDefinitionMark =
@@ -789,9 +899,14 @@ function buildDecorations(
         // Keep every authored blank as a normal CodeMirror row. Folding one
         // based on surrounding text makes its height change while typing.
         decoratedEmptyLines.add(line.from);
+        const active = view.hasFocus && state.selection.ranges.some(
+          (selection) => selection.empty && selection.head === line.from,
+        );
         ranges.push(
           Decoration.line({
-            class: "cm-markra-empty-line",
+            class: active
+              ? "cm-markra-empty-line cm-markra-active-empty-line"
+              : "cm-markra-empty-line",
           }).range(line.from),
         );
       }
@@ -958,6 +1073,7 @@ export function livePreview(config: LivePreviewConfig = {}): Extension {
   return [
     sourceDragSelectionExtension,
     previewPlugin(config),
+    blockquoteRailExtension(),
     listMarkerSelectionPlugin,
   ];
 }

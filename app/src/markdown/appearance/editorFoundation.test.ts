@@ -12,12 +12,13 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-test("source mode exposes themed gutters while visual mode keeps Protyle geometry", () => {
+test("source and visual modes keep Protyle geometry without line-number gutters", () => {
     const source = mountTestEditor("source");
     const visual = mountTestEditor("visual");
     try {
         assert.equal(source.view.dom.dataset.markdownMode, "source");
-        assert.ok(source.view.dom.querySelector(".cm-gutters"));
+        assert.equal(source.view.dom.querySelector(".cm-gutters"), null);
+        assert.ok(source.view.dom.querySelector(".cm-activeLine"));
         assert.equal(visual.view.dom.dataset.markdownMode, "visual");
         assert.equal(visual.view.dom.querySelector(".cm-gutters"), null);
     } finally {
@@ -66,8 +67,8 @@ test("renders multi-line callout shadows from their outer edges", () => {
 
     assert.match(source, /box-shadow:\s*var\(--markra-callout-shadow-inline/u);
     assert.match(source, /\.cm-line\.cm-markra-callout\s*\{[\s\S]*margin-block:\s*0;/u);
-    assert.match(source, /markra-callout-first\s*\{[\s\S]*margin-top:\s*2px;/u);
-    assert.match(source, /markra-callout-last\s*\{[\s\S]*margin-bottom:\s*2px;/u);
+    assert.match(source, /markra-callout-first\s*\{[\s\S]*border-top-width:\s*2px;/u);
+    assert.match(source, /markra-callout-last\s*\{[\s\S]*border-bottom-width:\s*2px;/u);
     assert.match(source, /markra-callout-first[\s\S]*box-shadow:\s*var\(--markra-callout-shadow-first/u);
     assert.match(source, /markra-callout-last[\s\S]*box-shadow:\s*var\(--markra-callout-shadow-last/u);
     assert.match(

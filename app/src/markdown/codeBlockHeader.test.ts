@@ -47,6 +47,34 @@ test("matches the native code action hierarchy without a synthetic top gap", asy
     assert.ok(view.dom.querySelector(".cm-markra-code-content-first.cm-markra-code-content-last"));
 });
 
+test("reveals controls only for the hovered or focused code block", async () => {
+    const source = "```sh\nfirst_command\n```\n\nBetween blocks\n\n```python\nsecond_value = 2\n```";
+    view = new EditorView({
+        doc: source,
+        extensions: [minimalSetup, liveMarkdown({plugins: [codeBlockPreviewPlugin()]})],
+        parent: document.body,
+    });
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const contentLines = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-markra-code-content-line"));
+    contentLines.find((line) => line.textContent?.includes("second_value"))
+        ?.dispatchEvent(new MouseEvent("mousemove", {bubbles: true}));
+    let headers = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-line:has(.cm-markra-code-actions)"));
+    assert.equal(headers.length, 2);
+    assert.equal(headers[0].dataset.codeBlockHovered, undefined);
+    assert.equal(headers[1].dataset.codeBlockHovered, "true");
+
+    const paragraph = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-line"))
+        .find((line) => line.textContent === "Between blocks");
+    paragraph?.dispatchEvent(new MouseEvent("mousemove", {bubbles: true}));
+    headers = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-line:has(.cm-markra-code-actions)"));
+    assert.equal(headers.every((header) => header.dataset.codeBlockHovered === undefined), true);
+    const firstControl = headers[0].querySelector<HTMLElement>(".markra-code-language-control");
+    firstControl?.focus();
+    assert.equal(firstControl?.closest(".cm-markra-code-actions")?.contains(document.activeElement), true);
+    assert.equal(view.state.doc.toString(), source);
+});
+
 test("uses the SiYuan language popover and updates the Markdown fence", async () => {
     const editorHost = document.createElement("div");
     editorHost.className = "markdown-editor";

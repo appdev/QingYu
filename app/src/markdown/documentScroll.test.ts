@@ -30,6 +30,7 @@ beforeEach(() => {
         parent: container,
         state: EditorState.create({doc: "0123456789", selection: {anchor: 2}}),
     });
+    Object.defineProperty(view, "inView", {configurable: true, value: true});
 });
 
 afterEach(() => {
@@ -59,6 +60,80 @@ test("uses the viewport center when the selection is outside the viewport", () =
     const controller = new MarkdownDocumentScrollController(() => view, container);
 
     assert.deepEqual(controller.captureAnchor(), {position: 5, viewportOffset: 95});
+});
+
+test("returns the last visible anchor without measuring a hidden editor", () => {
+    Object.defineProperty(view, "coordsAtPos", {
+        configurable: true,
+        value: () => rect(80, 100),
+    });
+    const controller = new MarkdownDocumentScrollController(() => view, container);
+    assert.deepEqual(controller.captureAnchor(), {position: 2, viewportOffset: 60});
+
+    Object.defineProperty(view, "inView", {configurable: true, value: false});
+    container.getBoundingClientRect = () => rect(0, 0, 0, 0);
+    Object.defineProperty(view, "posAtCoords", {
+        configurable: true,
+        value: () => {
+            throw new Error("hidden editor must not be measured");
+        },
+    });
+
+    assert.deepEqual(controller.captureAnchor(), {position: 2, viewportOffset: 60});
+});
+
+test("returns null when an editor is hidden before any anchor is captured", () => {
+    Object.defineProperty(view, "inView", {configurable: true, value: false});
+    container.getBoundingClientRect = () => rect(0, 0, 0, 0);
+    Object.defineProperty(view, "posAtCoords", {
+        configurable: true,
+        value: () => {
+            throw new Error("hidden editor must not be measured");
+        },
+    });
+    const controller = new MarkdownDocumentScrollController(() => view, container);
+
+    assert.equal(controller.captureAnchor(), null);
+});
+
+test("keeps the last anchor when CodeMirror cannot resolve viewport coordinates", () => {
+    Object.defineProperty(view, "coordsAtPos", {
+        configurable: true,
+        value: () => rect(80, 100),
+    });
+    const controller = new MarkdownDocumentScrollController(() => view, container);
+    assert.deepEqual(controller.captureAnchor(), {position: 2, viewportOffset: 60});
+
+    Object.defineProperty(view, "coordsAtPos", {
+        configurable: true,
+        value: () => rect(300, 320),
+    });
+    Object.defineProperty(view, "posAtCoords", {
+        configurable: true,
+        value: () => {
+            throw new TypeError("Cannot read properties of undefined (reading 'isText')");
+        },
+    });
+
+    assert.deepEqual(controller.captureAnchor(), {position: 2, viewportOffset: 60});
+});
+
+test("uses a restored anchor without measuring its hidden editor", async () => {
+    Object.defineProperty(view, "inView", {configurable: true, value: false});
+    Object.defineProperty(view, "coordsAtPos", {
+        configurable: true,
+        value: () => {
+            throw new Error("hidden editor must not be measured");
+        },
+    });
+    container.scrollTop = 100;
+    const controller = new MarkdownDocumentScrollController(() => view, container);
+
+    controller.restoreAnchor({position: 7, viewportOffset: 24});
+
+    assert.deepEqual(controller.captureAnchor(), {position: 7, viewportOffset: 24});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    assert.equal(container.scrollTop, 100);
 });
 
 test("restores a clamped document position at the previous viewport offset", async () => {

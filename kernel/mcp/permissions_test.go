@@ -19,6 +19,7 @@ package mcp
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -28,20 +29,24 @@ import (
 )
 
 func TestReadOnlyToolListFiltersActions(t *testing.T) {
+	expected := map[string][]string{
+		"document": {"get", "list", "search_docs", "info"},
+		"markdown": {"get"},
+	}
 	toolList := allowedTools(true)
 	for _, tool := range toolList {
-		if tool.Name != "document" {
+		want, ok := expected[tool.Name]
+		if !ok {
 			continue
 		}
-		action := tool.InputSchema.Properties["action"]
-		for _, value := range action.Enum {
-			if value == "create" || value == "delete" || value == "move" {
-				t.Fatalf("write action %q remains in read-only document schema", value)
-			}
+		if got := tool.InputSchema.Properties["action"].Enum; !reflect.DeepEqual(got, want) {
+			t.Fatalf("read-only %s actions = %v, want %v", tool.Name, got, want)
 		}
-		return
+		delete(expected, tool.Name)
 	}
-	t.Fatal("document tool missing from read-only tool list")
+	if len(expected) != 0 {
+		t.Fatalf("tools missing from read-only tool list: %v", expected)
+	}
 }
 
 func TestReadOnlyToolCallPermissions(t *testing.T) {
@@ -53,6 +58,11 @@ func TestReadOnlyToolCallPermissions(t *testing.T) {
 	}{
 		{name: "document read", tool: "document", action: "get", allowed: true},
 		{name: "document write", tool: "document", action: "create", allowed: false},
+		{name: "markdown read", tool: "markdown", action: "get", allowed: true},
+		{name: "markdown create", tool: "markdown", action: "create", allowed: false},
+		{name: "markdown save", tool: "markdown", action: "save", allowed: false},
+		{name: "markdown rename", tool: "markdown", action: "rename", allowed: false},
+		{name: "markdown remove", tool: "markdown", action: "remove", allowed: false},
 		{name: "sql query", tool: "sql", action: "query", allowed: true},
 		{name: "legacy sql query", tool: "sql", allowed: true},
 		{name: "unzip", tool: "unzip", allowed: false},

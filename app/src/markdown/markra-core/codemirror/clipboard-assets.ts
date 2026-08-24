@@ -43,6 +43,7 @@ import {
   type ConvertClipboardHtmlToMarkdown,
 } from "./html-paste";
 import { defineMarkraPlugin } from "./plugin";
+import {handlePendingPlainTextPasteEvent, isPlainTextPaste} from "../plain-text-paste";
 
 function savedAttachment(resource: SavedEditorResource): resource is Extract<SavedEditorResource, {kind: "attachment"}> {
   return resource.kind === "attachment";
@@ -452,6 +453,41 @@ function localizeRemoteImages(
   }
 }
 
+function structuredPasteSelection(
+  view: CodeMirrorView,
+  markdown: string,
+) {
+  const selection = view.state.selection.main;
+  if (!selection.empty || !markdown.includes("\n")) return selection;
+
+  const line = view.state.doc.lineAt(selection.head);
+  if (!/^[\t ]{0,3}#{1,6}[\t ]*$/u.test(line.text)) return selection;
+  return EditorSelection.range(line.from, line.to);
+}
+
+function insertPlainMarkdownOverEmptyHeading(
+  view: CodeMirrorView,
+  event: ClipboardEvent,
+) {
+  if (event.clipboardData?.getData("text/html")) return false;
+  const markdown = event.clipboardData?.getData("text/plain") ?? "";
+  if (!looksLikeMarkdownSource(markdown)) return false;
+
+  const selection = structuredPasteSelection(view, markdown);
+  const current = view.state.selection.main;
+  if (selection.from === current.from && selection.to === current.to) return false;
+
+  event.preventDefault();
+  view.dispatch({
+    changes: { from: selection.from, insert: markdown, to: selection.to },
+    scrollIntoView: true,
+    selection: EditorSelection.cursor(selection.from + markdown.length),
+    userEvent: "input.paste",
+  });
+  view.focus();
+  return true;
+}
+
 function insertHtmlPaste(
   view: CodeMirrorView,
   event: ClipboardEvent,
@@ -472,7 +508,7 @@ function insertHtmlPaste(
   // Only preserve the raw source when the HTML has no authored document structure.
   if (looksLikeMarkdownSource(plainText) && !converted.structured) return false;
 
-  const { from, to } = view.state.selection.main;
+  const { from, to } = structuredPasteSelection(view, converted.markdown);
   const replacements = saveRemoteImage
     ? remoteReplacementRanges(converted.markdown, from, converted.remoteImages)
     : [];
@@ -647,6 +683,8 @@ export function codeMirrorClipboardAssetsPlugin(
       EditorView.domEventHandlers({
         paste(event, view) {
           if (view.state.readOnly) return false;
+          if (isPlainTextPaste(event)) return false;
+          if (handlePendingPlainTextPasteEvent(event, view.contentDOM)) return true;
           const saveImage = imageSaver(options, "clipboard");
           const saveAttachment = attachmentSaver(options, "clipboard");
           const saveRemoteImage = remoteImageSaver(options);
@@ -684,6 +722,7 @@ export function codeMirrorClipboardAssetsPlugin(
             return true;
           }
           if (insertCodePaste(view, event)) return true;
+          if (insertPlainMarkdownOverEmptyHeading(view, event)) return true;
           return insertHtmlPaste(
             view,
             event,

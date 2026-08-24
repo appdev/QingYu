@@ -19,8 +19,9 @@ import {
 } from "../dialog/processSystem";
 import {initMessage} from "../dialog/message";
 import {getAllModels, getAllTabs} from "../layout/getAll";
+import {refreshMarkdownEditorsForConfigMessage} from "../markdown/configMessageRefresh";
 import {handleMarkdownSaveBarrier} from "../markdown/saveBarrier";
-import {getLocalStorage} from "../protyle/util/compatibility";
+import {getLocalStorage, setStorageVal} from "../protyle/util/compatibility";
 import {init} from "./init";
 import {loadPlugins, reloadPlugin} from "../plugin/loader";
 import {hideAllElements} from "../protyle/ui/hideElements";
@@ -30,6 +31,39 @@ import {renderSnippet} from "../config/util/snippets";
 import {setBodyHighlight} from "../util/assets";
 import {reloadSync} from "../util/reloadSync";
 import {setTitle} from "../util/processTitle";
+import {
+    createMarkdownManagementRuntimeEventController,
+    markdownReferenceFromInitData,
+    markdownManagementEventFromWebSocket,
+} from "../markdown/documentManagement";
+import {installMarkdownManagementRendererCoordinator, markdownCoordinatorEditor} from "../markdown/managementCoordinator";
+import {applyMarkdownTableAppearanceEvent} from "../markdown/markdownTableAppearance";
+import {ipcRenderer} from "electron";
+
+const markdownManagementEvents = createMarkdownManagementRuntimeEventController(() => {
+    const closedTabs = window.siyuan.storage[Constants.LOCAL_CLOSED_TABS] || [];
+    const lazyEditors = getAllTabs("MarkdownEditor").flatMap((tab) => {
+        if (tab.model) return [];
+        const reference = markdownReferenceFromInitData(tab.headElement?.getAttribute("data-initdata"));
+        return reference ? [{
+            notebookId: reference.notebook,
+            path: reference.path,
+            close: () => tab.parent.removeTab(tab.id).then(() => undefined),
+        }] : [];
+    });
+    return {
+        editors: [...getAllModels().markdown.map((editor) => ({
+            get notebookId() { return editor.notebookId; },
+            get path() { return editor.path; },
+            getRevision: () => editor.getRevision(),
+            applyWorkspaceDocumentReference: (notebook: string, path: string, revision: string) =>
+                editor.applyWorkspaceDocumentReference(notebook, path, revision),
+            close: () => editor.parent.parent.removeTab(editor.parent.id).then(() => undefined),
+        })), ...lazyEditors],
+        closedTabs,
+        persistClosedTabs: (layouts: readonly unknown[]) => setStorageVal(Constants.LOCAL_CLOSED_TABS, layouts),
+    };
+});
 
 class App {
     public plugins: import("../plugin").Plugin[] = [];
@@ -77,15 +111,20 @@ class App {
                             case "flushMarkdownForAssetScan":
                                 void handleMarkdownSaveBarrier(data.data, mainWs.sessionId, getAllModels().markdown);
                                 break;
+                            case "markdownTableAppearance":
+                                applyMarkdownTableAppearanceEvent(data.data);
+                                break;
                             case "syncMergeResult":
                                 reloadSync(this, data.data);
                                 break;
                             case "readonly":
                                 window.siyuan.config.editor.readOnly = data.data;
+                                refreshMarkdownEditorsForConfigMessage(data.cmd, getAllModels().markdown);
                                 hideAllElements(["util"]);
                                 break;
                             case "setConf":
                                 window.siyuan.config = data.data;
+                                refreshMarkdownEditorsForConfigMessage(data.cmd, getAllModels().markdown);
                                 break;
                             case "progress":
                                 progressLoading(data);
@@ -121,6 +160,15 @@ class App {
                                     }
                                 });
                                 break;
+                            case "createMarkdown":
+                            case "saveMarkdown":
+                            case "renameMarkdown":
+                            case "removeMarkdown":
+                            case "sortMarkdown":
+                            case "purgeMarkdown": {
+                                markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
+                                break;
+                            }
                             case "closeBox":
                             case "removeBox":
                                 getAllTabs().forEach((tab) => {
@@ -210,3 +258,5 @@ class App {
 }
 
 new App();
+installMarkdownManagementRendererCoordinator(ipcRenderer, window.location.origin,
+    () => getAllModels().markdown.map(markdownCoordinatorEditor));

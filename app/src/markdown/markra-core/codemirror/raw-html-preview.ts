@@ -118,6 +118,12 @@ function overlaps(
   return range.from < other.to && range.to > other.from;
 }
 
+function preservesRawHtmlInteraction(root: HTMLElement, target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  const interactive = target.closest("summary, a[href]");
+  return Boolean(interactive && root.contains(interactive));
+}
+
 function inlineHtmlRanges(
   view: CodeMirrorView,
   blocks: readonly CodeMirrorHtmlRange[],
@@ -225,6 +231,7 @@ class RawHtmlWidget extends WidgetType {
     root.setAttribute("role", "button");
     root.setAttribute("aria-label", "Edit HTML source");
     const activate = (event: Event) => {
+      if (preservesRawHtmlInteraction(root, event.target)) return;
       event.preventDefault();
       event.stopPropagation();
       activateHtml(view, this.range);

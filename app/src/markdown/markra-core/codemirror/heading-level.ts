@@ -110,6 +110,7 @@ class HeadingLevelWidget extends WidgetType {
       `${this.headingLevelLabel} ${levelLabel}`,
     );
     toggle.dataset.headingLevel = levelLabel;
+    toggle.textContent = levelLabel;
     toggle.title = this.headingLevelLabel;
     toggle.setAttribute("aria-expanded", String(this.open));
     toggle.setAttribute("aria-haspopup", "listbox");

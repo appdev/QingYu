@@ -15,13 +15,49 @@ import {reloadSync} from "../../util/reloadSync";
 import {setEmpty} from "./setEmpty";
 import {activateOnboarding} from "../../onboarding";
 import {clearMobileBackForward} from "./MobileBackFoward";
-import {getMobileMarkdownEditor} from "../markdownState";
+import {
+    closeMobileMarkdownEditor,
+    closeMobileMarkdownEditorForNotebook,
+    getMobileMarkdownEditor,
+    refreshMobileMarkdownReadOnly,
+} from "../markdownState";
 import {handleMarkdownSaveBarrier} from "../../markdown/saveBarrier";
+import {
+    createMarkdownManagementRuntimeEventController,
+    markdownManagementEventFromWebSocket,
+} from "../../markdown/documentManagement";
+import {Constants} from "../../constants";
+import {setStorageVal} from "../../protyle/util/compatibility";
+
+let markdownManagementApp: App;
+const markdownManagementEvents = createMarkdownManagementRuntimeEventController(() => {
+    const editor = getMobileMarkdownEditor() as ReturnType<typeof getMobileMarkdownEditor> & {
+        getRevision?(): string;
+        applyWorkspaceDocumentReference?(notebook: string, path: string, revision: string): void;
+    };
+    const closedTabs = window.siyuan.storage[Constants.LOCAL_CLOSED_TABS] || [];
+    return {
+        editors: editor ? [{
+            get notebookId() { return editor.notebookId; },
+            get path() { return editor.path; },
+            getRevision: () => editor.getRevision?.() || "",
+            applyWorkspaceDocumentReference: (notebook: string, path: string, revision: string) =>
+                editor.applyWorkspaceDocumentReference?.(notebook, path, revision),
+            close: () => {
+                closeMobileMarkdownEditor();
+                setEmpty(markdownManagementApp);
+            },
+        }] : [],
+        closedTabs,
+        persistClosedTabs: (layouts: readonly unknown[]) => setStorageVal(Constants.LOCAL_CLOSED_TABS, layouts),
+    };
+});
 
 let statusTimeout: number;
 const statusElement = document.querySelector("#status") as HTMLElement;
 
 export const onMessage = (app: App, data: IWebSocketData) => {
+    markdownManagementApp = app;
     if (data) {
         switch (data.cmd) {
             case "logoutAuth":
@@ -82,6 +118,7 @@ export const onMessage = (app: App, data: IWebSocketData) => {
             }
             case "readonly":
                 window.siyuan.config.editor.readOnly = data.data;
+                refreshMobileMarkdownReadOnly();
                 break;
             case "closeBox":
             case "removeBox": {
@@ -91,6 +128,9 @@ export const onMessage = (app: App, data: IWebSocketData) => {
                     window.siyuan.mobile.editor.destroy();
                     window.siyuan.mobile.editor.protyle.element.innerHTML = "";
                     window.siyuan.mobile.editor = undefined;
+                    setEmpty(app);
+                }
+                if (closeMobileMarkdownEditorForNotebook(data.data.box)) {
                     setEmpty(app);
                 }
                 break;
@@ -104,6 +144,15 @@ export const onMessage = (app: App, data: IWebSocketData) => {
                     void activateOnboarding(app, window.siyuan.config.onboarding);
                 }
                 break;
+            case "createMarkdown":
+            case "saveMarkdown":
+            case "renameMarkdown":
+            case "removeMarkdown":
+            case "sortMarkdown":
+            case "purgeMarkdown": {
+                markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
+                break;
+            }
             case "setLocalStorageVal":
                 window.siyuan.storage[data.data.key] = data.data.val;
                 break;

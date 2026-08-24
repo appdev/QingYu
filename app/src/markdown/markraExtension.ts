@@ -2,8 +2,6 @@ import {EditorState, type Extension} from "@codemirror/state";
 import {
     EditorView,
     highlightActiveLine,
-    highlightActiveLineGutter,
-    lineNumbers,
     placeholder,
 } from "@codemirror/view";
 import {getCodeLanguages} from "../protyle/codeLanguage";
@@ -17,6 +15,8 @@ import {
     calloutPreviewPlugin,
     codeBlockPreviewPlugin,
     codeMirrorBlockDragPlugin,
+    codeMirrorLocationCue,
+    codeMirrorSearchPlugin,
     codeMirrorClipboardAssetsPlugin,
     footnotePreviewPlugin,
     foldTogglePlugin,
@@ -38,6 +38,7 @@ import {
     tableFragmentMergePlugin,
     tablePreviewPlugin,
     trailingSpacePlugin,
+    type MarkdownTableAppearancePluginOptions,
 } from "./markra-core/codemirror";
 
 const getBlockLabels = (): Partial<BlockLabels> => {
@@ -67,6 +68,7 @@ export interface SiyuanMarkraExtensionOptions {
     documentPath(): string;
     getScrollContainer?(view: EditorView): HTMLElement | null;
     mode: "source" | "visual";
+    tableAppearance?: MarkdownTableAppearancePluginOptions;
 }
 
 const editorTheme = EditorView.theme({
@@ -91,9 +93,7 @@ const editorTheme = EditorView.theme({
 });
 
 const sourceModeAppearance: Extension[] = [
-    lineNumbers(),
     highlightActiveLine(),
-    highlightActiveLineGutter(),
     EditorView.editorAttributes.of({"data-markdown-mode": "source"}),
 ];
 
@@ -109,6 +109,7 @@ export const createSiyuanMarkraExtension = ({
     documentPath,
     getScrollContainer,
     mode,
+    tableAppearance,
 }: SiyuanMarkraExtensionOptions): Extension => {
     const imageOptions = {
         className: "img",
@@ -127,11 +128,12 @@ export const createSiyuanMarkraExtension = ({
             "aria-multiline": "true",
             "data-language": "markdown",
             role: "textbox",
-            spellcheck: "false",
         }),
         placeholder(window.siyuan?.languages?.emptyPlaceholder ?? ""),
         editorTheme,
         markdownSelectAllExtension(),
+        codeMirrorSearchPlugin(),
+        codeMirrorLocationCue(),
     ];
     if (mode === "source") {
         return [...common, markraLanguage, markdownSourceSyntaxHighlighting];
@@ -196,7 +198,7 @@ export const createSiyuanMarkraExtension = ({
                 }),
                 tableFragmentMergePlugin(),
                 tablePreviewPlugin({
-                    getDocumentKey: documentPath,
+                    appearance: tableAppearance,
                     images: imageOptions,
                     links: linkOptions,
                     widthMode: "auto",

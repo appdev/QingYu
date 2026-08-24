@@ -17,6 +17,31 @@
 
 declare namespace Config {
 
+    export interface IRecentNativeDocument {
+        kind?: "native";
+        rootID: string;
+        title: string;
+        icon?: string;
+        viewedAt?: number;
+        openAt?: number;
+        closedAt?: number;
+        updated?: number;
+    }
+
+    export interface IRecentMarkdownDocument {
+        kind: "markdown";
+        notebook: string;
+        path: string;
+        title: string;
+        icon?: string;
+        viewedAt?: number;
+        openAt?: number;
+        closedAt?: number;
+        updated?: number;
+    }
+
+    export type TRecentDocument = IRecentNativeDocument | IRecentMarkdownDocument;
+
     /**
      * Configuration object
      */
@@ -758,6 +783,8 @@ declare namespace Config {
         preview: IKey;
         quickMakeCard: IKey;
         redo: IKey;
+        rtl: IKey;
+        ltr: IKey;
         refPopover: IKey;
         refresh: IKey;
         refTab: IKey;
@@ -1657,6 +1684,7 @@ declare namespace Config {
         | IUILayoutTab
         | IUILayoutTabEditor
         | IUILayoutTabMarkdownEditor
+        | IUILayoutTabMarkdownOutline
         | IUILayoutTabAsset
         | IUILayoutTabCustom
         | IUILayoutTabBacklink
@@ -1743,7 +1771,7 @@ declare namespace Config {
         /**
          * Tab content
          */
-        children: (IUILayoutTabAsset | IUILayoutTabBacklink | IUILayoutTabCustom | IUILayoutTabEditor | IUILayoutTabMarkdownEditor)[];
+        children: (IUILayoutTabAsset | IUILayoutTabBacklink | IUILayoutTabCustom | IUILayoutTabEditor | IUILayoutTabMarkdownEditor | IUILayoutTabMarkdownOutline)[];
         /**
          * Tab icon
          */
@@ -1895,8 +1923,15 @@ declare namespace Config {
      */
     export interface IUILayoutTabMarkdownEditor {
         instance: "MarkdownEditor";
-        notebookId: string;
-        path: string;
+        notebookId?: string;
+        path?: string;
+        externalCapabilityId?: string;
+        markdownSession?: import("../markdown/sessionState").MarkdownEditorSessionState;
+    }
+
+    export interface IUILayoutTabMarkdownOutline {
+        instance: "MarkdownOutline";
+        sourceKey: string;
     }
 
     /**

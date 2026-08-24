@@ -50,6 +50,83 @@ test("prefers SiYuan variables and probes standard Protyle selectors", () => {
     assert.equal(document.querySelectorAll("[data-markdown-appearance-probe]").length, 1);
 });
 
+test("reads the native horizontal rule paint from its visible pseudo-element", () => {
+    Object.assign(window, {
+        Lute: {
+            New: () => ({
+                Md2BlockDOM: () => "<div class=\"hr\"><div></div></div>",
+            }),
+        },
+    });
+    const readComputedStyle = window.getComputedStyle.bind(window);
+    window.getComputedStyle = ((element: Element, pseudo?: string | null) => {
+        const computed = readComputedStyle(element);
+        if (!element.matches(".protyle-wysiwyg .hr > div") || pseudo !== "::after") return computed;
+        return new Proxy(computed, {
+            get(target, property, receiver) {
+                if (property === "backgroundColor") return "rgb(201, 151, 0)";
+                return Reflect.get(target, property, receiver);
+            },
+        });
+    }) as typeof window.getComputedStyle;
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    assert.equal(
+        snapshot.values["--b3-editor-appearance-block-horizontal-rule-background-color"],
+        "rgb(201, 151, 0)",
+    );
+});
+
+test("reads the native blockquote rail from its visible pseudo-element", () => {
+    Object.assign(window, {
+        Lute: {
+            New: () => ({
+                Md2BlockDOM: () => "<div class=\"bq\"><div class=\"p\">Quote</div></div>",
+            }),
+        },
+    });
+    const readComputedStyle = window.getComputedStyle.bind(window);
+    window.getComputedStyle = ((element: Element, pseudo?: string | null) => {
+        const computed = readComputedStyle(element);
+        if (!element.matches(".protyle-wysiwyg .bq") || pseudo !== "::before") return computed;
+        return new Proxy(computed, {
+            get(target, property, receiver) {
+                if (property === "backgroundColor") return "rgb(120, 130, 140)";
+                if (property === "width") return "4px";
+                return Reflect.get(target, property, receiver);
+            },
+        });
+    }) as typeof window.getComputedStyle;
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    assert.equal(
+        snapshot.values["--b3-editor-appearance-block-blockquote-border-left-color"],
+        "rgb(120, 130, 140)",
+    );
+    assert.equal(snapshot.values["--b3-editor-appearance-block-blockquote-border-left-width"], "4px");
+});
+
+test("preserves complete textured heading paint from third-party themes", () => {
+    const theme = document.createElement("style");
+    theme.textContent = `.protyle-wysiwyg .h1 {
+        background: linear-gradient(90deg, rgb(160, 120, 20), rgb(250, 220, 120));
+        background-blend-mode: multiply;
+        background-clip: text;
+        -webkit-background-clip: text;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+    }`;
+    document.head.append(theme);
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    const prefix = "--b3-editor-appearance-block-heading-1";
+    assert.match(snapshot.values[`${prefix}-background`] ?? "", /linear-gradient/u);
+    assert.match(snapshot.values[`${prefix}-background-image`] ?? "", /linear-gradient/u);
+    assert.equal(snapshot.values[`${prefix}-background-blend-mode`], "multiply");
+    assert.equal(snapshot.values[`${prefix}-background-clip`], "text");
+    assert.equal(snapshot.values[`${prefix}-webkit-text-fill-color`], "transparent");
+});
+
 test("probes native code and block control components", () => {
     const theme = document.createElement("style");
     theme.textContent = `
@@ -155,7 +232,7 @@ test("resolves theme variables from the Protyle probe scope before the applicati
     );
 });
 
-test("retains the last valid snapshot when a standard variable disappears", () => {
+test("removes stale theme values when a standard variable disappears", () => {
     document.documentElement.style.setProperty("--b3-theme-on-background", "rgb(4, 5, 6)");
     const root = document.body.appendChild(document.createElement("div"));
     root.className = "markdown-editor";
@@ -165,7 +242,7 @@ test("retains the last valid snapshot when a standard variable disappears", () =
     document.documentElement.style.removeProperty("--b3-theme-on-background");
     refreshMarkdownAppearance(document);
 
-    assert.equal(
+    assert.notEqual(
         root.style.getPropertyValue("--b3-editor-appearance-shell-document-color"),
         "rgb(4, 5, 6)",
     );

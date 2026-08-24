@@ -17,9 +17,11 @@
 package mcp
 
 const (
-	ProtocolVersion   = "2025-06-18"
-	ProtocolV20260728 = "2026-07-28"
-	ServerName        = "QingYu"
+	ProtocolVersion    = "2025-06-18"
+	ProtocolV20260728  = "2026-07-28"
+	ServerName         = "QingYu"
+	ServerInstructions = "QingYu is the application name; its Chinese name is 轻语. When the user refers to QingYu or 轻语 " +
+		"and asks to read, search, create, update, or manage workspace content, use this server's tools when appropriate."
 )
 
 type Meta struct {

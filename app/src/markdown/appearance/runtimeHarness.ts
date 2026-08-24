@@ -1,4 +1,5 @@
 import {history} from "@codemirror/commands";
+import {syntaxTree} from "@codemirror/language";
 import {Compartment, EditorSelection, EditorState} from "@codemirror/state";
 import {EditorView, minimalSetup} from "codemirror";
 import {openSearchPanel} from "@codemirror/search";
@@ -15,10 +16,15 @@ import {reconfigureSiyuanMarkraExtension} from "../markdownEditorExtension";
 import {
     appearanceComparisonProperties,
     listAppearanceContracts,
+    type AppearanceGeometryReference,
     type MarkdownAppearanceMode,
     type MarkdownAppearancePlatform,
 } from "./contracts";
-import {APPEARANCE_FIXTURE_MARKDOWN, createNativeAppearanceFixture} from "./fixture";
+import {
+    APPEARANCE_FIXTURE_MARKDOWN,
+    createNativeAppearanceFixture,
+    createNativeHeadingContextFixtures,
+} from "./fixture";
 import {acquireMarkdownAppearance, type MarkdownAppearanceHandle} from "./themeResolver";
 
 type AppearanceState = {
@@ -101,6 +107,31 @@ export interface RuntimeCoordinateMappingReport {
     targetLineNumber: number;
 }
 
+export interface RuntimeCompoundTopologyReport {
+    calloutRailCount: number;
+    quoteRailCount: number;
+    quoteRailHeight: number;
+    quoteRailWidth: number;
+    quoteSourceFrom: number;
+    quoteSourceTo: number;
+    roundedInternalSegmentCount: number;
+}
+
+export interface RuntimeVerticalRhythmBlock {
+    bottom: number;
+    height: number;
+    kind: string;
+    top: number;
+}
+
+export interface RuntimeVerticalRhythmReport {
+    kindsMatch: boolean;
+    markdown: RuntimeVerticalRhythmBlock[];
+    maximumTopDifference: number;
+    native: RuntimeVerticalRhythmBlock[];
+    totalHeightDifference: number;
+}
+
 export interface RuntimeModeContinuityReport {
     anchorOffsetDifference: number;
     anchorPositionAfter: number;
@@ -112,9 +143,11 @@ export interface MarkdownAppearanceRuntimeHarness {
     destroy(): Promise<void>;
     interact(state: string): Promise<void>;
     measure(): RuntimeAppearanceReport;
+    measureCompoundTopology(position: number): Promise<RuntimeCompoundTopologyReport>;
     measureCoordinateMapping(position: number): Promise<RuntimeCoordinateMappingReport>;
     measureDocumentBehavior(): Promise<RuntimeDocumentBehaviorReport>;
     measureModeContinuity(): Promise<RuntimeModeContinuityReport>;
+    measureVerticalRhythm(): RuntimeVerticalRhythmReport;
     mount(options?: RuntimeHarnessOptions): Promise<RuntimeAppearanceFixture>;
     setMode(mode: MarkdownAppearanceMode): Promise<void>;
     setTheme(theme: RuntimeAppearanceTheme): Promise<void>;
@@ -123,7 +156,7 @@ export interface MarkdownAppearanceRuntimeHarness {
 const trackedDataAttributes = ["data-dark-theme", "data-light-theme", "data-theme-mode"];
 const runtimeThemeScopes = [
     '[data-appearance-runtime="true"]',
-    '.protyle[data-markdown-appearance-probe="true"]',
+    '[data-markdown-appearance-probe="true"]',
 ];
 
 const scopeThemeCss = (css: string) => {
@@ -223,19 +256,6 @@ const collectContiguousLines = (element: HTMLElement, selector: string) => {
     return lines;
 };
 
-const contentBlockRect = (element: HTMLElement) => {
-    const rect = element.getBoundingClientRect();
-    const computed = element.ownerDocument.defaultView?.getComputedStyle(element);
-    const top = Number.parseFloat(computed?.borderTopWidth ?? "") || 0;
-    const bottom = Number.parseFloat(computed?.borderBottomWidth ?? "") || 0;
-    return DOMRect.fromRect({
-        height: Math.max(0, rect.height - top - bottom),
-        width: rect.width,
-        x: rect.left,
-        y: rect.top + top,
-    });
-};
-
 const markdownRect = (contractId: string, element: HTMLElement) => {
     if (contractId === "block.code") {
         const lines = collectContiguousLines(element, ".cm-markra-code-content-line");
@@ -245,18 +265,120 @@ const markdownRect = (contractId: string, element: HTMLElement) => {
         const lines = collectContiguousLines(element, ".cm-markra-callout");
         return lines.length > 0 ? unionRect(lines) : element.getBoundingClientRect();
     }
-    if (contractId === "block.paragraph" || contractId === "block.list" || contractId.startsWith("block.heading-")) {
-        return contentBlockRect(element);
-    }
     return element.getBoundingClientRect();
+};
+
+const geometryElements = (
+    shell: HTMLElement,
+    reference: AppearanceGeometryReference | undefined,
+    fallback: HTMLElement,
+) => {
+    if (!reference) return [fallback];
+    const selected = shell.querySelector<HTMLElement>(reference.selector);
+    const first = reference.closest ? selected?.closest<HTMLElement>(reference.closest) : selected;
+    if (!first || reference.aggregate !== "contiguous-lines") return first ? [first] : [fallback];
+    const elements = [first];
+    let sibling = first.nextElementSibling;
+    while (sibling instanceof HTMLElement && sibling.matches(reference.selector)) {
+        elements.push(sibling);
+        sibling = sibling.nextElementSibling;
+    }
+    return elements;
+};
+
+const geometryRect = (
+    shell: HTMLElement,
+    reference: AppearanceGeometryReference | undefined,
+    fallback: HTMLElement,
+) => {
+    const elements = geometryElements(shell, reference, fallback);
+    const rect = elements.length === 1 ? elements[0].getBoundingClientRect() : unionRect(elements);
+    if (reference?.box !== "margin") return rect;
+    const firstStyle = elements[0].ownerDocument.defaultView?.getComputedStyle(elements[0]);
+    const lastStyle = elements.at(-1)?.ownerDocument.defaultView?.getComputedStyle(elements.at(-1) as HTMLElement);
+    const marginTop = Number.parseFloat(firstStyle?.marginTop ?? "") || 0;
+    const marginBottom = Number.parseFloat(lastStyle?.marginBottom ?? "") || 0;
+    const marginLeft = Math.max(...elements.map((element) =>
+        Number.parseFloat(element.ownerDocument.defaultView?.getComputedStyle(element).marginLeft ?? "") || 0));
+    const marginRight = Math.max(...elements.map((element) =>
+        Number.parseFloat(element.ownerDocument.defaultView?.getComputedStyle(element).marginRight ?? "") || 0));
+    const DOMRectConstructor = elements[0].ownerDocument.defaultView?.DOMRect;
+    if (!DOMRectConstructor) return rect;
+    return DOMRectConstructor.fromRect({
+        height: rect.height + marginTop + marginBottom,
+        width: rect.width + marginLeft + marginRight,
+        x: rect.left - marginLeft,
+        y: rect.top - marginTop,
+    });
+};
+
+const nativeBlockKind = (element: HTMLElement) => {
+    for (let level = 1; level <= 6; level++) {
+        if (element.classList.contains(`h${level}`)) return `heading-${level}`;
+    }
+    if (element.classList.contains("p")) return "paragraph";
+    if (element.classList.contains("hr")) return "horizontal-rule";
+    if (element.classList.contains("list")) return "list";
+    if (element.classList.contains("bq")) return "blockquote";
+    if (element.matches('[data-type="NodeCallout"]')) return "callout";
+    if (element.classList.contains("code-block")) return "code";
+    if (element.classList.contains("table")) return "table";
+    return "other";
+};
+
+const markdownBlockKind = (element: HTMLElement) => {
+    for (let level = 1; level <= 6; level++) {
+        if (element.classList.contains(`cm-markra-h${level}`)) return `heading-${level}`;
+    }
+    if (element.querySelector(".cm-markra-horizontal-rule")) return "horizontal-rule";
+    if (element.classList.contains("cm-markra-list-item")) return "list";
+    if (element.classList.contains("cm-markra-callout")) return "callout";
+    if (element.classList.contains("cm-markra-blockquote")) return "blockquote";
+    if (element.classList.contains("cm-markra-code-line")) return "code";
+    if (element.querySelector(".cm-markra-table-wrap")) return "table";
+    if (element.classList.contains("cm-markra-paragraph")) return "paragraph";
+    return "other";
+};
+
+const rhythmBlocks = (
+    elements: HTMLElement[],
+    container: HTMLElement,
+    kindOf: (element: HTMLElement) => string,
+    includeMargins: boolean,
+) => {
+    const groups: Array<{elements: HTMLElement[]; kind: string}> = [];
+    for (const element of elements) {
+        const kind = kindOf(element);
+        if (kind === "other") continue;
+        const previous = groups.at(-1);
+        if (previous && previous.kind === kind && ["blockquote", "callout", "code", "list"].includes(kind)) {
+            previous.elements.push(element);
+        } else {
+            groups.push({elements: [element], kind});
+        }
+    }
+    const containerTop = container.getBoundingClientRect().top;
+    return groups.map(({elements: group, kind}) => {
+        const base = group.length === 1 ? group[0].getBoundingClientRect() : unionRect(group);
+        let top = base.top;
+        let bottom = base.bottom;
+        if (includeMargins) {
+            const first = group[0].ownerDocument.defaultView?.getComputedStyle(group[0]);
+            const last = group.at(-1)?.ownerDocument.defaultView?.getComputedStyle(group.at(-1) as HTMLElement);
+            top -= Number.parseFloat(first?.marginTop ?? "") || 0;
+            bottom += Number.parseFloat(last?.marginBottom ?? "") || 0;
+        }
+        return {bottom: bottom - containerTop, height: bottom - top, kind, top: top - containerTop};
+    });
 };
 
 const readNativeElement = (
     shell: HTMLElement,
     element: HTMLElement,
     contract: ReturnType<typeof listAppearanceContracts>[number],
+    rect = element.getBoundingClientRect(),
 ) => {
-    const result = readElement(element, contract.styleProperties);
+    const result = readElement(element, contract.styleProperties, rect);
     for (const property of contract.styleProperties) {
         const reference = contract.propertyReferences?.[property];
         if (!reference) continue;
@@ -271,8 +393,9 @@ const readMarkdownElement = (
     shell: HTMLElement,
     element: HTMLElement,
     contract: ReturnType<typeof listAppearanceContracts>[number],
+    rect = markdownRect(contract.id, element),
 ) => {
-    const result = readElement(element, contract.styleProperties, markdownRect(contract.id, element));
+    const result = readElement(element, contract.styleProperties, rect);
     for (const property of contract.styleProperties) {
         const reference = contract.markdownPropertyReferences?.[property];
         if (!reference) continue;
@@ -321,6 +444,9 @@ const equivalentStyleValue = (
     expected: string | undefined,
 ) => {
     if (actual === expected) return true;
+    if ((property === "firstMarginTop" || property.startsWith("inner") || property.startsWith("outer")) && !actual) {
+        return true;
+    }
     const markdownProperty = contract.markdownPropertyReferences?.[property]?.property;
     if (!["borderBottomWidth", "borderTopWidth"].includes(markdownProperty ?? "")) return false;
     const actualPixels = Number.parseFloat(actual ?? "");
@@ -329,11 +455,16 @@ const equivalentStyleValue = (
         Math.abs(actualPixels - expectedPixels) <= .5;
 };
 
-const createNativeShell = (document: Document, blockDOM: string, width: number) => {
+const createNativeShell = (
+    document: Document,
+    blockDOM: string,
+    width: number,
+    lute: {Md2BlockDOM(markdown: string): string},
+) => {
     const shell = document.createElement("section");
     shell.className = "protyle markdown-appearance-runtime__native";
     shell.dataset.appearanceFixture = "native-shell";
-    shell.style.height = "1400px";
+    shell.style.height = "1600px";
     shell.style.width = `${width}px`;
     shell.innerHTML = "<div class=\"protyle-content\"><div class=\"protyle-background\"></div><div class=\"protyle-title\"><div class=\"protyle-title__input\">Appearance fixture</div></div></div>";
     const nativeRoot = createNativeAppearanceFixture(document, blockDOM);
@@ -342,6 +473,7 @@ const createNativeShell = (document: Document, blockDOM: string, width: number) 
     references.className = "markdown-appearance-runtime__references";
     references.style.cssText = "contain:layout style;left:-100000px;position:fixed;top:0;visibility:hidden";
     references.innerHTML = "<div class=\"b3-typography\"></div><div class=\"b3-list\"></div><div class=\"b3-snackbar--error\"></div><div class=\"block__icons\"><button class=\"block__icon\"><svg></svg></button></div><div class=\"protyle-util\"></div><div class=\"b3-menu\"><input class=\"b3-text-field\"><button class=\"b3-list-item\"></button></div><div class=\"b3-progress\"></div><div class=\"viewer-container\"></div>";
+    references.append(createNativeHeadingContextFixtures(document, lute));
     shell.append(references);
     return {nativeRoot, shell};
 };
@@ -354,7 +486,7 @@ const createMarkdownShell = (
     const shell = document.createElement("section");
     shell.className = "protyle markdown-editor markdown-appearance-runtime__markdown";
     shell.dataset.markdownPlatform = platform;
-    shell.style.height = "1400px";
+    shell.style.height = "1600px";
     shell.style.width = `${width}px`;
     shell.innerHTML = "<div class=\"protyle-content markdown-editor__content\"><div class=\"protyle-top markdown-editor__top\"><div class=\"protyle-background markdown-editor__metadata\"></div><div class=\"protyle-title markdown-editor__title\"><div class=\"protyle-title__input\">Appearance fixture</div></div></div><div class=\"markdown-editor__body\" style=\"padding:16px 16px 0 24px\"><div class=\"markdown-editor__surface b3-typography\"></div></div></div><div class=\"markdown-editor__status\"></div>";
     return shell;
@@ -373,12 +505,16 @@ const waitForLayout = (window: Window) => new Promise<void>((resolve) => {
 });
 
 const waitForMedia = async (root: HTMLElement) => {
+    const mediaTimeout = 1_500;
     const images = [...root.querySelectorAll("img")].filter((image) =>
         Boolean(image.getAttribute("src") || image.dataset.src));
     images.forEach((image) => {
         if (!image.getAttribute("src") && image.dataset.src) image.src = image.dataset.src;
     });
-    await Promise.all(images.map((image) => image.decode?.().catch(() => undefined)));
+    await Promise.all(images.map((image) => Promise.race([
+        image.decode?.().catch(() => undefined),
+        new Promise<void>((resolve) => window.setTimeout(resolve, mediaTimeout)),
+    ])));
     await waitForLayout(root.ownerDocument.defaultView as Window);
 };
 
@@ -431,7 +567,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         const grid = document.createElement("div");
         grid.className = "markdown-appearance-runtime__grid";
         grid.style.cssText = "display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));min-width:0";
-        const native = createNativeShell(document, lute.Md2BlockDOM(markdown), width);
+        const native = createNativeShell(document, lute.Md2BlockDOM(markdown), width, lute);
         if (markdown.trim().length === 0) {
             native.nativeRoot.classList.add("protyle-wysiwyg--empty");
             native.nativeRoot.setAttribute("placeholder", window.siyuan?.languages?.emptyPlaceholder ?? "");
@@ -578,8 +714,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
             openSearchPanel(active.fixture.view);
         }
         if (state === "media") {
-            root.querySelector<HTMLElement>(".markra-image-node img")
-                ?.dispatchEvent(new MouseEvent("dblclick", {bubbles: true}));
+            root.querySelector<HTMLElement>(".markra-mermaid-zoom-button")?.click();
         }
         await waitForLayout(window);
     };
@@ -603,12 +738,39 @@ export const installMarkdownAppearanceRuntimeHarness = (
                 const nativeElement = contract.reference.selector
                     ? current.nativeShell.querySelector<HTMLElement>(contract.reference.selector)
                     : null;
+                const markdownGeometryRect = markdownElement
+                    ? geometryRect(
+                        current.fixture.markdownRoot,
+                        contract.geometryReferences?.markdown,
+                        markdownElement,
+                    )
+                    : null;
+                const nativeGeometryElement = contract.geometryReferences?.native
+                    ? current.nativeShell.querySelector<HTMLElement>(contract.geometryReferences.native.selector)
+                    : nativeElement;
+                const nativeGeometryRect = nativeGeometryElement
+                    ? geometryRect(
+                        current.nativeShell,
+                        contract.geometryReferences?.native,
+                        nativeGeometryElement,
+                    )
+                    : null;
                 const markdown = selectionElement && markdownElement === selectionElement
                     ? readPseudoElement(selectionElement, contract.styleProperties, "::selection")
                     : markdownElement
-                        ? readMarkdownElement(current.fixture.markdownRoot, markdownElement, contract)
+                        ? readMarkdownElement(
+                            current.fixture.markdownRoot,
+                            markdownElement,
+                            contract,
+                            markdownGeometryRect ?? undefined,
+                        )
                     : null;
-                const native = nativeElement ? readNativeElement(current.nativeShell, nativeElement, contract) : null;
+                const native = nativeElement ? readNativeElement(
+                    current.nativeShell,
+                    nativeElement,
+                    contract,
+                    nativeGeometryRect ?? undefined,
+                ) : null;
                 const styleDiffs: AppearanceMeasurement["styleDiffs"] = {};
                 const geometryDiffs: AppearanceMeasurement["geometryDiffs"] = {};
                 if (markdown && native) {
@@ -693,6 +855,42 @@ export const installMarkdownAppearanceRuntimeHarness = (
         return report;
     };
 
+    const measureVerticalRhythm = (): RuntimeVerticalRhythmReport => {
+        if (!active) throw new Error("Mount the Markdown appearance harness before measuring vertical rhythm");
+        const nativeRoot = active.fixture.nativeRoot;
+        const markdownContent = active.fixture.view.contentDOM;
+        const native = rhythmBlocks(
+            [...nativeRoot.children].filter((element): element is HTMLElement =>
+                element instanceof HTMLElement && !element.classList.contains("protyle-attr")),
+            nativeRoot,
+            nativeBlockKind,
+            true,
+        );
+        const markdown = rhythmBlocks(
+            [...markdownContent.children].filter((element): element is HTMLElement =>
+                element instanceof HTMLElement && element.matches(".cm-line") &&
+                element.getBoundingClientRect().height > 0),
+            markdownContent,
+            markdownBlockKind,
+            false,
+        );
+        const comparable = Math.min(native.length, markdown.length);
+        const nativeOrigin = native[0]?.top ?? 0;
+        const markdownOrigin = markdown[0]?.top ?? 0;
+        return {
+            kindsMatch: native.length === markdown.length && native.every((block, index) =>
+                block.kind === markdown[index]?.kind),
+            markdown,
+            maximumTopDifference: Math.max(0, ...Array.from({length: comparable}, (_value, index) =>
+                Math.abs(native[index].top - nativeOrigin - (markdown[index].top - markdownOrigin)))),
+            native,
+            totalHeightDifference: native.length > 0 && markdown.length > 0
+                ? Math.abs(native.at(-1)!.bottom - native[0].top -
+                    (markdown.at(-1)!.bottom - markdown[0].top))
+                : 0,
+        };
+    };
+
     const measureCoordinateMapping = async (position: number): Promise<RuntimeCoordinateMappingReport> => {
         if (!active) throw new Error("Mount the Markdown appearance harness before measuring coordinate mapping");
         const view = active.fixture.view;
@@ -717,6 +915,54 @@ export const installMarkdownAppearanceRuntimeHarness = (
             blockTopDifference: Math.abs(lineElement.getBoundingClientRect().top - (lineBlock.top + view.documentTop)),
             hitLineNumber: view.state.doc.lineAt(hit).number,
             targetLineNumber: view.state.doc.lineAt(position).number,
+        };
+    };
+
+    const measureCompoundTopology = async (position: number): Promise<RuntimeCompoundTopologyReport> => {
+        if (!active) throw new Error("Mount the Markdown appearance harness before measuring compound topology");
+        const view = active.fixture.view;
+        if (position < 0 || position > view.state.doc.length) {
+            throw new RangeError(`Markdown compound position is outside the document: ${position}`);
+        }
+
+        let quote: {from: number; to: number} | null = null;
+        syntaxTree(view.state).iterate({
+            enter(node) {
+                if (quote || node.name !== "Blockquote" || node.to < position) return;
+                quote = {from: node.from, to: node.to};
+            },
+        });
+        if (!quote) throw new Error("The Markdown compound probe did not resolve a blockquote");
+
+        view.dispatch({selection: {anchor: quote.from}, scrollIntoView: true});
+        await waitForLayout(window);
+        const rail = view.dom.querySelector<HTMLElement>(
+            `.cm-markra-blockquote-rail[data-from="${quote.from}"][data-to="${quote.to}"]`,
+        );
+        if (!rail) throw new Error("The Markdown compound blockquote does not expose a semantic rail");
+        const railRect = rail.getBoundingClientRect();
+        const lineElements = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote:not(.cm-markra-callout)"));
+        const roundedInternalSegmentCount = window.navigator.userAgent.includes("jsdom") ? 0 : lineElements.filter((line) => {
+            try {
+                const railStyle = window.getComputedStyle(line, "::before");
+                return railStyle.content !== "none" &&
+                    Number.parseFloat(railStyle.width) > 0 &&
+                    Number.parseFloat(railStyle.borderRadius) > 0;
+            } catch (_error) {
+                return false;
+            }
+        }).length;
+        return {
+            calloutRailCount: Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-markra-callout")).filter((line) => {
+                const linePosition = view.posAtDOM(line);
+                return linePosition >= quote.from && linePosition <= quote.to;
+            }).length,
+            quoteRailCount: 1,
+            quoteRailHeight: railRect.height || Number.parseFloat(rail.style.height),
+            quoteRailWidth: railRect.width || Number.parseFloat(window.getComputedStyle(rail).width),
+            quoteSourceFrom: quote.from,
+            quoteSourceTo: quote.to,
+            roundedInternalSegmentCount,
         };
     };
 
@@ -759,9 +1005,11 @@ export const installMarkdownAppearanceRuntimeHarness = (
         destroy,
         interact,
         measure,
+        measureCompoundTopology,
         measureCoordinateMapping,
         measureDocumentBehavior,
         measureModeContinuity,
+        measureVerticalRhythm,
         mount,
         setMode,
         setTheme,

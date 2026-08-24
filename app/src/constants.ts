@@ -36,6 +36,10 @@ export abstract class Constants {
     public static readonly SIYUAN_EVENT: string = "siyuan-event";
     public static readonly SIYUAN_NATIVE_MENU_STATE: string = "siyuan-native-menu-state";
     public static readonly SIYUAN_NATIVE_MENU_COMMAND: string = "siyuan-native-menu-command";
+    public static readonly SIYUAN_MARKDOWN_MANAGEMENT_REGISTER: string = "siyuan-markdown-management-register";
+    public static readonly SIYUAN_MARKDOWN_MANAGEMENT_INVOKE: string = "siyuan-markdown-management-invoke";
+    public static readonly SIYUAN_MARKDOWN_MANAGEMENT_PREPARE: string = "siyuan-markdown-management-prepare";
+    public static readonly SIYUAN_MARKDOWN_MANAGEMENT_ACK: string = "siyuan-markdown-management-ack";
 
     public static readonly SIYUAN_CONFIG_TRAY: string = "siyuan-config-tray";
     public static readonly SIYUAN_QUIT: string = "siyuan-quit";
@@ -50,6 +54,11 @@ export abstract class Constants {
     public static readonly SIYUAN_OPEN_URL: string = "siyuan-open-url";
     public static readonly SIYUAN_OPEN_WINDOW: string = "siyuan-open-window";
     public static readonly SIYUAN_OPEN_FILE: string = "siyuan-open-file";
+    /// #if !BROWSER
+    public static readonly SIYUAN_EXTERNAL_MARKDOWN: string = "siyuan-external-markdown";
+    public static readonly SIYUAN_OPEN_EXTERNAL_MARKDOWN: string = "siyuan-open-external-markdown";
+    public static readonly SIYUAN_FOCUS_EXTERNAL_MARKDOWN: string = "siyuan-focus-external-markdown";
+    /// #endif
 
     public static readonly SIYUAN_EXPORT_PDF: string = "siyuan-export-pdf";
     public static readonly SIYUAN_EXPORT_NEWWINDOW: string = "siyuan-export-newwindow";

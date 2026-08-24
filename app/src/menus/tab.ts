@@ -14,6 +14,14 @@ import {Asset} from "../asset";
 import {writeText} from "../protyle/util/compatibility";
 import {getAssetName, pathPosix} from "../util/pathName";
 import {Constants} from "../constants";
+import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import type {Model} from "../layout/Model";
+import {isTabModelUnmodified} from "../markdown/tabDirtyState";
+
+export const isTabUnmodified = (model: Model | undefined) => {
+    return isTabModelUnmodified(model, (value): value is Editor => value instanceof Editor,
+        (value): value is MarkdownEditor => value instanceof MarkdownEditor);
+};
 
 const closeMenu = (tab: Tab) => {
     const unmodifiedTabs: Tab[] = [];
@@ -21,8 +29,7 @@ const closeMenu = (tab: Tab) => {
     const rightTabs: Tab[] = [];
     let midIndex = -1;
     tab.parent.children.forEach((item: Tab, index: number) => {
-        const editor = item.model as Editor;
-        if (!editor || (editor.editor?.protyle && !editor.editor?.protyle.updated)) {
+        if (isTabUnmodified(item.model)) {
             unmodifiedTabs.push(item);
         }
         if (item.id === tab.id) {

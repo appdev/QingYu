@@ -33,7 +33,12 @@
 }
 
 @mixin editor-heading($level, $size, $codemirror: false) {
+  background: var(--b3-editor-appearance-block-heading-#{$level}-background, none);
+  background-blend-mode: var(--b3-editor-appearance-block-heading-#{$level}-background-blend-mode, normal);
+  background-clip: var(--b3-editor-appearance-block-heading-#{$level}-background-clip, border-box);
+  -webkit-background-clip: var(--b3-editor-appearance-block-heading-#{$level}-background-clip, border-box);
   color: var(--b3-editor-appearance-block-heading-#{$level}-color, inherit);
+  -webkit-text-fill-color: var(--b3-editor-appearance-block-heading-#{$level}-webkit-text-fill-color, currentcolor);
   font-family: var(--b3-editor-appearance-block-heading-#{$level}-font-family, inherit);
   font-size: var(--b3-editor-appearance-block-heading-#{$level}-font-size, $size);
   font-style: var(--b3-editor-appearance-block-heading-#{$level}-font-style, normal);
@@ -44,6 +49,14 @@
     border-bottom-width: var(--b3-editor-appearance-block-heading-#{$level}-margin-bottom, 2px);
     border-top-width: var(--b3-editor-appearance-block-heading-#{$level}-margin-top, 2px);
     margin-block: 0;
+    min-height: var(--b3-editor-appearance-block-heading-#{$level}-content-min-height, 1.625em);
+
+    &:first-child {
+      border-top-width: var(
+        --b3-editor-appearance-block-heading-#{$level}-first-margin-top,
+        var(--b3-editor-appearance-block-heading-#{$level}-margin-top, 2px)
+      );
+    }
   } @else {
     margin-bottom: var(--b3-editor-appearance-block-heading-#{$level}-margin-bottom, 2px);
     margin-top: var(--b3-editor-appearance-block-heading-#{$level}-margin-top, 2px);
@@ -164,8 +177,13 @@
 }
 
 @mixin editor-rendered-block($contract-id) {
-  background-color: var(--b3-editor-appearance-#{$contract-id}-background-color, var(--b3-theme-surface));
-  border: 1px solid var(--b3-editor-appearance-#{$contract-id}-border-color, var(--b3-border-color));
+  background-color: var(--b3-editor-appearance-#{$contract-id}-background-color, transparent);
+  border-color: var(--b3-editor-appearance-#{$contract-id}-border-color, currentcolor);
+  border-style: solid;
+  border-width: var(--b3-editor-appearance-#{$contract-id}-border-top-width, 0)
+    var(--b3-editor-appearance-#{$contract-id}-border-right-width, 0)
+    var(--b3-editor-appearance-#{$contract-id}-border-bottom-width, 0)
+    var(--b3-editor-appearance-#{$contract-id}-border-left-width, 0);
   border-radius: var(--b3-editor-appearance-#{$contract-id}-border-radius, var(--b3-border-radius));
   box-sizing: border-box;
   color: var(--b3-editor-appearance-#{$contract-id}-color, var(--b3-theme-on-background));
@@ -174,6 +192,7 @@
 
   &[data-appearance-state="error"] {
     border-color: var(--b3-theme-error);
+    border-width: 1px;
     color: var(--b3-theme-error);
   }
 }

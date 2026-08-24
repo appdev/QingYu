@@ -7,6 +7,15 @@ export type MarkdownAppearanceState = "default" | "hover" | "focus" | "selected"
     "editing" | "readonly" | "empty" | "error" | "expanded" | "drag" | "keyboard";
 export type AppearanceGeometryMetric = "bottom" | "contentLeft" | "controlRight" | "height" | "left" |
     "top" | "width";
+export type AppearanceGeometryBox = "border" | "margin";
+export type AppearanceGeometryAggregate = "self" | "contiguous-lines";
+
+export interface AppearanceGeometryReference {
+    selector: string;
+    closest?: string;
+    box?: AppearanceGeometryBox;
+    aggregate?: AppearanceGeometryAggregate;
+}
 
 export interface MarkdownAppearanceContract {
     id: string;
@@ -20,6 +29,10 @@ export interface MarkdownAppearanceContract {
     };
     propertyReferences?: Record<string, {selector: string; property: string; pseudo?: string}>;
     markdownPropertyReferences?: Record<string, {selector: string; property: string; pseudo?: string}>;
+    geometryReferences?: {
+        native: AppearanceGeometryReference;
+        markdown: AppearanceGeometryReference;
+    };
     states: MarkdownAppearanceState[];
     modes: MarkdownAppearanceMode[];
     platforms: MarkdownAppearancePlatform[];
@@ -85,6 +98,17 @@ const validateContracts = (value: unknown): readonly MarkdownAppearanceContract[
         if (contract.markdownPropertyReferences && Object.values(contract.markdownPropertyReferences).some((reference) =>
             !reference.selector || !reference.property || (reference.pseudo && !reference.pseudo.startsWith("::")))) {
             throw new TypeError(`Invalid Markdown appearance Markdown property reference for ${contract.id}`);
+        }
+        if (contract.geometryReferences) {
+            for (const [side, reference] of Object.entries(contract.geometryReferences)) {
+                if (!reference.selector || (reference.box && !["border", "margin"].includes(reference.box)) ||
+                    (reference.aggregate && !["self", "contiguous-lines"].includes(reference.aggregate))) {
+                    throw new TypeError(`Invalid Markdown appearance ${side} geometry reference for ${contract.id}`);
+                }
+                if (side === "native" && reference.closest) {
+                    throw new TypeError(`Native appearance geometry cannot use closest for ${contract.id}`);
+                }
+            }
         }
         if (!Array.isArray(contract.ownedSelectors)) {
             throw new TypeError(`Missing Markdown appearance selector ownership for ${contract.id}`);

@@ -290,12 +290,33 @@ type FileInfo struct {
 	isdir bool
 }
 
+var (
+	markdownRecoveryGateLock    sync.Mutex
+	markdownRecoveryGateDataDir string
+)
+
+func ensureMarkdownRecoveryGate() error {
+	markdownRecoveryGateLock.Lock()
+	defer markdownRecoveryGateLock.Unlock()
+	if markdownRecoveryGateDataDir == util.DataDir {
+		return nil
+	}
+	if err := RecoverMarkdownTransactions(); err != nil {
+		return err
+	}
+	markdownRecoveryGateDataDir = util.DataDir
+	return nil
+}
+
 func ListDocTree(boxID, listPath string, sortMode int, showHidden bool, maxListCount int) (ret []*File, totals int, err error) {
 	//os.MkdirAll("pprof", 0755)
 	//cpuProfile, _ := os.Create("pprof/cpu_profile_list_doc_tree")
 	//pprof.StartCPUProfile(cpuProfile)
 	//defer pprof.StopCPUProfile()
 
+	if err = ensureMarkdownRecoveryGate(); err != nil {
+		return nil, 0, err
+	}
 	ret = []*File{}
 
 	box := Conf.Box(boxID)
@@ -2055,9 +2076,24 @@ func moveSorts(rootID, fromBox, toBox string) {
 
 }
 
-func ChangeFileTreeSort(boxID string, paths []string) {
+func ChangeFileTreeSort(boxID string, paths []string, operationIDs ...string) {
+	if _, err := ChangeFileTreeSortWithOperationID(boxID, paths, operationIDs...); err != nil {
+		logging.LogErrorf("change file tree sort failed: %s", err)
+	}
+}
+
+func ChangeFileTreeSortWithOperationID(boxID string, paths []string, operationIDs ...string) (string, error) {
+	operationID, err := resolveMarkdownOperationID(operationIDs...)
+	if err != nil {
+		return "", err
+	}
 	if 1 > len(paths) {
-		return
+		return operationID, nil
+	}
+	markdownFileOperationLock.Lock()
+	defer markdownFileOperationLock.Unlock()
+	if err = recoverMarkdownTransactionsLocked(); err != nil {
+		return "", err
 	}
 
 	FlushTxQueue()
@@ -2065,7 +2101,7 @@ func ChangeFileTreeSort(boxID string, paths []string) {
 	sortIDs := map[string]int{}
 	max := 0
 	for i, p := range paths {
-		id := util.GetTreeID(p)
+		id := fileTreeSortKey(p)
 		sortIDs[id] = i + 1
 		if i == len(paths)-1 {
 			max = i + 2
@@ -2077,16 +2113,16 @@ func ChangeFileTreeSort(boxID string, paths []string) {
 	absParentPath := filepath.Join(util.DataDir, boxID, parentPath)
 	files, err := os.ReadDir(absParentPath)
 	if err != nil {
-		logging.LogErrorf("read dir [%s] failed: %s", absParentPath, err)
+		return "", err
 	}
 
 	sortFolderIDs := map[string]int{}
 	for _, f := range files {
-		if !strings.HasSuffix(f.Name(), ".sy") {
+		if !strings.HasSuffix(f.Name(), ".sy") && !isMarkdownFileName(f.Name()) {
 			continue
 		}
 
-		id := strings.TrimSuffix(f.Name(), ".sy")
+		id := fileTreeSortKey(path.Join(parentPath, f.Name()))
 		val := sortIDs[id]
 		if 0 == val {
 			val = max
@@ -2097,24 +2133,32 @@ func ChangeFileTreeSort(boxID string, paths []string) {
 
 	confDir := filepath.Join(util.DataDir, box.ID, ".siyuan")
 	if err = os.MkdirAll(confDir, 0755); err != nil {
-		logging.LogErrorf("create conf dir failed: %s", err)
-		return
+		return "", err
 	}
 	confPath := filepath.Join(confDir, "sort.json")
 	fullSortIDs, err := readSortConfMap(confPath)
 	if err != nil {
-		return
+		return "", err
 	}
 
 	maps.Copy(fullSortIDs, sortFolderIDs)
 
+	markdownBeforeChangeSortCommit()
 	if err = writeSortConfMap(confPath, fullSortIDs); err != nil {
-		return
+		return "", err
 	}
 
 	IncSync()
 
 	pushFiletreeSortChanged(sortFolderIDs)
+	for _, sortedPath := range paths {
+		if isMarkdownFileName(path.Base(sortedPath)) {
+			pushMarkdownFileEventWithOperation("sortMarkdown", boxID, canonicalMarkdownPath(sortedPath), "", "",
+				operationID)
+			break
+		}
+	}
+	return operationID, nil
 }
 
 func (box *Box) fillSort(files *[]*File) {
@@ -2125,7 +2169,10 @@ func (box *Box) fillSort(files *[]*File) {
 	}
 
 	for _, f := range *files {
-		id := strings.TrimSuffix(f.ID, ".sy")
+		id := f.ID
+		if f.DocType == "markdown" {
+			id = fileTreeSortKey(f.Path)
+		}
 		f.Sort = fullSortIDs[id]
 	}
 }

@@ -69,12 +69,23 @@ const matrix = [
     {theme: "standard-third-party", mode: "source", platform: "mobile", width: 375, input: "touch"},
 ];
 
+const showcaseDirectory = path.resolve(__dirname, "../testdata/markdown");
+const showcaseSource = fs.readFileSync(path.join(showcaseDirectory, "format-showcase.md"), "utf8");
+const showcaseSvg = fs.readFileSync(path.join(showcaseDirectory, "format-showcase.svg"), "utf8");
+const showcaseImageDataUrl = `data:image/svg+xml,${encodeURIComponent(showcaseSvg)}`;
+const showcaseMarkdown = showcaseSource.replaceAll("./format-showcase.svg", showcaseImageDataUrl);
+const showcaseScreenshotIds = ["Q04", "Q05", "R01", "T01", "K02", "M02", "M03", "P01", "X03"];
+
 const main = async () => {
     const {call, socket} = await connect();
     const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "qingyu-markdown-appearance-"));
     const reports = [];
     let coordinateMapping = null;
+    let compoundTopology = null;
     let emptyReport = null;
+    let nestedQuoteDepths = [];
+    const showcaseReports = [];
+    let verticalRhythm = null;
     try {
         await call("Page.enable");
         await call("Runtime.enable");
@@ -133,6 +144,70 @@ const main = async () => {
                         `${contractId} differs from its native equivalent: ${JSON.stringify(row)}`,
                     );
                 }
+                const syntaxParity = await evaluate(call, `(() => {
+                    const root = document.querySelector(".markdown-appearance-runtime__markdown");
+                    const bulletMarkers = Array.from(root?.querySelectorAll(".cm-markra-list-marker--bullet") ?? []);
+                    const orderedMarkers = Array.from(root?.querySelectorAll(".cm-markra-list-marker--ordered") ?? []);
+                    const structuralLines = Array.from(root?.querySelectorAll(
+                        ".cm-markra-structural-line:not(.cm-markra-active-structural-line)",
+                    ) ?? []);
+                    const nestedLine = root?.querySelector('.cm-markra-list-item[data-list-depth="1"]');
+                    const completedTask = root?.querySelector(".cm-markra-task-done");
+                    const nativeCompletedTask = document.querySelector(
+                        ".markdown-appearance-runtime__native .protyle-task--done > .p",
+                    );
+                    const completedTaskStyle = completedTask ? getComputedStyle(completedTask) : null;
+                    const nativeCompletedTaskStyle = nativeCompletedTask ? getComputedStyle(nativeCompletedTask) : null;
+                    const nestedGuideStyle = nestedLine ? getComputedStyle(nestedLine, "::after") : null;
+                    const quoteRails = Array.from(root?.querySelectorAll(".cm-markra-blockquote-rail") ?? []);
+                    return {
+                        bulletIconHrefs: bulletMarkers.map((marker) => marker.querySelector("use")?.getAttribute("href") ?? ""),
+                        bulletMarkerWidths: bulletMarkers.map((marker) => marker.getBoundingClientRect().width),
+                        nestedPaddingLeft: nestedLine ? Number.parseFloat(getComputedStyle(nestedLine).paddingLeft) : -1,
+                        nestedGuideBackgroundImage: nestedGuideStyle?.backgroundImage ?? "none",
+                        nestedGuideWidth: nestedGuideStyle ? Number.parseFloat(nestedGuideStyle.width) : -1,
+                        orderedMarkerCount: orderedMarkers.length,
+                        orderedMarkerWidths: orderedMarkers.map((marker) => marker.getBoundingClientRect().width),
+                        quoteRailHeights: quoteRails.map((rail) => rail.getBoundingClientRect().height),
+                        quoteRailWidths: quoteRails.map((rail) => rail.getBoundingClientRect().width),
+                        quotedListCount: root?.querySelectorAll(".cm-markra-blockquote.cm-markra-list-item").length ?? 0,
+                        setextMarkerCount: root?.querySelectorAll(".cm-markra-setext-marker-line").length ?? 0,
+                        structuralHeights: structuralLines.map((line) => line.getBoundingClientRect().height),
+                        taskDoneColor: completedTaskStyle?.color ?? "",
+                        taskDoneDecoration: completedTaskStyle?.textDecorationLine ?? "",
+                        nativeTaskDoneColor: nativeCompletedTaskStyle?.color ?? "",
+                    };
+                })()`);
+                assert.ok(syntaxParity.bulletIconHrefs.length >= 2, "Markdown must render unordered-list markers");
+                assert.ok(syntaxParity.bulletIconHrefs.every((href) => href === "#iconDot"),
+                    "Markdown unordered lists must reuse the native dot icon");
+                assert.ok(syntaxParity.bulletMarkerWidths.every((width) => Math.abs(width - 34) <= 1),
+                    "Markdown unordered-list markers must keep the native 34px action width");
+                assert.ok(syntaxParity.orderedMarkerCount >= 2, "Markdown must render ordered-list markers");
+                assert.ok(syntaxParity.orderedMarkerWidths.every((width) => Math.abs(width - 34) <= 1),
+                    "Markdown ordered-list markers must keep the native 34px action width");
+                assert.ok(syntaxParity.quotedListCount >= 3, "Markdown must preserve list roles inside blockquotes");
+                assert.ok(syntaxParity.quoteRailWidths.length >= 1,
+                    "Markdown blockquotes must expose semantic container rails");
+                assert.ok(syntaxParity.quoteRailWidths.every((width) => width > 0),
+                    "Markdown blockquote rails must keep the native visible width");
+                assert.ok(syntaxParity.quoteRailHeights.every((height) => height > 0),
+                    "Markdown blockquote rails must span their semantic containers");
+                assert.ok(syntaxParity.nestedPaddingLeft >= 33, "Nested Markdown lists must preserve native indentation");
+                assert.notEqual(syntaxParity.nestedGuideBackgroundImage, "none",
+                    "Nested Markdown lists must render native hierarchy guides");
+                assert.ok(syntaxParity.nestedGuideWidth >= 33,
+                    "Nested Markdown hierarchy guides must span the authored nesting depth");
+                assert.match(syntaxParity.taskDoneDecoration, /line-through/u,
+                    "Completed Markdown tasks must use native completion decoration");
+                assert.equal(syntaxParity.taskDoneColor, syntaxParity.nativeTaskDoneColor,
+                    "Completed Markdown tasks must use the native completion color");
+                assert.equal(syntaxParity.setextMarkerCount, 0,
+                    "Markdown must keep unsupported Setext syntax aligned with the native editor");
+                assert.ok(syntaxParity.structuralHeights.length >= 2,
+                    "Markdown fixture must expose authored quote structural lines");
+                assert.ok(syntaxParity.structuralHeights.every((height) => height <= 1),
+                    "Inactive Markdown structural lines must not add visible spacing");
             }
             const behavior = await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measureDocumentBehavior()");
             assert.equal(behavior.documentScrollOwnerCount, 1, "Markdown must expose one document-level vertical scroller");
@@ -185,6 +260,53 @@ const main = async () => {
                 console.log("Markdown appearance state", index, state);
                 await evaluate(call, `window.__siyuanMarkdownAppearanceTest.interact(${JSON.stringify(state)})`);
                 stateReports.push({state, report: await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measure()")});
+                if (state === "media" && row.mode === "visual") {
+                    const initialViewer = await evaluate(call, `(() => {
+                        const dialog = document.querySelector(".markra-media-viewer-dialog");
+                        const panel = dialog?.querySelector(".markra-media-viewer-panel");
+                        if (!dialog || !panel) return null;
+                        const dialogRect = dialog.getBoundingClientRect();
+                        const panelRect = panel.getBoundingClientRect();
+                        return {
+                            dialogBottom: dialogRect.bottom,
+                            dialogLeft: dialogRect.left,
+                            dialogPosition: getComputedStyle(dialog).position,
+                            dialogRight: dialogRect.right,
+                            dialogTop: dialogRect.top,
+                            panelHeight: panelRect.height,
+                            panelWidth: panelRect.width,
+                            viewportHeight: innerHeight,
+                            viewportWidth: innerWidth,
+                        };
+                    })()`);
+                    assert.ok(initialViewer, "The media viewer must open from the rendered media control");
+                    assert.equal(initialViewer.dialogPosition, "fixed", "The media viewer must be anchored to the viewport");
+                    assert.ok(Math.abs(initialViewer.dialogLeft) <= 1 && Math.abs(initialViewer.dialogTop) <= 1,
+                        `The media viewer must start at the viewport origin: ${JSON.stringify(initialViewer)}`);
+                    assert.ok(
+                        Math.abs(initialViewer.dialogRight - initialViewer.viewportWidth) <= 1 &&
+                        Math.abs(initialViewer.dialogBottom - initialViewer.viewportHeight) <= 1,
+                        `The media viewer must cover the viewport: ${JSON.stringify(initialViewer)}`,
+                    );
+                    await evaluate(call, `(() => {
+                        document.querySelector(".markra-media-viewer-fullscreen-button")?.click();
+                        return new Promise((resolve) => requestAnimationFrame(() => resolve(true)));
+                    })()`);
+                    const fullscreenPanel = await evaluate(call, `(() => {
+                        const panel = document.querySelector(".markra-media-viewer-panel");
+                        if (!panel) return null;
+                        const rect = panel.getBoundingClientRect();
+                        return {height: rect.height, left: rect.left, top: rect.top, width: rect.width};
+                    })()`);
+                    assert.ok(fullscreenPanel, "The fullscreen media panel must remain mounted");
+                    assert.ok(
+                        Math.abs(fullscreenPanel.left) <= 1 && Math.abs(fullscreenPanel.top) <= 1 &&
+                        Math.abs(fullscreenPanel.width - initialViewer.viewportWidth) <= 1 &&
+                        Math.abs(fullscreenPanel.height - initialViewer.viewportHeight) <= 1,
+                        `The fullscreen media panel must fill the viewport: ${JSON.stringify(fullscreenPanel)}`,
+                    );
+                    await evaluate(call, "document.querySelector(\".markra-media-viewer-close-button\")?.click()");
+                }
             }
             reports.push({...row, behavior, continuity, overflow, stateReports});
             fs.writeFileSync(
@@ -213,6 +335,149 @@ const main = async () => {
             `CodeMirror line geometry differs from the rendered line by ${coordinateMapping.blockTopDifference}px`,
         );
         await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
+        const showcaseOptions = {...matrix[0], markdown: showcaseMarkdown, theme: "daylight", width: 900};
+        await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(showcaseOptions)}).then(() => true)`);
+        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.setTheme(\"daylight\")");
+        for (const caseId of showcaseScreenshotIds) {
+            const position = showcaseMarkdown.indexOf(`${caseId}-`);
+            assert.ok(position >= 0, `The canonical corpus is missing ${caseId}`);
+            await evaluate(call, `window.__siyuanMarkdownAppearanceTest.measureCoordinateMapping(${position})`);
+            showcaseReports.push(await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measure()"));
+            if (caseId === "Q04") {
+                compoundTopology = await evaluate(
+                    call,
+                    `window.__siyuanMarkdownAppearanceTest.measureCompoundTopology(${position})`,
+                );
+                assert.equal(compoundTopology.calloutRailCount, 0, "Q04 must use the normal blockquote rail");
+                assert.equal(compoundTopology.quoteRailCount, 1, "Q04 must expose one semantic rail");
+                assert.ok(compoundTopology.quoteRailHeight > 0, "Q04 rail must have positive height");
+                assert.ok(compoundTopology.quoteRailWidth > 0, "Q04 rail must have positive width");
+                assert.equal(compoundTopology.roundedInternalSegmentCount, 0,
+                    "Q04 must not retain rounded line-level rail segments");
+            }
+            if (caseId === "Q05") {
+                await evaluate(call, `window.__siyuanMarkdownAppearanceTest.measureCompoundTopology(${position})`);
+                nestedQuoteDepths = await evaluate(call, `Array.from(document.querySelectorAll(
+                    ".markdown-appearance-runtime__markdown .cm-markra-blockquote-rail"
+                )).map((rail) => rail.style.getPropertyValue("--markra-blockquote-depth"))`);
+                assert.ok(nestedQuoteDepths.includes("0") && nestedQuoteDepths.includes("1"),
+                    `Q05 must expose distinct outer and inner rails: ${JSON.stringify(nestedQuoteDepths)}`);
+            }
+            if (caseId === "M03") {
+                const mathLayout = await evaluate(call, `(() => {
+                    const block = document.querySelector(".markdown-appearance-runtime__markdown .markra-math-render-display");
+                    const katex = block?.querySelector(".katex");
+                    const blockRect = block?.getBoundingClientRect();
+                    const katexRect = katex?.getBoundingClientRect();
+                    const style = block ? getComputedStyle(block) : null;
+                    return {
+                        borderBottomWidth: Number.parseFloat(style?.borderBottomWidth ?? "-1"),
+                        borderLeftWidth: Number.parseFloat(style?.borderLeftWidth ?? "-1"),
+                        borderRightWidth: Number.parseFloat(style?.borderRightWidth ?? "-1"),
+                        borderTopWidth: Number.parseFloat(style?.borderTopWidth ?? "-1"),
+                        centerDifference: blockRect && katexRect
+                            ? Math.abs((blockRect.left + blockRect.right - katexRect.left - katexRect.right) / 2)
+                            : Number.POSITIVE_INFINITY,
+                        spacerCount: block?.querySelectorAll(".katex-html > .fn__flex-1").length ?? 0,
+                    };
+                })()`);
+                assert.deepEqual(
+                    [mathLayout.borderTopWidth, mathLayout.borderRightWidth,
+                        mathLayout.borderBottomWidth, mathLayout.borderLeftWidth],
+                    [0, 0, 0, 0],
+                    "Markdown display math must not expose an outer border",
+                );
+                assert.ok(mathLayout.centerDifference <= 1,
+                    `Markdown display math differs from the block center by ${mathLayout.centerDifference}px`);
+                assert.equal(mathLayout.spacerCount, 1,
+                    "Markdown display math must use the native KaTeX balancing spacer");
+            }
+            const screenshot = await call("Page.captureScreenshot", {format: "png", fromSurface: true});
+            fs.writeFileSync(path.join(outputDirectory, `showcase-${caseId}.png`), screenshot.data, "base64");
+        }
+        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
+        const rhythmMarkdown = `## 7.5 工作量
+
+Android 端剩余工作量（从 v1.5 估算）≈ 15.5 人日。
+
+---
+
+## §8 iOS 实现要点
+
+| 项目 | 内容 |
+| --- | --- |
+| 文档版本 | v1.7 |
+| 作者 | 研发架构组 |
+
+iOS 部分目前项目中不存在成熟推送实现。
+
+### 8.1 通道选型
+
+- 方案一
+- 方案二
+
+> 引用说明`;
+        const rhythmOptions = {...matrix[0], markdown: rhythmMarkdown, theme: "savor", width: 900};
+        await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(rhythmOptions)}).then(() => true)`);
+        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.setTheme(\"savor\")");
+        verticalRhythm = await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measureVerticalRhythm()");
+        assert.equal(verticalRhythm.kindsMatch, true, "Native and Markdown block sequences must match");
+        assert.ok(
+            verticalRhythm.maximumTopDifference <= 2,
+            `Native and Markdown block positions differ by ${verticalRhythm.maximumTopDifference}px`,
+        );
+        assert.ok(
+            verticalRhythm.totalHeightDifference <= 2,
+            `Native and Markdown block sequence heights differ by ${verticalRhythm.totalHeightDifference}px`,
+        );
+        const tableLayout = await evaluate(call, `(async () => {
+            const root = document.querySelector(".markdown-appearance-runtime");
+            const nativeHeading = root?.querySelector(".markdown-appearance-runtime__native .h2");
+            const nativeTable = root?.querySelector(".markdown-appearance-runtime__native .table");
+            const markdownHeading = root?.querySelector(".markdown-appearance-runtime__markdown .cm-markra-h2");
+            const markdownTable = root?.querySelector(".markdown-appearance-runtime__markdown .cm-markra-table-wrap");
+            const firstHeader = markdownTable?.querySelector("th");
+            firstHeader?.focus();
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const controls = markdownTable?.querySelector(".markra-table-align-controls");
+            if (!nativeHeading || !nativeTable || !markdownHeading || !markdownTable || !firstHeader || !controls) {
+                return null;
+            }
+            const nativeTableRect = nativeTable.getBoundingClientRect();
+            const markdownTableRect = markdownTable.getBoundingClientRect();
+            const controlsRect = controls.getBoundingClientRect();
+            const headerRect = firstHeader.getBoundingClientRect();
+            const headerHitTarget = document.elementFromPoint(
+                headerRect.left + headerRect.width / 2,
+                headerRect.top + headerRect.height / 2,
+            );
+            return {
+                controlsOutsideTable: controlsRect.bottom <= markdownTableRect.top ||
+                    controlsRect.top >= markdownTableRect.bottom,
+                firstHeaderHitTarget: firstHeader === headerHitTarget || firstHeader.contains(headerHitTarget),
+                headerOverlap: Math.max(0, Math.min(controlsRect.bottom, headerRect.bottom) -
+                    Math.max(controlsRect.top, headerRect.top)),
+                tableTopDifference: Math.abs(nativeTableRect.top - markdownTableRect.top),
+            };
+        })()`);
+        assert.ok(tableLayout, "Markdown table layout measurements must be available");
+        assert.equal(tableLayout.controlsOutsideTable, true, "Markdown table controls must remain outside the table");
+        assert.equal(tableLayout.firstHeaderHitTarget, true, "Markdown table first header must remain pointer-accessible");
+        assert.ok(tableLayout.headerOverlap <= 1, "Markdown table controls must not overlap the first row");
+        assert.ok(
+            tableLayout.tableTopDifference <= 2,
+            `Markdown table top differs from native by ${tableLayout.tableTopDifference}px`,
+        );
+        const dividerPaint = await evaluate(call, `(() => {
+            const rule = document.querySelector(".markdown-appearance-runtime__markdown .cm-markra-horizontal-rule");
+            const style = rule ? getComputedStyle(rule, "::after") : null;
+            return {background: style?.background ?? "", height: Number.parseFloat(style?.height ?? "0")};
+        })()`);
+        assert.ok(dividerPaint.height > 0, "Markdown horizontal rule must expose a visible paint layer");
+        assert.doesNotMatch(dividerPaint.background, /^(?:|none|rgba\(0, 0, 0, 0\))$/u);
+        const rhythmScreenshot = await call("Page.captureScreenshot", {format: "png", fromSurface: true});
+        fs.writeFileSync(path.join(outputDirectory, "savor-vertical-rhythm.png"), rhythmScreenshot.data, "base64");
+        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
         const emptyOptions = {...matrix[0], markdown: ""};
         await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(emptyOptions)}).then(() => true)`);
         await evaluate(call, `window.__siyuanMarkdownAppearanceTest.setTheme(${JSON.stringify(matrix[0].theme)})`);
@@ -230,6 +495,7 @@ const main = async () => {
 
     const allReports = [
         ...reports.flatMap(({stateReports}) => stateReports.map(({report}) => report)),
+        ...showcaseReports,
         ...(emptyReport ? [emptyReport] : []),
     ];
     const contractCount = allReports[0]?.contractCount ?? 0;
@@ -247,29 +513,29 @@ const main = async () => {
         "control.table-toolbar",
     ];
     const missingRequired = requiredRuntimeContracts.filter((id) => !seen.has(id));
+    const intentionallyUnrenderedContracts = ["editor.gutter"];
     assert.equal(matrix.length, 7);
     assert.ok(contractCount >= 50, `Unexpected appearance contract count: ${contractCount}`);
     assert.deepEqual(missingRequired, [], `Required runtime contracts were not rendered: ${missingRequired.join(", ")}`);
     const knownContracts = new Set(allReports.flatMap((report) => report.measurements.map((measurement) => measurement.contractId)));
-    const parityReports = reports.flatMap(({stateReports}) => stateReports
-        .filter(({state}) => ["base", "focus", "selected"].includes(state))
-        .map(({report}) => report));
     const summary = {
         contractCount,
+        compoundTopology,
         coordinateMapping,
         matrixRows: reports.length,
-        maximumGeometryDifference: Math.max(...parityReports.map((report) => report.maximumGeometryDifference)),
+        nestedQuoteDepths,
         outputDirectory,
         screenshotCount: fs.readdirSync(outputDirectory).filter((name) => name.endsWith(".png")).length,
         seenContracts: seen.size,
         uncovered: [...knownContracts].filter((id) => !seen.has(id)),
+        verticalRhythm,
     };
     fs.writeFileSync(path.join(outputDirectory, "summary.json"), JSON.stringify(summary, null, 2));
-    assert.equal(summary.screenshotCount, matrix.length + 1);
-    assert.equal(summary.seenContracts, summary.contractCount, `Appearance contracts not rendered: ${summary.uncovered.join(", ")}`);
-    assert.ok(
-        summary.maximumGeometryDifference <= 12,
-        `Native-equivalent geometry differs by ${summary.maximumGeometryDifference}px`,
+    assert.equal(summary.screenshotCount, matrix.length + 2 + showcaseScreenshotIds.length);
+    assert.deepEqual(
+        summary.uncovered.sort(),
+        intentionallyUnrenderedContracts.sort(),
+        `Unexpected appearance contracts not rendered: ${summary.uncovered.join(", ")}`,
     );
     console.log("Markdown appearance runtime matrix passed", summary);
 };

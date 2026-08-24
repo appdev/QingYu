@@ -1056,6 +1056,53 @@ function fencedCodeAtPosition(state: EditorState, position: number) {
   return null;
 }
 
+function fencedCodeStartingAt(state: EditorState, from: number) {
+  const node = fencedCodeAtPosition(state, Math.min(state.doc.length, from + 1));
+  return node?.from === from ? node : null;
+}
+
+interface HoveredCodeBlockState {
+  readonly decorations: DecorationSet;
+  readonly from: number | null;
+}
+
+const setHoveredCodeBlockEffect = StateEffect.define<number | null>({
+  map(value, changes) {
+    return value === null ? null : changes.mapPos(value, 1);
+  },
+});
+
+const hoveredCodeBlockState = (state: EditorState, from: number | null): HoveredCodeBlockState => {
+  if (from === null) return {decorations: Decoration.none, from: null};
+  const node = fencedCodeStartingAt(state, from);
+  if (!node) return {decorations: Decoration.none, from: null};
+  return {
+    decorations: Decoration.set([
+      Decoration.line({attributes: {"data-code-block-hovered": "true"}}).range(state.doc.lineAt(node.from).from),
+    ]),
+    from: node.from,
+  };
+};
+
+const hoveredCodeBlockField = StateField.define<HoveredCodeBlockState>({
+  create(state) {
+    return hoveredCodeBlockState(state, null);
+  },
+  update(previous, transaction) {
+    let from = transaction.docChanged && previous.from !== null
+      ? transaction.changes.mapPos(previous.from, 1)
+      : previous.from;
+    for (const effect of transaction.effects) {
+      if (effect.is(setHoveredCodeBlockEffect)) from = effect.value;
+    }
+    if (!transaction.docChanged && !syntaxTreeChanged(transaction.startState, transaction.state) && from === previous.from) {
+      return previous;
+    }
+    return hoveredCodeBlockState(transaction.state, from);
+  },
+  provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
+});
+
 function fencedCodeAt(view: CodeMirrorView) {
   return fencedCodeAtPosition(
     view.state,
@@ -1230,6 +1277,14 @@ const codeBlockKeymap = Prec.high(
 );
 
 const codeBlockPointerHandlers = EditorView.domEventHandlers({
+  mouseleave(_event, view) {
+    syncHoveredCodeBlock(view, null);
+    return false;
+  },
+  mousemove(event, view) {
+    syncHoveredCodeBlock(view, codeBlockFromPointer(event, view));
+    return false;
+  },
   mousedown(event, view) {
     if (event.button !== 0 || !(event.target instanceof Element)) return false;
     const closingLine = event.target.closest<HTMLElement>(
@@ -1246,6 +1301,25 @@ const codeBlockPointerHandlers = EditorView.domEventHandlers({
     return true;
   },
 });
+
+function codeBlockFromPointer(event: MouseEvent, view: CodeMirrorView) {
+  const rawFrom = (event.target instanceof Element ? event.target : null)
+    ?.closest<HTMLElement>("[data-code-block-from]")?.dataset.codeBlockFrom;
+  const targetFrom = rawFrom === undefined ? null : Number(rawFrom);
+  if (targetFrom !== null && Number.isInteger(targetFrom) && fencedCodeStartingAt(view.state, targetFrom)) return targetFrom;
+  try {
+    const position = view.posAtCoords({x: event.clientX, y: event.clientY});
+    return position === null ? null : fencedCodeAtPosition(view.state, position)?.from ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function syncHoveredCodeBlock(view: CodeMirrorView, from: number | null) {
+  if (view.state.field(hoveredCodeBlockField).from !== from) {
+    view.dispatch({effects: setHoveredCodeBlockEffect.of(from)});
+  }
+}
 
 export function codeBlockPreviewPlugin(
   options: CodeBlockPreviewPluginOptions = {},
@@ -1336,6 +1410,7 @@ export function codeBlockPreviewPlugin(
       // are measured explicitly, so repeated blocks cannot accumulate a
       // pointer-to-caret offset.
       createMermaidPreviewField(labels, renderMermaid),
+      hoveredCodeBlockField,
       markraRenderer({
         id: "markra.code-block-preview",
         nodeNames: ["FencedCode"],
@@ -1401,6 +1476,7 @@ export function codeBlockPreviewPlugin(
               }`
               : "";
             if (codeContentLine) codeLineNumber += 1;
+            const codeBlockIdentity = {"data-code-block-from": String(node.from)};
             const lineNumberVisibility = {
               "data-code-ligatures": String(ligatures),
               "data-code-line-numbers": String(showLineNumbers),
@@ -1410,6 +1486,7 @@ export function codeBlockPreviewPlugin(
               Decoration.line({
                 attributes: codeContentLine
                   ? {
+                      ...codeBlockIdentity,
                       ...lineNumberVisibility,
                       ...(showLineNumbers
                         ? { "data-code-line-number": String(codeLineNumber) }
@@ -1417,11 +1494,12 @@ export function codeBlockPreviewPlugin(
                     }
                   : roleClass === "cm-markra-code-closing-line"
                     ? {
+                        ...codeBlockIdentity,
                         ...lineNumberVisibility,
                         "data-code-block-active": String(revealed),
                         "data-code-block-end": String(node.to),
                       }
-                    : undefined,
+                    : codeBlockIdentity,
                 class: `cm-markra-code-line ${roleClass}${positionClasses}`,
               }).range(line.from),
             );
@@ -1492,6 +1570,39 @@ export function codeBlockPreviewPlugin(
             }
           }
 
+          return false;
+        },
+      }),
+      markraRenderer({
+        id: "markra.indented-code-block-preview",
+        nodeNames: ["CodeBlock"],
+        scope: "visible-range",
+        render(context) {
+          const firstLine = context.state.doc.lineAt(context.node.from);
+          const lastLine = context.state.doc.lineAt(context.node.to);
+          const firstVisibleLine = context.state.doc.lineAt(
+            Math.max(context.node.from, context.visibleRange.from),
+          ).number;
+          const lastVisibleLine = context.state.doc.lineAt(
+            Math.max(context.node.from, Math.min(context.node.to - 1, context.visibleRange.to - 1)),
+          ).number;
+
+          for (
+            let lineNumber = firstVisibleLine;
+            lineNumber <= lastVisibleLine;
+            lineNumber += 1
+          ) {
+            const line = context.state.doc.line(lineNumber);
+            const first = line.number === firstLine.number;
+            const last = line.number === lastLine.number;
+            context.add(
+              Decoration.line({
+                class: `cm-markra-code-line cm-markra-code-content-line cm-markra-indented-code-line markra-code-block${
+                  first ? " cm-markra-code-content-first" : ""
+                }${last ? " cm-markra-code-content-last" : ""}`,
+              }).range(line.from),
+            );
+          }
           return false;
         },
       }),

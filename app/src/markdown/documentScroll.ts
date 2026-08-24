@@ -13,6 +13,7 @@ const intersectsVertically = (
 
 export class MarkdownDocumentScrollController {
     private restoreFrame: number | null = null;
+    private lastAnchor: MarkdownScrollAnchor | null = null;
 
     constructor(
         private readonly getView: () => EditorView | undefined,
@@ -26,31 +27,39 @@ export class MarkdownDocumentScrollController {
 
     public captureAnchor(): MarkdownScrollAnchor | null {
         const view = this.getView();
-        if (!view) return null;
+        if (!view) return this.lastAnchor;
         const viewport = this.container.getBoundingClientRect();
-        const selectionPosition = view.state.selection.main.head;
-        const selectionRect = view.coordsAtPos(selectionPosition);
-        if (selectionRect && intersectsVertically(selectionRect, viewport)) {
-            return {
-                position: selectionPosition,
-                viewportOffset: selectionRect.top - viewport.top,
-            };
-        }
+        if (viewport.width <= 0 || viewport.height <= 0) return this.lastAnchor;
+        try {
+            const selectionPosition = view.state.selection.main.head;
+            const selectionRect = view.coordsAtPos(selectionPosition);
+            if (selectionRect && intersectsVertically(selectionRect, viewport)) {
+                this.lastAnchor = {
+                    position: selectionPosition,
+                    viewportOffset: selectionRect.top - viewport.top,
+                };
+                return this.lastAnchor;
+            }
 
-        const position = view.posAtCoords({
-            x: viewport.left + viewport.width / 2,
-            y: viewport.top + viewport.height / 2,
-        }, false);
-        if (position === null) return null;
-        const positionRect = view.coordsAtPos(position);
-        if (!positionRect) return null;
-        return {
-            position,
-            viewportOffset: positionRect.top - viewport.top,
-        };
+            const position = view.posAtCoords({
+                x: viewport.left + viewport.width / 2,
+                y: viewport.top + viewport.height / 2,
+            }, false);
+            if (position === null) return this.lastAnchor;
+            const positionRect = view.coordsAtPos(position);
+            if (!positionRect) return this.lastAnchor;
+            this.lastAnchor = {
+                position,
+                viewportOffset: positionRect.top - viewport.top,
+            };
+            return this.lastAnchor;
+        } catch {
+            return this.lastAnchor;
+        }
     }
 
     public restoreAnchor(anchor: MarkdownScrollAnchor) {
+        this.lastAnchor = {...anchor};
         if (this.restoreFrame !== null) {
             window.cancelAnimationFrame(this.restoreFrame);
         }
@@ -58,11 +67,16 @@ export class MarkdownDocumentScrollController {
             this.restoreFrame = null;
             const view = this.getView();
             if (!view) return;
-            const position = Math.max(0, Math.min(anchor.position, view.state.doc.length));
-            const positionRect = view.coordsAtPos(position);
-            if (!positionRect) return;
             const viewport = this.container.getBoundingClientRect();
-            this.container.scrollTop += positionRect.top - viewport.top - anchor.viewportOffset;
+            if (viewport.width <= 0 || viewport.height <= 0) return;
+            try {
+                const position = Math.max(0, Math.min(anchor.position, view.state.doc.length));
+                const positionRect = view.coordsAtPos(position);
+                if (!positionRect) return;
+                this.container.scrollTop += positionRect.top - viewport.top - anchor.viewportOffset;
+            } catch {
+                // CodeMirror 视口尚未稳定时保留锚点，等待下一次可见状态恢复。
+            }
         });
     }
 

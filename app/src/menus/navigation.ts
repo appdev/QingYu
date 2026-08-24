@@ -27,12 +27,23 @@ import {App} from "../index";
 import {openDocHistory} from "../history/doc";
 import {openEditorTab} from "./util";
 import {emitOpenMenu} from "../plugin/EventBus";
-import {saveExportFile} from "../protyle/util/compatibility";
+import {saveExportFile, writeText} from "../protyle/util/compatibility";
 import {exportMarkdownZip} from "../protyle/export/exportMd";
 import {addFilesToDatabase} from "../protyle/render/av/addToDatabase";
 import {openEmojiPanel} from "../emoji";
-import {newMarkdownFile, removeMarkdownFile, renameMarkdownFile} from "../markdown/fileActions";
+import {
+    copyMarkdownContent,
+    duplicateMarkdownFile,
+    moveMarkdownFile,
+    newMarkdownFile,
+    removeMarkdownFile,
+    renameMarkdownFile,
+} from "../markdown/fileActions";
 import {getDocumentCreateMenuItems} from "../markdown/documentCreateMenu";
+import {openMarkdownFile} from "../editor/util";
+/// #if !BROWSER
+import {openNewWindowByMarkdown} from "../window/openNewWindow";
+/// #endif
 
 const appendDocumentCreateMenuItems = (app: App, notebookId: string, parentPath: string) => {
     getDocumentCreateMenuItems({
@@ -442,10 +453,53 @@ export const initFileMenu = (app: App, notebookId: string, pathString: string, l
     if (liElement.getAttribute("data-doc-type") === "markdown") {
         if (!window.siyuan.config.readonly) {
             window.siyuan.menus.menu.append(new MenuItem({
-                id: "renameMarkdown",
-                label: window.siyuan.languages.rename,
-                icon: "iconEdit",
-                click: () => renameMarkdownFile(notebookId, pathString),
+                id: "newMarkdown",
+                label: `${window.siyuan.languages.newFile} Markdown`,
+                icon: "iconMarkdown",
+                click: () => void newMarkdownFile(app, notebookId, pathPosix().dirname(pathString)),
+            }).element);
+            window.siyuan.menus.menu.append(new MenuItem({id: "separator_1", type: "separator"}).element);
+        }
+        const copySubmenu: IMenu[] = [{
+            id: "copyRelativePath",
+            label: window.siyuan.languages.copyRelativePath,
+            click: () => writeText(pathString),
+        }];
+        /// #if !BROWSER
+        copySubmenu.push({
+            id: "copyAbsolutePath",
+            label: window.siyuan.languages.copyAbsolutePath,
+            click: () => writeText(path.join(window.siyuan.config.system.dataDir, notebookId, pathString)),
+        });
+        /// #endif
+        copySubmenu.push({
+            id: "copyMarkdown",
+            label: window.siyuan.languages.copyMarkdown,
+            click: async () => {
+                const content = await copyMarkdownContent(notebookId, pathString);
+                if (content !== null) writeText(content);
+            },
+        });
+        if (!window.siyuan.config.readonly) {
+            copySubmenu.push({
+                id: "duplicateMarkdown",
+                label: window.siyuan.languages.duplicate,
+                click: () => void duplicateMarkdownFile(notebookId, pathString),
+            });
+        }
+        window.siyuan.menus.menu.append(new MenuItem({
+            id: "copy",
+            label: window.siyuan.languages.copy,
+            type: "submenu",
+            icon: "iconCopy",
+            submenu: copySubmenu,
+        }).element);
+        if (!window.siyuan.config.readonly) {
+            window.siyuan.menus.menu.append(new MenuItem({
+                id: "moveMarkdown",
+                label: window.siyuan.languages.move,
+                icon: "iconMove",
+                click: () => moveMarkdownFile(notebookId, pathString),
             }).element);
             window.siyuan.menus.menu.append(new MenuItem({
                 id: "deleteMarkdown",
@@ -453,7 +507,48 @@ export const initFileMenu = (app: App, notebookId: string, pathString: string, l
                 icon: "iconTrashcan",
                 click: () => removeMarkdownFile(notebookId, pathString),
             }).element);
+            window.siyuan.menus.menu.append(new MenuItem({id: "separator_2", type: "separator"}).element);
+            window.siyuan.menus.menu.append(new MenuItem({
+                id: "renameMarkdown",
+                label: window.siyuan.languages.rename,
+                icon: "iconEdit",
+                click: () => renameMarkdownFile(notebookId, pathString),
+            }).element);
         }
+        /// #if !MOBILE
+        const openSubmenu: IMenu[] = [{
+            id: "insertRight",
+            icon: "iconLayoutRight",
+            label: window.siyuan.languages.insertRight,
+            click: () => void openMarkdownFile(app, notebookId, pathString, name, "right"),
+        }, {
+            id: "insertBottom",
+            icon: "iconLayoutBottom",
+            label: window.siyuan.languages.insertBottom,
+            click: () => void openMarkdownFile(app, notebookId, pathString, name, "bottom"),
+        }];
+        /// #if !BROWSER
+        openSubmenu.push({
+            id: "openByNewWindow",
+            icon: "iconOpenWindow",
+            label: window.siyuan.languages.openByNewWindow,
+            click: () => openNewWindowByMarkdown(notebookId, pathString, name),
+        }, {id: "separator_1", type: "separator"}, {
+            id: "showInFolder",
+            icon: "iconFolder",
+            label: window.siyuan.languages.showInFolder,
+            click: () => useShell("showItemInFolder", path.join(window.siyuan.config.system.dataDir, notebookId, pathString)),
+        });
+        /// #endif
+        window.siyuan.menus.menu.append(new MenuItem({id: "separator_3", type: "separator"}).element);
+        window.siyuan.menus.menu.append(new MenuItem({
+            id: "openBy",
+            label: window.siyuan.languages.openBy,
+            icon: "iconOpen",
+            type: "submenu",
+            submenu: openSubmenu,
+        }).element);
+        /// #endif
         return window.siyuan.menus.menu;
     }
     /// #if !MOBILE

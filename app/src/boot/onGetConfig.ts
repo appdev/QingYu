@@ -16,7 +16,8 @@ import {appearanceConfigApi} from "../config/tabs/appearanceRuntime";
 import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {initAssets, setInlineStyle} from "../util/assets";
 import {renderSnippet} from "../config/util/snippets";
-import {openFile} from "../editor/util";
+import {openExternalMarkdownFile, openFile} from "../editor/util";
+import {getAllModels} from "../layout/getAll";
 import {exitSiYuan} from "../dialog/processSystem";
 import {isWindow, setToolbarLeftMac} from "../util/functions";
 import {initStatus} from "../layout/status";
@@ -185,6 +186,24 @@ export const initWindow = async (app: App) => {
             data.app = app;
         }
         openFile(data);
+    });
+    ipcRenderer.on(Constants.SIYUAN_OPEN_EXTERNAL_MARKDOWN, (_event, result) => {
+        if (result.status !== "ok") {
+            showMessage(`${window.siyuan.languages.externalMarkdown}: ${result.code}`, 6000, "error");
+            return;
+        }
+        void openExternalMarkdownFile(app, result.descriptor);
+    });
+    ipcRenderer.on(Constants.SIYUAN_FOCUS_EXTERNAL_MARKDOWN, (_event, capabilityId) => {
+        const editor = getAllModels().markdown.find((item) => item.externalCapabilityId === capabilityId);
+        if (editor) {
+            editor.parent.parent.switchTab(editor.parent.headElement);
+            editor.parent.parent.showHeading();
+        }
+    });
+    void ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+        action: "ready",
+        readOnly: window.siyuan.config.readonly || window.siyuan.config.editor.readOnly,
     });
     ipcRenderer.on(Constants.SIYUAN_SAVE_CLOSE, (event, close) => {
         if (isWindow()) {

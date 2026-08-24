@@ -198,7 +198,8 @@
     min-height: 0;
     padding-block: 0;
 
-    &.cm-markra-empty-body-line {
+    &.cm-markra-empty-body-line,
+    &.cm-markra-active-empty-line {
       border-block-width: 2px;
       line-height: 1.625;
       min-height: auto;
@@ -209,7 +210,65 @@
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-list-item {
     border-bottom-width: var(--b3-editor-appearance-block-list-margin-bottom, 2px);
     border-top-width: var(--b3-editor-appearance-block-list-margin-top, 2px);
-    padding-left: var(--b3-editor-appearance-block-list-padding-left, 4px);
+    padding-inline-start: calc(
+      var(--b3-editor-appearance-block-list-padding-left, 0px) +
+      var(--markra-list-indent, 0px)
+    );
+
+    &::after {
+      background-image: repeating-linear-gradient(
+        to right,
+        transparent 0,
+        transparent 16.5px,
+        var(--b3-theme-background-light) 16.5px,
+        var(--b3-theme-background-light) 17px,
+        transparent 17px,
+        transparent 34px
+      );
+      background-repeat: no-repeat;
+      content: "";
+      inset-block: 0;
+      inset-inline-start: var(--b3-editor-appearance-block-list-padding-left, 0px);
+      pointer-events: none;
+      position: absolute;
+      width: var(--markra-list-indent, 0px);
+    }
+  }
+
+  .cm-markra-list-marker {
+    align-items: center;
+    color: var(--b3-theme-on-surface);
+    display: inline-flex;
+    height: 1.625em;
+    justify-content: center;
+    user-select: none;
+    vertical-align: top;
+    width: 34px;
+
+    &--ordered {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+  }
+
+  .cm-markra-list-marker-icon {
+    height: 16px;
+    width: 16px;
+  }
+
+  .cm-line[data-markra-list-marker-selected="true"] .cm-markra-list-marker {
+    background-color: var(--b3-theme-primary-lightest);
+  }
+
+  .cm-markra-list-item .cm-markra-task-checkbox {
+    margin-inline-end: calc(
+      34px - var(--b3-editor-appearance-block-task-width, max(14px, calc(1em - 4px)))
+    );
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-task-done {
+    color: var(--b3-theme-on-surface-light);
+    text-decoration: line-through;
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-paragraph.p:not(
@@ -243,6 +302,57 @@
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h6 {
     @include editorAppearance.editor-heading(6, 1em, true);
+  }
+
+  .markra-heading-level-control {
+    display: inline-flex;
+    font-size: var(--b3-font-size-editor);
+    line-height: 1;
+    margin-inline-end: .35em;
+    position: relative;
+    vertical-align: middle;
+    z-index: 20;
+  }
+
+  .markra-heading-level-button {
+    @include editorAppearance.editor-control-button;
+    font-size: .75em;
+    font-weight: 600;
+  }
+
+  .markra-heading-level-list {
+    background-color: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius);
+    box-shadow: var(--b3-dialog-shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    inset-inline-start: 0;
+    min-width: 96px;
+    padding: 4px;
+    position: absolute;
+    top: calc(100% + 4px);
+    z-index: 100;
+  }
+
+  .markra-heading-level-option {
+    background-color: transparent;
+    border: 0;
+    border-radius: var(--b3-border-radius);
+    color: var(--b3-theme-on-surface);
+    cursor: pointer;
+    font-size: var(--b3-font-size-editor);
+    min-height: 28px;
+    padding: 4px 8px;
+    text-align: start;
+
+    &:hover,
+    &:focus-visible,
+    &[aria-selected="true"] {
+      background-color: var(--b3-list-hover);
+      color: var(--b3-theme-primary);
+    }
   }
 
   .cm-markra-strong {
@@ -282,30 +392,70 @@
     padding: 4px 8px 4px var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px));
 
     &::before {
-      bottom: 0;
-      top: 0;
+      content: none;
     }
 
     &.cm-markra-blockquote-first {
       border-radius: var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius)) var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius)) 0 0;
-      padding-top: 10px;
+      border-top-width: calc(
+        var(--b3-editor-appearance-block-blockquote-outer-margin-top, 2px) +
+        var(--b3-editor-appearance-block-blockquote-inner-margin-top, 2px)
+      );
+      padding-top: calc(
+        var(--b3-editor-appearance-block-blockquote-outer-padding-top, 4px) +
+        var(--b3-editor-appearance-block-blockquote-inner-padding-top, 4px)
+      );
 
-      &::before {
-        top: 6px;
-      }
     }
 
     &.cm-markra-blockquote-last {
       border-radius: 0 0 var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius)) var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius));
-      padding-bottom: 10px;
+      border-bottom-width: calc(
+        var(--b3-editor-appearance-block-blockquote-outer-margin-bottom, 2px) +
+        var(--b3-editor-appearance-block-blockquote-inner-margin-bottom, 2px)
+      );
+      padding-bottom: calc(
+        var(--b3-editor-appearance-block-blockquote-outer-padding-bottom, 4px) +
+        var(--b3-editor-appearance-block-blockquote-inner-padding-bottom, 4px)
+      );
 
-      &::before {
-        bottom: 6px;
-      }
     }
 
     &.cm-markra-blockquote-first.cm-markra-blockquote-last {
       border-radius: var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius));
+    }
+
+    &.cm-markra-list-item {
+      padding-inline-start: calc(
+        var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px)) +
+        var(--b3-editor-appearance-block-list-padding-left, 0px) +
+        var(--markra-list-indent, 0px)
+      );
+
+      &::after {
+        inset-inline-start: var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px));
+      }
+    }
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-markra-blockquote-rail {
+    background-color: var(--b3-editor-appearance-block-blockquote-border-left-color, var(--b3-theme-surface-lighter));
+    border-radius: var(--b3-border-radius);
+    left: calc(2px + var(--markra-blockquote-depth, 0) * var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px)));
+    pointer-events: none;
+    width: var(--b3-editor-appearance-block-blockquote-border-left-width, .25em);
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-structural-line:not(
+    .cm-markra-active-structural-line
+  ) {
+    border-block-width: 0;
+    line-height: 0;
+    min-height: 0;
+    padding-block: 0;
+
+    > .cm-widgetBuffer {
+      display: none !important;
     }
   }
 
@@ -506,6 +656,10 @@
     padding-right: calc(var(--b3-editor-appearance-block-code-padding-right, 1em) + var(--b3-editor-appearance-block-code-outer-padding-right, 4px)) !important;
   }
 
+  .cm-markra-indented-code-line {
+    padding-left: var(--b3-editor-appearance-block-code-outer-padding-left, 4px) !important;
+  }
+
   .cm-markra-code-opening-line,
   .cm-markra-code-closing-line {
     background: transparent;
@@ -555,9 +709,8 @@
     z-index: 1;
   }
 
-  .cm-markra-code-content-first:hover + .cm-markra-code-actions,
-  .cm-editor:hover .cm-markra-code-actions .protyle-icon,
-  .cm-editor:hover .cm-markra-code-actions .protyle-action__language,
+  .cm-line[data-code-block-hovered="true"] .cm-markra-code-actions .protyle-icon,
+  .cm-line[data-code-block-hovered="true"] .cm-markra-code-actions .protyle-action__language,
   .cm-markra-code-actions:focus-within .protyle-icon,
   .cm-markra-code-actions:focus-within .protyle-action__language {
     opacity: 1;
@@ -639,7 +792,11 @@
   }
 
   .markra-math-render-display {
-    @include editorAppearance.editor-rendered-block(block-math);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-sizing: border-box;
+    color: var(--b3-editor-appearance-block-math-color, var(--b3-theme-on-background));
     display: block;
     overflow-x: auto;
     min-height: 62px;
@@ -666,6 +823,11 @@
   .markra-mermaid-render svg {
     height: auto;
     max-width: 100%;
+  }
+
+  .markra-mermaid-zoom-button {
+    @include editorAppearance.editor-control-button;
+    margin: 4px 0 0 auto;
   }
 
   .cm-markra-code-exit-wrap,
@@ -704,17 +866,23 @@
     @include editorAppearance.editor-horizontal-rule;
     cursor: pointer;
 
-    &__line {
+    &::after {
       background: var(
         --b3-editor-appearance-block-horizontal-rule-background,
         var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light))
       );
+      content: "";
       display: block;
       height: var(--b3-editor-appearance-block-horizontal-rule-line-height, calc(1em / 16));
       left: 0;
       position: absolute;
       top: var(--b3-editor-appearance-block-horizontal-rule-line-top, calc(1.625em / 2));
       width: calc(100% - 1px);
+    }
+
+    // 容器伪元素是唯一绘制层，内部节点不参与外观。
+    &__line {
+      display: none;
     }
   }
 
@@ -728,6 +896,16 @@
     overflow: visible;
     padding: 4px;
     position: relative;
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-table-line {
+    border-block-width: 0;
+    padding-block: 0;
+
+    > .cm-widgetBuffer {
+      // 整块表格已经提供单元格光标入口，缓冲图片不能再生成独立行盒。
+      display: none !important;
+    }
   }
 
   .markra-table-scroll {
@@ -775,7 +953,8 @@
   }
 
   .cm-markra-table-wrap:hover .markra-table-control,
-  .cm-markra-table-wrap:focus-within .markra-table-control {
+  .cm-markra-table-wrap:focus-within .markra-table-control,
+  .cm-markra-table-wrap.markra-table-controls-visible .markra-table-control {
     opacity: 1;
     pointer-events: auto;
   }
@@ -796,19 +975,19 @@
     align-items: center;
     display: flex;
     gap: 8px;
-    max-width: calc(100% - 8px);
+    max-width: calc(100vw - 16px);
     opacity: 0;
     overflow-x: auto;
     pointer-events: none;
-    position: absolute;
-    right: 4px;
-    top: 4px;
+    position: fixed;
+    width: max-content;
     transition: opacity 150ms ease;
     z-index: 10;
   }
 
   .cm-markra-table-wrap:hover .markra-table-align-controls,
-  .cm-markra-table-wrap:focus-within .markra-table-align-controls {
+  .cm-markra-table-wrap:focus-within .markra-table-align-controls,
+  .cm-markra-table-wrap.markra-table-controls-visible .markra-table-align-controls {
     opacity: 1;
     pointer-events: auto;
   }
@@ -1055,72 +1234,79 @@
     border-radius: var(--b3-border-radius-b);
   }
 
-  .markra-media-viewer-dialog {
-    align-items: center;
-    background-color: color-mix(in srgb, var(--b3-theme-on-background) 72%, transparent);
-    display: flex;
-    inset: 0;
-    justify-content: center;
-    position: absolute;
-    z-index: 100;
-
-    &[data-fullscreen="true"] {
+  @at-root {
+    .markra-media-viewer-dialog {
+      align-items: center;
+      background-color: color-mix(in srgb, var(--b3-theme-on-background) 72%, transparent);
+      display: flex;
+      inset: 0;
+      justify-content: center;
       position: fixed;
+      z-index: 100;
+
+      &[data-fullscreen="true"] .markra-media-viewer-panel {
+        border-radius: 0;
+        height: 100%;
+        max-height: none;
+        max-width: none;
+        width: 100%;
+      }
     }
-  }
 
-  .markra-media-viewer-panel {
-    background-color: var(--b3-theme-background);
-    border: 1px solid var(--b3-border-color);
-    border-radius: var(--b3-border-radius);
-    box-shadow: var(--b3-dialog-shadow);
-    display: flex;
-    flex-direction: column;
-    height: min(80vh, 720px);
-    max-height: calc(100% - 32px);
-    max-width: calc(100% - 32px);
-    overflow: hidden;
-    width: min(80vw, 960px);
-  }
-
-  .markra-media-viewer-toolbar {
-    align-items: center;
-    border-bottom: 1px solid var(--b3-border-color);
-    display: flex;
-    gap: 4px;
-    justify-content: flex-end;
-    padding: 4px;
-  }
-
-  .markra-media-viewer-control-button,
-  .markra-media-viewer-close-button {
-    @include editorAppearance.editor-control-button;
-  }
-
-  .markra-media-viewer-content {
-    cursor: grab;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-    position: relative;
-
-    &[data-dragging="true"] {
-      cursor: grabbing;
+    .markra-media-viewer-panel {
+      background-color: var(--b3-theme-background);
+      border: 1px solid var(--b3-border-color);
+      border-radius: var(--b3-border-radius);
+      box-shadow: var(--b3-dialog-shadow);
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      height: min(80vh, 720px);
+      max-height: calc(100% - 32px);
+      max-width: calc(100% - 32px);
+      overflow: hidden;
+      width: min(80vw, 960px);
     }
-  }
 
-  .markra-media-viewer-canvas {
-    align-items: center;
-    display: flex;
-    height: 100%;
-    justify-content: center;
-    transform-origin: center;
-    width: 100%;
-  }
+    .markra-media-viewer-toolbar {
+      align-items: center;
+      border-bottom: 1px solid var(--b3-border-color);
+      display: flex;
+      gap: 4px;
+      justify-content: flex-end;
+      padding: 4px;
+    }
 
-  .markra-media-viewer-media {
-    max-height: 100%;
-    max-width: 100%;
+    .markra-media-viewer-control-button,
+    .markra-media-viewer-close-button {
+      @include editorAppearance.editor-control-button;
+    }
+
+    .markra-media-viewer-content {
+      cursor: grab;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+
+      &[data-dragging="true"] {
+        cursor: grabbing;
+      }
+    }
+
+    .markra-media-viewer-canvas {
+      align-items: center;
+      display: flex;
+      height: 100%;
+      justify-content: center;
+      transform-origin: center;
+      width: 100%;
+    }
+
+    .markra-media-viewer-media {
+      max-height: 100%;
+      max-width: 100%;
+    }
   }
 
   .markra-image-node {
@@ -1170,9 +1356,7 @@
 
   .cm-scroller {
     line-height: 1.625;
-    overflow-x: auto;
-    overflow-y: visible;
-    overscroll-behavior-x: contain;
+    overflow: visible;
   }
 
   @media (max-width: 600px) {
@@ -1250,6 +1434,58 @@
 .markdown-editor__slash-menu-empty {
   color: var(--b3-theme-on-surface-light);
   padding: 8px 12px;
+}
+
+.markdown-editor__search {
+  align-items: center;
+  background: var(--b3-theme-surface);
+  border-bottom: 1px solid var(--b3-border-color);
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+
+  .b3-text-field {
+    min-width: 120px;
+    width: 180px;
+  }
+}
+
+.markdown-editor__search-case {
+  align-items: center;
+  color: var(--b3-theme-on-surface-light);
+  display: flex;
+  gap: 2px;
+}
+
+.markdown-editor--rtl .cm-content,
+.markdown-editor--rtl .protyle-title__input {
+  direction: rtl;
+}
+
+.markdown-editor--justify .cm-line,
+.markdown-editor--justify .protyle-title__input {
+  text-align: justify;
+}
+
+.markdown-editor .cm-line.cm-markra-location-cue {
+  animation: markdown-location-cue 1200ms cubic-bezier(.16, 1, .3, 1);
+}
+
+@keyframes markdown-location-cue {
+  0%, 34% {
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--b3-theme-primary) 14%, transparent),
+      inset 2px 0 0 color-mix(in srgb, var(--b3-theme-primary) 72%, transparent);
+  }
+
+  to {
+    box-shadow: inset 0 0 0 9999px transparent, inset 2px 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .markdown-editor .cm-line.cm-markra-location-cue {
+    animation-duration: 1ms;
+  }
 }
 
 @keyframes markra-codemirror-upload-spin {

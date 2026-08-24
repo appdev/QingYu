@@ -16,7 +16,7 @@ export function renderMarkraMathToString(
     displayMode: kind === "display",
     globalGroup: true,
     macros,
-    output: "htmlAndMathml",
+    output: "html",
     strict: "ignore",
     throwOnError: false,
   });

@@ -56,6 +56,15 @@ test("Mermaid preview exposes loading, ready, and error states", async () => {
     complete?.("<svg></svg>");
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(preview?.dataset.appearanceState, "ready");
+    const zoomButton = view.dom.querySelector<HTMLButtonElement>(".markra-mermaid-zoom-button");
+    assert.ok(zoomButton);
+    zoomButton.click();
+    const dialog = document.querySelector<HTMLElement>(".markra-media-viewer-dialog");
+    assert.ok(dialog);
+    dialog.querySelector<HTMLButtonElement>(".markra-media-viewer-fullscreen-button")?.click();
+    assert.equal(dialog.dataset.fullscreen, "true");
+    dialog.querySelector<HTMLButtonElement>(".markra-media-viewer-close-button")?.click();
+    assert.equal(document.querySelector(".markra-media-viewer-dialog"), null);
 
     view.destroy();
     view = new EditorView({

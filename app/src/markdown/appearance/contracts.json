@@ -208,6 +208,10 @@
       "marginBottom": {"selector": ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)", "property": "borderTopWidth"}
     },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .p", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-paragraph.p:not(.cm-markra-blockquote):not(.cm-markra-list-item):not(.cm-markra-image-line)", "box": "border"}
+    },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
@@ -223,13 +227,23 @@
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h1"},
     "markdownPropertyReferences": {
+      "contentMinHeight": {"selector": ".cm-markra-h1", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".cm-content > .cm-line:first-child.cm-markra-h1", "property": "borderTopWidth"},
       "marginBottom": {"selector": ".cm-markra-h1", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-h1", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .h1", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-h1", "box": "border"}
+    },
+    "propertyReferences": {
+      "contentMinHeight": {"selector": ".protyle-wysiwyg .h1 > [spellcheck]", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".protyle-wysiwyg[data-markdown-appearance-context=\"heading-1-first\"] .h1", "property": "marginTop"}
     },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["color", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop"],
+    "styleProperties": ["background", "backgroundBlendMode", "backgroundClip", "backgroundImage", "color", "contentMinHeight", "firstMarginTop", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop", "webkitTextFillColor"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -241,13 +255,23 @@
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h2"},
     "markdownPropertyReferences": {
+      "contentMinHeight": {"selector": ".cm-markra-h2", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".cm-content > .cm-line:first-child.cm-markra-h2", "property": "borderTopWidth"},
       "marginBottom": {"selector": ".cm-markra-h2", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-h2", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .h2", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-h2", "box": "border"}
+    },
+    "propertyReferences": {
+      "contentMinHeight": {"selector": ".protyle-wysiwyg .h2 > [spellcheck]", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".protyle-wysiwyg[data-markdown-appearance-context=\"heading-2-first\"] .h2", "property": "marginTop"}
     },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["color", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop"],
+    "styleProperties": ["background", "backgroundBlendMode", "backgroundClip", "backgroundImage", "color", "contentMinHeight", "firstMarginTop", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop", "webkitTextFillColor"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -259,13 +283,23 @@
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h3"},
     "markdownPropertyReferences": {
+      "contentMinHeight": {"selector": ".cm-markra-h3", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".cm-content > .cm-line:first-child.cm-markra-h3", "property": "borderTopWidth"},
       "marginBottom": {"selector": ".cm-markra-h3", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-h3", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .h3", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-h3", "box": "border"}
+    },
+    "propertyReferences": {
+      "contentMinHeight": {"selector": ".protyle-wysiwyg .h3 > [spellcheck]", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".protyle-wysiwyg[data-markdown-appearance-context=\"heading-3-first\"] .h3", "property": "marginTop"}
     },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["color", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop"],
+    "styleProperties": ["background", "backgroundBlendMode", "backgroundClip", "backgroundImage", "color", "contentMinHeight", "firstMarginTop", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop", "webkitTextFillColor"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -277,13 +311,23 @@
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h4"},
     "markdownPropertyReferences": {
+      "contentMinHeight": {"selector": ".cm-markra-h4", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".cm-content > .cm-line:first-child.cm-markra-h4", "property": "borderTopWidth"},
       "marginBottom": {"selector": ".cm-markra-h4", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-h4", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .h4", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-h4", "box": "border"}
+    },
+    "propertyReferences": {
+      "contentMinHeight": {"selector": ".protyle-wysiwyg .h4 > [spellcheck]", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".protyle-wysiwyg[data-markdown-appearance-context=\"heading-4-first\"] .h4", "property": "marginTop"}
     },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["color", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop"],
+    "styleProperties": ["background", "backgroundBlendMode", "backgroundClip", "backgroundImage", "color", "contentMinHeight", "firstMarginTop", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop", "webkitTextFillColor"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -295,13 +339,23 @@
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h5"},
     "markdownPropertyReferences": {
+      "contentMinHeight": {"selector": ".cm-markra-h5", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".cm-content > .cm-line:first-child.cm-markra-h5", "property": "borderTopWidth"},
       "marginBottom": {"selector": ".cm-markra-h5", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-h5", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .h5", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-h5", "box": "border"}
+    },
+    "propertyReferences": {
+      "contentMinHeight": {"selector": ".protyle-wysiwyg .h5 > [spellcheck]", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".protyle-wysiwyg[data-markdown-appearance-context=\"heading-5-first\"] .h5", "property": "marginTop"}
     },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["color", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop"],
+    "styleProperties": ["background", "backgroundBlendMode", "backgroundClip", "backgroundImage", "color", "contentMinHeight", "firstMarginTop", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop", "webkitTextFillColor"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -313,13 +367,23 @@
     "ownedSelectors": [],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .h6"},
     "markdownPropertyReferences": {
+      "contentMinHeight": {"selector": ".cm-markra-h6", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".cm-content > .cm-line:first-child.cm-markra-h6", "property": "borderTopWidth"},
       "marginBottom": {"selector": ".cm-markra-h6", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-h6", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .h6", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-h6", "box": "border"}
+    },
+    "propertyReferences": {
+      "contentMinHeight": {"selector": ".protyle-wysiwyg .h6 > [spellcheck]", "property": "minHeight"},
+      "firstMarginTop": {"selector": ".protyle-wysiwyg[data-markdown-appearance-context=\"heading-6-first\"] .h6", "property": "marginTop"}
     },
     "states": ["default", "focus", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["color", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop"],
+    "styleProperties": ["background", "backgroundBlendMode", "backgroundClip", "backgroundImage", "color", "contentMinHeight", "firstMarginTop", "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight", "marginBottom", "marginTop", "paddingBottom", "paddingTop", "webkitTextFillColor"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-on-background", "--b3-font-family-protyle"],
     "probe": true
@@ -328,11 +392,15 @@
     "id": "block.list",
     "category": "native-equivalent",
     "markdownSelector": ".cm-markra-list-item",
-    "ownedSelectors": [".cm-markra-list-marker"],
+    "ownedSelectors": [".cm-markra-list-marker", ".cm-markra-list-item::after"],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .list"},
     "markdownPropertyReferences": {
       "marginBottom": {"selector": ".cm-markra-list-item", "property": "borderBottomWidth"},
       "marginTop": {"selector": ".cm-markra-list-item", "property": "borderTopWidth"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .list", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-list-item", "box": "border", "aggregate": "contiguous-lines"}
     },
     "states": ["default", "hover", "selected"],
     "modes": ["visual"],
@@ -346,7 +414,7 @@
     "id": "block.task",
     "category": "native-equivalent",
     "markdownSelector": ".cm-markra-task-checkbox",
-    "ownedSelectors": [],
+    "ownedSelectors": [".cm-markra-task-done"],
     "reference": {"kind": "native", "selector": ".li[data-subtype=\"t\"] > .protyle-action--task svg"},
     "propertyReferences": {
       "width": {"selector": ".li[data-subtype=\"t\"] > .protyle-action--task svg", "property": "height"}
@@ -363,12 +431,32 @@
     "id": "block.blockquote",
     "category": "native-equivalent",
     "markdownSelector": ".cm-markra-blockquote",
-    "ownedSelectors": [".cm-markra-blockquote-first", ".cm-markra-blockquote-last"],
+    "ownedSelectors": [".cm-markra-blockquote-first", ".cm-markra-blockquote-last", ".cm-markra-blockquote-rail"],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .bq"},
+    "propertyReferences": {
+      "borderLeftColor": {"selector": ".protyle-wysiwyg .bq", "property": "backgroundColor", "pseudo": "::before"},
+      "borderLeftWidth": {"selector": ".protyle-wysiwyg .bq", "property": "width", "pseudo": "::before"},
+      "innerMarginBottom": {"selector": ".protyle-wysiwyg .bq > .p", "property": "marginBottom"},
+      "innerMarginTop": {"selector": ".protyle-wysiwyg .bq > .p", "property": "marginTop"},
+      "innerPaddingBottom": {"selector": ".protyle-wysiwyg .bq > .p", "property": "paddingBottom"},
+      "innerPaddingTop": {"selector": ".protyle-wysiwyg .bq > .p", "property": "paddingTop"},
+      "outerMarginBottom": {"selector": ".protyle-wysiwyg .bq", "property": "marginBottom"},
+      "outerMarginTop": {"selector": ".protyle-wysiwyg .bq", "property": "marginTop"},
+      "outerPaddingBottom": {"selector": ".protyle-wysiwyg .bq", "property": "paddingBottom"},
+      "outerPaddingTop": {"selector": ".protyle-wysiwyg .bq", "property": "paddingTop"}
+    },
+    "markdownPropertyReferences": {
+      "borderLeftColor": {"selector": ".cm-markra-blockquote-rail", "property": "backgroundColor"},
+      "borderLeftWidth": {"selector": ".cm-markra-blockquote-rail", "property": "width"}
+    },
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .bq", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-blockquote:not(.cm-markra-callout)", "box": "border", "aggregate": "contiguous-lines"}
+    },
     "states": ["default", "selected"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "borderLeftColor", "borderLeftWidth", "borderRadius", "color", "fontFamily", "fontSize", "lineHeight", "paddingLeft"],
+    "styleProperties": ["backgroundColor", "borderLeftColor", "borderLeftWidth", "borderRadius", "color", "fontFamily", "fontSize", "innerMarginBottom", "innerMarginTop", "innerPaddingBottom", "innerPaddingTop", "lineHeight", "outerMarginBottom", "outerMarginTop", "outerPaddingBottom", "outerPaddingTop", "paddingLeft"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-surface", "--b3-theme-on-surface", "--b3-border-color"],
     "probe": true
@@ -487,8 +575,12 @@
     "id": "block.horizontal-rule",
     "category": "native-equivalent",
     "markdownSelector": ".cm-markra-horizontal-rule",
-    "ownedSelectors": [".cm-markra-horizontal-rule__line"],
-    "reference": {"kind": "native", "selector": ".protyle-wysiwyg .hr > div"},
+    "ownedSelectors": [],
+    "reference": {"kind": "native", "selector": ".protyle-wysiwyg .hr"},
+    "geometryReferences": {
+      "native": {"selector": ".protyle-wysiwyg .hr", "box": "margin"},
+      "markdown": {"selector": ".cm-markra-horizontal-rule", "closest": ".cm-line", "box": "border"}
+    },
     "propertyReferences": {
       "background": {"selector": ".protyle-wysiwyg .hr > div", "property": "background", "pseudo": "::after"},
       "backgroundColor": {"selector": ".protyle-wysiwyg .hr > div", "property": "backgroundColor", "pseudo": "::after"},
@@ -496,10 +588,10 @@
       "lineTop": {"selector": ".protyle-wysiwyg .hr > div", "property": "top", "pseudo": "::after"}
     },
     "markdownPropertyReferences": {
-      "background": {"selector": ".cm-markra-horizontal-rule__line", "property": "background"},
-      "backgroundColor": {"selector": ".cm-markra-horizontal-rule__line", "property": "backgroundColor"},
-      "lineHeight": {"selector": ".cm-markra-horizontal-rule__line", "property": "height"},
-      "lineTop": {"selector": ".cm-markra-horizontal-rule__line", "property": "top"}
+      "background": {"selector": ".cm-markra-horizontal-rule", "property": "background", "pseudo": "::after"},
+      "backgroundColor": {"selector": ".cm-markra-horizontal-rule", "property": "backgroundColor", "pseudo": "::after"},
+      "lineHeight": {"selector": ".cm-markra-horizontal-rule", "property": "height", "pseudo": "::after"},
+      "lineTop": {"selector": ".cm-markra-horizontal-rule", "property": "top", "pseudo": "::after"}
     },
     "states": ["default", "hover", "selected"],
     "modes": ["visual"],
@@ -527,7 +619,7 @@
     "id": "block.code",
     "category": "native-equivalent",
     "markdownSelector": ".markra-code-block",
-    "ownedSelectors": [".cm-markra-code-line", ".cm-markra-code-content-line", ".cm-markra-code-opening-line", ".cm-markra-code-closing-line", ".cm-markra-code-token", ".markra-mermaid-zoom-button"],
+    "ownedSelectors": [".cm-markra-code-line", ".cm-markra-code-content-line", ".cm-markra-code-opening-line", ".cm-markra-code-closing-line", ".cm-markra-code-token", ".markra-mermaid-zoom-button", ".markra-mermaid-zoom-icon"],
     "reference": {"kind": "native", "selector": ".protyle-wysiwyg .code-block"},
     "propertyReferences": {
       "color": {"selector": ".protyle-wysiwyg .code-block .hljs", "property": "color"},
@@ -561,7 +653,7 @@
     "states": ["default", "focus", "error"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
+    "styleProperties": ["backgroundColor", "borderBottomWidth", "borderColor", "borderLeftWidth", "borderRadius", "borderRightWidth", "borderTopWidth", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-surface", "--b3-theme-on-background", "--b3-theme-error"],
     "probe": true
@@ -575,7 +667,7 @@
     "states": ["default", "focus", "error"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
+    "styleProperties": ["backgroundColor", "borderBottomWidth", "borderColor", "borderLeftWidth", "borderRadius", "borderRightWidth", "borderTopWidth", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-surface", "--b3-theme-on-background", "--b3-theme-error"],
     "probe": true
@@ -589,7 +681,7 @@
     "states": ["default", "focus", "error"],
     "modes": ["visual"],
     "platforms": ["desktop", "mobile"],
-    "styleProperties": ["backgroundColor", "borderColor", "borderRadius", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
+    "styleProperties": ["backgroundColor", "borderBottomWidth", "borderColor", "borderLeftWidth", "borderRadius", "borderRightWidth", "borderTopWidth", "color", "fontFamily", "fontSize", "lineHeight", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop"],
     "geometry": ["contentLeft", "height", "top", "width"],
     "fallbackVariables": ["--b3-theme-surface", "--b3-theme-on-background", "--b3-theme-error"],
     "probe": true

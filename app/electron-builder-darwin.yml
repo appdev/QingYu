@@ -5,6 +5,14 @@ asar: false
 compression: "normal"
 copyright: "QingYu Project"
 artifactName: "qingyu-${version}-${os}.${ext}"
+fileAssociations:
+  - ext:
+      - "md"
+      - "markdown"
+    name: "Markdown document"
+    description: "Markdown document"
+    mimeType: "text/markdown"
+    role: "Editor"
 extraMetadata:
   main: "electron/main.js"
 directories:

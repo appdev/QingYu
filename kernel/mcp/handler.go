@@ -136,6 +136,7 @@ func handleInitialize(req *JsonRpcRequest, session *Session) *JsonRpcResponse {
 		JsonRpc: "2.0",
 		Result: map[string]any{
 			"protocolVersion": serverVersion,
+			"instructions":    ServerInstructions,
 			"capabilities": ServerCapabilities{
 				Tools: &ToolsCapability{ListChanged: false},
 			},
@@ -227,6 +228,7 @@ func handleDiscover(req *JsonRpcRequest) *JsonRpcResponse {
 		JsonRpc: "2.0",
 		Result: map[string]any{
 			"protocolVersion": ProtocolV20260728,
+			"instructions":    ServerInstructions,
 			"capabilities": ServerCapabilities{
 				Tools: &ToolsCapability{ListChanged: false},
 			},

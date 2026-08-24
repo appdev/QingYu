@@ -6,7 +6,7 @@ import {renderAssetsPreview} from "../asset/renderAssets";
 import {Protyle} from "../protyle";
 import {disabledProtyle, onGet} from "../protyle/util/onGet";
 import * as dayjs from "dayjs";
-import {fetchPost} from "../util/fetch";
+import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {escapeAttr, escapeHtml} from "../util/escape";
 import {isMobile} from "../util/functions";
 import {showDiff} from "./diff";
@@ -16,7 +16,19 @@ import {closeModel} from "../mobile/util/closePanel";
 import {App} from "../index";
 import {resizeSide} from "./resizeSide";
 import {isSupportCSSHL, searchMarkRender} from "../protyle/render/searchMarkRender";
-import {pathPosix} from "../util/pathName";
+import {movePathTo, pathPosix} from "../util/pathName";
+import {
+    DeletedMarkdownEntry,
+    deletedMarkdownActionAllowed,
+    loadDeletedMarkdown,
+    previewDeletedMarkdown,
+    purgeDeletedMarkdown,
+    renderDeletedMarkdownList,
+    resolveDeletedMarkdownTarget,
+    restoreDeletedMarkdown,
+    setDeletedMarkdownPreview,
+} from "../markdown/deletedDocuments";
+import {showMessage} from "../dialog/message";
 
 let historyEditor: Protyle;
 
@@ -431,6 +443,7 @@ export const openHistory = (app: App, tab: "doc" | "notebook" | "repo" = "doc") 
     const contentHTML = `<div class="fn__flex-column" style="height: 100%;">
     <div class="layout-tab-bar fn__flex" ${isMobile() ? "" : 'style="border-radius: var(--b3-border-radius-b) var(--b3-border-radius-b) 0 0"'}>
         <div data-type="doc" class="item item--full item--focus"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.fileHistory}</span><span class="fn__flex-1"></span></div>
+        <div data-type="deletedMarkdown" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.deletedMarkdown}</span><span class="fn__flex-1"></span></div>
         <div data-type="notebook" style="min-width: 160px" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.removedNotebook}</span><span class="fn__flex-1"></span></div>
         <div data-type="repo" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.dataSnapshot}</span><span class="fn__flex-1"></span></div>
     </div>
@@ -486,6 +499,15 @@ export const openHistory = (app: App, tab: "doc" | "notebook" | "repo" = "doc") 
                     <textarea class="fn__flex-1 history__text fn__none" data-type="mdPanel"></textarea>
                     <div class="fn__flex-1 history__text fn__none" style="padding: 0" data-type="docPanel"></div>
                 </div>
+            </div>
+        </div>
+        <div data-type="deletedMarkdown" class="fn__none history__repo" data-init="false">
+            <div class="fn__flex fn__flex-1 history__panel">
+                <ul class="b3-list b3-list--background history__side" ${isMobile() ? "" : `style="width: ${localHistory.sideWidth}"`}>
+                    <li class="b3-list--empty">${window.siyuan.languages.emptyContent}</li>
+                </ul>
+                <div class="history__resize"></div>
+                <textarea readonly class="fn__flex-1 history__text" data-type="deletedMarkdownPreview"></textarea>
             </div>
         </div>
         <ul data-type="notebook" style="padding: 8px 0;" class="fn__none b3-list b3-list--background">
@@ -561,6 +583,59 @@ export const openHistory = (app: App, tab: "doc" | "notebook" | "repo" = "doc") 
 };
 
 const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
+    const markdownRequest = (url: string, body: Record<string, unknown>) => fetchSyncPost(url, body);
+    const deletedMarkdownEntries = new Map<string, DeletedMarkdownEntry>();
+    const deletedMarkdownPanel = element.querySelector<HTMLElement>('#historyContainer [data-type="deletedMarkdown"]');
+    const chooseDeletedMarkdownTarget = (entry: DeletedMarkdownEntry) => movePathTo({
+        title: window.siyuan.languages.restoreLocation,
+        cb: (toPath, toNotebook) => {
+            const originalName = entry.originalPath.slice(entry.originalPath.lastIndexOf("/") + 1);
+            const nameDialog = new Dialog({
+                title: window.siyuan.languages.rename,
+                content: `<div class="b3-dialog__content"><input class="b3-text-field fn__block" value="${escapeAttr(originalName)}"></div>
+<div class="b3-dialog__action"><button class="b3-button b3-button--cancel">${window.siyuan.languages.cancel}</button><div class="fn__space"></div><button class="b3-button b3-button--text">${window.siyuan.languages.confirm}</button></div>`,
+                width: isMobile() ? "92vw" : "520px",
+            });
+            const buttons = nameDialog.element.querySelectorAll<HTMLButtonElement>(".b3-button");
+            const input = nameDialog.element.querySelector<HTMLInputElement>(".b3-text-field");
+            buttons[0].addEventListener("click", () => nameDialog.destroy());
+            buttons[1].addEventListener("click", async () => {
+                const name = input.value.trim();
+                if (!name) return;
+                const result = await restoreDeletedMarkdown(entry, {
+                    notebook: toNotebook[0],
+                    parentPath: toPath[0],
+                    name,
+                }, markdownRequest);
+                if (result.ok) {
+                    nameDialog.destroy();
+                    await renderDeletedMarkdown();
+                } else {
+                    showMessage(result.conflict ? window.siyuan.languages.markdownTargetConflict :
+                        result.message || window.siyuan.languages.transactionError, 6000, "error");
+                }
+            });
+            input.addEventListener("keydown", (event) => {
+                if (event.key === "Enter") buttons[1].click();
+            });
+            input.select();
+        },
+    });
+    const renderDeletedMarkdown = async () => {
+        const entries = await loadDeletedMarkdown(markdownRequest);
+        deletedMarkdownEntries.clear();
+        entries.forEach((entry) => deletedMarkdownEntries.set(entry.id, entry));
+        const list = deletedMarkdownPanel.querySelector<HTMLElement>(".b3-list");
+        renderDeletedMarkdownList(list, entries, {
+            readonly: window.siyuan.config.readonly,
+            emptyText: window.siyuan.languages.emptyContent,
+            restoreText: window.siyuan.languages.rollback,
+            restoreToText: window.siyuan.languages.restoreLocation,
+            purgeText: window.siyuan.languages.permanentlyRemoveMarkdown,
+            formatTime: (time) => dayjs(time).format("YYYY-MM-DD HH:mm:ss"),
+        });
+        deletedMarkdownPanel.setAttribute("data-init", "true");
+    };
     const firstPanelElement = element.querySelector("#historyContainer [data-type=doc]") as HTMLElement;
     firstPanelElement.querySelectorAll(".b3-select").forEach((itemElement) => {
         itemElement.addEventListener("change", () => {
@@ -619,6 +694,7 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
         let target = event.target as HTMLElement;
         while (target && !target.isEqualNode(element)) {
             const type = target.getAttribute("data-type");
+            if (!deletedMarkdownActionAllowed(target, window.siyuan.config.readonly)) break;
             if (target.classList.contains("item")) {
                 target.parentElement.querySelector(".item--focus").classList.remove("item--focus");
                 Array.from(element.querySelector("#historyContainer").children).forEach((item: HTMLElement) => {
@@ -629,6 +705,8 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
                         if (item.getAttribute("data-init") !== "true") {
                             if (type === "notebook") {
                                 renderRmNotebook(item);
+                            } else if (type === "deletedMarkdown") {
+                                void renderDeletedMarkdown();
                             } else if (type === "repo") {
                                 renderRepo(item, 1);
                             }
@@ -638,6 +716,58 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
                         item.classList.remove("fn__block");
                     }
                 });
+                event.stopPropagation();
+                event.preventDefault();
+                break;
+            } else if (type === "deletedMarkdownItem") {
+                const entry = deletedMarkdownEntries.get(target.getAttribute("data-id"));
+                if (entry) {
+                    void previewDeletedMarkdown(entry.id, markdownRequest).then((content) => {
+                        setDeletedMarkdownPreview(
+                            deletedMarkdownPanel.querySelector('[data-type="deletedMarkdownPreview"]') as HTMLTextAreaElement,
+                            content,
+                        );
+                    });
+                    deletedMarkdownPanel.querySelector(".b3-list-item--focus")?.classList.remove("b3-list-item--focus");
+                    target.classList.add("b3-list-item--focus");
+                }
+                event.stopPropagation();
+                event.preventDefault();
+                break;
+            } else if (type === "restoreDeletedMarkdown") {
+                const entry = deletedMarkdownEntries.get(target.closest(".b3-list-item")?.getAttribute("data-id"));
+                if (!entry) break;
+                const original = resolveDeletedMarkdownTarget(entry,
+                    new Set(window.siyuan.notebooks.filter((notebook) => !notebook.closed).map((notebook) => notebook.id)));
+                if (original) {
+                    void restoreDeletedMarkdown(entry, original, markdownRequest).then((result) => {
+                        if (result.ok) void renderDeletedMarkdown();
+                        else showMessage(result.conflict ? window.siyuan.languages.markdownTargetConflict :
+                            result.message || window.siyuan.languages.transactionError, 6000, "error");
+                    });
+                } else {
+                    showMessage(window.siyuan.languages.markdownOriginalNotebookMissing);
+                    chooseDeletedMarkdownTarget(entry);
+                }
+                event.stopPropagation();
+                event.preventDefault();
+                break;
+            } else if (type === "restoreDeletedMarkdownTo") {
+                const entry = deletedMarkdownEntries.get(target.closest(".b3-list-item")?.getAttribute("data-id"));
+                if (entry) chooseDeletedMarkdownTarget(entry);
+                event.stopPropagation();
+                event.preventDefault();
+                break;
+            } else if (type === "purgeDeletedMarkdown") {
+                const entry = deletedMarkdownEntries.get(target.closest(".b3-list-item")?.getAttribute("data-id"));
+                if (!entry) break;
+                confirmDialog(window.siyuan.languages.permanentlyRemoveMarkdown,
+                    window.siyuan.languages.deleteOpConfirm, () => {
+                        void purgeDeletedMarkdown(entry, markdownRequest).then((result) => {
+                            if (result.ok) void renderDeletedMarkdown();
+                            else showMessage(result.message || window.siyuan.languages.transactionError, 6000, "error");
+                        });
+                    });
                 event.stopPropagation();
                 event.preventDefault();
                 break;

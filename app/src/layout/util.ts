@@ -31,7 +31,19 @@ import {setStorageVal} from "../protyle/util/compatibility";
 import {adjustDockPadding} from "./dock/util";
 import {setTitle} from "../util/processTitle";
 import {activateQueuedAVLocate, queueAVLocateRequest} from "../protyle/render/av/locate";
-import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {getMarkdownEditorBySourceKey, MarkdownEditor} from "../markdown/MarkdownEditor";
+import {serializeMarkdownEditorSessionState} from "../markdown/sessionState";
+import {MarkdownOutline} from "../markdown/MarkdownOutline";
+import {canRestoreMarkdownOutline, collectMarkdownLayoutSourceKeys, serializeMarkdownOutline} from "../markdown/outlineLayout";
+import {collectExternalMarkdownCapabilityIds} from "../markdown/externalTab";
+import {
+    markdownReferenceFromInitData,
+    markdownReferenceFromLayout,
+    type MarkdownDocumentReference,
+} from "../markdown/documentManagement";
+/// #if !BROWSER
+import {ipcRenderer} from "electron";
+/// #endif
 
 const isBuiltInCustomModel = (type: string) => {
     return type === "siyuan-database-row";
@@ -134,6 +146,16 @@ export const resetLayout = () => {
 };
 
 let saveCount = 0;
+const reportExternalMarkdownLayout = (layoutJSON: unknown) => {
+    if (isWindow()) return;
+    /// #if !BROWSER
+    void ipcRenderer.invoke(Constants.SIYUAN_EXTERNAL_MARKDOWN, {
+        action: "layout",
+        capabilityIds: collectExternalMarkdownCapabilityIds(layoutJSON),
+    });
+    /// #endif
+};
+
 export const saveLayout = () => {
     const breakObj = {};
     let layoutJSON: any = {};
@@ -154,6 +176,7 @@ export const saveLayout = () => {
             };
             layoutToJSON(window.siyuan.layout.layout, layoutJSON.layout, breakObj);
             window.siyuan.config.uiLayout = layoutJSON;
+            reportExternalMarkdownLayout(layoutJSON);
         }
     }
     if (Object.keys(breakObj).length > 0 && saveCount < 10) {
@@ -206,6 +229,7 @@ export const exportLayout = async (options: {
         right: dockToJSON(window.siyuan.layout.rightDock),
     };
     layoutToJSON(window.siyuan.layout.layout, layoutJSON.layout);
+    reportExternalMarkdownLayout(layoutJSON);
     if (window.siyuan.config.readonly) {
         options.cb();
     } else {
@@ -264,10 +288,58 @@ const JSONToDock = (json: any, app: App) => {
 
 const removedTabs: Tab[] = [];
 
+const markdownTabReference = (tab: Tab): MarkdownDocumentReference | null => {
+    if (tab.model instanceof MarkdownEditor) {
+        return tab.model.externalCapabilityId ? null : {
+            kind: "markdown",
+            notebook: tab.model.notebookId,
+            path: tab.model.path,
+        };
+    }
+    return markdownReferenceFromInitData(tab.headElement?.getAttribute("data-initdata"));
+};
+
+const pruneStaleMarkdownTabs = async () => {
+    const candidates = getAllTabs("MarkdownEditor").map((tab) => ({tab, reference: markdownTabReference(tab)}))
+        .filter((item): item is {tab: Tab, reference: MarkdownDocumentReference} => Boolean(item.reference));
+    const stale = (await Promise.all(candidates.map(async (item) => {
+        try {
+            const response = await fetch("/api/markdown/get", {
+                method: "POST",
+                body: JSON.stringify({
+                    notebook: item.reference.notebook,
+                    path: item.reference.path,
+                }),
+            });
+            const result = await response.json() as IWebSocketData;
+            return result.code === 0 ? null : item;
+        } catch {
+            // 启动期间的临时请求失败不能作为文件已经删除的证据。
+            return null;
+        }
+    }))).filter((item): item is {tab: Tab, reference: MarkdownDocumentReference} => Boolean(item));
+    if (stale.length === 0) return;
+    for (const item of stale) {
+        const current = markdownTabReference(item.tab);
+        if (current?.notebook === item.reference.notebook && current.path === item.reference.path) {
+            await item.tab.parent.removeTab(item.tab.id, false, false, false);
+        }
+    }
+    const staleKeys = new Set(stale.map((item) => `${item.reference.notebook}\n${item.reference.path}`));
+    const closedTabs = (window.siyuan.storage[Constants.LOCAL_CLOSED_TABS] || []).filter((layout: unknown) => {
+        const reference = markdownReferenceFromLayout(layout);
+        return !reference || !staleKeys.has(`${reference.notebook}\n${reference.path}`);
+    });
+    window.siyuan.storage[Constants.LOCAL_CLOSED_TABS] = closedTabs;
+    setStorageVal(Constants.LOCAL_CLOSED_TABS, closedTabs);
+    saveLayout();
+};
+
 export const JSONToCenter = (
     app: App,
     json: Config.TUILayoutItem,
     layout?: Layout | Wnd | Tab | Model,
+    markdownSourceKeys = collectMarkdownLayoutSourceKeys(json),
 ) => {
     let child: Layout | Wnd | Tab | Model;
     if (json.instance === "Layout") {
@@ -348,6 +420,18 @@ export const JSONToCenter = (
         }));
     } else if (json.instance === "MarkdownEditor") {
         (layout as Tab).headElement.setAttribute("data-initdata", JSON.stringify(json));
+    } else if (json.instance === "MarkdownOutline") {
+        const sourceExists = Boolean(getMarkdownEditorBySourceKey(json.sourceKey)) || markdownSourceKeys.has(json.sourceKey);
+        if (!sourceExists) {
+            removedTabs.push(layout as Tab);
+            return;
+        }
+        (layout as Tab).addModel(new MarkdownOutline({
+            app,
+            tab: layout as Tab,
+            sourceKey: json.sourceKey,
+            editor: () => getMarkdownEditorBySourceKey(json.sourceKey),
+        }));
     } else if (json.instance === "Backlink") {
         (layout as Tab).addModel(new Backlink({
             app,
@@ -401,10 +485,10 @@ export const JSONToCenter = (
     if ("children" in json) {
         if (Array.isArray(json.children)) {
             json.children.forEach((item: any) => {
-                JSONToCenter(app, item, layout ? child : window.siyuan.layout.layout);
+                JSONToCenter(app, item, layout ? child : window.siyuan.layout.layout, markdownSourceKeys);
             });
         } else if (json.children && Object.keys(json.children).length > 0) {
-            JSONToCenter(app, json.children, child);
+            JSONToCenter(app, json.children, child, markdownSourceKeys);
         } else if (child instanceof Tab) {
             removedTabs.push(child);
         }
@@ -506,6 +590,7 @@ export const JSONToLayout = (app: App, isStart: boolean) => {
     // 需放在 tab.parent.switchTab 后，否则当前 tab 永远为最后一个
     afterLayoutReady(app);
     saveLayout();
+    void pruneStaleMarkdownTabs();
     // https://github.com/siyuan-note/siyuan/issues/17779
     if (window.siyuan.layout.rightDock.layout.children[0].element.classList.contains("fn__none") &&
         window.siyuan.layout.rightDock.layout.children[1].element.classList.contains("fn__none")) {
@@ -588,9 +673,16 @@ export const layoutToJSON = (layout: Layout | Wnd | Tab | Model, json: any, brea
         }
         json.instance = "Asset";
     } else if (layout instanceof MarkdownEditor) {
-        json.notebookId = layout.notebookId;
-        json.path = layout.path;
+        if (layout.externalCapabilityId) {
+            json.externalCapabilityId = layout.externalCapabilityId;
+        } else {
+            json.notebookId = layout.notebookId;
+            json.path = layout.path;
+        }
         json.instance = "MarkdownEditor";
+        json.markdownSession = serializeMarkdownEditorSessionState(layout.getSessionState());
+    } else if (layout instanceof MarkdownOutline) {
+        Object.assign(json, serializeMarkdownOutline(layout.sourceKey));
     } else if (layout instanceof Backlink) {
         json.blockId = layout.blockId;
         json.rootId = layout.rootId;
@@ -786,9 +878,24 @@ export const newModelByInitData = (app: App, tab: Tab, json: any) => {
         model = new MarkdownEditor({
             app,
             tab,
-            notebookId: json.notebookId,
-            path: json.path,
+            restoredLayout: true,
+            sessionState: json.markdownSession
+                ? serializeMarkdownEditorSessionState(json.markdownSession)
+                : undefined,
+            ...(json.externalCapabilityId ? {
+                externalCapabilityId: json.externalCapabilityId,
+            } : {
+                notebookId: json.notebookId,
+                path: json.path,
+            }),
         });
+    } else if (json.instance === "MarkdownOutline") {
+        const editor = getMarkdownEditorBySourceKey(json.sourceKey);
+        const sourceExists = canRestoreMarkdownOutline(json.sourceKey, Boolean(editor),
+            getAllTabs().map((item) => item.headElement?.getAttribute("data-initdata")).filter(Boolean));
+        if (sourceExists) {
+            model = new MarkdownOutline({app, tab, sourceKey: json.sourceKey, editor: () => getMarkdownEditorBySourceKey(json.sourceKey)});
+        }
     }
     return model;
 };

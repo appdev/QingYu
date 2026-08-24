@@ -3,6 +3,7 @@ export * from "./code-support";
 export * from "./hugo-math";
 export * from "./markdown-source-detection";
 export * from "./math-render";
+export * from "./plain-text-paste";
 export * from "./mermaid";
 export * from "./raw-html-sanitize";
 export * from "./resource-urls";

@@ -351,15 +351,17 @@ func updateRecentDocOpenTime(c *gin.Context) {
 		return
 	}
 
-	var rootID string
-	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("rootID", &rootID, false, false)) {
-		return
-	}
-	if "" == rootID {
+	rootID, markdownRef, ok := recentDocIdentityArg(arg, ret)
+	if !ok {
 		return
 	}
 
-	err := model.UpdateRecentDocOpenTime(rootID)
+	var err error
+	if markdownRef != nil {
+		err = model.UpdateRecentMarkdownOpenTime(*markdownRef)
+	} else {
+		err = model.UpdateRecentDocOpenTime(rootID)
+	}
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
@@ -380,15 +382,17 @@ func updateRecentDocViewTime(c *gin.Context) {
 		return
 	}
 
-	var rootID string
-	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("rootID", &rootID, false, false)) {
-		return
-	}
-	if "" == rootID {
+	rootID, markdownRef, ok := recentDocIdentityArg(arg, ret)
+	if !ok {
 		return
 	}
 
-	err := model.UpdateRecentDocViewTime(rootID)
+	var err error
+	if markdownRef != nil {
+		err = model.UpdateRecentMarkdownViewTime(*markdownRef)
+	} else {
+		err = model.UpdateRecentDocViewTime(rootID)
+	}
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
@@ -409,20 +413,57 @@ func updateRecentDocCloseTime(c *gin.Context) {
 		return
 	}
 
-	var rootID string
-	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("rootID", &rootID, false, false)) {
-		return
-	}
-	if "" == rootID {
+	rootID, markdownRef, ok := recentDocIdentityArg(arg, ret)
+	if !ok {
 		return
 	}
 
-	err := model.UpdateRecentDocCloseTime(rootID)
+	var err error
+	if markdownRef != nil {
+		err = model.UpdateRecentMarkdownCloseTime(*markdownRef)
+	} else {
+		err = model.UpdateRecentDocCloseTime(rootID)
+	}
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()
 		return
 	}
+}
+
+func recentDocIdentityArg(arg map[string]any, ret *gulu.Result) (rootID string, markdownRef *model.MarkdownDocumentRef, ok bool) {
+	stringArg := func(name string) (string, bool) {
+		value, exists := arg[name]
+		if !exists || value == nil {
+			return "", true
+		}
+		stringValue, isString := value.(string)
+		return stringValue, isString
+	}
+	rootID, rootIDOK := stringArg("rootID")
+	kind, kindOK := stringArg("kind")
+	notebook, notebookOK := stringArg("notebook")
+	p, pathOK := stringArg("path")
+	if !rootIDOK || !kindOK || !notebookOK || !pathOK {
+		ret.Code = -1
+		ret.Msg = "invalid recent document identity"
+		return "", nil, false
+	}
+	if rootID != "" && kind == "" && notebook == "" && p == "" {
+		if util.InvalidIDPattern(rootID, ret) {
+			return "", nil, false
+		}
+		return rootID, nil, true
+	}
+	if rootID == "" && kind == "markdown" && notebook != "" && p != "" {
+		if util.InvalidIDPattern(notebook, ret) {
+			return "", nil, false
+		}
+		return "", &model.MarkdownDocumentRef{Notebook: notebook, Path: p}, true
+	}
+	ret.Code = -1
+	ret.Msg = "exactly one recent document identity is required"
+	return "", nil, false
 }
 
 func batchUpdateRecentDocCloseTime(c *gin.Context) {

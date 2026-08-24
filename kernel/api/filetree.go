@@ -950,13 +950,31 @@ func changeSort(c *gin.Context) {
 		return
 	}
 
-	notebook := arg["notebook"].(string)
-	pathsArg := arg["paths"].([]any)
+	var notebook, operationID string
+	var pathsArg []any
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("notebook", &notebook, true, true),
+		util.BindJsonArg("paths", &pathsArg, true, false),
+		util.BindJsonArg("operationID", &operationID, false, true),
+	) || util.InvalidIDPattern(notebook, ret) {
+		return
+	}
 	var paths []string
 	for _, p := range pathsArg {
-		paths = append(paths, p.(string))
+		value, valueOK := p.(string)
+		if !valueOK {
+			ret.Code = -1
+			ret.Msg = "invalid path"
+			return
+		}
+		paths = append(paths, value)
 	}
-	model.ChangeFileTreeSort(notebook, paths)
+	resolvedOperationID, err := model.ChangeFileTreeSortWithOperationID(notebook, paths, operationID)
+	if err != nil {
+		markdownError(ret, err)
+		return
+	}
+	ret.Data = map[string]any{"operationID": resolvedOperationID}
 }
 
 func searchDocs(c *gin.Context) {

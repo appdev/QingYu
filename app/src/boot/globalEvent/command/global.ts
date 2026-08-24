@@ -38,9 +38,11 @@ import {newFile} from "../../../util/newFile";
 import {syncGuide} from "../../../sync/syncGuide";
 import {Wnd} from "../../../layout/Wnd";
 import {unsplitWnd} from "../../../menus/tab";
-import {openFile} from "../../../editor/util";
-import {fetchPost} from "../../../util/fetch";
+import {openFile, openMarkdownFile} from "../../../editor/util";
+import {fetchPost, fetchSyncPost} from "../../../util/fetch";
 import {setStorageVal} from "../../../protyle/util/compatibility";
+import {restoreRecentlyClosedTab} from "../../../markdown/recentDocuments";
+import {showMessage} from "../../../dialog/message";
 
 export const globalCommand = (command: string, app: App) => {
     /// #if MOBILE
@@ -139,10 +141,37 @@ export const globalCommand = (command: string, app: App) => {
             }
             return true;
         case "recentDocs":
-            openRecentDocs();
+            openRecentDocs(app);
             return true;
         case "recentClosed":
             if (window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].length > 0) {
+                const latest = window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].at(-1);
+                const latestChild = latest?.children as ILayoutJSON;
+                if (latestChild?.instance === "MarkdownEditor" && !latestChild.externalCapabilityId) {
+                    void restoreRecentlyClosedTab(app, window.siyuan.storage[Constants.LOCAL_CLOSED_TABS], {
+                        validateMarkdown: async (ref) => {
+                            try {
+                                return (await fetchSyncPost("/api/markdown/get", {
+                                    notebook: ref.notebook,
+                                    path: ref.path,
+                                })).code === 0;
+                            } catch {
+                                return false;
+                            }
+                        },
+                        openMarkdown: async (currentApp, ref, title) => {
+                            await openMarkdownFile(currentApp, ref.notebook, ref.path, title);
+                        },
+                        restoreNative: async (currentApp, layout) => {
+                            window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].push(layout);
+                            return globalCommand("recentClosed", currentApp);
+                        },
+                        stale: () => showMessage(window.siyuan.languages.fileNotFound),
+                        persist: (layouts) => setStorageVal(Constants.LOCAL_CLOSED_TABS, layouts),
+                        limit: Constants.SIZE_UNDO,
+                    });
+                    return true;
+                }
                 const closeData = window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].pop();
                 setStorageVal(Constants.LOCAL_CLOSED_TABS, window.siyuan.storage[Constants.LOCAL_CLOSED_TABS]);
                 const childData = closeData.children as ILayoutJSON;

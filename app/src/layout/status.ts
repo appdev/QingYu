@@ -10,6 +10,7 @@ import {ipcRenderer} from "electron";
 /// #endif
 import {MenuItem} from "../menus/Menu";
 import {Constants} from "../constants";
+import {StatusbarOwnership} from "../markdown/statusbarOwnership";
 import {updateHotkeyTip} from "../protyle/util/compatibility";
 import {QINGYU_CONTACT_URL, QINGYU_SOURCE_URL, QINGYU_WEBSITE_URL} from "../util/qingyuBrand";
 
@@ -133,9 +134,12 @@ export const initStatus = (isWindow = false) => {
 let countTimeout: number;
 let countAbortController: AbortController | null = null;
 let lastRootId: string;
+const statusbarOwnership = new StatusbarOwnership();
+const protyleCounterOwner = {};
 
 const scheduleStatusStat = (rootID: string, content?: string, ids?: string[]) => {
     clearTimeout(countTimeout);
+    const ownershipToken = statusbarOwnership.claim(protyleCounterOwner);
     countTimeout = window.setTimeout(() => {
         if (countAbortController) {
             countAbortController.abort();
@@ -149,7 +153,9 @@ const scheduleStatusStat = (rootID: string, content?: string, ids?: string[]) =>
             if (signal.aborted) {
                 return;
             }
-            renderStatusbarCounter(response.data.stat);
+            if (statusbarOwnership.owns(protyleCounterOwner, ownershipToken)) {
+                renderStatusbarCounter(response.data.stat);
+            }
             if (countAbortController === capturedController) {
                 countAbortController = null;
             }
@@ -207,6 +213,7 @@ export const clearCounter = () => {
         countAbortController.abort();
         countAbortController = null;
     }
+    statusbarOwnership.reset();
     document.querySelector("#status .status__counter").innerHTML = "";
 };
 
@@ -236,4 +243,24 @@ export const renderStatusbarCounter = (stat: {
         html += `<span class="ft__on-surface">${window.siyuan.languages.blockCount}</span>&nbsp;${stat.blockCount}<span class="fn__space"></span>`;
     }
     document.querySelector("#status .status__counter").innerHTML = html;
+};
+
+export const claimMarkdownStatusbarCounter = (owner: object) => statusbarOwnership.claim(owner);
+
+export const clearMarkdownStatusbarCounter = (owner: object) => {
+    if (!statusbarOwnership.release(owner)) return false;
+    const counter = document.querySelector<HTMLElement>("#status .status__counter");
+    if (counter) counter.innerHTML = "";
+    return true;
+};
+
+export const renderMarkdownStatusbarCounter = (owner: object, token: number, stat: {
+    runeCount: number,
+    wordCount: number,
+    linkCount: number,
+    imageCount: number,
+}) => {
+    if (!statusbarOwnership.owns(owner, token)) return false;
+    renderStatusbarCounter({...stat, refCount: 0, blockCount: 0});
+    return true;
 };

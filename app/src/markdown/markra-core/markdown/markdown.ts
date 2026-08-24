@@ -21,11 +21,28 @@ export function getWordCount(text: string) {
   return words?.length ?? 0;
 }
 
+export function getMarkdownLinkImageCounts(text: string) {
+  let linkCount = 0;
+  let imageCount = 0;
+  const visit = (node: MarkdownNode) => {
+    if (node.type === "link" || node.type === "linkReference") linkCount += 1;
+    else if (node.type === "image" || node.type === "imageReference") imageCount += 1;
+    node.children?.forEach(visit);
+  };
+  visit(inlineMarkdownParser.parse(text) as MarkdownNode);
+  return {linkCount, imageCount};
+}
+
 export type MarkdownOutlineItem = {
   level: number;
   title: string;
   titleMarkdown?: string;
 };
+
+export interface MarkdownOutlineItemWithPosition extends MarkdownOutlineItem {
+  from: number;
+  to: number;
+}
 
 function splitMarkraHighlightText(value: string): MarkdownNode[] {
   const nodes: MarkdownNode[] = [];
@@ -86,20 +103,28 @@ function readableMarkdownHeadingTitle(title: string) {
   return toString(inlineMarkdownParser.runSync(inlineMarkdownParser.parse(`# ${title}`))).trim();
 }
 
-export function getMarkdownOutline(text: string): MarkdownOutlineItem[] {
-  const outline: MarkdownOutlineItem[] = [];
-  let fenced = false;
+export function getMarkdownOutlineWithPositions(text: string): MarkdownOutlineItemWithPosition[] {
+  const outline: MarkdownOutlineItemWithPosition[] = [];
+  let fence: {character: string; length: number} | null = null;
 
-  text.split(/\r?\n/).forEach((line) => {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
-      return;
+  for (const lineMatch of text.matchAll(/([^\r\n]*)(\r\n|\r|\n|$)/gu)) {
+    const line = lineMatch[1];
+    const offset = lineMatch.index ?? 0;
+    if (!line && !lineMatch[2] && offset === text.length) break;
+    const marker = /^\s{0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence.character && marker[1].length >= fence.length && !marker[2].trim()) {
+        fence = null;
+      }
+      continue;
+    }
+    if (marker) {
+      fence = {character: marker[1][0], length: marker[1].length};
+      continue;
     }
 
-    if (fenced) return;
-
     const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-    if (!match) return;
+    if (!match) continue;
 
     const titleMarkdown = match[2].trim();
     const title = readableMarkdownHeadingTitle(titleMarkdown);
@@ -107,9 +132,19 @@ export function getMarkdownOutline(text: string): MarkdownOutlineItem[] {
     outline.push({
       level: match[1].length,
       title,
+      from: offset,
+      to: offset + line.length,
       ...(titleMarkdown === title ? {} : { titleMarkdown })
     });
-  });
+  }
 
   return outline;
+}
+
+export function getMarkdownOutline(text: string): MarkdownOutlineItem[] {
+  return getMarkdownOutlineWithPositions(text).map((item) => ({
+    level: item.level,
+    title: item.title,
+    ...(item.titleMarkdown === undefined ? {} : {titleMarkdown: item.titleMarkdown}),
+  }));
 }

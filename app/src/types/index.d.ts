@@ -656,6 +656,10 @@ interface ILayoutJSON extends ILayoutOptions {
     isPreview?: boolean
     customModelData?: any
     customModelType?: string
+    markdownSession?: import("../markdown/sessionState").MarkdownEditorSessionState
+    sourceKey?: string
+    notebookId?: string
+    externalCapabilityId?: string
     config?: Config.IUILayoutTabSearchConfig
     children?: ILayoutJSON[] | ILayoutJSON
 }
@@ -712,6 +716,7 @@ interface IOpenFileOptions {
     scrollPosition?: ScrollLogicalPosition,
     assetPath?: string, // asset 必填
     markdown?: {notebookId: string, path: string, name: string},
+    externalMarkdown?: {capabilityId: string, name: string, displayPath: string},
     fileName?: string, // file 必填
     rootTitleEmpty?: boolean,
     rootIcon?: string, // 文档图标
@@ -828,6 +833,7 @@ interface IModels {
     search: import("../search").Search[]
     custom: import("../layout/dock/Custom").Custom[]
     markdown: import("../markdown/MarkdownEditor").MarkdownEditor[]
+    markdownOutline: import("../markdown/MarkdownOutline").MarkdownOutline[]
 }
 
 interface IMenu {

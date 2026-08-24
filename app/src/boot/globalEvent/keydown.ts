@@ -1084,6 +1084,9 @@ const panelTreeKeydown = (app: App, event: KeyboardEvent) => {
 
 let switchDialog: Dialog;
 export const windowKeyDown = (app: App, event: KeyboardEvent) => {
+    const eventTarget = event.target as Node | null;
+    const markdownEditor = getAllModels().markdown.find((editor) => eventTarget && editor.element.contains(eventTarget));
+    if (markdownEditor?.handleShortcut(event)) return;
     if (filterHotkey(event, app)) {
         return;
     }

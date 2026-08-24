@@ -19,6 +19,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
@@ -34,13 +35,14 @@ func createMarkdown(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var notebook, parentPath, name string
+	var notebook, parentPath, name, operationID string
 	var autoName bool
 	if !util.ParseJsonArgs(arg, ret,
 		util.BindJsonArg("notebook", &notebook, true, true),
 		util.BindJsonArg("parentPath", &parentPath, true, false),
 		util.BindJsonArg("name", &name, true, true),
 		util.BindJsonArg("autoName", &autoName, false, false),
+		util.BindJsonArg("operationID", &operationID, false, true),
 	) {
 		return
 	}
@@ -48,7 +50,7 @@ func createMarkdown(c *gin.Context) {
 		return
 	}
 
-	document, err := model.CreateMarkdown(notebook, parentPath, name, autoName)
+	document, err := model.CreateMarkdownWithOperationID(notebook, parentPath, name, autoName, operationID)
 	ret.Data, _ = markdownResult(ret, document, err)
 }
 
@@ -72,19 +74,20 @@ func saveMarkdown(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var notebook, p, content, revision string
+	var notebook, p, content, revision, operationID string
 	if !util.ParseJsonArgs(arg, ret,
 		util.BindJsonArg("notebook", &notebook, true, true),
 		util.BindJsonArg("path", &p, true, true),
 		util.BindJsonArg("content", &content, true, false),
 		util.BindJsonArg("revision", &revision, true, true),
+		util.BindJsonArg("operationID", &operationID, false, true),
 	) {
 		return
 	}
 	if util.InvalidIDPattern(notebook, ret) {
 		return
 	}
-	document, err := model.SaveMarkdown(notebook, p, content, revision)
+	document, err := model.SaveMarkdownWithOperationID(notebook, p, content, revision, operationID)
 	ret.Data, _ = markdownResult(ret, document, err)
 }
 
@@ -96,18 +99,64 @@ func renameMarkdown(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var notebook, p, name string
+	var notebook, p, name, revision, operationID string
 	if !util.ParseJsonArgs(arg, ret,
 		util.BindJsonArg("notebook", &notebook, true, true),
 		util.BindJsonArg("path", &p, true, true),
 		util.BindJsonArg("name", &name, true, true),
+		util.BindJsonArg("revision", &revision, true, true),
+		util.BindJsonArg("operationID", &operationID, false, true),
 	) {
 		return
 	}
 	if util.InvalidIDPattern(notebook, ret) {
 		return
 	}
-	document, err := model.RenameMarkdown(notebook, p, name)
+	document, err := model.RenameMarkdownWithRevision(notebook, p, name, revision, operationID)
+	ret.Data, _ = markdownResult(ret, document, err)
+}
+
+func duplicateMarkdown(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	var notebook, p, revision, operationID string
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("notebook", &notebook, true, true),
+		util.BindJsonArg("path", &p, true, true),
+		util.BindJsonArg("revision", &revision, true, true),
+		util.BindJsonArg("operationID", &operationID, false, true),
+	) || util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+	document, err := model.DuplicateMarkdownWithOperationID(notebook, p, revision, operationID)
+	ret.Data, _ = markdownResult(ret, document, err)
+}
+
+func moveMarkdown(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	var notebook, p, revision, toNotebook, toParentPath, operationID string
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("notebook", &notebook, true, true),
+		util.BindJsonArg("path", &p, true, true),
+		util.BindJsonArg("revision", &revision, true, true),
+		util.BindJsonArg("toNotebook", &toNotebook, true, true),
+		util.BindJsonArg("toParentPath", &toParentPath, true, false),
+		util.BindJsonArg("operationID", &operationID, false, true),
+	) || util.InvalidIDPattern(notebook, ret) || util.InvalidIDPattern(toNotebook, ret) {
+		return
+	}
+	document, err := model.MoveMarkdown(notebook, p, revision, toNotebook, toParentPath, operationID)
 	ret.Data, _ = markdownResult(ret, document, err)
 }
 
@@ -115,13 +164,106 @@ func removeMarkdown(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
 
-	notebook, p, ok := markdownPathArgs(c, ret)
+	arg, ok := util.JsonArg(c, ret)
 	if !ok {
 		return
 	}
-	if err := model.RemoveMarkdown(notebook, p); err != nil {
-		markdownError(ret, err)
+	var notebook, p, revision, operationID string
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("notebook", &notebook, true, true),
+		util.BindJsonArg("path", &p, true, true),
+		util.BindJsonArg("revision", &revision, true, true),
+		util.BindJsonArg("operationID", &operationID, false, true),
+	) || util.InvalidIDPattern(notebook, ret) {
+		return
 	}
+	entry, err := model.RecycleMarkdown(model.MarkdownDocumentRef{Notebook: notebook, Path: p}, revision, operationID)
+	if err != nil {
+		markdownError(ret, err)
+		return
+	}
+	ret.Data = entry
+}
+
+func listDeletedMarkdown(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	entries, err := model.ListDeletedMarkdown()
+	if err != nil {
+		markdownError(ret, err)
+		return
+	}
+	ret.Data = entries
+}
+
+func getDeletedMarkdown(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	var id string
+	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("id", &id, true, true)) {
+		return
+	}
+	entry, data, err := model.GetDeletedMarkdown(id)
+	if err != nil {
+		markdownError(ret, err)
+		return
+	}
+	ret.Data = map[string]any{"entry": entry, "content": string(data)}
+}
+
+func restoreDeletedMarkdown(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	var id, toNotebook, toParentPath, name, operationID string
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("id", &id, true, true),
+		util.BindJsonArg("toNotebook", &toNotebook, true, true),
+		util.BindJsonArg("toParentPath", &toParentPath, true, false),
+		util.BindJsonArg("name", &name, true, true),
+		util.BindJsonArg("operationID", &operationID, false, true),
+	) || util.InvalidIDPattern(toNotebook, ret) {
+		return
+	}
+	document, err := model.RestoreDeletedMarkdown(id, toNotebook, toParentPath, name, operationID)
+	ret.Data, _ = markdownResult(ret, document, err)
+}
+
+func purgeDeletedMarkdown(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	var id, requestedOperationID string
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("id", &id, true, true),
+		util.BindJsonArg("operationID", &requestedOperationID, false, true),
+	) {
+		return
+	}
+	operationID, err := model.ResolveMarkdownOperationID(requestedOperationID)
+	if err != nil {
+		markdownError(ret, err)
+		return
+	}
+	if err = model.PurgeDeletedMarkdown(id, operationID); err != nil {
+		markdownError(ret, err)
+		return
+	}
+	ret.Data = map[string]any{"operationID": operationID}
 }
 
 func markdownPathArgs(c *gin.Context, ret *gulu.Result) (notebook, p string, ok bool) {
@@ -148,7 +290,7 @@ func markdownResult(ret *gulu.Result, data *model.MarkdownDocument, err error) (
 
 func markdownError(ret *gulu.Result, err error) {
 	ret.Code = -1
-	if errors.Is(err, model.ErrMarkdownConflict) {
+	if errors.Is(err, model.ErrMarkdownConflict) || errors.Is(err, os.ErrExist) {
 		ret.Code = http.StatusConflict
 	}
 	ret.Msg = err.Error()
