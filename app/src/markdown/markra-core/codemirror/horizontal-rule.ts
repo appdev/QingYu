@@ -1,7 +1,9 @@
+import {syntaxTree} from "@codemirror/language";
 import { Decoration, WidgetType, type EditorView as CodeMirrorView } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin";
 import { markraRenderer } from "./renderers";
 import { readMarkdownFrontmatter } from "../markdown";
+import {focusAdjacentVisualBlockBoundary} from "./visual-block-navigation";
 
 class HorizontalRuleWidget extends WidgetType {
   constructor(readonly from: number) {
@@ -36,6 +38,38 @@ class HorizontalRuleWidget extends WidgetType {
 export function horizontalRulePlugin() {
   return defineMarkraPlugin({
     id: "markra.horizontal-rule",
+    visualBlocks: [{
+      read(state) {
+        const blocks: Array<{
+          from: number;
+          to: number;
+          enter: (
+            view: CodeMirrorView,
+            direction: "backward" | "forward",
+          ) => boolean;
+        }> = [];
+        syntaxTree(state).iterate({
+          enter(node) {
+            if (node.name !== "HorizontalRule") return;
+            const from = node.from;
+            const to = node.to;
+            blocks.push({
+              from,
+              to,
+              enter(view, direction) {
+                return focusAdjacentVisualBlockBoundary(
+                  view,
+                  from,
+                  to,
+                  direction,
+                );
+              },
+            });
+          },
+        });
+        return blocks;
+      },
+    }],
     extension: [
       markraRenderer({
         id: "markra.horizontal-rule",
@@ -62,6 +96,9 @@ export function horizontalRulePlugin() {
               (selection) => selection.empty && selection.head === line.to,
             );
           if (context.revealed("line") || caretAtLineEnd) return true;
+          context.add(
+            Decoration.line({class: "cm-markra-horizontal-rule-line"}).range(line.from),
+          );
           context.add(
             Decoration.replace({
               widget: new HorizontalRuleWidget(context.node.from),

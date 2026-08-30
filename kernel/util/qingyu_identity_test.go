@@ -16,6 +16,9 @@ func TestQingYuKernelIdentityDefaults(t *testing.T) {
 	if UserAgent != "QingYu/"+Ver {
 		t.Fatalf("UserAgent = %q, want QingYu/%s", UserAgent, Ver)
 	}
+	if QingYuWorkspacePathEnv != "QINGYU_WORKSPACE_PATH" {
+		t.Fatalf("QingYuWorkspacePathEnv = %q, want QINGYU_WORKSPACE_PATH", QingYuWorkspacePathEnv)
+	}
 }
 
 func TestQingYuWorkspaceHistoryUsesIsolatedConfig(t *testing.T) {

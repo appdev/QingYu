@@ -1,6 +1,7 @@
 import data = require("./contracts.json");
 
 export type MarkdownAppearanceCategory = "native-equivalent" | "editor-foundation" | "markdown-exclusive";
+export type MarkdownAppearanceStrategy = "scalar" | "structural" | "markdown-owned";
 export type MarkdownAppearanceMode = "source" | "visual";
 export type MarkdownAppearancePlatform = "desktop" | "mobile";
 export type MarkdownAppearanceState = "default" | "hover" | "focus" | "selected" | "disabled" |
@@ -41,6 +42,7 @@ export interface MarkdownAppearanceContract {
     geometry: AppearanceGeometryMetric[];
     fallbackVariables: string[];
     probe: boolean;
+    strategy?: MarkdownAppearanceStrategy;
 }
 
 const categories = new Set<MarkdownAppearanceCategory>([
@@ -64,6 +66,7 @@ const states = new Set<MarkdownAppearanceState>([
 ]);
 const modes = new Set<MarkdownAppearanceMode>(["source", "visual"]);
 const platforms = new Set<MarkdownAppearancePlatform>(["desktop", "mobile"]);
+const strategies = new Set<MarkdownAppearanceStrategy>(["scalar", "structural", "markdown-owned"]);
 
 const validateContracts = (value: unknown): readonly MarkdownAppearanceContract[] => {
     if (!Array.isArray(value)) {
@@ -122,6 +125,9 @@ const validateContracts = (value: unknown): readonly MarkdownAppearanceContract[
         if (!contract.fallbackVariables?.every((name) => name.startsWith("--b3-"))) {
             throw new TypeError(`Invalid Markdown appearance fallback for ${contract.id}`);
         }
+        if (contract.strategy && !strategies.has(contract.strategy)) {
+            throw new TypeError(`Invalid Markdown appearance strategy for ${contract.id}`);
+        }
         if (contract.comparisonProperties?.some((property) => !contract.styleProperties.includes(property))) {
             throw new TypeError(`Invalid Markdown appearance comparison property for ${contract.id}`);
         }
@@ -135,6 +141,9 @@ const contracts = validateContracts(data);
 export const listAppearanceContracts = () => contracts;
 
 export const getAppearanceContract = (id: string) => contracts.find((contract) => contract.id === id);
+
+export const appearanceStrategy = (contract: MarkdownAppearanceContract) => contract.strategy ??
+    (contract.category === "markdown-exclusive" ? "markdown-owned" : "scalar");
 
 export const appearanceComparisonProperties = (contract: MarkdownAppearanceContract | undefined) => {
     if (!contract) return [];

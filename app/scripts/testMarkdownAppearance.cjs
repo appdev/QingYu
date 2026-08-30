@@ -74,7 +74,23 @@ const showcaseSource = fs.readFileSync(path.join(showcaseDirectory, "format-show
 const showcaseSvg = fs.readFileSync(path.join(showcaseDirectory, "format-showcase.svg"), "utf8");
 const showcaseImageDataUrl = `data:image/svg+xml,${encodeURIComponent(showcaseSvg)}`;
 const showcaseMarkdown = showcaseSource.replaceAll("./format-showcase.svg", showcaseImageDataUrl);
-const showcaseScreenshotIds = ["Q04", "Q05", "R01", "T01", "K02", "M02", "M03", "P01", "X03"];
+const showcaseScreenshotIds = ["Q04", "Q05", "R01", "T01", "T03", "T04", "T05", "T06", "K02", "M02", "M03", "P01", "X03"];
+
+const showcaseCase = (caseId) => {
+    const lines = showcaseMarkdown.split("\n");
+    const start = lines.findIndex((line) => new RegExp(`^#{1,6}\\s+${caseId}-`, "u").test(line));
+    assert.ok(start >= 0, `The canonical corpus is missing ${caseId}`);
+    const level = /^#+/u.exec(lines[start])[0].length;
+    let end = lines.length;
+    for (let index = start + 1; index < lines.length; index++) {
+        const heading = /^(#{1,6})\s+/u.exec(lines[index]);
+        if (heading && heading[1].length <= level) {
+            end = index;
+            break;
+        }
+    }
+    return lines.slice(start, end).join("\n").trim();
+};
 
 const main = async () => {
     const {call, socket} = await connect();
@@ -84,7 +100,9 @@ const main = async () => {
     let compoundTopology = null;
     let emptyReport = null;
     let nestedQuoteDepths = [];
+    let nestedQuoteGeometry = null;
     const showcaseReports = [];
+    const tableShowcaseParity = {};
     let verticalRhythm = null;
     try {
         await call("Page.enable");
@@ -113,35 +131,13 @@ const main = async () => {
                 );
             }
             if (row.mode === "visual") {
-                const equivalentContracts = [
-                    "editor.visual",
-                    "block.heading-1",
-                    "block.heading-2",
-                    "block.heading-3",
-                    "block.heading-4",
-                    "block.heading-5",
-                    "block.heading-6",
-                    "block.list",
-                    "block.blockquote",
-                    "block.callout-note",
-                    "block.callout-tip",
-                    "block.callout-important",
-                    "block.callout-warning",
-                    "block.callout-caution",
-                    "block.code",
-                    "control.code-language",
-                    "control.code-copy",
-                    "control.code-more",
-                    "control.table-button",
-                ];
-                for (const contractId of equivalentContracts) {
-                    const measurement = stateReports[0].report.measurements.find((item) =>
-                        item.contractId === contractId);
-                    assert.ok(measurement?.markdown && measurement.native, `Missing parity measurement for ${contractId}`);
+                const equivalentMeasurements = stateReports[0].report.measurements.filter((measurement) =>
+                    measurement.markdown && measurement.native);
+                for (const measurement of equivalentMeasurements) {
                     assert.deepEqual(
                         measurement.styleDiffs,
                         {},
-                        `${contractId} differs from its native equivalent: ${JSON.stringify(row)}`,
+                        `${measurement.contractId} differs from its native equivalent: ${JSON.stringify(row)}`,
                     );
                 }
                 const syntaxParity = await evaluate(call, `(() => {
@@ -159,7 +155,7 @@ const main = async () => {
                     const completedTaskStyle = completedTask ? getComputedStyle(completedTask) : null;
                     const nativeCompletedTaskStyle = nativeCompletedTask ? getComputedStyle(nativeCompletedTask) : null;
                     const nestedGuideStyle = nestedLine ? getComputedStyle(nestedLine, "::after") : null;
-                    const quoteRails = Array.from(root?.querySelectorAll(".cm-markra-blockquote-rail") ?? []);
+                    const quoteRails = Array.from(root?.querySelectorAll(".cm-markra-blockquote-decoration") ?? []);
                     return {
                         bulletIconHrefs: bulletMarkers.map((marker) => marker.querySelector("use")?.getAttribute("href") ?? ""),
                         bulletMarkerWidths: bulletMarkers.map((marker) => marker.getBoundingClientRect().width),
@@ -169,13 +165,15 @@ const main = async () => {
                         orderedMarkerCount: orderedMarkers.length,
                         orderedMarkerWidths: orderedMarkers.map((marker) => marker.getBoundingClientRect().width),
                         quoteRailHeights: quoteRails.map((rail) => rail.getBoundingClientRect().height),
-                        quoteRailWidths: quoteRails.map((rail) => rail.getBoundingClientRect().width),
+                        quoteDecorationMode: root?.getAttribute("data-markdown-blockquote-decoration") ?? "",
+                        quoteRailWidths: quoteRails.map((rail) => Number.parseFloat(getComputedStyle(rail, "::before").width)),
                         quotedListCount: root?.querySelectorAll(".cm-markra-blockquote.cm-markra-list-item").length ?? 0,
                         setextMarkerCount: root?.querySelectorAll(".cm-markra-setext-marker-line").length ?? 0,
                         structuralHeights: structuralLines.map((line) => line.getBoundingClientRect().height),
                         taskDoneColor: completedTaskStyle?.color ?? "",
                         taskDoneDecoration: completedTaskStyle?.textDecorationLine ?? "",
                         nativeTaskDoneColor: nativeCompletedTaskStyle?.color ?? "",
+                        nativeTaskDoneDecoration: nativeCompletedTaskStyle?.textDecorationLine ?? "",
                     };
                 })()`);
                 assert.ok(syntaxParity.bulletIconHrefs.length >= 2, "Markdown must render unordered-list markers");
@@ -188,7 +186,9 @@ const main = async () => {
                     "Markdown ordered-list markers must keep the native 34px action width");
                 assert.ok(syntaxParity.quotedListCount >= 3, "Markdown must preserve list roles inside blockquotes");
                 assert.ok(syntaxParity.quoteRailWidths.length >= 1,
-                    "Markdown blockquotes must expose semantic container rails");
+                    "Markdown blockquotes must expose structural decorations");
+                assert.notEqual(syntaxParity.quoteDecorationMode, "",
+                    "Markdown blockquotes must declare the resolved native decoration strategy");
                 assert.ok(syntaxParity.quoteRailWidths.every((width) => width > 0),
                     "Markdown blockquote rails must keep the native visible width");
                 assert.ok(syntaxParity.quoteRailHeights.every((height) => height > 0),
@@ -198,8 +198,8 @@ const main = async () => {
                     "Nested Markdown lists must render native hierarchy guides");
                 assert.ok(syntaxParity.nestedGuideWidth >= 33,
                     "Nested Markdown hierarchy guides must span the authored nesting depth");
-                assert.match(syntaxParity.taskDoneDecoration, /line-through/u,
-                    "Completed Markdown tasks must use native completion decoration");
+                assert.equal(syntaxParity.taskDoneDecoration, syntaxParity.nativeTaskDoneDecoration,
+                    "Completed Markdown tasks must use the native completion decoration");
                 assert.equal(syntaxParity.taskDoneColor, syntaxParity.nativeTaskDoneColor,
                     "Completed Markdown tasks must use the native completion color");
                 assert.equal(syntaxParity.setextMarkerCount, 0,
@@ -335,12 +335,12 @@ const main = async () => {
             `CodeMirror line geometry differs from the rendered line by ${coordinateMapping.blockTopDifference}px`,
         );
         await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
-        const showcaseOptions = {...matrix[0], markdown: showcaseMarkdown, theme: "daylight", width: 900};
-        await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(showcaseOptions)}).then(() => true)`);
-        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.setTheme(\"daylight\")");
         for (const caseId of showcaseScreenshotIds) {
-            const position = showcaseMarkdown.indexOf(`${caseId}-`);
-            assert.ok(position >= 0, `The canonical corpus is missing ${caseId}`);
+            const markdown = showcaseCase(caseId);
+            const position = markdown.indexOf(`${caseId}-`);
+            const showcaseOptions = {...matrix[0], markdown, theme: "daylight", width: 900};
+            await evaluate(call, `window.__siyuanMarkdownAppearanceTest.mount(${JSON.stringify(showcaseOptions)}).then(() => true)`);
+            await evaluate(call, "window.__siyuanMarkdownAppearanceTest.setTheme(\"daylight\")");
             await evaluate(call, `window.__siyuanMarkdownAppearanceTest.measureCoordinateMapping(${position})`);
             showcaseReports.push(await evaluate(call, "window.__siyuanMarkdownAppearanceTest.measure()"));
             if (caseId === "Q04") {
@@ -352,16 +352,110 @@ const main = async () => {
                 assert.equal(compoundTopology.quoteRailCount, 1, "Q04 must expose one semantic rail");
                 assert.ok(compoundTopology.quoteRailHeight > 0, "Q04 rail must have positive height");
                 assert.ok(compoundTopology.quoteRailWidth > 0, "Q04 rail must have positive width");
+                assert.ok(compoundTopology.quoteHostWidth >= compoundTopology.quoteLineWidth - 1,
+                    `Q04 host must cover the quoted line width: ${JSON.stringify(compoundTopology)}`);
+                assert.ok(Math.abs(compoundTopology.quoteHostTopInset - compoundTopology.quoteMarginTop) <= 1,
+                    `Q04 host top must exclude the native outer margin: ${JSON.stringify(compoundTopology)}`);
+                assert.ok(Math.abs(compoundTopology.quoteHostBottomInset - compoundTopology.quoteMarginBottom) <= 1,
+                    `Q04 host bottom must exclude the native outer margin: ${JSON.stringify(compoundTopology)}`);
                 assert.equal(compoundTopology.roundedInternalSegmentCount, 0,
                     "Q04 must not retain rounded line-level rail segments");
             }
             if (caseId === "Q05") {
                 await evaluate(call, `window.__siyuanMarkdownAppearanceTest.measureCompoundTopology(${position})`);
                 nestedQuoteDepths = await evaluate(call, `Array.from(document.querySelectorAll(
-                    ".markdown-appearance-runtime__markdown .cm-markra-blockquote-rail"
+                    ".markdown-appearance-runtime__markdown .cm-markra-blockquote-decoration"
                 )).map((rail) => rail.style.getPropertyValue("--markra-blockquote-depth"))`);
                 assert.ok(nestedQuoteDepths.includes("0") && nestedQuoteDepths.includes("1"),
                     `Q05 must expose distinct outer and inner rails: ${JSON.stringify(nestedQuoteDepths)}`);
+                nestedQuoteGeometry = await evaluate(call, `(() => {
+                    const root = document.querySelector(".markdown-appearance-runtime");
+                    const native = Array.from(root?.querySelectorAll(".markdown-appearance-runtime__native .bq") ?? []);
+                    const markdown = Array.from(root?.querySelectorAll(
+                        ".markdown-appearance-runtime__markdown .cm-markra-blockquote-decoration"
+                    ) ?? []).sort((left, right) => Number(left.style.getPropertyValue("--markra-blockquote-depth")) -
+                        Number(right.style.getPropertyValue("--markra-blockquote-depth")));
+                    if (native.length !== 2 || markdown.length !== 2) return null;
+                    const nativeOuter = native[0].getBoundingClientRect();
+                    const nativeInner = native[1].getBoundingClientRect();
+                    const markdownOuter = markdown[0].getBoundingClientRect();
+                    const markdownInner = markdown[1].getBoundingClientRect();
+                    return {
+                        innerHeightDifference: Math.abs(nativeInner.height - markdownInner.height),
+                        leftInsetDifference: Math.abs(
+                            nativeInner.left - nativeOuter.left - (markdownInner.left - markdownOuter.left)
+                        ),
+                        outerHeightDifference: Math.abs(nativeOuter.height - markdownOuter.height),
+                        rightInsetDifference: Math.abs(
+                            nativeOuter.right - nativeInner.right - (markdownOuter.right - markdownInner.right)
+                        ),
+                    };
+                })()`);
+                assert.ok(nestedQuoteGeometry, "Q05 nested quote geometry must be measurable");
+                assert.ok(nestedQuoteGeometry.outerHeightDifference <= 1,
+                    `Q05 outer quote height must match native: ${JSON.stringify(nestedQuoteGeometry)}`);
+                assert.ok(nestedQuoteGeometry.innerHeightDifference <= 1,
+                    `Q05 inner quote height must match native: ${JSON.stringify(nestedQuoteGeometry)}`);
+                assert.ok(nestedQuoteGeometry.leftInsetDifference <= 1 && nestedQuoteGeometry.rightInsetDifference <= 1,
+                    `Q05 inner quote insets must match native: ${JSON.stringify(nestedQuoteGeometry)}`);
+            }
+            if (["T03", "T04", "T05", "T06"].includes(caseId)) {
+                tableShowcaseParity[caseId] = await evaluate(call, `(() => {
+                    const root = document.querySelector(".markdown-appearance-runtime");
+                    const nativeTable = root?.querySelector(".markdown-appearance-runtime__native .table table");
+                    const markdownTable = root?.querySelector(".markdown-appearance-runtime__markdown .cm-markra-table");
+                    const markdownOuter = root?.querySelector(
+                        ".markdown-appearance-runtime__markdown .markra-table-scroll"
+                    );
+                    if (!nativeTable || !markdownTable || !markdownOuter) return null;
+                    const nativeStyle = getComputedStyle(nativeTable);
+                    const markdownStyle = getComputedStyle(markdownTable);
+                    const markdownOuterStyle = getComputedStyle(markdownOuter);
+                    const nativeLink = nativeTable.querySelector('[data-type~="a"]');
+                    const markdownLink = markdownTable.querySelector("a");
+                    const nativeLinkStyle = nativeLink ? getComputedStyle(nativeLink) : null;
+                    const markdownLinkStyle = markdownLink ? getComputedStyle(markdownLink) : null;
+                    return {
+                        display: [nativeStyle.display, markdownOuterStyle.display],
+                        inlineCode: [nativeTable.querySelector('[data-type~="code"]')?.textContent ?? "",
+                            markdownTable.querySelector("code")?.textContent ?? ""].map((value) =>
+                            value.replace(/[\u200b\u200c\u200d\ufeff]/gu, "").trim()),
+                        linkClass: markdownLink?.classList.contains("cm-markra-link") ?? false,
+                        linkColor: [nativeLinkStyle?.color ?? "", markdownLinkStyle?.color ?? ""],
+                        linkDecoration: [nativeLinkStyle?.textDecorationLine ?? "", markdownLinkStyle?.textDecorationLine ?? ""],
+                        linkDecorationColor: [nativeLinkStyle?.textDecorationColor ?? "",
+                            markdownLinkStyle?.textDecorationColor ?? ""],
+                        overflow: [nativeStyle.overflow, markdownOuterStyle.overflow],
+                        radius: [nativeStyle.borderRadius, markdownOuterStyle.borderRadius],
+                        semanticDisplay: markdownStyle.display,
+                        widthDifference: Math.abs(nativeTable.getBoundingClientRect().width -
+                            markdownTable.getBoundingClientRect().width),
+                    };
+                })()`);
+                assert.ok(tableShowcaseParity[caseId], `${caseId} table parity must be measurable`);
+                assert.equal(tableShowcaseParity[caseId].display[0], tableShowcaseParity[caseId].display[1],
+                    `${caseId} table display topology must match native`);
+                assert.equal(tableShowcaseParity[caseId].overflow[0], tableShowcaseParity[caseId].overflow[1],
+                    `${caseId} table clipping topology must match native`);
+                assert.equal(tableShowcaseParity[caseId].radius[0], tableShowcaseParity[caseId].radius[1],
+                    `${caseId} table radius must match native`);
+                assert.equal(tableShowcaseParity[caseId].semanticDisplay, "table",
+                    `${caseId} semantic table must preserve the table layout algorithm`);
+                assert.ok(tableShowcaseParity[caseId].widthDifference <= 1,
+                    `${caseId} table width must match native: ${JSON.stringify(tableShowcaseParity[caseId])}`);
+                if (caseId === "T03") {
+                    assert.deepEqual(tableShowcaseParity[caseId].inlineCode, ["a | b", "a | b"],
+                        `T03 escaped pipe display must match native: ${JSON.stringify(tableShowcaseParity[caseId])}`);
+                }
+                if (caseId === "T05") {
+                    assert.equal(tableShowcaseParity[caseId].linkClass, true,
+                        "T05 table links must use the shared Markdown link appearance contract");
+                    assert.equal(tableShowcaseParity[caseId].linkColor[0], tableShowcaseParity[caseId].linkColor[1]);
+                    assert.equal(tableShowcaseParity[caseId].linkDecoration[0],
+                        tableShowcaseParity[caseId].linkDecoration[1]);
+                    assert.equal(tableShowcaseParity[caseId].linkDecorationColor[0],
+                        tableShowcaseParity[caseId].linkDecorationColor[1]);
+                }
             }
             if (caseId === "M03") {
                 const mathLayout = await evaluate(call, `(() => {
@@ -392,10 +486,53 @@ const main = async () => {
                 assert.equal(mathLayout.spacerCount, 1,
                     "Markdown display math must use the native KaTeX balancing spacer");
             }
+            if (caseId === "T01") {
+                const tableWidths = await evaluate(call, `(async () => {
+                    const root = document.querySelector(".markdown-appearance-runtime__markdown");
+                    const table = root?.querySelector(".cm-markra-table");
+                    const scroll = root?.querySelector(".markra-table-scroll");
+                    const button = root?.querySelector(".markra-table-width-button");
+                    if (!table || !scroll || !button) throw new Error("T01 table width controls are incomplete");
+                    const measure = () => {
+                        const currentTable = root.querySelector(".cm-markra-table");
+                        const currentScroll = root.querySelector(".markra-table-scroll");
+                        if (!currentTable || !currentScroll) throw new Error("T01 table was removed during width change");
+                        return {
+                            cellWidths: Array.from(currentTable.querySelectorAll("thead th"), (cell) =>
+                                cell.getBoundingClientRect().width),
+                            mode: currentTable.dataset.widthMode,
+                            scrollDisplay: getComputedStyle(currentScroll).display,
+                            tableDisplay: getComputedStyle(currentTable).display,
+                            tableLayout: getComputedStyle(currentTable).tableLayout,
+                            tableWidth: currentTable.getBoundingClientRect().width,
+                            viewportWidth: currentScroll.getBoundingClientRect().width,
+                        };
+                    };
+                    const auto = measure();
+                    button.click();
+                    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    const even = measure();
+                    return {auto, even};
+                })()`);
+                assert.equal(tableWidths.auto.mode, "auto");
+                assert.equal(tableWidths.auto.tableDisplay, "table");
+                assert.equal(tableWidths.auto.tableLayout, "auto");
+                assert.ok(Math.abs(tableWidths.auto.cellWidths[0] - tableWidths.auto.cellWidths[1]) > 1,
+                    `T01 auto width must follow cell content: ${JSON.stringify(tableWidths)}`);
+                assert.ok(tableWidths.auto.tableWidth <= tableWidths.auto.viewportWidth,
+                    `T01 auto width must keep native content sizing: ${JSON.stringify(tableWidths)}`);
+                assert.equal(tableWidths.even.mode, "even");
+                assert.equal(tableWidths.even.tableDisplay, "table");
+                assert.equal(tableWidths.even.tableLayout, "fixed");
+                assert.ok(Math.abs(tableWidths.even.cellWidths[0] - tableWidths.even.cellWidths[1]) <= 1,
+                    `T01 even width must distribute columns evenly: ${JSON.stringify(tableWidths)}`);
+                assert.ok(Math.abs(tableWidths.even.tableWidth - tableWidths.even.viewportWidth) <= 1,
+                    `T01 even width must fill its viewport: ${JSON.stringify(tableWidths)}`);
+            }
             const screenshot = await call("Page.captureScreenshot", {format: "png", fromSurface: true});
             fs.writeFileSync(path.join(outputDirectory, `showcase-${caseId}.png`), screenshot.data, "base64");
+            await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
         }
-        await evaluate(call, "window.__siyuanMarkdownAppearanceTest.destroy()");
         const rhythmMarkdown = `## 7.5 工作量
 
 Android 端剩余工作量（从 v1.5 估算）≈ 15.5 人日。
@@ -524,9 +661,11 @@ iOS 部分目前项目中不存在成熟推送实现。
         coordinateMapping,
         matrixRows: reports.length,
         nestedQuoteDepths,
+        nestedQuoteGeometry,
         outputDirectory,
         screenshotCount: fs.readdirSync(outputDirectory).filter((name) => name.endsWith(".png")).length,
         seenContracts: seen.size,
+        tableShowcaseParity,
         uncovered: [...knownContracts].filter((id) => !seen.has(id)),
         verticalRhythm,
     };

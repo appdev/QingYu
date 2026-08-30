@@ -1,14 +1,26 @@
 #!/bin/sh
 set -e
 
-# Default values
+# 默认值
 PUID=${PUID:-1000}
 PGID=${PGID:-1000}
-USER_NAME=${USER_NAME:-siyuan}
-GROUP_NAME=${GROUP_NAME:-siyuan}
-WORKSPACE_DIR="/siyuan/workspace"
+USER_NAME=${USER_NAME:-qingyu}
+GROUP_NAME=${GROUP_NAME:-qingyu}
+WORKSPACE_DIR=${QINGYU_WORKSPACE_PATH:-/qingyu/workspace}
 
-# Get or create group
+if [ "$#" -eq 0 ] || [ "$1" != "/opt/qingyu/QingYu-Kernel" ]; then
+    echo "The command must start with /opt/qingyu/QingYu-Kernel" >&2
+    exit 64
+fi
+
+for arg in "$@"; do
+    case "$arg" in
+        --workspace=*) WORKSPACE_DIR=${arg#*=} ;;
+    esac
+done
+export QINGYU_WORKSPACE_PATH="${WORKSPACE_DIR}"
+
+# 获取或创建用户组
 group_name="${GROUP_NAME}"
 if getent group "${PGID}" > /dev/null 2>&1; then
     group_name=$(getent group "${PGID}" | cut -d: -f1)
@@ -18,7 +30,7 @@ else
     addgroup --gid "${PGID}" "${group_name}"
 fi
 
-# Get or create user
+# 获取或创建用户
 user_name="${USER_NAME}"
 if getent passwd "${PUID}" > /dev/null 2>&1; then
     user_name=$(getent passwd "${PUID}" | cut -d: -f1)
@@ -28,25 +40,11 @@ else
     adduser --uid "${PUID}" --ingroup "${group_name}" --disabled-password --gecos "" "${user_name}"
 fi
 
-# Parse command line arguments for --workspace option or SIYUAN_WORKSPACE_PATH env variable
-# Store other arguments in ARGS for later use
-if [[ -n "${SIYUAN_WORKSPACE_PATH}" ]]; then
-    WORKSPACE_DIR="${SIYUAN_WORKSPACE_PATH}"
-fi
-ARGS=""
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --workspace=*) WORKSPACE_DIR="${1#*=}"; shift ;;
-        *) ARGS="$ARGS $1"; shift ;;
-    esac
-done
+# 准备轻语运行目录和工作空间权限
+mkdir -p /home/qingyu "${WORKSPACE_DIR}"
+echo "Adjusting ownership of /opt/qingyu, /home/qingyu/, and ${WORKSPACE_DIR}"
+chown -R "${PUID}:${PGID}" /opt/qingyu /home/qingyu/ "${WORKSPACE_DIR}"
 
-# Change ownership of relevant directories, including the workspace directory
-echo "Adjusting ownership of /opt/siyuan, /home/siyuan/, and ${WORKSPACE_DIR}"
-chown -R "${PUID}:${PGID}" /opt/siyuan
-chown -R "${PUID}:${PGID}" /home/siyuan/
-chown -R "${PUID}:${PGID}" "${WORKSPACE_DIR}"
-
-# Switch to the newly created user and start the main process with all arguments
+# 切换到目标用户并原样执行完整命令
 echo "Starting QingYu with UID:${PUID} and GID:${PGID} in workspace ${WORKSPACE_DIR}"
-exec su-exec "${PUID}:${PGID}" /opt/siyuan/kernel --workspace="${WORKSPACE_DIR}" ${ARGS}
+exec su-exec "${PUID}:${PGID}" "$@"

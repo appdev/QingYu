@@ -2,10 +2,13 @@ import assert = require("node:assert/strict");
 import {afterEach, beforeEach, test} from "node:test";
 import {installMarkdownTestDom} from "./markraTestDom";
 import {
+    isAutoUntitledMarkdownName,
+    isGeneratedUntitledMarkdownTitle,
     isMarkdownTitleEditing,
     MarkdownTitleComposition,
     syncMarkdownTitleEditable,
     syncMarkdownTitleElement,
+    syncMarkdownTitlePresentation,
 } from "./titleEditing";
 
 let cleanup: () => void;
@@ -69,4 +72,28 @@ test("does not rewrite an unchanged contenteditable state", () => {
     assert.equal(syncMarkdownTitleEditable(title, true), false);
     assert.equal(syncMarkdownTitleEditable(title, false), true);
     assert.equal(title.getAttribute("contenteditable"), "false");
+});
+
+test("recognizes only generated untitled Markdown file names", () => {
+    assert.equal(isAutoUntitledMarkdownName("未命名", "未命名"), true);
+    assert.equal(isAutoUntitledMarkdownName("未命名 12", "未命名"), true);
+    assert.equal(isAutoUntitledMarkdownName("未命名文档", "未命名"), false);
+    assert.equal(isAutoUntitledMarkdownName("项目说明", "未命名"), false);
+});
+
+test("treats matching generated Front Matter titles as placeholders", () => {
+    assert.equal(isGeneratedUntitledMarkdownTitle("未命名 12", "未命名 12", "未命名"), true);
+    assert.equal(isGeneratedUntitledMarkdownTitle("未命名 12", undefined, "未命名"), true);
+    assert.equal(isGeneratedUntitledMarkdownTitle("未命名 12", "真实标题", "未命名"), false);
+    assert.equal(isGeneratedUntitledMarkdownTitle("真实标题", "真实标题", "未命名"), false);
+});
+
+test("renders generated untitled names as a placeholder until a real title exists", () => {
+    const title = createTitle("未命名 12");
+    assert.equal(syncMarkdownTitlePresentation(title, "未命名 12", "未命名文档", true), "updated");
+    assert.equal(title.textContent, "");
+    assert.equal(title.getAttribute("placeholder"), "未命名文档");
+    assert.equal(syncMarkdownTitlePresentation(title, "项目标题", "未命名文档", false), "updated");
+    assert.equal(title.textContent, "项目标题");
+    assert.equal(title.hasAttribute("placeholder"), false);
 });

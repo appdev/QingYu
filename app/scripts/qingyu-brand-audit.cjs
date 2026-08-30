@@ -6,6 +6,10 @@ const {spawnSync} = require("node:child_process");
 const {APPROVED_PRODUCT_URLS, AUDIT_SOURCE_EXCLUDES, SKIPPED_DIRECTORIES, TEXT_EXTENSIONS} = require("./qingyu-brand-policy.cjs");
 
 const normalize = (value) => value.split(path.sep).join("/");
+const isAuditedTextFile = (relativePath) => {
+    const normalized = normalize(relativePath);
+    return normalized === "Dockerfile" || TEXT_EXTENSIONS.has(path.extname(normalized).toLowerCase());
+};
 
 const shouldSkipDirectory = (relativePath) => {
     const normalized = normalize(relativePath);
@@ -17,7 +21,7 @@ const listTextFiles = (root) => {
     if (gitFiles.status === 0 && gitFiles.stdout) {
         return gitFiles.stdout.split("\0").filter(Boolean).filter((relativePath) => {
             const normalized = normalize(relativePath);
-            return TEXT_EXTENSIONS.has(path.extname(normalized).toLowerCase()) &&
+            return isAuditedTextFile(normalized) &&
                 !AUDIT_SOURCE_EXCLUDES.some((excluded) => normalized === excluded || normalized.startsWith(excluded));
         }).map((relativePath) => ({
             absolutePath: path.join(root, relativePath),
@@ -35,7 +39,7 @@ const listTextFiles = (root) => {
                 }
                 continue;
             }
-            if (entry.isFile() && TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+            if (entry.isFile() && isAuditedTextFile(relativePath)) {
                 const normalized = normalize(relativePath);
                 if (!AUDIT_SOURCE_EXCLUDES.some((excluded) => normalized === excluded || normalized.startsWith(excluded))) {
                     files.push({absolutePath, relativePath: normalized});
@@ -76,6 +80,10 @@ const auditRepository = (root) => {
         lines.forEach((line, index) => {
             const lineNumber = index + 1;
             const productSurface = /^(?:README(?:\.[^/]+)?\.md|NOTICE\.md|docs\/legal\/|app\/(?:appearance\/langs|electron|guide|guide-src)\/)/.test(relativePath);
+            const dockerRuntimeSurface = relativePath === "Dockerfile" || relativePath === "kernel/entrypoint.sh";
+            if (dockerRuntimeSurface && /\/opt\/siyuan|\/home\/siyuan|\/siyuan\/workspace|SIYUAN_WORKSPACE_PATH|\/kernel\/kernel\b|:-siyuan}/.test(line)) {
+                addViolation(violations, "upstream-docker-runtime-identity", relativePath, lineNumber, line);
+            }
             if (/(?:release\.b3log\.org|release\.liuyun\.io|github\.com\/siyuan-note\/siyuan\/releases)/i.test(line)) {
                 addViolation(violations, "upstream-update-service", relativePath, lineNumber, line);
             }

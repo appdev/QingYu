@@ -4,8 +4,6 @@ import {layer, type EditorView, type LayerMarker, type ViewUpdate} from "@codemi
 import {parseMarkdownCalloutMarker} from "../shared";
 import type {MarkraSyntaxNode} from "./renderers";
 
-const RAIL_CAP_INSET = 6;
-
 function firstQuotedContent(view: EditorView, from: number) {
     return view.state.doc.lineAt(from).text.replace(/^[ \t]{0,3}(?:>[ \t]*)+/u, "");
 }
@@ -22,6 +20,22 @@ function blockquoteDepth(node: MarkraSyntaxNode) {
 
 function intersectsVisibleRange(view: EditorView, from: number, to: number) {
     return view.visibleRanges.some((range) => range.from <= to && range.to >= from);
+}
+
+function renderedLineBounds(view: EditorView, position: number) {
+    try {
+        const dom = view.domAtPos(position).node;
+        const element = (dom instanceof HTMLElement ? dom : dom.parentElement)?.closest<HTMLElement>(".cm-line");
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom <= rect.top) return null;
+        return {
+            bottom: (rect.bottom - view.documentTop) / view.scaleY,
+            top: (rect.top - view.documentTop) / view.scaleY,
+        };
+    } catch {
+        return null;
+    }
 }
 
 export class BlockquoteRailMarker implements LayerMarker {
@@ -43,14 +57,14 @@ export class BlockquoteRailMarker implements LayerMarker {
     }
 
     draw() {
-        const rail = document.createElement("div");
-        rail.className = "cm-markra-blockquote-rail";
-        rail.dataset.from = String(this.from);
-        rail.dataset.to = String(this.to);
-        rail.style.setProperty("--markra-blockquote-depth", String(this.depth));
-        rail.style.height = `${this.height}px`;
-        rail.style.top = `${this.top}px`;
-        return rail;
+        const decoration = document.createElement("div");
+        decoration.className = "cm-markra-blockquote-decoration";
+        decoration.dataset.from = String(this.from);
+        decoration.dataset.to = String(this.to);
+        decoration.style.setProperty("--markra-blockquote-depth", String(this.depth));
+        decoration.style.setProperty("--markra-blockquote-span-height", `${this.height}px`);
+        decoration.style.setProperty("--markra-blockquote-span-top", `${this.top}px`);
+        return decoration;
     }
 }
 
@@ -71,8 +85,10 @@ function buildBlockquoteRailMarkers(view: EditorView) {
             const lastLine = view.state.doc.lineAt(Math.max(node.from, node.to - 1));
             const firstBlock = view.lineBlockAt(firstLine.from);
             const lastBlock = view.lineBlockAt(lastLine.from);
-            const top = firstBlock.top + RAIL_CAP_INSET;
-            const bottom = lastBlock.bottom - RAIL_CAP_INSET;
+            const firstBounds = renderedLineBounds(view, firstLine.from);
+            const lastBounds = renderedLineBounds(view, lastLine.from);
+            const top = firstBounds?.top ?? firstBlock.top;
+            const bottom = lastBounds?.bottom ?? lastBlock.bottom;
             markers.push(new BlockquoteRailMarker(
                 node.from,
                 node.to,

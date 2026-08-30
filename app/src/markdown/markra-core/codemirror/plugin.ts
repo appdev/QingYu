@@ -39,11 +39,26 @@ export interface MarkraUiContribution {
   readonly when?: (view: EditorView) => boolean;
 }
 
+export interface MarkraVisualBlock {
+  readonly from: number;
+  readonly to: number;
+  enter(
+    view: EditorView,
+    direction: "backward" | "forward",
+    horizontalPosition: number | null,
+  ): boolean;
+}
+
+export interface MarkraVisualBlockProvider {
+  read(state: EditorState): readonly MarkraVisualBlock[];
+}
+
 export interface MarkraPlugin {
   readonly id: string;
   readonly extension?: Extension;
   readonly commands?: readonly MarkraCommand[];
   readonly ui?: readonly MarkraUiContribution[];
+  readonly visualBlocks?: readonly MarkraVisualBlockProvider[];
 }
 
 export interface MarkraUiAction {
@@ -70,12 +85,14 @@ interface MarkraRegistry {
   commands: ReadonlyMap<string, RegisteredCommand>;
   plugins: readonly MarkraPlugin[];
   ui: readonly MarkraUiContribution[];
+  visualBlocks: readonly MarkraVisualBlockProvider[];
 }
 
 function createRegistry(plugins: readonly MarkraPlugin[]): MarkraRegistry {
   const pluginIds = new Set<string>();
   const commands = new Map<string, RegisteredCommand>();
   const ui: MarkraUiContribution[] = [];
+  const visualBlocks: MarkraVisualBlockProvider[] = [];
 
   for (const plugin of plugins) {
     if (pluginIds.has(plugin.id)) {
@@ -91,6 +108,7 @@ function createRegistry(plugins: readonly MarkraPlugin[]): MarkraRegistry {
     }
 
     ui.push(...(plugin.ui ?? []));
+    visualBlocks.push(...(plugin.visualBlocks ?? []));
   }
 
   for (const contribution of ui) {
@@ -101,7 +119,7 @@ function createRegistry(plugins: readonly MarkraPlugin[]): MarkraRegistry {
     }
   }
 
-  return { commands, plugins: [...plugins], ui };
+  return { commands, plugins: [...plugins], ui, visualBlocks };
 }
 
 const registryFacet = Facet.define<MarkraPlugin, MarkraRegistry>({
@@ -144,6 +162,12 @@ export function listMarkraPlugins(
   state: EditorState,
 ): readonly MarkraPlugin[] {
   return state.facet(registryFacet).plugins;
+}
+
+export function readMarkraVisualBlocks(state: EditorState) {
+  return state.facet(registryFacet).visualBlocks
+    .flatMap((provider) => provider.read(state))
+    .sort((left, right) => left.from - right.from || left.to - right.to);
 }
 
 export function runMarkraCommand(

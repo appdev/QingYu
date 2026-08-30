@@ -2,6 +2,7 @@ import assert = require("node:assert/strict");
 import test from "node:test";
 import {
     appearanceComparisonProperties,
+    appearanceStrategy,
     appearanceVariableName,
     getAppearanceContract,
     listAppearanceContracts,
@@ -106,6 +107,38 @@ test("provides stable lookup and component-scoped variable names", () => {
     assert.equal(getAppearanceContract("missing"), undefined);
 });
 
+test("declares structural strategies for topology-sensitive native formats", () => {
+    for (const id of [
+        "block.task",
+        "block.blockquote",
+        "block.heading-1",
+        "block.heading-2",
+        "block.heading-3",
+        "block.heading-4",
+        "block.heading-5",
+        "block.heading-6",
+        "block.list",
+        "block.callout-note",
+        "block.callout-tip",
+        "block.callout-important",
+        "block.callout-warning",
+        "block.callout-caution",
+        "block.horizontal-rule",
+        "block.table",
+        "block.code",
+        "block.raw-html",
+        "inline.highlight",
+        "media.image",
+    ]) {
+        const contract = getAppearanceContract(id);
+        assert.ok(contract, `Missing structural appearance contract: ${id}`);
+        assert.equal(appearanceStrategy(contract), "structural", id);
+    }
+    for (const contract of listAppearanceContracts().filter((item) => item.category === "markdown-exclusive")) {
+        assert.equal(appearanceStrategy(contract), "markdown-owned", contract.id);
+    }
+});
+
 test("measures composite controls by equivalent responsibility", () => {
     assert.equal(getAppearanceContract("control.code-copy")?.markdownSelector, ".markra-code-copy-button");
     assert.equal(getAppearanceContract("control.code-more")?.markdownSelector, ".markra-code-more-button");
@@ -130,8 +163,7 @@ test("maps the native horizontal rule container and textured line independently"
         native: {selector: ".protyle-wysiwyg .hr", box: "margin"},
         markdown: {
             selector: ".cm-markra-horizontal-rule",
-            closest: ".cm-line",
-            box: "border",
+            box: "margin",
         },
     });
     assert.deepEqual(contract?.propertyReferences?.background, {
@@ -159,30 +191,80 @@ test("maps the native horizontal rule container and textured line independently"
         property: "background",
         pseudo: "::after",
     });
-    assert.deepEqual(contract?.ownedSelectors, []);
+    assert.deepEqual(contract?.ownedSelectors, [".cm-markra-horizontal-rule-line"]);
 });
 
-test("maps the native blockquote pseudo-element to one Markdown semantic rail", () => {
+test("maps the native blockquote pseudo-element to one structural decoration", () => {
     const contract = getAppearanceContract("block.blockquote");
-    assert.deepEqual(contract?.propertyReferences?.borderLeftColor, {
+    assert.equal(contract?.strategy, "structural");
+    assert.deepEqual(contract?.propertyReferences?.clipPath, {
         selector: ".protyle-wysiwyg .bq",
-        property: "backgroundColor",
+        property: "clipPath",
+    });
+    assert.deepEqual(contract?.markdownPropertyReferences?.clipPath, {
+        selector: ".cm-markra-blockquote-decoration",
+        property: "clipPath",
+    });
+    assert.deepEqual(contract?.propertyReferences?.decorationBackground, {
+        selector: ".protyle-wysiwyg .bq",
+        property: "background",
         pseudo: "::before",
     });
-    assert.deepEqual(contract?.propertyReferences?.borderLeftWidth, {
+    assert.deepEqual(contract?.propertyReferences?.decorationWidth, {
         selector: ".protyle-wysiwyg .bq",
         property: "width",
         pseudo: "::before",
     });
-    assert.deepEqual(contract?.markdownPropertyReferences?.borderLeftColor, {
-        selector: ".cm-markra-blockquote-rail",
-        property: "backgroundColor",
-    });
-    assert.deepEqual(contract?.markdownPropertyReferences?.borderLeftWidth, {
-        selector: ".cm-markra-blockquote-rail",
+    assert.deepEqual(contract?.markdownPropertyReferences?.decorationWidth, {
+        selector: ".cm-markra-blockquote-decoration",
         property: "width",
+        pseudo: "::before",
     });
-    assert.ok(contract?.ownedSelectors.includes(".cm-markra-blockquote-rail"));
+    assert.ok(contract?.ownedSelectors.includes(".cm-markra-blockquote-decoration"));
+});
+
+test("maps table paint from the native table element instead of its layout wrapper", () => {
+    const contract = getAppearanceContract("block.table");
+    for (const property of ["backgroundColor", "borderColor", "color"] as const) {
+        assert.deepEqual(contract?.propertyReferences?.[property], {
+            selector: ".protyle-wysiwyg .table table",
+            property,
+        });
+        assert.deepEqual(contract?.markdownPropertyReferences?.[property], {
+            selector: ".cm-markra-table",
+            property,
+        });
+    }
+    for (const property of ["borderRadius", "display", "overflow", "verticalAlign"] as const) {
+        assert.deepEqual(contract?.propertyReferences?.[property], {
+            selector: ".protyle-wysiwyg .table table",
+            property,
+        });
+        assert.deepEqual(contract?.markdownPropertyReferences?.[property], {
+            selector: ".markra-table-scroll",
+            property,
+        });
+    }
+    assert.deepEqual(contract?.propertyReferences?.bodyCellBorderColor, {
+        selector: ".protyle-wysiwyg .table tbody td",
+        property: "borderTopColor",
+    });
+    assert.deepEqual(contract?.propertyReferences?.headerFirstCellBorderLeftWidth, {
+        selector: ".protyle-wysiwyg .table thead th:first-child",
+        property: "borderLeftWidth",
+    });
+    assert.deepEqual(contract?.propertyReferences?.bodyLastRowBorderBottomWidth, {
+        selector: ".protyle-wysiwyg .table tbody tr:last-child td",
+        property: "borderBottomWidth",
+    });
+    assert.deepEqual(contract?.propertyReferences?.outerMarginTop, {
+        selector: ".protyle-wysiwyg .table",
+        property: "marginTop",
+    });
+    assert.deepEqual(contract?.markdownPropertyReferences?.outerMarginTop, {
+        selector: ".cm-markra-table-wrap",
+        property: "marginTop",
+    });
 });
 
 test("models native outer geometry separately from visual paint probes", () => {
@@ -214,6 +296,10 @@ test("derives blockquote geometry from its native outer box and inner paragraph"
     assert.equal(contract?.propertyReferences?.innerMarginTop.selector, ".protyle-wysiwyg .bq > .p");
     assert.equal(contract?.propertyReferences?.outerPaddingBottom.property, "paddingBottom");
     assert.equal(contract?.propertyReferences?.innerPaddingBottom.property, "paddingBottom");
+    assert.equal(contract?.propertyReferences?.outerPaddingLeft.property, "paddingLeft");
+    assert.equal(contract?.propertyReferences?.outerPaddingRight.property, "paddingRight");
+    assert.equal(contract?.propertyReferences?.innerPaddingLeft.property, "paddingLeft");
+    assert.equal(contract?.propertyReferences?.innerPaddingRight.property, "paddingRight");
 });
 
 test("compares paragraph and list spacing through CodeMirror-safe transparent borders", () => {

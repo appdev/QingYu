@@ -77,7 +77,7 @@ var rootCmd = &cobra.Command{
 
 		// 设置工作空间路径
 		if workspacePath == "" {
-			workspacePath = os.Getenv("SIYUAN_WORKSPACE_PATH")
+			workspacePath = os.Getenv(util.QingYuWorkspacePathEnv)
 		}
 		if workspacePath == "" {
 			workspacePath = filepath.Join(util.HomeDir, "QingYu")

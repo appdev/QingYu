@@ -63,7 +63,7 @@ export class MarkdownDocumentScrollController {
         if (this.restoreFrame !== null) {
             window.cancelAnimationFrame(this.restoreFrame);
         }
-        this.restoreFrame = window.requestAnimationFrame(() => {
+        const restoreVisiblePosition = (remainingCorrections: number) => {
             this.restoreFrame = null;
             const view = this.getView();
             if (!view) return;
@@ -72,11 +72,18 @@ export class MarkdownDocumentScrollController {
             try {
                 const position = Math.max(0, Math.min(anchor.position, view.state.doc.length));
                 const positionRect = view.coordsAtPos(position);
-                if (!positionRect) return;
-                this.container.scrollTop += positionRect.top - viewport.top - anchor.viewportOffset;
+                const positionTop = positionRect?.top ?? view.lineBlockAt(position).top + view.documentTop;
+                this.container.scrollTop += positionTop - viewport.top - anchor.viewportOffset;
+                if (remainingCorrections > 0) {
+                    this.restoreFrame = window.requestAnimationFrame(() => restoreVisiblePosition(remainingCorrections - 1));
+                }
             } catch {
                 // CodeMirror 视口尚未稳定时保留锚点，等待下一次可见状态恢复。
             }
+        };
+        this.restoreFrame = window.requestAnimationFrame(() => {
+            // 重新配置后 CodeMirror 会在下一帧完成区块测量；在测量完成后再恢复锚点，避免按旧高度滚动。
+            this.restoreFrame = window.requestAnimationFrame(() => restoreVisiblePosition(3));
         });
     }
 

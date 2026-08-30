@@ -11,7 +11,7 @@ import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {confirmDialog} from "../dialog/confirmDialog";
 import {escapeHtml} from "../util/escape";
 import {fixWndFlex1, saveLayout, setPanelFocus} from "../layout/util";
-import {createSiyuanMarkraExtension} from "./markraExtension";
+import {createSiyuanMarkraExtension, type SiyuanMarkraExtensionOptions} from "./markraExtension";
 import {
     createSiyuanMarkdownAdapter,
     resolveMarkdownCoverSource,
@@ -33,9 +33,11 @@ import {genUUID} from "../util/genID";
 import {openEmojiPanel, unicode2Emoji} from "../emoji";
 import {runMarkdownTitleTransaction} from "./titleTransaction";
 import {
+    isGeneratedUntitledMarkdownTitle,
     MarkdownTitleComposition,
     syncMarkdownTitleEditable,
     syncMarkdownTitleElement,
+    syncMarkdownTitlePresentation,
 } from "./titleEditing";
 import {Constants} from "../constants";
 import {assetPickerMenu} from "../menus/protyle";
@@ -62,6 +64,7 @@ import {isMarkdownStatisticsOwnerEligible} from "./statusbarOwnership";
 import type {MarkdownOutlineItemWithPosition} from "./outlineModel";
 import {
     codeMirrorTypewriterMode,
+    MarkdownTableInteractionController,
     restoreMarkdownTableAppearances,
     showCodeMirrorLocationCue,
 } from "./markra-core/codemirror";
@@ -116,6 +119,7 @@ export class MarkdownEditor extends Model {
     private savePromise: Promise<boolean>;
     private titlePromise: Promise<boolean> = Promise.resolve(true);
     private titleTimer: number;
+    private titlePlaceholder = false;
     private readonly titleComposition = new MarkdownTitleComposition();
     private preview = true;
     private destroyed = false;
@@ -138,6 +142,7 @@ export class MarkdownEditor extends Model {
     private slashMenu?: MarkdownSlashMenuController;
     private source: MarkdownDocumentSource;
     private readonly tableAppearance: MarkdownTableAppearanceController;
+    private readonly tableInteraction = new MarkdownTableInteractionController();
     private tableAppearanceSubscription?: () => void;
     private discarded = false;
     private closing = false;
@@ -386,14 +391,9 @@ export class MarkdownEditor extends Model {
             this.contentAttributesCompartment.reconfigure(EditorView.contentAttributes.of({
                 spellcheck: String(preferences.spellcheck),
             })),
-            this.modeCompartment.reconfigure(createSiyuanMarkraExtension({
-                adapter: this.createAdapter(),
-                documentPath: () => this.path,
-                getScrollContainer: () => this.contentElement,
-                mode: this.preview ? "visual" : "source",
-                tableAppearance: this.tableAppearance.pluginOptions(),
-            })),
+            this.modeCompartment.reconfigure(createSiyuanMarkraExtension(this.markraExtensionOptions())),
         ]});
+        this.tableInteraction.restore(this.view);
         if (anchor) this.documentScroll.restoreAnchor(anchor);
         this.slashMenu?.update();
     }
@@ -703,7 +703,7 @@ export class MarkdownEditor extends Model {
         window.clearTimeout(this.fontZoomTimer);
         const normalized = this.normalizedTitle(name);
         if (!normalized) {
-            syncMarkdownTitleElement(this.titleElement, this.fileStem());
+            this.syncTitleElement(this.fileStem());
             return Promise.resolve(false);
         }
         this.titlePromise = this.titlePromise.catch(() => false)
@@ -755,7 +755,10 @@ export class MarkdownEditor extends Model {
             renameRequired: requestedName !== this.fileName(),
         });
         if (!success) {
-            syncMarkdownTitleElement(this.titleElement, previousTitle);
+            this.syncTitleElement(previousTitle);
+        } else {
+            this.titlePlaceholder = false;
+            this.titleElement.removeAttribute("placeholder");
         }
         return success;
     }
@@ -960,8 +963,8 @@ export class MarkdownEditor extends Model {
             const title = this.normalizedTitle(this.titleElement.innerText || this.titleElement.textContent);
             if (title && title !== this.fileStem()) {
                 void this.queueTitleTransaction(title);
-            } else {
-                syncMarkdownTitleElement(this.titleElement, this.fileStem());
+            } else if (!this.titlePlaceholder) {
+                this.syncTitleElement(this.fileStem());
             }
         });
     }
@@ -979,9 +982,15 @@ export class MarkdownEditor extends Model {
         }
         this.path = document.displayPath;
         this.revision = document.revision;
+        const initialMetadata = readMarkdownFrontmatter(document.content);
+        this.titlePlaceholder = this.source.kind === "workspace" && isGeneratedUntitledMarkdownTitle(
+            this.fileStem(),
+            initialMetadata.status === "valid" ? initialMetadata.title : undefined,
+            window.siyuan.languages.untitled,
+        );
         await this.tableAppearance.load();
         if (this.destroyed) return;
-        syncMarkdownTitleElement(this.titleElement, this.fileStem());
+        this.syncTitleElement(this.fileStem());
         this.updateTitle(document.name);
         this.renderBreadcrumb();
         const adapter = this.createAdapter();
@@ -1004,13 +1013,7 @@ export class MarkdownEditor extends Model {
                     enabled: this.typewriterMode,
                     getScrollContainer: () => this.contentElement,
                 })),
-                this.modeCompartment.of(createSiyuanMarkraExtension({
-                    adapter,
-                    documentPath: () => this.path,
-                    getScrollContainer: () => this.contentElement,
-                    mode: this.preview ? "visual" : "source",
-                    tableAppearance: this.tableAppearance.pluginOptions(),
-                })),
+                this.modeCompartment.of(createSiyuanMarkraExtension(this.markraExtensionOptions(adapter))),
                 this.contentAttributesCompartment.of(EditorView.contentAttributes.of({
                     spellcheck: String(preferences.spellcheck),
                 })),
@@ -1077,6 +1080,20 @@ export class MarkdownEditor extends Model {
         });
     }
 
+    private markraExtensionOptions(
+        adapter = this.createAdapter(),
+        mode: SiyuanMarkraExtensionOptions["mode"] = this.preview ? "visual" : "source",
+    ): SiyuanMarkraExtensionOptions {
+        return {
+            adapter,
+            documentPath: () => this.path,
+            getScrollContainer: () => this.contentElement,
+            mode,
+            tableAppearance: this.tableAppearance.pluginOptions(),
+            tableInteraction: this.tableInteraction,
+        };
+    }
+
     private registerSourceKey() {
         this.registryRegistration.register(this.sourceKey);
         void this.tableAppearance.migrate(this.sourceKey);
@@ -1134,12 +1151,12 @@ export class MarkdownEditor extends Model {
         });
         if (this.view) {
             this.slashMenu?.close();
-            reconfigureSiyuanMarkraExtension(this.view, this.modeCompartment, {
-                adapter: this.createAdapter(),
-                documentPath: () => this.path,
-                getScrollContainer: () => this.contentElement,
-                mode: preview ? "visual" : "source",
-            }, this.documentScroll);
+            reconfigureSiyuanMarkraExtension(
+                this.view,
+                this.modeCompartment,
+                this.markraExtensionOptions(undefined, preview ? "visual" : "source"),
+                this.documentScroll,
+            );
             this.slashMenu?.update();
             if (focus) {
                 this.view.focus();
@@ -1175,7 +1192,7 @@ export class MarkdownEditor extends Model {
         this.metadataElement.classList.toggle("protyle-background--enable", editable);
         syncMarkdownTitleEditable(this.titleElement, editable);
         if (document.activeElement !== this.titleElement) {
-            syncMarkdownTitleElement(this.titleElement, metadata.status === "valid" && metadata.title || this.fileStem());
+            this.syncTitleElement(metadata.status === "valid" && metadata.title || this.fileStem());
         }
         const tags = metadata.status === "valid" ? metadata.tags : [];
         this.tagsElement.innerHTML = tags.map((tag) => `<span class="b3-chip b3-chip--middle b3-chip--pointer">${escapeHtml(tag)}${editable ? `<svg class="b3-chip__close" data-type="markdown-tag-remove" data-value="${escapeHtml(tag)}"><use xlink:href="#iconClose"></use></svg>` : ""}</span>`).join("");
@@ -1196,6 +1213,15 @@ export class MarkdownEditor extends Model {
         } else {
             this.metadataElement.querySelectorAll<HTMLButtonElement>("button").forEach((button) => button.disabled = false);
         }
+    }
+
+    private syncTitleElement(title: string) {
+        return syncMarkdownTitlePresentation(
+            this.titleElement,
+            title,
+            window.siyuan.languages._kernel[16],
+            this.titlePlaceholder && title === this.fileStem(),
+        );
     }
 
     private openTagDialog(target: HTMLElement) {

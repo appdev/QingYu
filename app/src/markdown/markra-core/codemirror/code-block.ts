@@ -742,6 +742,13 @@ interface MermaidPreviewBlock {
   readonly to: number;
 }
 
+interface CodeBlockNavigationRange {
+  readonly from: number;
+  readonly source: string;
+  readonly sourceOffset: number;
+  readonly to: number;
+}
+
 function mermaidSourceRevealed(
   state: EditorState,
   from: number,
@@ -779,6 +786,40 @@ function readMermaidPreviewBlocks(state: EditorState) {
     },
   });
   return blocks;
+}
+
+function readCodeBlockNavigationRanges(state: EditorState) {
+  const blocks: CodeBlockNavigationRange[] = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.type.name !== "FencedCode") return;
+      const parts = codeBlockParts(state, node.node as MarkraSyntaxNode);
+      if (!parts.hasClosingFence || !parts.codeNode) return;
+      blocks.push({
+        from: node.from,
+        source: parts.code,
+        sourceOffset: parts.codeNode.from - node.from,
+        to: node.to,
+      });
+    },
+  });
+  return blocks;
+}
+
+function activateCodeBlockSource(
+  view: CodeMirrorView,
+  block: CodeBlockNavigationRange,
+  direction: "backward" | "forward",
+) {
+  const codeFrom = block.from + block.sourceOffset;
+  const anchor = direction === "forward"
+    ? codeFrom
+    : codeFrom + block.source.length;
+  view.dispatch({
+    selection: EditorSelection.cursor(Math.min(block.to - 1, anchor)),
+    scrollIntoView: true,
+  });
+  view.focus();
 }
 
 function mermaidPreviewDecorationsFromBlocks(
@@ -1404,6 +1445,18 @@ export function codeBlockPreviewPlugin(
 
   return defineMarkraPlugin({
     id: "markra.code-block-preview",
+    visualBlocks: [{
+      read(state) {
+        return readCodeBlockNavigationRanges(state).map((block) => ({
+          from: block.from,
+          to: block.to,
+          enter(view: CodeMirrorView, direction: "backward" | "forward") {
+            activateCodeBlockSource(view, block, direction);
+            return true;
+          },
+        }));
+      },
+    }],
     extension: [
       // Vertical margins and padding on editable lines are not part of
       // CodeMirror's height map in every WebView. State-field block widgets

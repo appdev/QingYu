@@ -167,6 +167,9 @@ app.whenReady().then(async () => {
                 <div class="cm-markra-table-wrap markra-table-controls-wrapper">
                     <div class="markra-table-scroll"><table class="cm-markra-table"><thead><tr>${columns}</tr></thead><tbody><tr>${cells}</tr></tbody></table></div>
                 </div>
+                <div class="cm-markra-table-wrap markra-table-controls-wrapper" data-width-mode="auto" id="table-width-mode-fixture">
+                    <div class="markra-table-scroll"><table class="cm-markra-table" data-width-mode="auto"><thead><tr><th>短</th><th>较长的表格内容</th></tr></thead><tbody><tr><td>A</td><td>用于验证列宽模式</td></tr></tbody></table></div>
+                </div>
                 <span class="img markra-image-node markra-image-node-selected"><span class="markra-image-frame"><img alt="test" style="height:80px;width:160px"><span class="protyle-action__drag" style="display:block"></span></span></span>
                 <br><span class="img markra-image-node"><span class="markra-image-frame" id="default-image-frame" style="width:506px"><img alt="default-size" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='506' height='538'%3E%3Crect width='506' height='538' fill='blue'/%3E%3C/svg%3E"><span class="protyle-action__drag" style="display:block"></span></span></span>
             </div>
@@ -289,6 +292,21 @@ ${managementDOM.window.document.querySelector("section").outerHTML}
         const surface = document.querySelector(".markdown-editor__surface");
         const tableScroll = surface.querySelector(".markra-table-scroll");
         const table = tableScroll.querySelector("table");
+        const widthModeWrapper = surface.querySelector("#table-width-mode-fixture");
+        const widthModeScroll = widthModeWrapper.querySelector(".markra-table-scroll");
+        const widthModeTable = widthModeWrapper.querySelector("table");
+        const measureWidthMode = () => ({
+            cellWidths: Array.from(widthModeTable.querySelectorAll("thead th"), (cell) =>
+                cell.getBoundingClientRect().width),
+            scrollWidth: widthModeScroll.getBoundingClientRect().width,
+            tableDisplay: getComputedStyle(widthModeTable).display,
+            tableLayout: getComputedStyle(widthModeTable).tableLayout,
+            tableWidth: widthModeTable.getBoundingClientRect().width,
+        });
+        const autoWidthMode = measureWidthMode();
+        widthModeWrapper.dataset.widthMode = "even";
+        widthModeTable.dataset.widthMode = "even";
+        const evenWidthMode = measureWidthMode();
         const imageFrame = surface.querySelector(".markra-image-frame");
         const selectedImageFrameStyle = getComputedStyle(imageFrame);
         const defaultImageFrame = surface.querySelector("#default-image-frame");
@@ -396,6 +414,8 @@ ${managementDOM.window.document.querySelector("section").outerHTML}
             tableViewportScrollWidth: tableScroll.scrollWidth,
             tableDisplay: getComputedStyle(table).display,
             tableHeight: table.getBoundingClientRect().height,
+            autoWidthMode,
+            evenWidthMode,
             imageFrameRight: imageFrameRect.right,
             imageHandleCenter: imageHandleRect.left + imageHandleRect.width / 2,
             selectedImageOutlineColor: selectedImageFrameStyle.outlineColor,
@@ -577,6 +597,18 @@ ${managementDOM.window.document.querySelector("section").outerHTML}
         Math.abs(metrics.imageFrameRight - metrics.imageHandleCenter) <= 3;
     if (!keepsTabWidth) {
         console.error("Markdown wide table escapes the tab width", metrics);
+        app.exit(1);
+        return;
+    }
+    const columnWidthModeWorks = metrics.autoWidthMode.tableDisplay === "table" &&
+        metrics.autoWidthMode.tableLayout === "auto" &&
+        Math.abs(metrics.autoWidthMode.cellWidths[0] - metrics.autoWidthMode.cellWidths[1]) > 1 &&
+        metrics.evenWidthMode.tableDisplay === "table" &&
+        metrics.evenWidthMode.tableLayout === "fixed" &&
+        Math.abs(metrics.evenWidthMode.cellWidths[0] - metrics.evenWidthMode.cellWidths[1]) <= 1 &&
+        Math.abs(metrics.evenWidthMode.tableWidth - metrics.evenWidthMode.scrollWidth) <= 1;
+    if (!columnWidthModeWorks) {
+        console.error("Markdown table column width mode does not affect layout", metrics);
         app.exit(1);
         return;
     }

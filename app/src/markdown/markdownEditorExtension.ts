@@ -21,5 +21,6 @@ export const reconfigureSiyuanMarkraExtension = (
     view.dispatch({
         effects: compartment.reconfigure(createSiyuanMarkraExtension(options)),
     });
+    options.tableInteraction?.restore(view);
     if (anchor) continuity.restoreAnchor(anchor);
 };

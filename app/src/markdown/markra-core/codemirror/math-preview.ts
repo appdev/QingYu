@@ -223,11 +223,23 @@ export function findCodeMirrorMathRanges(state: EditorState) {
   return [...display, ...inline].sort((left, right) => left.from - right.from);
 }
 
-function activateMath(view: CodeMirrorView, range: CodeMirrorMathRange) {
+function activateMath(
+  view: CodeMirrorView,
+  range: CodeMirrorMathRange,
+  direction: "backward" | "forward" = "forward",
+) {
   const offset = range.source.startsWith("$$") || range.source.startsWith(String.raw`\[`)
     ? 2
     : 1;
-  view.dispatch({ selection: { anchor: Math.min(range.to - 1, range.from + offset) } });
+  const openingBreak = range.source.slice(offset).match(/^\r?\n/u)?.[0].length ?? 0;
+  const closingStart = Math.max(offset, range.source.length - offset);
+  const closingBreak = range.source.slice(0, closingStart).match(/\r?\n$/u)?.[0].length ?? 0;
+  const contentFrom = range.from + offset + openingBreak;
+  const contentTo = range.from + closingStart - closingBreak;
+  const anchor = direction === "forward"
+    ? Math.min(contentTo, contentFrom)
+    : Math.max(contentFrom, contentTo);
+  view.dispatch({ selection: { anchor }, scrollIntoView: true });
   view.focus();
 }
 
@@ -470,6 +482,20 @@ function createMathPreviewExtension() {
 export function mathPreviewPlugin() {
   return defineMarkraPlugin({
     id: "markra.math-preview",
+    visualBlocks: [{
+      read(state) {
+        return findCodeMirrorMathRanges(state)
+          .filter((range) => range.kind === "display")
+          .map((range) => ({
+            from: range.from,
+            to: range.to,
+            enter(view: CodeMirrorView, direction: "backward" | "forward") {
+              activateMath(view, range, direction);
+              return true;
+            },
+          }));
+      },
+    }],
     extension: [
       ...createMathPreviewExtension(),
       mathTheme,

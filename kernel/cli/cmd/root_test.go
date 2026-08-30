@@ -46,3 +46,11 @@ func TestDailyNoteCommandRemoved(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveDefaultWorkspaceUsesQingYuEnvironment(t *testing.T) {
+	t.Setenv("QINGYU_WORKSPACE_PATH", "/qingyu/workspace")
+	t.Setenv("SIYUAN_WORKSPACE_PATH", "/siyuan/workspace")
+	if got := resolveDefaultWorkspace(); got != "/qingyu/workspace" {
+		t.Fatalf("resolveDefaultWorkspace() = %q, want /qingyu/workspace", got)
+	}
+}

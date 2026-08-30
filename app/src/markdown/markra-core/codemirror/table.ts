@@ -3,6 +3,7 @@ import type { EditorState } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
+  ViewPlugin,
   WidgetType,
   type EditorView as CodeMirrorView,
 } from "@codemirror/view";
@@ -21,11 +22,23 @@ import { defineMarkraPlugin } from "./plugin";
 import { getMarkraRenderers, markraRenderer } from "./renderers";
 import {
   createMarkdownTableAppearanceExtension,
+  deleteMarkdownTableAppearance,
+  ensureMarkdownTableAppearance,
   markdownTableAppearanceAt,
+  markdownTableAppearanceSnapshot,
+  resolveMarkdownTableAppearance,
   setMarkdownTableWidthMode,
   type MarkdownTableAppearancePluginOptions,
   type MarkdownTableWidthMode,
 } from "./table-appearance";
+import {
+  createMarkdownTableInteractionController,
+  type MarkdownTableInteractionController,
+  markdownActiveTableId,
+  markdownHoveredTableId,
+  setActiveMarkdownTable,
+  setHoveredMarkdownTable,
+} from "./table-interaction";
 
 export type CodeMirrorTableAlignment = "center" | "left" | "right" | null;
 export type CodeMirrorTableWidthMode = MarkdownTableWidthMode;
@@ -38,6 +51,7 @@ export interface CodeMirrorTableShape {
 export interface TablePreviewPluginOptions {
   appearance?: MarkdownTableAppearancePluginOptions;
   images?: ImagePreviewPluginOptions;
+  interaction?: MarkdownTableInteractionController;
   labels?: Partial<TablePreviewLabels>;
   links?: LinksPluginOptions;
   widthMode?: CodeMirrorTableWidthMode;
@@ -90,6 +104,11 @@ interface TableEditingSession {
   readonly originalSource: string;
   readonly row: number;
   readonly tableFrom: number;
+}
+
+interface TableAppearanceReference {
+  readonly tableId: string;
+  readonly widthMode?: CodeMirrorTableWidthMode;
 }
 
 const defaultLabels: TablePreviewLabels = {
@@ -257,6 +276,13 @@ function tablePreviewForDOM(
   );
 }
 
+function tablePreviewAt(state: EditorState, from: number) {
+  let node = syntaxTree(state).resolveInner(from, 1);
+  while (node.parent && node.name !== "Table") node = node.parent;
+  if (node.name !== "Table") return null;
+  return tablePreview(state.sliceDoc(node.from, node.to), node.from, node.to);
+}
+
 export function readCodeMirrorTableShape(source: string): CodeMirrorTableShape | null {
   const preview = tablePreview(source, 0, source.length);
   if (!preview) return null;
@@ -296,14 +322,28 @@ function replaceTable(
   rows: readonly (readonly string[])[],
   alignments: readonly CodeMirrorTableAlignment[],
   focus = true,
+  appearance?: TableAppearanceReference,
 ) {
   if (view.state.readOnly) return false;
+  const effects = appearance ? [
+    setActiveMarkdownTable.of(appearance.tableId),
+    ensureMarkdownTableAppearance.of({
+      from: preview.from,
+      tableId: appearance.tableId,
+    }),
+    ...(appearance.widthMode ? [setMarkdownTableWidthMode.of({
+      from: preview.from,
+      mode: appearance.widthMode,
+      tableId: appearance.tableId,
+    })] : []),
+  ] : [];
   view.dispatch({
     changes: {
       from: preview.from,
       insert: serializeTable(header, rows, alignments),
       to: preview.to,
     },
+    effects,
   });
   if (focus) view.focus();
   return true;
@@ -317,7 +357,7 @@ function tableValues(preview: TablePreview) {
   };
 }
 
-function addRow(view: CodeMirrorView, preview: TablePreview) {
+function addRow(view: CodeMirrorView, preview: TablePreview, tableId: string) {
   const values = tableValues(preview);
   const rowIndex = values.rows.length;
   values.rows.push(Array.from({ length: values.header.length }, () => ""));
@@ -328,12 +368,13 @@ function addRow(view: CodeMirrorView, preview: TablePreview) {
     values.rows,
     values.alignments,
     false,
+    {tableId},
   );
   if (changed) focusVisualTableCell(view, preview.from, rowIndex, 0, false, 0);
   return changed;
 }
 
-function addColumn(view: CodeMirrorView, preview: TablePreview) {
+function addColumn(view: CodeMirrorView, preview: TablePreview, tableId: string) {
   const values = tableValues(preview);
   const columnIndex = values.header.length;
   values.header.push("");
@@ -346,6 +387,7 @@ function addColumn(view: CodeMirrorView, preview: TablePreview) {
     values.rows,
     values.alignments,
     false,
+    {tableId},
   );
   if (changed) focusVisualTableCell(view, preview.from, -1, columnIndex, true, 0);
   return changed;
@@ -355,13 +397,15 @@ function alignTable(
   view: CodeMirrorView,
   preview: TablePreview,
   alignment: Exclude<CodeMirrorTableAlignment, null>,
+  tableId: string,
+  widthMode: CodeMirrorTableWidthMode,
 ) {
   const values = tableValues(preview);
   values.alignments.fill(alignment);
-  return replaceTable(view, preview, values.header, values.rows, values.alignments);
+  return replaceTable(view, preview, values.header, values.rows, values.alignments, true, {tableId, widthMode});
 }
 
-function deleteRow(view: CodeMirrorView, preview: TablePreview, rowIndex: number) {
+function deleteRow(view: CodeMirrorView, preview: TablePreview, rowIndex: number, tableId: string) {
   const values = tableValues(preview);
   if (rowIndex < 0 || rowIndex >= values.rows.length) return false;
   values.rows.splice(rowIndex, 1);
@@ -372,6 +416,7 @@ function deleteRow(view: CodeMirrorView, preview: TablePreview, rowIndex: number
     values.rows,
     values.alignments,
     false,
+    {tableId},
   );
   if (changed) {
     const nextRow = Math.min(rowIndex, values.rows.length - 1);
@@ -391,6 +436,7 @@ function deleteColumn(
   view: CodeMirrorView,
   preview: TablePreview,
   columnIndex: number,
+  tableId: string,
 ) {
   const values = tableValues(preview);
   if (values.header.length <= 1 || columnIndex < 0 || columnIndex >= values.header.length) {
@@ -406,6 +452,7 @@ function deleteColumn(
     values.rows,
     values.alignments,
     false,
+    {tableId},
   );
   if (changed) {
     focusVisualTableCell(
@@ -420,7 +467,7 @@ function deleteColumn(
   return changed;
 }
 
-function deleteTable(view: CodeMirrorView, preview: TablePreview) {
+function deleteTable(view: CodeMirrorView, preview: TablePreview, tableId: string) {
   if (view.state.readOnly) return false;
   const consumeNewline = view.state.sliceDoc(preview.to, preview.to + 2) === "\n\n";
   view.dispatch({
@@ -429,6 +476,11 @@ function deleteTable(view: CodeMirrorView, preview: TablePreview) {
       insert: "",
       to: preview.to + (consumeNewline ? 1 : 0),
     },
+    effects: [
+      deleteMarkdownTableAppearance.of({tableId}),
+      setActiveMarkdownTable.of(null),
+      setHoveredMarkdownTable.of(null),
+    ],
   });
   view.focus();
   return true;
@@ -469,6 +521,8 @@ function resizeTable(
   preview: TablePreview,
   columns: number,
   rows: number,
+  tableId: string,
+  widthMode: CodeMirrorTableWidthMode,
 ) {
   if (view.state.readOnly) return false;
   const values = resizedValues(preview, columns, rows);
@@ -479,6 +533,15 @@ function resizeTable(
   );
   view.dispatch({
     changes: { from: preview.from, insert: source, to: preview.to },
+    effects: [
+      setActiveMarkdownTable.of(tableId),
+      ensureMarkdownTableAppearance.of({from: preview.from, tableId}),
+      setMarkdownTableWidthMode.of({
+        from: preview.from,
+        mode: widthMode,
+        tableId,
+      }),
+    ],
     scrollIntoView: true,
   });
   const lastRow = values.rows.length - 1;
@@ -537,25 +600,6 @@ function normalizedTableAlignment(preview: TablePreview) {
   return alignments.size === 1 ? [...alignments][0] : null;
 }
 
-function applyWidthModeToTable(
-  wrapper: HTMLElement,
-  mode: CodeMirrorTableWidthMode,
-) {
-  wrapper.dataset.widthMode = mode;
-  const table = wrapper.querySelector<HTMLTableElement>(".cm-markra-table");
-  if (table) {
-    table.dataset.widthMode = mode;
-    table.classList.toggle("markra-table-width-auto", mode === "auto");
-  }
-  const button = wrapper.querySelector<HTMLButtonElement>(
-    ".markra-table-width-button",
-  );
-  if (button) {
-    button.ariaPressed = String(mode === "auto");
-    button.dataset.mode = mode;
-  }
-}
-
 function visualTableCellHasPlaceholderBreak(cell: HTMLTableCellElement) {
   return (
     cell.childNodes.length === 1 &&
@@ -579,6 +623,7 @@ function replaceVisualTableCell(
   columnIndex: number,
   header: boolean,
   source: string,
+  appearance?: TableAppearanceReference,
 ) {
   const values = tableValues(preview);
   const currentSource = header
@@ -601,6 +646,7 @@ function replaceVisualTableCell(
     values.rows,
     values.alignments,
     false,
+    appearance,
   );
 }
 
@@ -928,6 +974,7 @@ function syncVisualTableCell(
   view: CodeMirrorView,
   preview: TablePreview,
   cell: HTMLTableCellElement,
+  appearance: TableAppearanceReference,
 ) {
   if (view.state.readOnly) return;
 
@@ -944,6 +991,7 @@ function syncVisualTableCell(
     columnIndex,
     header,
     visualTableCellSource(cell),
+    appearance,
   );
   const selectionNode = cell.ownerDocument.getSelection()?.anchorNode;
   if (changed || !selectionNode || !cell.contains(selectionNode)) {
@@ -1175,7 +1223,6 @@ function appendCell(
 
 interface TableWidgetRuntime {
   controls: HTMLElement | null;
-  controlsHideTimer: number | null;
   documentMouseDownHandler: ((event: MouseEvent) => void) | null;
   ownerDocument: Document | null;
   positionControlsHandler: (() => void) | null;
@@ -1202,6 +1249,10 @@ class TableWidget extends WidgetType {
     readonly labels: TablePreviewLabels,
     readonly tableId: string,
     readonly widthMode: CodeMirrorTableWidthMode,
+    readonly active: boolean,
+    readonly hovered: boolean,
+    readonly appearanceField: Parameters<typeof markdownTableAppearanceAt>[1],
+    readonly interactionField: Parameters<typeof markdownActiveTableId>[1],
     readonly images: ImagePreviewPluginOptions | undefined,
     readonly links: LinksPluginOptions | undefined,
   ) {
@@ -1210,7 +1261,6 @@ class TableWidget extends WidgetType {
     this.labelsKey = JSON.stringify(labels);
     this.runtime = {
       controls: null,
-      controlsHideTimer: null,
       documentMouseDownHandler: null,
       ownerDocument: null,
       positionControlsHandler: null,
@@ -1237,6 +1287,8 @@ class TableWidget extends WidgetType {
 
   eq(other: TableWidget) {
     if (!this.hasSameContent(other)) return false;
+    if (this.active !== other.active) return false;
+    if (this.hovered !== other.hovered) return false;
     if (
       this.preview.from !== other.preview.from ||
       this.preview.to !== other.preview.to
@@ -1258,7 +1310,16 @@ class TableWidget extends WidgetType {
     // generations must share the latest document positions and popup state.
     this.runtime = from.runtime;
     this.runtime.preview = nextPreview;
+    if (!this.active) this.closeSizePicker();
     dom.dataset.tableFrom = String(nextPreview.from);
+    dom.dataset.tableActive = String(this.active);
+    dom.dataset.tableHovered = String(this.hovered);
+    dom.dataset.tableId = this.tableId;
+    if (this.active || this.hovered) {
+      dom.classList.add("markra-table-controls-visible");
+    } else {
+      dom.classList.remove("markra-table-controls-visible");
+    }
     return true;
   }
 
@@ -1322,6 +1383,7 @@ class TableWidget extends WidgetType {
     );
 
     popover.className = "markra-table-size-popover";
+    popover.dataset.tableId = this.tableId;
     popover.setAttribute("role", "dialog");
     popover.ariaLabel = this.labels.adjustTable;
     grid.className = "markra-table-size-grid";
@@ -1357,7 +1419,14 @@ class TableWidget extends WidgetType {
 
     const applySize = (columns: number, rows: number) => {
       const currentPreview = tablePreviewForDOM(view, wrapper);
-      if (currentPreview && resizeTable(view, currentPreview, columns, rows)) {
+      if (currentPreview && resizeTable(
+        view,
+        currentPreview,
+        columns,
+        rows,
+        this.tableId,
+        this.widthMode,
+      )) {
         this.closeSizePicker();
       }
     };
@@ -1432,12 +1501,6 @@ class TableWidget extends WidgetType {
 
   destroy() {
     this.closeSizePicker();
-    if (this.runtime.controlsHideTimer !== null) {
-      this.runtime.ownerDocument?.defaultView?.clearTimeout(
-        this.runtime.controlsHideTimer,
-      );
-      this.runtime.controlsHideTimer = null;
-    }
     if (this.runtime.positionControlsHandler) {
       this.runtime.ownerDocument?.removeEventListener(
         "scroll",
@@ -1473,18 +1536,47 @@ class TableWidget extends WidgetType {
     let hoveredColumn = 0;
     let hoveredRow = 0;
     let composing = false;
+    const currentPreview = () => {
+      const appearance = markdownTableAppearanceSnapshot(
+        view.state,
+        this.appearanceField,
+      ).find((entry) => entry.tableId === this.tableId);
+      return tablePreviewForDOM(view, wrapper) ?? tablePreviewAt(
+        view.state,
+        appearance?.from ?? this.preview.from,
+      );
+    };
     const runTableAction = (
       action: (preview: TablePreview) => unknown,
     ) => () => {
-      const preview = tablePreviewForDOM(view, wrapper);
-      if (preview) action(preview);
+      const preview = currentPreview();
+      if (!preview) return;
+      if (markdownActiveTableId(view.state, this.interactionField) !== this.tableId) {
+        view.dispatch({effects: setActiveMarkdownTable.of(this.tableId)});
+      }
+      action(preview);
+    };
+    const currentAppearance = (preview: TablePreview): TableAppearanceReference => {
+      const appearance = markdownTableAppearanceAt(
+        view.state,
+        this.appearanceField,
+        preview.from,
+      );
+      return {
+        tableId: appearance?.tableId ?? this.tableId,
+        widthMode: appearance?.attributes.widthMode ?? this.widthMode,
+      };
     };
 
     wrapper.className =
       "cm-markra-table-wrap tableWrapper markra-table-controls-wrapper";
     wrapper.dataset.tableFrom = String(this.preview.from);
+    wrapper.dataset.tableActive = String(this.active);
+    wrapper.dataset.tableHovered = String(this.hovered);
     wrapper.dataset.tableAlignment = tableAlignment;
+    wrapper.dataset.tableId = this.tableId;
     wrapper.dataset.widthMode = widthMode;
+    wrapper.classList.toggle("markra-table-controls-visible", this.active || this.hovered);
     tableScroll.className = "markra-table-scroll";
     tableScroll.dataset.tableAlignment = tableAlignment;
     alignControls.className = "markra-table-align-controls";
@@ -1575,14 +1667,14 @@ class TableWidget extends WidgetType {
       event.stopPropagation();
       composing = false;
       const cell = activeVisualTableCell(view, table);
-      if (cell) syncVisualTableCell(view, this.preview, cell);
+      if (cell) syncVisualTableCell(view, this.preview, cell, currentAppearance(this.preview));
     });
     table.addEventListener("input", (event) => {
       event.stopPropagation();
       // Replacing the widget mid-composition cancels native CJK input, so commit only after compositionend.
       if (composing || (event instanceof InputEvent && event.isComposing)) return;
       const cell = activeVisualTableCell(view, table);
-      if (cell) syncVisualTableCell(view, this.preview, cell);
+      if (cell) syncVisualTableCell(view, this.preview, cell, currentAppearance(this.preview));
     });
 
     const sizeButton = document.createElement("button");
@@ -1601,7 +1693,10 @@ class TableWidget extends WidgetType {
       if (event.button !== 0 || event.ctrlKey) return;
       event.preventDefault();
       event.stopPropagation();
-      this.openSizePicker(view, wrapper, sizeButton);
+      if (markdownActiveTableId(view.state, this.interactionField) !== this.tableId) {
+        view.dispatch({effects: setActiveMarkdownTable.of(this.tableId)});
+      }
+      if (currentPreview()) this.openSizePicker(view, wrapper, sizeButton);
     });
     this.runtime.sizeButton = sizeButton;
 
@@ -1617,7 +1712,16 @@ class TableWidget extends WidgetType {
           document,
           `markra-table-align-button markra-table-align-${alignment}`,
           label,
-          runTableAction((preview) => alignTable(view, preview, alignment)),
+          runTableAction((preview) => {
+            const appearance = currentAppearance(preview);
+            return alignTable(
+              view,
+              preview,
+              alignment,
+              appearance.tableId,
+              appearance.widthMode ?? this.widthMode,
+            );
+          }),
           createTableAlignIcon(document, alignment),
         );
         button.dataset.alignment = alignment;
@@ -1627,18 +1731,25 @@ class TableWidget extends WidgetType {
     );
 
     const toggleWidthMode = () => {
-      const currentMode =
-        widthModeButton.dataset.mode === "auto" ? "auto" : "even";
-      const nextMode = currentMode === "auto" ? "even" : "auto";
-      const preview = tablePreviewForDOM(view, wrapper);
+      const preview = currentPreview();
       if (!preview) return;
+      const appearance = currentAppearance(preview);
+      const currentMode = appearance.widthMode ?? this.widthMode;
+      const nextMode = currentMode === "auto" ? "even" : "auto";
       view.dispatch({
-        effects: setMarkdownTableWidthMode.of({
-          mode: nextMode,
-          tableId: this.tableId,
-        }),
+        effects: [
+          setActiveMarkdownTable.of(appearance.tableId),
+          ensureMarkdownTableAppearance.of({
+            from: preview.from,
+            tableId: appearance.tableId,
+          }),
+          setMarkdownTableWidthMode.of({
+            from: preview.from,
+            mode: nextMode,
+            tableId: appearance.tableId,
+          }),
+        ],
       });
-      applyWidthModeToTable(wrapper, nextMode);
     };
     const widthModeButton = createControl(
       document,
@@ -1660,35 +1771,35 @@ class TableWidget extends WidgetType {
       document,
       "markra-table-delete-table",
       this.labels.deleteTable,
-      runTableAction((preview) => deleteTable(view, preview)),
+      runTableAction((preview) => deleteTable(view, preview, this.tableId)),
       createSiyuanMarkdownIcon(document, "trash", "markra-table-control-icon"),
     );
     const addColumnButton = createControl(
       document,
       "markra-table-add-column",
       this.labels.addColumnRight,
-      runTableAction((preview) => addColumn(view, preview)),
+      runTableAction((preview) => addColumn(view, preview, this.tableId)),
       createSiyuanMarkdownIcon(document, "add", "markra-table-control-icon"),
     );
     const addRowButton = createControl(
       document,
       "markra-table-add-row",
       this.labels.addRowBelow,
-      runTableAction((preview) => addRow(view, preview)),
+      runTableAction((preview) => addRow(view, preview, this.tableId)),
       createSiyuanMarkdownIcon(document, "add", "markra-table-control-icon"),
     );
     const deleteColumnButton = createControl(
       document,
       "markra-table-delete-control markra-table-delete-column",
       this.labels.deleteColumn,
-      runTableAction((preview) => deleteColumn(view, preview, hoveredColumn)),
+      runTableAction((preview) => deleteColumn(view, preview, hoveredColumn, this.tableId)),
       createSiyuanMarkdownIcon(document, "remove", "markra-table-control-icon"),
     );
     const deleteRowButton = createControl(
       document,
       "markra-table-delete-control markra-table-delete-row",
       this.labels.deleteRow,
-      runTableAction((preview) => deleteRow(view, preview, hoveredRow)),
+      runTableAction((preview) => deleteRow(view, preview, hoveredRow, this.tableId)),
       createSiyuanMarkdownIcon(document, "remove", "markra-table-control-icon"),
     );
     deleteColumnButton.hidden = true;
@@ -1776,38 +1887,24 @@ class TableWidget extends WidgetType {
       alignControls.style.top = `${position.top}px`;
     };
     this.runtime.positionControlsHandler = positionControls;
-    const showControls = () => {
-      if (this.runtime.controlsHideTimer !== null) {
-        document.defaultView?.clearTimeout(this.runtime.controlsHideTimer);
-        this.runtime.controlsHideTimer = null;
-      }
-      wrapper.classList.add("markra-table-controls-visible");
-      positionControls();
-    };
-    const hideControlsSoon = () => {
-      if (this.runtime.controlsHideTimer !== null) {
-        document.defaultView?.clearTimeout(this.runtime.controlsHideTimer);
-      }
-      this.runtime.controlsHideTimer = document.defaultView?.setTimeout(() => {
-        this.runtime.controlsHideTimer = null;
-        if (
-          wrapper.matches(":hover") ||
-          alignControls.matches(":hover") ||
-          wrapper.contains(document.activeElement)
-        ) {
-          return;
-        }
-        wrapper.classList.remove("markra-table-controls-visible");
-      }, 120) ?? null;
-    };
     document.addEventListener("scroll", positionControls, true);
     document.defaultView?.addEventListener("resize", positionControls);
-    wrapper.addEventListener("mouseenter", showControls);
-    wrapper.addEventListener("mouseleave", hideControlsSoon);
-    wrapper.addEventListener("focusin", showControls);
-    wrapper.addEventListener("focusout", hideControlsSoon);
-    alignControls.addEventListener("mouseenter", showControls);
-    alignControls.addEventListener("mouseleave", hideControlsSoon);
+    const setHovered = (tableId: string | null) => {
+      if (markdownHoveredTableId(view.state, this.interactionField) === tableId) return;
+      view.dispatch({effects: setHoveredMarkdownTable.of(tableId)});
+    };
+    wrapper.addEventListener("mouseenter", () => {
+      positionControls();
+      setHovered(this.tableId);
+    });
+    wrapper.addEventListener("focusin", () => {
+      positionControls();
+      setHovered(this.tableId);
+    });
+    wrapper.addEventListener("focusout", (event) => {
+      if (event.relatedTarget instanceof Node && wrapper.contains(event.relatedTarget)) return;
+      setHovered(null);
+    });
     queueMicrotask(positionControls);
     wrapper.addEventListener("mousemove", (event) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -1839,6 +1936,7 @@ class TableWidget extends WidgetType {
     wrapper.addEventListener("mouseleave", () => {
       deleteColumnButton.hidden = true;
       deleteRowButton.hidden = true;
+      setHovered(null);
     });
     wrapper.addEventListener("copy", (event) => {
       if (!event.clipboardData) return;
@@ -1863,6 +1961,49 @@ class TableWidget extends WidgetType {
     return wrapper;
   }
 }
+
+const tableActivityPlugin = (
+  interaction: ReturnType<typeof createMarkdownTableInteractionController>,
+) => ViewPlugin.fromClass(class {
+  private readonly document: Document;
+
+  constructor(private readonly view: EditorView) {
+    this.document = view.dom.ownerDocument;
+    this.document.addEventListener("pointerdown", this.handlePointerDown, true);
+    this.document.addEventListener("keydown", this.handleKeyDown, true);
+  }
+
+  private setActiveTable = (tableId: string | null) => {
+    if (
+      markdownActiveTableId(this.view.state, interaction.field) === tableId &&
+      markdownHoveredTableId(this.view.state, interaction.field) === tableId
+    ) return;
+    this.view.dispatch({effects: [
+      setActiveMarkdownTable.of(tableId),
+      setHoveredMarkdownTable.of(tableId),
+    ]});
+  };
+
+  private handlePointerDown = (event: PointerEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    const wrapper = target.closest<HTMLElement>(".cm-markra-table-wrap[data-table-id]");
+    const popover = target.closest<HTMLElement>(".markra-table-size-popover[data-table-id]");
+    const ownedWrapper = wrapper && this.view.dom.contains(wrapper) ? wrapper : null;
+    const ownedPopover = popover && this.view.dom.contains(popover) ? popover : null;
+    const nextTableId = ownedWrapper?.dataset.tableId ?? ownedPopover?.dataset.tableId ?? null;
+    this.setActiveTable(nextTableId);
+  };
+
+  private handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") this.setActiveTable(null);
+  };
+
+  destroy() {
+    this.document.removeEventListener("pointerdown", this.handlePointerDown, true);
+    this.document.removeEventListener("keydown", this.handleKeyDown, true);
+  }
+});
 
 const tableTheme = EditorView.baseTheme({
   ".cm-markra-table-wrap": {
@@ -1929,11 +2070,48 @@ export function tablePreviewPlugin(
     defaultWidthMode: widthMode,
     ...options.appearance,
   });
+  const interaction = createMarkdownTableInteractionController(options.interaction);
 
   return defineMarkraPlugin({
     id: tablePreviewRendererId,
+    visualBlocks: [{
+      read(state) {
+        const blocks: Array<{
+          from: number;
+          to: number;
+          enter: (
+            view: CodeMirrorView,
+            direction: "backward" | "forward",
+            horizontalPosition: number | null,
+          ) => boolean;
+        }> = [];
+        syntaxTree(state).iterate({
+          enter(node) {
+            if (node.name !== "Table") return;
+            const from = node.from;
+            const to = node.to;
+            blocks.push({
+              from,
+              to,
+              enter(view, direction, horizontalPosition) {
+                focusVisualTableBoundary(
+                  view,
+                  from,
+                  direction === "forward",
+                  horizontalPosition,
+                );
+                return true;
+              },
+            });
+          },
+        });
+        return blocks;
+      },
+    }],
     extension: [
       appearance.extension,
+      interaction.extension,
+      tableActivityPlugin(interaction),
       markraRenderer({
         id: tablePreviewRendererId,
         nodeNames: ["Table"],
@@ -1946,12 +2124,20 @@ export function tablePreviewPlugin(
             context.node.to,
           );
           if (!preview) return true;
-          const currentAppearance = markdownTableAppearanceAt(
+          const fieldAppearance = markdownTableAppearanceAt(
             context.state,
             appearance.field,
             context.node.from,
           );
+          const resolvedAppearance = resolveMarkdownTableAppearance(
+            context.state,
+            context.node.from,
+            options.appearance?.getRecords?.() ?? [],
+            widthMode,
+          );
+          const currentAppearance = fieldAppearance ?? resolvedAppearance;
           const currentWidthMode = currentAppearance?.attributes.widthMode ?? widthMode;
+          const currentTableId = currentAppearance?.tableId ?? `table-${context.node.from}`;
 
           const firstLine = context.state.doc.lineAt(context.node.from);
           const lastLine = context.state.doc.lineAt(context.node.to);
@@ -1960,8 +2146,12 @@ export function tablePreviewPlugin(
               widget: new TableWidget(
                 preview,
                 labels,
-                currentAppearance?.tableId ?? `table-${context.node.from}`,
+                currentTableId,
                 currentWidthMode,
+                markdownActiveTableId(context.state, interaction.field) === currentTableId,
+                markdownHoveredTableId(context.state, interaction.field) === currentTableId,
+                appearance.field,
+                interaction.field,
                 options.images,
                 options.links,
               ),

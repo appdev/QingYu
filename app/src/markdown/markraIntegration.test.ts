@@ -106,6 +106,19 @@ test("renders tables through the Markra visual core without changing source", as
     assert.equal(editor.dom.querySelectorAll("tbody tr").length, 1);
 });
 
+test("renders escaped table pipes and themed links with native semantics", async () => {
+    const source = "| 语法 | 链接 |\n| --- | --- |\n| `a \\| b` | [示例](https://example.com) |";
+    const editor = createView(source);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const code = editor.dom.querySelector<HTMLElement>(".cm-markra-table code");
+    const link = editor.dom.querySelector<HTMLAnchorElement>(".cm-markra-table a");
+    assert.equal(code?.textContent, "a | b");
+    assert.equal(code?.dataset.markraCodeMarkdown, "`a \\| b`");
+    assert.ok(link?.classList.contains("cm-markra-link"));
+    assert.equal(editor.state.doc.toString(), source);
+});
+
 test("moves down from a heading into the visual table without breaking its source", async () => {
     Object.assign(globalThis, {
         HTMLTableCellElement: window.HTMLTableCellElement,
@@ -161,6 +174,137 @@ test("moves up from following text into the last visual table row", async () => 
     assert.equal(cell?.dataset.tableRow, "0");
     assert.equal(cell?.dataset.tableHeader, "false");
     assert.equal(editor.state.doc.toString(), source);
+});
+
+test("moves through display math without editing the following heading", async () => {
+    const source = "### M03-美元块公式\n\n$$\nx = 1\n$$\n\n### M04-Hugo 块公式与宏";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("\n")}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor"), true);
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.equal(editor.state.doc.toString(), "### M03-美元块公式\n\n$$\n新增x = 1\n$$\n\n### M04-Hugo 块公式与宏");
+});
+
+test("moves upward into display math without editing the preceding heading", async () => {
+    const source = "### 上方标题\n\n$$\nx = 1\n$$\n\n下方正文";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("下方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+    }), "editor"), true);
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.equal(editor.state.doc.toString(), "### 上方标题\n\n$$\nx = 1新增\n$$\n\n下方正文");
+});
+
+test("moves into Mermaid source without crossing its fenced boundary", async () => {
+    const source = "上方正文\n\n```mermaid\ngraph TD\nA --> B\n```\n\n### 下方标题";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("上方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor"), true);
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.equal(editor.state.doc.toString(), "上方正文\n\n```mermaid\n新增graph TD\nA --> B\n```\n\n### 下方标题");
+});
+
+test("moves into block HTML content without changing its tags or following heading", async () => {
+    const source = "上方正文\n\n<details>\n<summary>标题</summary>\n正文\n</details>\n\n### 下方标题";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("上方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    assert.equal(runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor"), true);
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.equal(editor.state.doc.toString(), "上方正文\n\n<details>\n新增<summary>标题</summary>\n正文\n</details>\n\n### 下方标题");
+});
+
+test("keeps ordinary fenced code navigation inside the code content", async () => {
+    const source = "上方正文\n\n```ts\nconst value = true;\n```\n\n### 下方标题";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("上方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor");
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.match(editor.state.doc.toString(), /^上方正文\n\n```ts\n.*新增.*\n```\n\n### 下方标题$/su);
+});
+
+test("keeps an image block and following heading intact after downward input", async () => {
+    const source = "上方正文\n\n![示例](image.png)\n\n### 下方标题";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("上方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor");
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.match(editor.state.doc.toString(), /\n!\[示例\]\(image\.png\)\n/u);
+    assert.match(editor.state.doc.toString(), /\n### 下方标题$/u);
+});
+
+test("keeps a horizontal rule and following heading intact after downward input", async () => {
+    const source = "上方正文\n\n---\n\n### 下方标题";
+    const editor = createView(source);
+    editor.focus();
+    editor.dispatch({selection: {anchor: source.indexOf("上方正文") + 2}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    runScopeHandlers(editor, new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+    }), "editor");
+    editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+    assert.match(editor.state.doc.toString(), /\n---\n/u);
+    assert.match(editor.state.doc.toString(), /\n### 下方标题$/u);
+});
+
+test("keeps quote, list, and callout markers intact during vertical input", async () => {
+    const cases = [
+        {marker: "> ", source: "上方正文\n\n> 引用内容\n\n### 下方标题"},
+        {marker: "- ", source: "上方正文\n\n- 列表内容\n\n### 下方标题"},
+        {marker: "> [!NOTE]", source: "上方正文\n\n> [!NOTE]\n> Callout 内容\n\n### 下方标题"},
+    ];
+
+    for (const entry of cases) {
+        const editor = createView(entry.source);
+        editor.focus();
+        editor.dispatch({selection: {anchor: entry.source.indexOf("上方正文") + 2}});
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+        runScopeHandlers(editor, new KeyboardEvent("keydown", {
+            key: "ArrowDown",
+        }), "editor");
+        editor.dispatch({changes: {from: editor.state.selection.main.head, insert: "新增"}});
+
+        assert.ok(editor.state.doc.toString().includes(entry.marker));
+        assert.match(editor.state.doc.toString(), /\n### 下方标题$/u);
+        editor.destroy();
+        view = undefined;
+    }
 });
 
 test("moves visual table focus on Tab without inserting indentation", async () => {
@@ -352,7 +496,7 @@ test("maps native list roles through nested blockquotes without changing Markdow
     assert.equal(editor.state.doc.toString(), source);
 });
 
-test("draws one semantic rail for a compound blockquote", async () => {
+test("draws one structural decoration for a compound blockquote", async () => {
     const source = `> **复合引用标题**：
 >
 > - 第一项包含 \`inlineCode\`
@@ -363,10 +507,18 @@ test("draws one semantic rail for a compound blockquote", async () => {
     const editor = createView(source);
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
-    const rails = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote-rail");
+    const rails = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote-decoration");
     assert.equal(rails.length, 1);
     assert.equal(rails[0].dataset.from, "0");
     assert.equal(rails[0].dataset.to, String(source.length));
+    const firstDOM = editor.domAtPos(0).node;
+    const firstLine = (firstDOM instanceof HTMLElement ? firstDOM : firstDOM.parentElement)
+        ?.closest<HTMLElement>(".cm-line");
+    assert.ok(firstLine);
+    assert.equal(
+        Number.parseFloat(rails[0].style.getPropertyValue("--markra-blockquote-span-top")),
+        (firstLine.getBoundingClientRect().top - editor.documentTop) / editor.scaleY,
+    );
     assert.equal(editor.state.doc.toString(), source);
 });
 
@@ -381,9 +533,14 @@ test("draws nested quote rails while keeping callouts isolated", async () => {
     let editor = createView(nestedSource);
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
-    const nestedRails = Array.from(editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote-rail"));
+    const nestedRails = Array.from(editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote-decoration"));
     assert.equal(nestedRails.length, 2);
     assert.deepEqual(nestedRails.map((rail) => rail.style.getPropertyValue("--markra-blockquote-depth")), ["0", "1"]);
+    const nestedLine = Array.from(editor.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote"))
+        .find((line) => line.textContent === "内层引用");
+    assert.equal(nestedLine?.dataset.blockquoteDepth, "1");
+    assert.equal(nestedLine?.dataset.blockquoteStartCount, "1");
+    assert.equal(nestedLine?.style.getPropertyValue("--markra-blockquote-depth"), "1");
     assert.equal(editor.state.doc.toString(), nestedSource);
 
     editor.destroy();
@@ -391,7 +548,7 @@ test("draws nested quote rails while keeping callouts isolated", async () => {
     editor = createView(calloutSource);
     await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
 
-    assert.equal(editor.dom.querySelectorAll(".cm-markra-blockquote-rail").length, 0);
+    assert.equal(editor.dom.querySelectorAll(".cm-markra-blockquote-decoration").length, 0);
     assert.ok(editor.dom.querySelector(".cm-markra-callout"));
     assert.equal(editor.state.doc.toString(), calloutSource);
 });
@@ -479,6 +636,7 @@ test("renders horizontal rules as semantic containers with a stable paint surfac
     const rule = editor.dom.querySelector<HTMLElement>(".cm-markra-horizontal-rule");
     assert.equal(rule?.tagName, "HR");
     assert.equal(rule?.childElementCount, 0);
+    assert.ok(rule?.parentElement?.classList.contains("cm-markra-horizontal-rule-line"));
 });
 
 test("keeps safe details interactive without losing HTML source editing", async () => {
@@ -553,6 +711,95 @@ test("keeps visual table actions visible after the table loses focus", async () 
     assert.equal(sizeButton.disabled, false);
 });
 
+test("keeps only the active table toolbar visible until explicit dismissal", async () => {
+    const first = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const second = "| X | Y |\n| --- | --- |\n| 3 | 4 |";
+    const editor = createView(`${first}\n\n正文\n\n${second}`);
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    let wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    wrappers[0].querySelector("table")?.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].classList.contains("markra-table-controls-visible"), true);
+
+    wrappers[0].querySelector<HTMLButtonElement>(".markra-table-align-center")?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].classList.contains("markra-table-controls-visible"), true);
+
+    wrappers[0].querySelector<HTMLButtonElement>(".markra-table-width-button")?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].classList.contains("markra-table-controls-visible"), true);
+
+    wrappers[0].querySelector<HTMLButtonElement>(".markra-table-add-row")?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].classList.contains("markra-table-controls-visible"), true);
+
+    wrappers[1].querySelector("table")?.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].classList.contains("markra-table-controls-visible"), false);
+    assert.equal(wrappers[1].classList.contains("markra-table-controls-visible"), true);
+
+    const sizeButton = wrappers[1].querySelector<HTMLButtonElement>(".markra-table-size-button");
+    sizeButton?.click();
+    const popover = editor.dom.querySelector<HTMLElement>(".markra-table-size-popover");
+    assert.equal(popover?.dataset.tableId, wrappers[1].dataset.tableId);
+    popover?.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    assert.equal(wrappers[1].classList.contains("markra-table-controls-visible"), true);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[1].classList.contains("markra-table-controls-visible"), false);
+    assert.equal(editor.dom.querySelector(".markra-table-size-popover"), null);
+
+    wrappers[1].querySelector("table")?.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    editor.contentDOM.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[1].classList.contains("markra-table-controls-visible"), false);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+});
+
+test("keeps hover visibility separate from persistent table activity", async () => {
+    const editor = createView("| A | B |\n| --- | --- |\n| 1 | 2 |");
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    let wrapper = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    assert.ok(wrapper);
+    wrapper.dispatchEvent(new MouseEvent("mouseenter"));
+    assert.equal(wrapper.dataset.tableHovered, "true");
+    assert.equal(wrapper.classList.contains("markra-table-controls-visible"), true);
+
+    wrapper.dispatchEvent(new MouseEvent("mouseleave"));
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrapper = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    assert.ok(wrapper);
+    assert.equal(wrapper.dataset.tableActive, "false");
+    assert.equal(wrapper.classList.contains("markra-table-controls-visible"), false);
+
+    const centerButton = wrapper.querySelector<HTMLButtonElement>(".markra-table-align-center");
+    centerButton?.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    centerButton?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrapper = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    assert.ok(wrapper);
+    assert.equal(wrapper.dataset.tableActive, "true");
+    assert.equal(wrapper.classList.contains("markra-table-controls-visible"), true);
+
+    wrapper.dispatchEvent(new MouseEvent("mouseleave"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    assert.equal(wrapper.dataset.tableActive, "true");
+    assert.equal(wrapper.classList.contains("markra-table-controls-visible"), true);
+});
+
 test("keeps the table size picker inside the CodeMirror theme scope", async () => {
     const editor = createView("| 项目 | 内容 |\n| --- | --- |\n| 文档版本 | v1.7 |");
     editor.dispatch({selection: {anchor: 0}});
@@ -596,6 +843,13 @@ test("keeps column width mode scoped to its table while positions and content ch
 
     let wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
     wrappers[0].querySelector<HTMLButtonElement>(".markra-table-width-button")?.click();
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(wrappers[0].dataset.widthMode, "even");
+    assert.equal(wrappers[1].dataset.widthMode, "auto");
+
+    editor.dispatch({selection: {anchor: editor.state.doc.length}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
     assert.equal(wrappers[0].dataset.widthMode, "even");
     assert.equal(wrappers[1].dataset.widthMode, "auto");
 
@@ -624,6 +878,45 @@ test("keeps column width mode scoped to its table while positions and content ch
     wrappers = editor.dom.querySelectorAll<HTMLElement>(".cm-markra-table-wrap");
     assert.equal(wrappers.length, 1);
     assert.equal(wrappers[0].dataset.widthMode, "auto");
+});
+
+test("keeps the latest width mode during rapid width and alignment actions", async () => {
+    const editor = createView("| A | B |\n| --- | --- |\n| 1 | 2 |");
+    editor.dispatch({selection: {anchor: 0}});
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const initialWrapper = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    const initialTableId = initialWrapper?.dataset.tableId;
+    const staleCenterButton = initialWrapper?.querySelector<HTMLButtonElement>(".markra-table-align-center");
+    const widthButton = initialWrapper?.querySelector<HTMLButtonElement>(".markra-table-width-button");
+    assert.ok(initialTableId);
+    assert.ok(staleCenterButton);
+    assert.ok(widthButton);
+
+    widthButton.click();
+    staleCenterButton.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const currentWrapper = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(currentWrapper?.dataset.tableId, initialTableId);
+    assert.equal(currentWrapper?.dataset.widthMode, "even");
+    assert.equal(currentWrapper?.dataset.tableActive, "true");
+    assert.equal(currentWrapper?.classList.contains("markra-table-controls-visible"), true);
+    assert.match(editor.state.doc.toString(), /\| :---: \| :---: \|/u);
+
+    const staleRightButton = currentWrapper?.querySelector<HTMLButtonElement>(".markra-table-align-right");
+    currentWrapper?.querySelector<HTMLButtonElement>(".markra-table-width-button")?.click();
+    assert.equal(
+        editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap")?.dataset.widthMode,
+        "auto",
+    );
+    staleRightButton?.click();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+
+    const finalWrapper = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    assert.equal(finalWrapper?.dataset.tableId, initialTableId);
+    assert.equal(finalWrapper?.dataset.widthMode, "auto");
+    assert.equal(finalWrapper?.dataset.tableAlignment, "right");
 });
 
 test("uses SiYuan native image wrapper and resize handle", async () => {

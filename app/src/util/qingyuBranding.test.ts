@@ -136,6 +136,14 @@ test("QingYu block links are generated with the new protocol and accept legacy l
 });
 
 test("QingYu packaging launches the renamed kernel", async () => {
+    const [dockerSource, entrypointSource] = await Promise.all([
+        readRepositoryFile("Dockerfile"),
+        readRepositoryFile("kernel/entrypoint.sh"),
+    ]).then((files) => files.map((file) => file.toString()));
+    assert.match(dockerSource, /\/opt\/qingyu\/QingYu-Kernel/);
+    assert.match(entrypointSource, /QINGYU_WORKSPACE_PATH/);
+    assert.doesNotMatch(`${dockerSource}\n${entrypointSource}`, /\/opt\/siyuan|\/home\/siyuan|\/siyuan\/workspace|SIYUAN_WORKSPACE_PATH/);
+
     const builderPaths = [
         "app/electron-builder.yml",
         "app/electron-builder-arm64.yml",

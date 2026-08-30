@@ -9,6 +9,10 @@ let cleanup: () => void;
 let view: EditorView;
 let container: HTMLElement;
 
+const waitForAnchorRestore = async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))));
+};
+
 const rect = (top: number, bottom: number, left = 0, right = 400): DOMRect => ({
     bottom,
     height: bottom - top,
@@ -132,7 +136,7 @@ test("uses a restored anchor without measuring its hidden editor", async () => {
     controller.restoreAnchor({position: 7, viewportOffset: 24});
 
     assert.deepEqual(controller.captureAnchor(), {position: 7, viewportOffset: 24});
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    await waitForAnchorRestore();
     assert.equal(container.scrollTop, 100);
 });
 
@@ -149,10 +153,29 @@ test("restores a clamped document position at the previous viewport offset", asy
     const controller = new MarkdownDocumentScrollController(() => view, container);
 
     controller.restoreAnchor({position: 999, viewportOffset: 60});
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    await waitForAnchorRestore();
 
     assert.equal(requestedPosition, view.state.doc.length);
     assert.equal(container.scrollTop, 170);
+});
+
+test("restores an offscreen anchor through CodeMirror document geometry", async () => {
+    Object.defineProperty(view, "coordsAtPos", {
+        configurable: true,
+        value: (): DOMRect | null => null,
+    });
+    Object.defineProperty(view, "lineBlockAt", {
+        configurable: true,
+        value: () => ({top: 480}),
+    });
+    Object.defineProperty(view, "documentTop", {configurable: true, value: -80});
+    container.scrollTop = 100;
+    const controller = new MarkdownDocumentScrollController(() => view, container);
+
+    controller.restoreAnchor({position: 7, viewportOffset: 60});
+    await waitForAnchorRestore();
+
+    assert.equal(container.scrollTop, 420);
 });
 
 test("cancels a pending restoration when destroyed", async () => {
@@ -165,7 +188,7 @@ test("cancels a pending restoration when destroyed", async () => {
 
     controller.restoreAnchor({position: 2, viewportOffset: 60});
     controller.destroy();
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    await waitForAnchorRestore();
 
     assert.equal(container.scrollTop, 100);
 });

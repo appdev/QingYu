@@ -84,6 +84,105 @@ test("persists table appearance across controller recreation", async () => {
     second.destroy();
 });
 
+test("keeps the table identity persisted when its width returns to auto", async () => {
+    const server = createRequest();
+    const first = await createController({
+        documentKey: "workspace:box:/auto.md",
+        request: server.request,
+    });
+    await first.load();
+    first.pluginOptions().onChange?.({...snapshot("stable-auto"), attributes: {widthMode: "auto"}});
+    await first.flush();
+    first.destroy();
+
+    const second = await createController({
+        documentKey: "workspace:box:/auto.md",
+        request: server.request,
+    });
+    await second.load();
+    const restored = second.pluginOptions().getRecords?.()[0];
+    assert.equal(restored?.tableId, "stable-auto");
+    assert.equal(restored?.attributes.widthMode, "auto");
+    assert.equal(restored?.deletedAt, undefined);
+    second.destroy();
+});
+
+test("ignores an older remote record after a newer width state is cached", async () => {
+    const server = createRequest();
+    server.documents.set("workspace:box:/note.md", new Map([[
+        "table-1",
+        {...snapshot(), updatedAt: 20, version: 20},
+    ]]));
+    const controller = await createController({
+        documentKey: "workspace:box:/note.md",
+        request: server.request,
+    });
+    await controller.load();
+
+    controller.applyRemote({
+        documentKey: "workspace:box:/note.md",
+        origin: "another-editor",
+        record: {
+            ...snapshot(),
+            attributes: {widthMode: "auto"},
+            deletedAt: 10,
+            updatedAt: 10,
+            version: 10,
+        },
+    });
+
+    const current = controller.pluginOptions().getRecords?.()[0];
+    assert.equal(current?.attributes.widthMode, "even");
+    assert.equal(current?.deletedAt, undefined);
+    assert.equal(current?.version, 20);
+    controller.destroy();
+});
+
+test("ignores older patch responses that finish after the latest table update", async () => {
+    const pending: Array<{
+        data: Record<string, any>;
+        resolve: (response: {code: number; data: {record: PersistedMarkdownTableAppearance}}) => void;
+    }> = [];
+    const request = async (url: string, data?: Record<string, any>) => {
+        if (url.endsWith("getMarkdownTableAppearance")) {
+            return {code: 0, data: {tables: {"table-1": {...snapshot(), version: 1}}}};
+        }
+        if (url.endsWith("patchMarkdownTableAppearance")) {
+            return new Promise<{code: number; data: {record: PersistedMarkdownTableAppearance}}>((resolve) => {
+                pending.push({data, resolve});
+            });
+        }
+        throw new Error(`unexpected request: ${url}`);
+    };
+    const controller = await createController({documentKey: "workspace:box:/note.md", request});
+    await controller.load();
+    const options = controller.pluginOptions();
+
+    options.onDelete?.(["table-1"]);
+    options.onChange?.({...snapshot(), version: 1});
+    const flushed = controller.flush();
+    assert.equal(pending.length, 3);
+
+    [...pending].reverse().forEach((item, reverseIndex) => {
+        const version = pending.length + 1 - reverseIndex;
+        const deleted = item.data.patch.deleted === true;
+        item.resolve({code: 0, data: {record: {
+            ...snapshot(),
+            attributes: {widthMode: deleted ? "auto" : "even"},
+            ...(deleted ? {deletedAt: version} : {}),
+            updatedAt: version,
+            version,
+        }}});
+    });
+    await flushed;
+
+    const current = options.getRecords?.()[0];
+    assert.equal(current?.attributes.widthMode, "even");
+    assert.equal(current?.deletedAt, undefined);
+    assert.equal(current?.version, 4);
+    controller.destroy();
+});
+
 test("migrates the legacy document-wide width mode once", async () => {
     const server = createRequest();
     const legacyKey = `markra:table-width-mode:${encodeURIComponent("/note.md")}`;
@@ -142,5 +241,58 @@ test("releases an external capability after its last custom appearance returns t
     await controller.flush();
 
     assert.deepEqual(retention, [true, false]);
+    controller.destroy();
+});
+
+test("does not delete persisted tables that are absent from a partial parser snapshot", async () => {
+    const server = createRequest();
+    server.documents.set("workspace:box:/note.md", new Map([
+        ["visible", snapshot("visible")],
+        ["offscreen", snapshot("offscreen")],
+    ]));
+    const controller = await createController({
+        documentKey: "workspace:box:/note.md",
+        request: server.request,
+    });
+    await controller.load();
+
+    controller.pluginOptions().onSnapshot?.([snapshot("visible")]);
+    await controller.flush();
+
+    assert.equal(server.documents.get("workspace:box:/note.md")?.get("offscreen")?.deletedAt, undefined);
+    controller.destroy();
+});
+
+test("deletes appearance only when the editor reports a concrete table identity", async () => {
+    const server = createRequest();
+    server.documents.set("workspace:box:/note.md", new Map([["table-1", snapshot()]]));
+    const controller = await createController({
+        documentKey: "workspace:box:/note.md",
+        request: server.request,
+    });
+    await controller.load();
+
+    controller.pluginOptions().onDelete?.(["table-1"]);
+    await controller.flush();
+
+    assert.ok(server.documents.get("workspace:box:/note.md")?.get("table-1")?.deletedAt);
+    controller.destroy();
+});
+
+test("flushes the pending width change instead of a later partial snapshot fallback", async () => {
+    const server = createRequest();
+    const controller = await createController({
+        documentKey: "workspace:box:/note.md",
+        request: server.request,
+    });
+    await controller.load();
+
+    controller.pluginOptions().onChange?.(snapshot());
+    controller.pluginOptions().onSnapshot?.([{...snapshot(), attributes: {widthMode: "auto"}}]);
+    await controller.flush();
+
+    const persisted = server.documents.get("workspace:box:/note.md")?.get("table-1");
+    assert.equal(persisted?.attributes.widthMode, "even");
+    assert.equal(persisted?.deletedAt, undefined);
     controller.destroy();
 });

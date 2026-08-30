@@ -30,9 +30,11 @@ import {
 import {
   clearImageAtomicSelection,
   getSelectedImageAtomicRange,
+  readImageAtomicRanges,
   selectImageAtomicRange,
 } from "./image-atomic";
 import { unescapeMarkdown, unquoteMarkdownTitle } from "./syntax";
+import {focusAdjacentVisualBlockBoundary} from "./visual-block-navigation";
 
 export interface MarkraImageSourceContext {
   readonly alt: string;
@@ -945,6 +947,22 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
 
   return defineMarkraPlugin({
     id: "markra.image-preview",
+    visualBlocks: [{
+      read(state) {
+        return readImageAtomicRanges(state).map((range) => ({
+          from: range.from,
+          to: range.to,
+          enter(view: CodeMirrorView, direction: "backward" | "forward") {
+            return focusAdjacentVisualBlockBoundary(
+              view,
+              range.from,
+              range.to,
+              direction,
+            );
+          },
+        }));
+      },
+    }],
     extension: [
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {

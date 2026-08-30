@@ -7,6 +7,7 @@ import {
 import {createStaticProtyleLute} from "../../protyle/render/setLute";
 
 export interface MarkdownAppearanceSnapshot {
+    attributes: Readonly<Record<string, string>>;
     revision: number;
     values: Readonly<Record<string, string>>;
 }
@@ -158,6 +159,21 @@ const resolveValues = (
     return values;
 };
 
+const resolveAttributes = (document: Document, probe: HTMLElement) => {
+    const quote = probe.querySelector<HTMLElement>(".protyle-wysiwyg .bq");
+    const pseudo = quote ? document.defaultView?.getComputedStyle(quote, "::before") : null;
+    const content = pseudo?.content.trim().toLowerCase() ?? "none";
+    const display = pseudo?.display.trim().toLowerCase() ?? "none";
+    const bottom = pseudo?.bottom.trim().toLowerCase() ?? "auto";
+    const quoteHeight = quote?.getBoundingClientRect().height ?? 0;
+    const decorationHeight = Number.parseFloat(pseudo?.height ?? "");
+    const isCorner = quoteHeight > 0 && Number.isFinite(decorationHeight) && decorationHeight < quoteHeight * .5;
+    const decoration = display === "none" || ["none", "normal", ""].includes(content)
+        ? "none"
+        : isCorner || bottom === "auto" ? "corner" : "rail";
+    return {"data-markdown-blockquote-decoration": decoration};
+};
+
 const recordsEqual = (left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>) => {
     const leftKeys = Object.keys(left);
     const rightKeys = Object.keys(right);
@@ -170,7 +186,11 @@ class MarkdownAppearanceResolver {
     private readonly probe: HTMLElement;
     private readonly observer: MutationObserver;
     private readonly roots = new Map<HTMLElement, number>();
-    private snapshot: MarkdownAppearanceSnapshot = {revision: 0, values: Object.freeze({})};
+    private snapshot: MarkdownAppearanceSnapshot = {
+        attributes: Object.freeze({}),
+        revision: 0,
+        values: Object.freeze({}),
+    };
     private readonly appliedVariables = new Map<HTMLElement, Set<string>>();
     private frame = 0;
     private disposed = false;
@@ -220,8 +240,10 @@ class MarkdownAppearanceResolver {
     public refresh() {
         if (this.disposed) return;
         const values = resolveValues(this.document, this.probe);
-        if (!recordsEqual(values, this.snapshot.values)) {
+        const attributes = resolveAttributes(this.document, this.probe);
+        if (!recordsEqual(values, this.snapshot.values) || !recordsEqual(attributes, this.snapshot.attributes)) {
             this.snapshot = {
+                attributes: Object.freeze(attributes),
                 revision: this.snapshot.revision + 1,
                 values: Object.freeze(values),
             };
@@ -235,6 +257,7 @@ class MarkdownAppearanceResolver {
             if (!(name in this.snapshot.values)) root.style.removeProperty(name);
         });
         Object.entries(this.snapshot.values).forEach(([name, value]) => root.style.setProperty(name, value));
+        Object.entries(this.snapshot.attributes).forEach(([name, value]) => root.setAttribute(name, value));
         this.appliedVariables.set(root, new Set(Object.keys(this.snapshot.values)));
         root.dataset.markdownAppearanceRevision = String(this.snapshot.revision);
     }
@@ -250,6 +273,7 @@ class MarkdownAppearanceResolver {
             .forEach((name) => root.style.removeProperty(name));
         this.appliedVariables.delete(root);
         delete root.dataset.markdownAppearanceRevision;
+        Object.keys(this.snapshot.attributes).forEach((name) => root.removeAttribute(name));
         if (this.roots.size > 0) return;
         this.dispose();
     }
@@ -275,6 +299,7 @@ class MarkdownAppearanceResolver {
         document.body.append(probe);
         try {
             return {
+                attributes: Object.freeze(resolveAttributes(document, probe)),
                 revision: 1,
                 values: Object.freeze(resolveValues(document, probe)),
             };

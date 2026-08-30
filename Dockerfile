@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
 
 ADD kernel/ .
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg \
-    go build -tags fts5 -ldflags "-s -w"
+    go build -tags fts5 -o /kernel/QingYu-Kernel -ldflags "-s -w"
 
 FROM alpine:latest
 LABEL maintainer="QingYu Project"
@@ -47,15 +47,14 @@ LABEL maintainer="QingYu Project"
 RUN apk add --no-cache ca-certificates tzdata su-exec
 
 ENV TZ=Asia/Shanghai
-ENV HOME=/home/siyuan
+ENV HOME=/home/qingyu
 ENV RUN_IN_CONTAINER=true
 EXPOSE 9806
 
-WORKDIR /opt/siyuan/
-COPY --from=go-build --chmod=755 /kernel/kernel /kernel/entrypoint.sh .
+WORKDIR /opt/qingyu/
+COPY --from=go-build --chmod=755 /kernel/QingYu-Kernel /kernel/entrypoint.sh .
 COPY --from=node-build /artifacts .
 
-ENTRYPOINT ["/opt/siyuan/entrypoint.sh"]
-# 默认启动伺服。若通过 `docker run` / `command:` 传额外参数，需自行带上 `serve` 子命令，
-# 否则用户参数会整体覆盖 CMD。
-CMD ["/opt/siyuan/kernel", "serve"]
+ENTRYPOINT ["/opt/qingyu/entrypoint.sh"]
+# 默认启动伺服。若通过 `docker run` / `command:` 覆盖命令，需提供完整的轻语内核路径及子命令。
+CMD ["/opt/qingyu/QingYu-Kernel", "serve"]

@@ -39,6 +39,7 @@ import {
     tablePreviewPlugin,
     trailingSpacePlugin,
     type MarkdownTableAppearancePluginOptions,
+    type MarkdownTableInteractionController,
 } from "./markra-core/codemirror";
 
 const getBlockLabels = (): Partial<BlockLabels> => {
@@ -69,6 +70,7 @@ export interface SiyuanMarkraExtensionOptions {
     getScrollContainer?(view: EditorView): HTMLElement | null;
     mode: "source" | "visual";
     tableAppearance?: MarkdownTableAppearancePluginOptions;
+    tableInteraction?: MarkdownTableInteractionController;
 }
 
 const editorTheme = EditorView.theme({
@@ -110,6 +112,7 @@ export const createSiyuanMarkraExtension = ({
     getScrollContainer,
     mode,
     tableAppearance,
+    tableInteraction,
 }: SiyuanMarkraExtensionOptions): Extension => {
     const imageOptions = {
         className: "img",
@@ -200,6 +203,7 @@ export const createSiyuanMarkraExtension = ({
                 tablePreviewPlugin({
                     appearance: tableAppearance,
                     images: imageOptions,
+                    interaction: tableInteraction,
                     links: linkOptions,
                     widthMode: "auto",
                 }),

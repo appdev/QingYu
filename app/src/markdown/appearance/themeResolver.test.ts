@@ -77,7 +77,7 @@ test("reads the native horizontal rule paint from its visible pseudo-element", (
     );
 });
 
-test("reads the native blockquote rail from its visible pseudo-element", () => {
+test("reads the native blockquote decoration without assuming that it is a rail", () => {
     Object.assign(window, {
         Lute: {
             New: () => ({
@@ -91,7 +91,7 @@ test("reads the native blockquote rail from its visible pseudo-element", () => {
         if (!element.matches(".protyle-wysiwyg .bq") || pseudo !== "::before") return computed;
         return new Proxy(computed, {
             get(target, property, receiver) {
-                if (property === "backgroundColor") return "rgb(120, 130, 140)";
+                if (property === "background") return "rgb(120, 130, 140) none repeat scroll 0% 0% / auto padding-box border-box";
                 if (property === "width") return "4px";
                 return Reflect.get(target, property, receiver);
             },
@@ -100,10 +100,31 @@ test("reads the native blockquote rail from its visible pseudo-element", () => {
 
     const snapshot = resolveMarkdownAppearanceForTest(document);
     assert.equal(
-        snapshot.values["--b3-editor-appearance-block-blockquote-border-left-color"],
-        "rgb(120, 130, 140)",
+        snapshot.values["--b3-editor-appearance-block-blockquote-decoration-background"],
+        "rgb(120, 130, 140) none repeat scroll 0% 0% / auto padding-box border-box",
     );
-    assert.equal(snapshot.values["--b3-editor-appearance-block-blockquote-border-left-width"], "4px");
+    assert.equal(snapshot.values["--b3-editor-appearance-block-blockquote-decoration-width"], "4px");
+});
+
+test("keeps the native blockquote host clipping with its pseudo-element paint", () => {
+    Object.assign(window, {
+        Lute: {
+            New: () => ({
+                Md2BlockDOM: () => "<div class=\"bq\"><div class=\"p\">Quote</div></div>",
+            }),
+        },
+    });
+    const theme = document.createElement("style");
+    theme.textContent = `.protyle-wysiwyg .bq {
+        clip-path: polygon(18px 0, 100% 0, 100% 100%, 0 100%, 0 18px);
+    }`;
+    document.head.append(theme);
+
+    const snapshot = resolveMarkdownAppearanceForTest(document);
+    assert.equal(
+        snapshot.values["--b3-editor-appearance-block-blockquote-clip-path"],
+        "polygon(18px 0, 100% 0, 100% 100%, 0 100%, 0 18px)",
+    );
 });
 
 test("preserves complete textured heading paint from third-party themes", () => {

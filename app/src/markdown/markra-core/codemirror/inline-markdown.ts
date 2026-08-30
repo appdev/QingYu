@@ -159,6 +159,7 @@ function renderLink(
     options,
   );
   const element = ownerDocument.createElement(href ? "a" : "span");
+  element.classList.add("cm-markra-link");
   element.dataset.markraLinkMarkdown = source.slice(node.from, node.to);
   element.dataset.markraLinkSource = source.slice(url.from, url.to).trim();
   if (href) {
@@ -203,6 +204,7 @@ function renderAutolink(
   const linkSource = unescapeMarkdown(source.slice(url.from, url.to).trim());
   const href = resolveLinkHref(linkSource, true, options);
   const element = ownerDocument.createElement(href ? "a" : "span");
+  element.classList.add("cm-markra-link");
   element.dataset.markraLinkMarkdown = source.slice(node.from, node.to);
   element.dataset.markraLinkSource = href ?? linkSource;
   if (href) {
@@ -304,7 +306,8 @@ function renderNode(
       const marks = childNodes(node).filter((child) => child.name === "CodeMark");
       const contentFrom = marks[0]?.to ?? node.from;
       const contentTo = marks.at(-1)?.from ?? node.to;
-      element.textContent = source.slice(contentFrom, contentTo);
+      // GFM 表格中的代码竖线需要转义，但单元格显示时不应保留用于区分列边界的反斜线。
+      element.textContent = source.slice(contentFrom, contentTo).replace(/\\\|/gu, "|");
       element.dataset.markraCodeMarkdown = source.slice(node.from, node.to);
       element.dataset.markraCodeText = element.textContent;
       parent.appendChild(element);

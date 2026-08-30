@@ -33,7 +33,7 @@ for (const [id, states] of new Map<string, string[]>([
     ["block.callout-caution", ["default", "expanded", "selected"]],
     ["block.math", ["default", "focus", "error"]],
     ["block.mermaid", ["default", "focus", "error"]],
-    ["block.raw-html", ["default", "focus", "error"]],
+    ["block.raw-html", ["default", "focus", "expanded", "error"]],
     ["media.image", ["default", "hover", "selected", "drag", "error"]],
 ])) {
     test(`${id} declares every rendered state`, () => {

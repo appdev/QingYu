@@ -267,8 +267,9 @@
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-task-done {
-    color: var(--b3-theme-on-surface-light);
-    text-decoration: line-through;
+    color: var(--b3-editor-appearance-block-task-done-color, inherit);
+    opacity: var(--b3-editor-appearance-block-task-done-opacity, 1);
+    text-decoration-line: var(--b3-editor-appearance-block-task-done-text-decoration-line, none);
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-paragraph.p:not(
@@ -388,8 +389,20 @@
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-blockquote:not(.cm-markra-callout) {
     @include editorAppearance.editor-blockquote;
+    background-color: transparent;
     border-radius: 0;
-    padding: 4px 8px 4px var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px));
+    padding-block: var(--b3-editor-appearance-block-blockquote-inner-padding-top, 4px)
+      var(--b3-editor-appearance-block-blockquote-inner-padding-bottom, 4px);
+    padding-inline-end: calc(
+      (var(--markra-blockquote-depth, 0) + 1) *
+      var(--b3-editor-appearance-block-blockquote-outer-padding-right, 8px) +
+      var(--b3-editor-appearance-block-blockquote-inner-padding-right, 0px)
+    );
+    padding-inline-start: calc(
+      (var(--markra-blockquote-depth, 0) + 1) *
+      var(--b3-editor-appearance-block-blockquote-outer-padding-left, calc(.25em + 6px)) +
+      var(--b3-editor-appearance-block-blockquote-inner-padding-left, 0px)
+    );
 
     &::before {
       content: none;
@@ -398,10 +411,12 @@
     &.cm-markra-blockquote-first {
       border-radius: var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius)) var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius)) 0 0;
       border-top-width: calc(
+        var(--markra-blockquote-start-count, 1) *
         var(--b3-editor-appearance-block-blockquote-outer-margin-top, 2px) +
         var(--b3-editor-appearance-block-blockquote-inner-margin-top, 2px)
       );
       padding-top: calc(
+        var(--markra-blockquote-start-count, 1) *
         var(--b3-editor-appearance-block-blockquote-outer-padding-top, 4px) +
         var(--b3-editor-appearance-block-blockquote-inner-padding-top, 4px)
       );
@@ -411,10 +426,12 @@
     &.cm-markra-blockquote-last {
       border-radius: 0 0 var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius)) var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius));
       border-bottom-width: calc(
+        var(--markra-blockquote-end-count, 1) *
         var(--b3-editor-appearance-block-blockquote-outer-margin-bottom, 2px) +
         var(--b3-editor-appearance-block-blockquote-inner-margin-bottom, 2px)
       );
       padding-bottom: calc(
+        var(--markra-blockquote-end-count, 1) *
         var(--b3-editor-appearance-block-blockquote-outer-padding-bottom, 4px) +
         var(--b3-editor-appearance-block-blockquote-inner-padding-bottom, 4px)
       );
@@ -427,28 +444,86 @@
 
     &.cm-markra-list-item {
       padding-inline-start: calc(
-        var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px)) +
+        (var(--markra-blockquote-depth, 0) + 1) *
+        var(--b3-editor-appearance-block-blockquote-outer-padding-left, calc(.25em + 6px)) +
+        var(--b3-editor-appearance-block-blockquote-inner-padding-left, 0px) +
         var(--b3-editor-appearance-block-list-padding-left, 0px) +
         var(--markra-list-indent, 0px)
       );
 
       &::after {
-        inset-inline-start: var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px));
+        inset-inline-start: calc(
+          (var(--markra-blockquote-depth, 0) + 1) *
+          var(--b3-editor-appearance-block-blockquote-outer-padding-left, calc(.25em + 6px)) +
+          var(--b3-editor-appearance-block-blockquote-inner-padding-left, 0px)
+        );
       }
     }
   }
 
-  .cm-editor[data-markdown-mode="visual"] .cm-markra-blockquote-rail {
-    background-color: var(--b3-editor-appearance-block-blockquote-border-left-color, var(--b3-theme-surface-lighter));
-    border-radius: var(--b3-border-radius);
-    left: calc(2px + var(--markra-blockquote-depth, 0) * var(--b3-editor-appearance-block-blockquote-padding-left, calc(.25em + 6px)));
+  .cm-editor[data-markdown-mode="visual"] .cm-markra-blockquote-rail-layer {
+    width: 100%;
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-markra-blockquote-decoration {
+    background-color: var(--b3-editor-appearance-block-blockquote-background-color, var(--b3-bq-background));
+    border-radius: var(--b3-editor-appearance-block-blockquote-border-radius, var(--b3-border-radius));
+    box-shadow: var(--b3-editor-appearance-block-blockquote-box-shadow, none);
+    box-sizing: border-box;
+    clip-path: var(--b3-editor-appearance-block-blockquote-clip-path, none);
+    height: calc(
+      var(--markra-blockquote-span-height) -
+      var(--b3-editor-appearance-block-blockquote-outer-margin-top, 2px) -
+      var(--b3-editor-appearance-block-blockquote-outer-margin-bottom, 2px)
+    );
+    left: calc(
+      var(--markra-blockquote-depth, 0) *
+      var(--b3-editor-appearance-block-blockquote-outer-padding-left, calc(.25em + 6px))
+    );
     pointer-events: none;
-    width: var(--b3-editor-appearance-block-blockquote-border-left-width, .25em);
+    right: calc(
+      var(--markra-blockquote-depth, 0) *
+      var(--b3-editor-appearance-block-blockquote-outer-padding-right, 8px)
+    );
+    top: calc(
+      var(--markra-blockquote-span-top) +
+      var(--b3-editor-appearance-block-blockquote-outer-margin-top, 2px)
+    );
+    width: auto;
+
+    &::before {
+      background: var(--b3-editor-appearance-block-blockquote-decoration-background, var(--b3-theme-surface-lighter));
+      border-radius: var(--b3-editor-appearance-block-blockquote-decoration-border-radius, var(--b3-border-radius));
+      bottom: var(--b3-editor-appearance-block-blockquote-decoration-bottom, auto);
+      box-shadow: var(--b3-editor-appearance-block-blockquote-decoration-box-shadow, none);
+      clip-path: var(--b3-editor-appearance-block-blockquote-decoration-clip-path, none);
+      content: "";
+      display: var(--b3-editor-appearance-block-blockquote-decoration-display, block);
+      left: var(--b3-editor-appearance-block-blockquote-decoration-left, 2px);
+      mix-blend-mode: var(--b3-editor-appearance-block-blockquote-decoration-mix-blend-mode, normal);
+      opacity: var(--b3-editor-appearance-block-blockquote-decoration-opacity, 1);
+      position: absolute;
+      transform: var(--b3-editor-appearance-block-blockquote-decoration-transform, none);
+      width: var(--b3-editor-appearance-block-blockquote-decoration-width, .25em);
+    }
+  }
+
+  &[data-markdown-blockquote-decoration="rail"] .cm-markra-blockquote-decoration::before {
+    top: var(--b3-editor-appearance-block-blockquote-decoration-top, 6px);
+  }
+
+  &[data-markdown-blockquote-decoration="corner"] .cm-markra-blockquote-decoration::before {
+    height: var(--b3-editor-appearance-block-blockquote-decoration-height, 18px);
+    top: var(--b3-editor-appearance-block-blockquote-decoration-top, 0);
+  }
+
+  &[data-markdown-blockquote-decoration="none"] .cm-markra-blockquote-decoration {
+    display: none;
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-structural-line:not(
     .cm-markra-active-structural-line
-  ) {
+  ):not(.cm-markra-blockquote-first):not(.cm-markra-blockquote-last) {
     border-block-width: 0;
     line-height: 0;
     min-height: 0;
@@ -509,6 +584,8 @@
 
         &::before {
           background-color: var(--b3-editor-appearance-block-callout-#{$type}-border-left-color, var(--b3-callout-#{$type}));
+          display: var(--b3-editor-appearance-block-callout-#{$type}-decoration-display, block);
+          width: var(--b3-editor-appearance-block-callout-#{$type}-decoration-width, .25em);
         }
       }
     }
@@ -602,12 +679,16 @@
   }
 
   .markra-footnote-preview {
-    color: var(--b3-theme-on-background);
+    color: var(--b3-editor-appearance-overlay-footnote-color, var(--b3-theme-on-background));
     display: block;
-    font-size: .95rem;
-    line-height: 1.45;
+    font-family: var(--b3-editor-appearance-overlay-footnote-font-family, inherit);
+    font-size: var(--b3-editor-appearance-overlay-footnote-font-size, .95rem);
+    line-height: var(--b3-editor-appearance-overlay-footnote-line-height, 1.45);
     max-width: min(20rem, calc(100vw - 32px));
-    padding: .6em .75em;
+    padding: var(--b3-editor-appearance-overlay-footnote-padding-top, .6em)
+      var(--b3-editor-appearance-overlay-footnote-padding-right, .75em)
+      var(--b3-editor-appearance-overlay-footnote-padding-bottom, .6em)
+      var(--b3-editor-appearance-overlay-footnote-padding-left, .75em);
     width: max-content;
 
     &[data-appearance-state="error"] {
@@ -616,10 +697,10 @@
   }
 
   .cm-markra-footnote-reference > .markra-footnote-preview {
-    background: var(--b3-theme-background);
-    border: 1px solid var(--b3-border-color);
-    border-radius: var(--b3-border-radius);
-    box-shadow: var(--b3-dialog-shadow);
+    background: var(--b3-editor-appearance-overlay-footnote-background-color, var(--b3-theme-background));
+    border: 1px solid var(--b3-editor-appearance-overlay-footnote-border-color, var(--b3-border-color));
+    border-radius: var(--b3-editor-appearance-overlay-footnote-border-radius, var(--b3-border-radius));
+    box-shadow: var(--b3-editor-appearance-overlay-footnote-box-shadow, var(--b3-dialog-shadow));
     left: 0;
     position: absolute;
     top: calc(100% + .35em);
@@ -638,8 +719,7 @@
     margin-right: .45em;
   }
 
-  .cm-markra-table,
-  .cm-markra-horizontal-rule {
+  .cm-markra-table {
     box-sizing: border-box;
     margin: 8px 0;
     max-width: 100%;
@@ -703,6 +783,7 @@
     align-items: center;
     display: flex;
     left: var(--b3-editor-appearance-block-code-outer-padding-left, 4px);
+    mix-blend-mode: var(--b3-editor-appearance-control-code-actions-mix-blend-mode, normal);
     position: absolute;
     right: var(--b3-editor-appearance-block-code-outer-padding-right, 4px);
     top: var(--b3-editor-appearance-block-code-outer-padding-top, 4px);
@@ -759,6 +840,7 @@
     border-radius: var(--b3-editor-appearance-control-code-copy-border-radius, 0);
     color: var(--b3-editor-appearance-control-code-copy-color, var(--b3-theme-on-surface));
     height: var(--b3-editor-appearance-control-code-copy-height, 24px);
+    mix-blend-mode: var(--b3-editor-appearance-control-code-copy-mix-blend-mode, normal);
     opacity: var(--b3-editor-appearance-control-code-copy-opacity, 0);
     width: var(--b3-editor-appearance-control-code-copy-width, 24px);
   }
@@ -769,6 +851,7 @@
     border-radius: var(--b3-editor-appearance-control-code-more-border-radius, 0);
     color: var(--b3-editor-appearance-control-code-more-color, var(--b3-theme-on-surface));
     height: var(--b3-editor-appearance-control-code-more-height, 24px);
+    mix-blend-mode: var(--b3-editor-appearance-control-code-more-mix-blend-mode, normal);
     opacity: var(--b3-editor-appearance-control-code-more-opacity, 0);
     width: var(--b3-editor-appearance-control-code-more-width, 24px);
   }
@@ -794,7 +877,7 @@
   .markra-math-render-display {
     background: transparent;
     border: 0;
-    border-radius: 0;
+    border-radius: var(--b3-editor-appearance-block-math-border-radius, 0);
     box-sizing: border-box;
     color: var(--b3-editor-appearance-block-math-color, var(--b3-theme-on-background));
     display: block;
@@ -851,11 +934,33 @@
   }
 
   .markra-html-node {
-    @include editorAppearance.editor-rendered-block(block-raw-html);
+    background: transparent;
+    border: 0;
+    border-radius: var(--b3-editor-appearance-block-raw-html-border-radius, 0);
+    color: var(--b3-editor-appearance-block-raw-html-color, var(--b3-theme-on-background));
     display: block;
     overflow: auto;
     min-height: 26px;
-    padding: 4px;
+    padding: var(--b3-editor-appearance-block-raw-html-padding-top, 0)
+      var(--b3-editor-appearance-block-raw-html-padding-right, 0)
+      var(--b3-editor-appearance-block-raw-html-padding-bottom, 0)
+      var(--b3-editor-appearance-block-raw-html-padding-left, 0);
+
+    details {
+      background-color: var(--b3-editor-appearance-block-raw-html-details-background-color, transparent);
+      border: var(--b3-editor-appearance-block-raw-html-details-border-width, 0) solid
+        var(--b3-editor-appearance-block-raw-html-details-border-color, transparent);
+      border-radius: var(--b3-editor-appearance-block-raw-html-details-border-radius, 0);
+      padding: var(--b3-editor-appearance-block-raw-html-details-padding-top, 0)
+        var(--b3-editor-appearance-block-raw-html-details-padding-right, 0)
+        var(--b3-editor-appearance-block-raw-html-details-padding-bottom, 0)
+        var(--b3-editor-appearance-block-raw-html-details-padding-left, 0);
+    }
+
+    details > summary {
+      color: var(--b3-editor-appearance-block-raw-html-summary-color, inherit);
+      font-weight: var(--b3-editor-appearance-block-raw-html-summary-font-weight, inherit);
+    }
 
     img {
       max-width: 100%;
@@ -871,10 +976,15 @@
         --b3-editor-appearance-block-horizontal-rule-background,
         var(--b3-editor-appearance-block-horizontal-rule-background-color, var(--b3-theme-background-light))
       );
+      background-blend-mode: var(--b3-editor-appearance-block-horizontal-rule-line-background-blend-mode, normal);
+      border-radius: var(--b3-editor-appearance-block-horizontal-rule-line-border-radius, 0);
+      box-shadow: var(--b3-editor-appearance-block-horizontal-rule-line-box-shadow, none);
       content: "";
       display: block;
       height: var(--b3-editor-appearance-block-horizontal-rule-line-height, calc(1em / 16));
       left: 0;
+      mix-blend-mode: var(--b3-editor-appearance-block-horizontal-rule-line-mix-blend-mode, normal);
+      opacity: var(--b3-editor-appearance-block-horizontal-rule-line-opacity, 1);
       position: absolute;
       top: var(--b3-editor-appearance-block-horizontal-rule-line-top, calc(1.625em / 2));
       width: calc(100% - 1px);
@@ -886,15 +996,35 @@
     }
   }
 
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-horizontal-rule-line {
+    border-block-width: 0;
+    height: calc(
+      var(--b3-editor-appearance-block-horizontal-rule-height, 1.625em) +
+      var(--b3-editor-appearance-block-horizontal-rule-padding-top, 0px) +
+      var(--b3-editor-appearance-block-horizontal-rule-padding-bottom, 0px) +
+      var(--b3-editor-appearance-block-horizontal-rule-margin-top, 2px) +
+      var(--b3-editor-appearance-block-horizontal-rule-margin-bottom, 2px)
+    );
+    line-height: 0;
+    min-height: 0;
+    padding: 0;
+  }
+
   .cm-markra-table-wrap {
-    border-radius: var(--b3-border-radius);
+    border-radius: var(--b3-editor-appearance-block-table-border-radius, var(--b3-border-radius));
     box-sizing: border-box;
     display: block;
-    margin: 2px 0;
+    margin: var(--b3-editor-appearance-block-table-outer-margin-top, 2px)
+      var(--b3-editor-appearance-block-table-outer-margin-right, 0)
+      var(--b3-editor-appearance-block-table-outer-margin-bottom, 2px)
+      var(--b3-editor-appearance-block-table-outer-margin-left, 0);
     max-width: 100%;
     min-width: 0;
     overflow: visible;
-    padding: 4px;
+    padding: var(--b3-editor-appearance-block-table-padding-top, 4px)
+      var(--b3-editor-appearance-block-table-padding-right, 4px)
+      var(--b3-editor-appearance-block-table-padding-bottom, 4px)
+      var(--b3-editor-appearance-block-table-padding-left, 4px);
     position: relative;
   }
 
@@ -909,32 +1039,89 @@
   }
 
   .markra-table-scroll {
-    display: block;
+    border-radius: var(--b3-editor-appearance-block-table-border-radius, var(--b3-border-radius));
+    display: var(--b3-editor-appearance-block-table-display, inline-block);
     max-width: 100%;
     min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: var(--b3-editor-appearance-block-table-overflow, auto);
     overscroll-behavior-x: contain;
+    vertical-align: var(--b3-editor-appearance-block-table-vertical-align, top);
+    width: max-content;
+  }
+
+  .cm-markra-table-wrap[data-width-mode="even"] .markra-table-scroll {
+    display: block;
+    width: 100%;
   }
 
   .cm-markra-table {
     @include editorAppearance.editor-table;
+    background-color: var(--b3-editor-appearance-block-table-background-color, transparent);
+    border-color: var(--b3-editor-appearance-block-table-border-color, var(--b3-border-color));
+    border-radius: var(--b3-editor-appearance-block-table-border-radius, var(--b3-border-radius));
     border-collapse: collapse;
+    display: table;
     margin: 0;
-    min-width: max-content;
+    min-width: 0;
+    overflow: visible;
     table-layout: auto;
-    width: 100%;
+    vertical-align: top;
+    width: max-content;
 
     th,
     td {
+      border-color: var(--b3-editor-appearance-block-table-body-cell-border-color, var(--b3-border-color));
       color: var(--b3-editor-appearance-block-table-color, inherit);
-      min-width: 112px;
+      padding: var(--b3-editor-appearance-block-table-body-cell-padding-top, 4px)
+        var(--b3-editor-appearance-block-table-body-cell-padding-right, 8px)
+        var(--b3-editor-appearance-block-table-body-cell-padding-bottom, 4px)
+        var(--b3-editor-appearance-block-table-body-cell-padding-left, 8px);
       vertical-align: top;
     }
 
     th {
-      background-color: var(--b3-list-hover);
-      font-weight: var(--b3-editor-appearance-block-table-font-weight, 600);
+      background-color: var(--b3-editor-appearance-block-table-header-background-color, var(--b3-list-hover));
+      border-top-width: var(--b3-editor-appearance-block-table-header-border-top-width, 1px);
+      color: var(--b3-editor-appearance-block-table-header-color, var(--b3-editor-appearance-block-table-color, inherit));
+      font-weight: var(--b3-editor-appearance-block-table-header-font-weight, var(--b3-editor-appearance-block-table-font-weight, 600));
+    }
+
+    thead th:first-child {
+      border-left-width: var(--b3-editor-appearance-block-table-header-first-cell-border-left-width, 1px);
+    }
+
+    thead th:last-child {
+      border-right-width: var(--b3-editor-appearance-block-table-header-last-cell-border-right-width, 1px);
+    }
+
+    tbody td {
+      background-color: var(--b3-editor-appearance-block-table-body-cell-background-color, transparent);
+    }
+
+    tbody tr:nth-child(odd) td {
+      background-color: var(--b3-editor-appearance-block-table-odd-row-background-color, var(--b3-editor-appearance-block-table-body-cell-background-color, transparent));
+    }
+
+    tbody tr td:first-child {
+      border-left-width: var(--b3-editor-appearance-block-table-body-first-cell-border-left-width, 1px);
+    }
+
+    tbody tr td:last-child {
+      border-right-width: var(--b3-editor-appearance-block-table-body-last-cell-border-right-width, 1px);
+    }
+
+    tbody tr:last-child td {
+      border-bottom-width: var(--b3-editor-appearance-block-table-body-last-row-border-bottom-width, 1px);
+    }
+
+    &[data-width-mode="auto"] {
+      table-layout: auto;
+      width: max-content;
+    }
+
+    &[data-width-mode="even"] {
+      table-layout: fixed;
+      width: 100%;
     }
   }
 
@@ -952,8 +1139,6 @@
     width: var(--b3-editor-appearance-control-table-button-width, 28px);
   }
 
-  .cm-markra-table-wrap:hover .markra-table-control,
-  .cm-markra-table-wrap:focus-within .markra-table-control,
   .cm-markra-table-wrap.markra-table-controls-visible .markra-table-control {
     opacity: 1;
     pointer-events: auto;
@@ -985,8 +1170,6 @@
     z-index: 10;
   }
 
-  .cm-markra-table-wrap:hover .markra-table-align-controls,
-  .cm-markra-table-wrap:focus-within .markra-table-align-controls,
   .cm-markra-table-wrap.markra-table-controls-visible .markra-table-align-controls {
     opacity: 1;
     pointer-events: auto;
@@ -1001,6 +1184,11 @@
     height: var(--b3-editor-appearance-control-table-button-height, 28px);
     position: static;
     width: var(--b3-editor-appearance-control-table-button-width, 28px);
+  }
+
+  .markra-table-control:hover:not(:focus-visible):not([aria-pressed="true"]):not([aria-expanded="true"]) {
+    background-color: var(--b3-editor-appearance-control-table-button-background-color, transparent);
+    color: var(--b3-editor-appearance-control-table-button-color, var(--b3-theme-on-surface));
   }
 
   .markra-table-control-icon {
@@ -1101,11 +1289,13 @@
 
   .cm-search,
   .markra-search-popover {
-    background-color: var(--b3-theme-background);
-    border: 1px solid var(--b3-border-color);
-    border-radius: var(--b3-border-radius);
-    box-shadow: var(--b3-dialog-shadow);
-    color: var(--b3-theme-on-background);
+    background-color: var(--b3-editor-appearance-overlay-search-background-color, var(--b3-theme-background));
+    border: 1px solid var(--b3-editor-appearance-overlay-search-border-color, var(--b3-border-color));
+    border-radius: var(--b3-editor-appearance-overlay-search-border-radius, var(--b3-border-radius));
+    box-shadow: var(--b3-editor-appearance-overlay-search-box-shadow, var(--b3-dialog-shadow));
+    color: var(--b3-editor-appearance-overlay-search-color, var(--b3-theme-on-background));
+    font-family: var(--b3-editor-appearance-overlay-search-font-family, inherit);
+    font-size: var(--b3-editor-appearance-overlay-search-font-size, inherit);
   }
 
   .cm-search input {
@@ -1328,6 +1518,10 @@
     }
 
     .markra-image-frame {
+      background-color: var(--b3-editor-appearance-media-image-frame-background-color, transparent);
+      border-color: var(--b3-editor-appearance-media-image-frame-border-color, transparent);
+      border-radius: var(--b3-editor-appearance-media-image-frame-border-radius, 0);
+      box-shadow: var(--b3-editor-appearance-media-image-frame-box-shadow, none);
       display: inline-block;
       max-width: 100%;
       position: relative;
@@ -1352,6 +1546,11 @@
 
   .cm-editor.cm-focused {
     outline: none;
+  }
+
+  &__title .protyle-title__input[placeholder]:empty::after {
+    color: var(--b3-empty-color);
+    content: attr(placeholder);
   }
 
   .cm-scroller {

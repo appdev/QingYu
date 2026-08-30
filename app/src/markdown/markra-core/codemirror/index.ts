@@ -168,6 +168,8 @@ export type {
   MarkraUiAction,
   MarkraUiContribution,
   MarkraUiPlacement,
+  MarkraVisualBlock,
+  MarkraVisualBlockProvider,
 } from "./plugin";
 export type { LivePreviewConfig } from "./preview";
 export type {
@@ -184,6 +186,7 @@ export {
   listMarkraPlugins,
   listMarkraUi,
   markraPlugins,
+  readMarkraVisualBlocks,
   runMarkraCommand,
   searchMarkraUi,
 } from "./plugin";
@@ -234,8 +237,10 @@ export type {
 export {
   matchMarkdownTableAppearances,
   readMarkdownTableDescriptors,
+  resolveMarkdownTableAppearance,
   restoreMarkdownTableAppearances,
 } from "./table-appearance";
+export {MarkdownTableInteractionController} from "./table-interaction";
 export { trailingSpacePlugin } from "./trailing-space";
 export type { CodeMirrorTypewriterModeOptions } from "./typewriter";
 export { codeMirrorTypewriterMode } from "./typewriter";

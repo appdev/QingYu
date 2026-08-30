@@ -35,7 +35,13 @@ type MarkdownTableAppearanceRequest = (
 
 type AppearanceListener = (records: readonly PersistedMarkdownTableAppearance[]) => void;
 
+interface PendingAppearancePatch {
+    readonly record: MarkdownTableAppearanceSnapshot;
+    readonly timer: number;
+}
+
 const controllers = new Set<MarkdownTableAppearanceController>();
+const documentRecords = new Map<string, Map<string, PersistedMarkdownTableAppearance>>();
 
 const requestMarkdownTableAppearance: MarkdownTableAppearanceRequest = async (url, data) => {
     const response = await fetch(url, {
@@ -60,17 +66,20 @@ const patchForRecord = (record: MarkdownTableAppearanceSnapshot, includeWidthMod
     headerFingerprint: record.structure.headerFingerprint,
     ordinalHint: record.ordinalHint,
     lastMatchedAt: Date.now(),
-    ...(includeWidthMode ? {widthMode: record.attributes.widthMode} : {}),
-    deleted: includeWidthMode && record.attributes.widthMode === "auto",
+    ...(includeWidthMode ? {
+        deleted: false,
+        widthMode: record.attributes.widthMode,
+    } : {}),
 });
 
 export class MarkdownTableAppearanceController {
     private documentKey: string;
     private readonly legacyDocumentKey?: string;
     private readonly origin = globalThis.crypto?.randomUUID?.() ?? `appearance-${Date.now()}-${Math.random()}`;
-    private readonly records = new Map<string, PersistedMarkdownTableAppearance>();
+    private records: Map<string, PersistedMarkdownTableAppearance>;
     private readonly listeners = new Set<AppearanceListener>();
-    private readonly patchTimers = new Map<string, number>();
+    private readonly patchTimers = new Map<string, PendingAppearancePatch>();
+    private readonly requestGenerations = new Map<string, number>();
     private readonly pending = new Set<Promise<unknown>>();
     private snapshotTimer?: number;
     private latestSnapshot: readonly MarkdownTableAppearanceSnapshot[] = [];
@@ -83,6 +92,8 @@ export class MarkdownTableAppearanceController {
     constructor(private readonly options: MarkdownTableAppearanceControllerOptions) {
         this.documentKey = options.documentKey;
         this.legacyDocumentKey = options.legacyDocumentKey;
+        this.records = documentRecords.get(this.documentKey) ?? new Map<string, PersistedMarkdownTableAppearance>();
+        documentRecords.set(this.documentKey, this.records);
         controllers.add(this);
     }
 
@@ -102,6 +113,7 @@ export class MarkdownTableAppearanceController {
             defaultWidthMode: this.legacyWidthMode ?? "auto",
             getRecords: () => [...this.records.values()],
             onChange: (record) => this.handleAppearanceChange(record),
+            onDelete: (tableIds) => this.handleDelete(tableIds),
             onSnapshot: (records) => this.handleSnapshot(records),
         };
     }
@@ -114,6 +126,18 @@ export class MarkdownTableAppearanceController {
     async migrate(nextDocumentKey: string) {
         if (nextDocumentKey === this.documentKey) return;
         const previousDocumentKey = this.documentKey;
+        const previousRecords = this.records;
+        const nextRecords = documentRecords.get(nextDocumentKey);
+        if (nextRecords && nextRecords !== this.records) {
+            this.records.forEach((record, tableId) => {
+                const current = nextRecords.get(tableId);
+                if (!current || (record.version ?? 0) >= (current.version ?? 0)) nextRecords.set(tableId, record);
+            });
+            this.records = nextRecords;
+        } else {
+            documentRecords.set(nextDocumentKey, this.records);
+        }
+        if (documentRecords.get(previousDocumentKey) === previousRecords) documentRecords.delete(previousDocumentKey);
         this.documentKey = nextDocumentKey;
         const promise = this.request("/api/storage/migrateMarkdownTableAppearance", {
             fromKey: previousDocumentKey,
@@ -127,7 +151,7 @@ export class MarkdownTableAppearanceController {
         if (event.documentKey !== this.documentKey || event.origin === this.origin || !event.record) return;
         const record = normalizedRecord(event.record);
         if (!record) return;
-        this.records.set(record.tableId, record);
+        if (!this.storeRecord(record)) return;
         void this.syncExternalAppearanceRetention();
         this.listeners.forEach((listener) => listener([record]));
     }
@@ -135,11 +159,10 @@ export class MarkdownTableAppearanceController {
     async flush() {
         window.clearTimeout(this.snapshotTimer);
         this.snapshotTimer = undefined;
-        for (const [tableId, timer] of this.patchTimers) {
-            window.clearTimeout(timer);
+        for (const [tableId, pending] of this.patchTimers) {
+            window.clearTimeout(pending.timer);
             this.patchTimers.delete(tableId);
-            const record = this.latestSnapshot.find((item) => item.tableId === tableId);
-            if (record) this.sendPatch(record, true);
+            this.sendPatch(pending.record, true);
         }
         if (this.latestSnapshot.length > 0) this.persistSnapshot();
         await Promise.allSettled([...this.pending]);
@@ -147,10 +170,15 @@ export class MarkdownTableAppearanceController {
 
     destroy() {
         window.clearTimeout(this.snapshotTimer);
-        this.patchTimers.forEach((timer) => window.clearTimeout(timer));
+        this.patchTimers.forEach((pending) => window.clearTimeout(pending.timer));
         this.patchTimers.clear();
+        this.requestGenerations.clear();
         this.listeners.clear();
         controllers.delete(this);
+        if (![...controllers].some((controller) => controller.documentKey === this.documentKey) &&
+            documentRecords.get(this.documentKey) === this.records) {
+            documentRecords.delete(this.documentKey);
+        }
     }
 
     private handleAppearanceChange(record: MarkdownTableAppearanceSnapshot) {
@@ -160,15 +188,17 @@ export class MarkdownTableAppearanceController {
         }
         this.records.set(record.tableId, record);
         if (record.attributes.widthMode !== "auto") void this.setExternalAppearanceRetention(true);
-        window.clearTimeout(this.patchTimers.get(record.tableId));
-        this.patchTimers.set(record.tableId, window.setTimeout(() => {
+        window.clearTimeout(this.patchTimers.get(record.tableId)?.timer);
+        const timer = window.setTimeout(() => {
             this.patchTimers.delete(record.tableId);
             this.sendPatch(record, true);
-        }, 300));
+        }, 300);
+        this.patchTimers.set(record.tableId, {record, timer});
     }
 
     private handleSnapshot(records: readonly MarkdownTableAppearanceSnapshot[]) {
         this.latestSnapshot = records;
+        records.forEach((record) => this.records.set(record.tableId, record));
         window.clearTimeout(this.snapshotTimer);
         this.snapshotTimer = window.setTimeout(() => {
             this.snapshotTimer = undefined;
@@ -176,18 +206,25 @@ export class MarkdownTableAppearanceController {
         }, 1000);
     }
 
+    private handleDelete(tableIds: readonly string[]) {
+        const deleted = new Set(tableIds);
+        this.latestSnapshot = this.latestSnapshot.filter((record) => !deleted.has(record.tableId));
+        tableIds.forEach((tableId) => {
+            window.clearTimeout(this.patchTimers.get(tableId)?.timer);
+            this.patchTimers.delete(tableId);
+            const record = this.records.get(tableId);
+            if (!record || record.deletedAt) return;
+            this.sendRawPatch(tableId, {deleted: true});
+        });
+    }
+
     private persistSnapshot() {
-        const active = new Set(this.latestSnapshot.map((record) => record.tableId));
         this.latestSnapshot.forEach((record) => {
             if (this.legacyWidthMode) {
                 this.sendPatch(record, true);
             } else if (record.attributes.widthMode !== "auto" && this.records.has(record.tableId)) {
                 this.sendPatch(record, false);
             }
-        });
-        this.records.forEach((record) => {
-            if (active.has(record.tableId) || record.deletedAt) return;
-            this.sendRawPatch(record.tableId, {deleted: true});
         });
         if (this.legacyWidthMode && !this.legacyMigrated && this.latestSnapshot.length > 0) {
             this.legacyMigrated = true;
@@ -205,6 +242,8 @@ export class MarkdownTableAppearanceController {
 
     private sendRawPatch(tableID: string, patch: Record<string, unknown>) {
         const documentKey = this.documentKey;
+        const generation = (this.requestGenerations.get(tableID) ?? 0) + 1;
+        this.requestGenerations.set(tableID, generation);
         const promise = this.request("/api/storage/patchMarkdownTableAppearance", {
             documentKey,
             origin: this.origin,
@@ -213,8 +252,7 @@ export class MarkdownTableAppearanceController {
         }).then((response) => {
             if (response.code !== 0 || documentKey !== this.documentKey) return;
             const record = normalizedRecord(response.data?.record as PersistedMarkdownTableAppearance);
-            if (record) {
-                this.records.set(record.tableId, record);
+            if (record && this.requestGenerations.get(tableID) === generation && this.storeRecord(record)) {
                 void this.syncExternalAppearanceRetention();
             }
         });
@@ -231,6 +269,17 @@ export class MarkdownTableAppearanceController {
         return this.options.request ?? requestMarkdownTableAppearance;
     }
 
+    private storeRecord(record: PersistedMarkdownTableAppearance) {
+        const current = this.records.get(record.tableId);
+        if (current?.version !== undefined) {
+            if (record.version === undefined || record.version < current.version) return false;
+            if (record.version === current.version &&
+                (record.updatedAt ?? 0) < (current.updatedAt ?? 0)) return false;
+        }
+        this.records.set(record.tableId, record);
+        return true;
+    }
+
     private async loadRecords() {
         try {
             const response = await this.request("/api/storage/getMarkdownTableAppearance", {documentKey: this.documentKey});
@@ -238,7 +287,7 @@ export class MarkdownTableAppearanceController {
                 const data = response.data as MarkdownTableAppearanceDocumentResponse;
                 Object.values(data?.tables || {}).forEach((value) => {
                     const record = normalizedRecord(value);
-                    if (record) this.records.set(record.tableId, record);
+                    if (record) this.storeRecord(record);
                 });
             }
         } catch {

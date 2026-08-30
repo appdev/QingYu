@@ -37,6 +37,7 @@
   background-blend-mode: var(--b3-editor-appearance-block-heading-#{$level}-background-blend-mode, normal);
   background-clip: var(--b3-editor-appearance-block-heading-#{$level}-background-clip, border-box);
   -webkit-background-clip: var(--b3-editor-appearance-block-heading-#{$level}-background-clip, border-box);
+  box-shadow: var(--b3-editor-appearance-block-heading-#{$level}-box-shadow, none);
   color: var(--b3-editor-appearance-block-heading-#{$level}-color, inherit);
   -webkit-text-fill-color: var(--b3-editor-appearance-block-heading-#{$level}-webkit-text-fill-color, currentcolor);
   font-family: var(--b3-editor-appearance-block-heading-#{$level}-font-family, inherit);
@@ -63,6 +64,7 @@
   }
   padding-bottom: var(--b3-editor-appearance-block-heading-#{$level}-padding-bottom, 4px);
   padding-top: var(--b3-editor-appearance-block-heading-#{$level}-padding-top, 4px);
+  text-shadow: var(--b3-editor-appearance-block-heading-#{$level}-text-shadow, none);
 }
 
 @mixin editor-inline-format($kind) {
@@ -78,8 +80,13 @@
     text-decoration-color: var(--b3-editor-appearance-inline-strikethrough-text-decoration-color, currentcolor);
     text-decoration-style: var(--b3-editor-appearance-inline-strikethrough-text-decoration-style, solid);
   } @else if $kind == highlight {
+    background: var(--b3-editor-appearance-inline-highlight-background, transparent);
     background-color: var(--b3-editor-appearance-inline-highlight-background-color, var(--b3-protyle-inline-mark-background));
+    border-bottom-color: var(--b3-editor-appearance-inline-highlight-border-bottom-color, transparent);
+    border-bottom-style: var(--b3-editor-appearance-inline-highlight-border-bottom-style, solid);
+    border-bottom-width: var(--b3-editor-appearance-inline-highlight-border-bottom-width, 0);
     border-radius: var(--b3-editor-appearance-inline-highlight-border-radius, 0);
+    box-shadow: var(--b3-editor-appearance-inline-highlight-box-shadow, none);
     color: var(--b3-editor-appearance-inline-highlight-color, var(--b3-protyle-inline-mark-color));
     padding-left: var(--b3-editor-appearance-inline-highlight-padding-left, 0);
     padding-right: var(--b3-editor-appearance-inline-highlight-padding-right, 0);
@@ -130,9 +137,15 @@
 @mixin editor-horizontal-rule {
   border: 0;
   box-sizing: border-box;
+  color: var(--b3-editor-appearance-block-horizontal-rule-color, inherit);
   display: inline-block;
-  height: var(--b3-editor-appearance-block-horizontal-rule-height, 1.625em);
-  margin: 0;
+  height: calc(
+    var(--b3-editor-appearance-block-horizontal-rule-height, 1.625em) +
+    var(--b3-editor-appearance-block-horizontal-rule-padding-top, 0px) +
+    var(--b3-editor-appearance-block-horizontal-rule-padding-bottom, 0px)
+  );
+  margin: var(--b3-editor-appearance-block-horizontal-rule-margin-top, 2px) 0
+    var(--b3-editor-appearance-block-horizontal-rule-margin-bottom, 2px);
   padding: 0;
   position: relative;
   vertical-align: top;

@@ -45,9 +45,10 @@ import (
 var Mode = "prod"
 
 const (
-	Ver                 = "1.0.4"
-	SiYuanCompatibleVer = "3.7.0"
-	IsInsider           = false
+	Ver                    = "1.0.4"
+	SiYuanCompatibleVer    = "3.7.0"
+	IsInsider              = false
+	QingYuWorkspacePathEnv = "QINGYU_WORKSPACE_PATH"
 )
 
 // IsReleaseVer 判断是否为正式版（不含 alpha、beta、rc 等预发布标识）。
@@ -146,7 +147,7 @@ func BootWithFlags(workspacePath, wdPath, port, readOnly, accessAuthCode, lang, 
 	// Fallback to env vars if commandline args are not set
 	// valid only for CLI args that default to "", as the
 	// others have explicit (sane) defaults
-	workspacePath = *coalesceToEnvVar(&workspacePath, "SIYUAN_WORKSPACE_PATH")
+	workspacePath = *coalesceToEnvVar(&workspacePath, QingYuWorkspacePathEnv)
 	accessAuthCode = *coalesceToEnvVar(&accessAuthCode, "SIYUAN_ACCESS_AUTH_CODE")
 	lang = *coalesceToEnvVar(&lang, "SIYUAN_LANG")
 

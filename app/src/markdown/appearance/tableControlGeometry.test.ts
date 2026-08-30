@@ -15,11 +15,15 @@ test("table controls keep a 28px hit target and activate pointer events with the
     assert.match(control, /width: var\(--b3-editor-appearance-control-table-button-width, 28px\)/u);
     assert.match(control, /pointer-events: none/u);
     assert.match(toolbarControl, /position: static/u);
-    assert.match(source, /\.cm-markra-table-wrap:hover \.markra-table-align-controls,[\s\S]*?pointer-events: auto/u);
+    assert.match(source, /\.cm-markra-table-wrap\.markra-table-controls-visible \.markra-table-align-controls \{[\s\S]*?pointer-events: auto/u);
     assert.match(source, /\.markra-table-add-column \{[\s\S]*?right: \.375em;[\s\S]*?top: 50%;/u);
     assert.match(source, /\.markra-table-add-row \{[\s\S]*?bottom: \.375em;[\s\S]*?left: 50%;/u);
     assert.match(tableSource, /align: "start",\s*gap: 2,\s*placement: "top"/u);
     assert.match(tableSource, /markra-table-controls-visible/u);
+});
+
+test("table controls reserve highlight styling for active and keyboard-focus states", () => {
+    assert.match(source, /\.markra-table-control:hover:not\(:focus-visible\):not\(\[aria-pressed="true"\]\):not\(\[aria-expanded="true"\]\) \{[\s\S]*?background-color: var\(--b3-editor-appearance-control-table-button-background-color, transparent\);[\s\S]*?color: var\(--b3-editor-appearance-control-table-button-color, var\(--b3-theme-on-surface\)\);/u);
 });
 
 test("fold and block controls own separate start-of-line geometry slots", () => {

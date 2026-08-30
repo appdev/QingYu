@@ -33,6 +33,8 @@ import { isInsidePreformattedBlock } from "./blank-lines";
 import { syntaxTreeChanged, updateOnlyInsertsPlainText } from "./changes";
 import { readOptionalMarkdownHostAdapter } from "../adapter";
 import {blockquoteRailExtension} from "./blockquote-rail";
+import {setMarkdownTableWidthMode} from "./table-appearance";
+import {setActiveMarkdownTable, setHoveredMarkdownTable} from "./table-interaction";
 
 const HEADING_CLASSES: Readonly<Record<string, string>> = {
   ATXHeading1: "cm-markra-h1 h1",
@@ -67,7 +69,6 @@ const INLINE_CLASSES: Readonly<Record<string, string>> = {
 };
 
 const BLOCK_CLASSES: Readonly<Record<string, string>> = {
-  Blockquote: "cm-markra-blockquote",
   Paragraph: "cm-markra-paragraph p",
 };
 
@@ -445,6 +446,70 @@ function buildDecorations(
   const decoratedNodes = new Set<string>();
   const rendererClaimedNodes = new Set<string>();
   const tree = syntaxTree(state);
+  const blockquoteLines = new Map<number, {
+    depth: number;
+    endCount: number;
+    line: Line;
+    startCount: number;
+  }>();
+  const visitedBlockquoteLines = new Set<string>();
+
+  // CodeMirror 行无法直接复刻思源的嵌套块 DOM，因此需要把全部引用祖先汇总为单个行装饰，
+  // 避免内层引用边界被外层引用提前占用，并保留每层独立的内外边距。
+  for (const visibleRange of view.visibleRanges) {
+    tree.iterate({
+      from: visibleRange.from,
+      to: visibleRange.to,
+      enter(node) {
+        if (node.name !== "Blockquote") return;
+        const firstLineNumber = state.doc.lineAt(node.from).number;
+        const lastLineNumber = state.doc.lineAt(Math.max(node.from, node.to - 1)).number;
+        const visibleFirstLine = state.doc.lineAt(Math.max(node.from, visibleRange.from)).number;
+        const visibleLastLine = state.doc.lineAt(Math.min(node.to - 1, visibleRange.to)).number;
+        for (let lineNumber = visibleFirstLine; lineNumber <= visibleLastLine; lineNumber += 1) {
+          const line = state.doc.line(lineNumber);
+          const visitKey = `${node.from}:${node.to}:${line.from}`;
+          if (visitedBlockquoteLines.has(visitKey)) continue;
+          visitedBlockquoteLines.add(visitKey);
+          const topology = blockquoteLines.get(line.from) ?? {
+            depth: 0,
+            endCount: 0,
+            line,
+            startCount: 0,
+          };
+          topology.depth += 1;
+          if (lineNumber === firstLineNumber) topology.startCount += 1;
+          if (lineNumber === lastLineNumber) topology.endCount += 1;
+          blockquoteLines.set(line.from, topology);
+        }
+      },
+    });
+  }
+
+  for (const topology of blockquoteLines.values()) {
+    const classes = ["cm-markra-blockquote"];
+    if (topology.startCount > 0) classes.push("cm-markra-blockquote-first");
+    if (topology.endCount > 0) classes.push("cm-markra-blockquote-last");
+    if (isQuoteOnlyLine(topology.line.text)) {
+      classes.push("cm-markra-structural-line");
+      if (lineContainsSelection(view, topology.line)) {
+        classes.push("cm-markra-active-structural-line");
+      }
+    }
+    ranges.push(
+      Decoration.line({
+        attributes: {
+          "data-blockquote-depth": String(topology.depth - 1),
+          "data-blockquote-end-count": String(topology.endCount),
+          "data-blockquote-start-count": String(topology.startCount),
+          style: `--markra-blockquote-depth: ${topology.depth - 1}; ` +
+            `--markra-blockquote-end-count: ${topology.endCount}; ` +
+            `--markra-blockquote-start-count: ${topology.startCount}`,
+        },
+        class: classes.join(" "),
+      }).range(topology.line.from),
+    );
+  }
   const isRevealed = (context: RevealContext) =>
     reveal(context) ||
     (
@@ -472,12 +537,6 @@ function buildDecorations(
       if (blockClass) {
         const firstLine = state.doc.lineAt(visibleNodeFrom).number;
         const lastLine = state.doc.lineAt(visibleNodeTo - 1).number;
-        const blockquoteFirstLine = node.name === "Blockquote"
-          ? state.doc.lineAt(node.from).number
-          : null;
-        const blockquoteLastLine = node.name === "Blockquote"
-          ? state.doc.lineAt(Math.max(node.from, node.to - 1)).number
-          : null;
         let paragraphEndLine: number | null = null;
         if (
           node.name === "Paragraph" &&
@@ -500,14 +559,6 @@ function buildDecorations(
             decoratedBlockLines.add(key);
             const lineClasses = [blockClass];
             if (lineNumber === paragraphEndLine) lineClasses.push("cm-markra-paragraph-end");
-            if (lineNumber === blockquoteFirstLine) lineClasses.push("cm-markra-blockquote-first");
-            if (lineNumber === blockquoteLastLine) lineClasses.push("cm-markra-blockquote-last");
-            if (node.name === "Blockquote" && isQuoteOnlyLine(line.text)) {
-              lineClasses.push("cm-markra-structural-line");
-              if (lineContainsSelection(view, line)) {
-                lineClasses.push("cm-markra-active-structural-line");
-              }
-            }
             const className = lineClasses.join(" ");
             ranges.push(Decoration.line({ class: className }).range(line.from));
           }
@@ -1024,6 +1075,12 @@ function previewPlugin(config: LivePreviewConfig): Extension {
         const reconfigured = update.transactions.some(
           (transaction) => transaction.reconfigured,
         );
+        const tableAppearanceChanged = update.transactions.some(
+          (transaction) => transaction.effects.some(
+            (effect) => effect.is(setMarkdownTableWidthMode) ||
+              effect.is(setActiveMarkdownTable) || effect.is(setHoveredMarkdownTable),
+          ),
+        );
         const treeChanged =
           !update.selectionSet &&
           update.transactions.length > 0 &&
@@ -1036,6 +1093,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
           update.focusChanged ||
           update.viewportChanged ||
           reconfigured ||
+          tableAppearanceChanged ||
           treeChanged
         ) {
           this.decorations = buildDecorations(

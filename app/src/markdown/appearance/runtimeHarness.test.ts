@@ -91,6 +91,8 @@ test("runtime harness measures one semantic rail for a compound blockquote", asy
 
     assert.equal(report.quoteRailCount, 1);
     assert.equal(report.calloutRailCount, 0);
+    assert.ok(report.quoteHostWidth >= 0);
+    assert.ok(report.quoteLineWidth >= 0);
     assert.ok(report.quoteRailHeight > 0);
     assert.ok(report.quoteSourceFrom > markdown.indexOf("Q04-"));
     assert.equal(report.quoteSourceTo, markdown.length);

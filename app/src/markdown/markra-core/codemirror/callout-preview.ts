@@ -21,6 +21,7 @@ import {
 } from "../shared";
 import { defineMarkraPlugin } from "./plugin";
 import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy";
+import {focusAdjacentVisualBlockBoundary} from "./visual-block-navigation";
 
 export interface CalloutPreviewPluginOptions {
   enabled?: boolean;
@@ -259,6 +260,37 @@ export function calloutPreviewPlugin(
   const enabled = options.enabled ?? true;
   return defineMarkraPlugin({
     id: "markra.callout-preview",
+    visualBlocks: enabled
+      ? [{
+          read(state) {
+            return readCodeMirrorCallouts(state).map((callout) => ({
+              from: callout.from,
+              to: callout.to,
+              enter(view: CodeMirrorView, direction: "backward" | "forward") {
+                const contentLineFrom = direction === "forward"
+                  ? callout.lineFroms[1]
+                  : callout.lineFroms[callout.lineFroms.length - 1];
+                if (contentLineFrom === undefined || contentLineFrom === callout.lineFroms[0]) {
+                  return focusAdjacentVisualBlockBoundary(
+                    view,
+                    callout.from,
+                    callout.to,
+                    direction,
+                  );
+                }
+                const line = view.state.doc.lineAt(contentLineFrom);
+                const quote = blockquoteContent(line.text);
+                const anchor = direction === "forward"
+                  ? line.from + (quote?.prefix.length ?? 0)
+                  : line.to;
+                view.dispatch({selection: {anchor}, scrollIntoView: true});
+                view.focus();
+                return true;
+              },
+            }));
+          },
+        }]
+      : [],
     extension: enabled
       ? [
           ViewPlugin.fromClass(

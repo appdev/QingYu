@@ -109,6 +109,12 @@ export interface RuntimeCoordinateMappingReport {
 
 export interface RuntimeCompoundTopologyReport {
     calloutRailCount: number;
+    quoteHostBottomInset: number;
+    quoteHostTopInset: number;
+    quoteHostWidth: number;
+    quoteLineWidth: number;
+    quoteMarginBottom: number;
+    quoteMarginTop: number;
     quoteRailCount: number;
     quoteRailHeight: number;
     quoteRailWidth: number;
@@ -159,17 +165,52 @@ const runtimeThemeScopes = [
     '[data-markdown-appearance-probe="true"]',
 ];
 
+const splitSelectorList = (selectorText: string) => {
+    const selectors: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let index = 0; index < selectorText.length; index++) {
+        const character = selectorText[index];
+        if (["(", "["].includes(character)) depth += 1;
+        if ([")", "]"].includes(character)) depth -= 1;
+        if (character === "," && depth === 0) {
+            selectors.push(selectorText.slice(start, index).trim());
+            start = index + 1;
+        }
+    }
+    selectors.push(selectorText.slice(start).trim());
+    return selectors.filter(Boolean);
+};
+
+const scopeSelector = (selector: string, scope: string) => {
+    const root = /^(?::root|html|body)(?=$|[.:[#])/u.exec(selector);
+    return root ? `${scope}${selector.slice(root[0].length)}` : `${scope} ${selector}`;
+};
+
 const scopeThemeCss = (css: string) => {
-    const rules = css.replace(/\/\*[\s\S]*?\*\//gu, "").matchAll(/([^{}]+)\{([^{}]*)\}/gu);
-    const scoped = Array.from(rules).flatMap(([, selectorText, declarations]) => {
-        const selectors = selectorText.split(",").flatMap((selector) => {
-            const normalized = selector.trim();
-            return runtimeThemeScopes.map((scope) => normalized.startsWith(":root")
-                ? `${scope}${normalized.slice(":root".length)}`
-                : `${scope} ${normalized}`);
-        });
-        return [`${selectors.join(",")}{${declarations.trim()}}`];
+    const source = document.createElement("style");
+    source.media = "not all";
+    source.textContent = css;
+    document.head.append(source);
+    const serialize = (rules: CSSRuleList): string => Array.from(rules).map((rule) => {
+        if ("selectorText" in rule && "style" in rule) {
+            const styleRule = rule as CSSStyleRule;
+            const selectors = splitSelectorList(styleRule.selectorText).flatMap((selector) =>
+                runtimeThemeScopes.map((scope) => scopeSelector(selector, scope)));
+            return `${selectors.join(",")}{${styleRule.style.cssText}}`;
+        }
+        if ("cssRules" in rule) {
+            const opening = rule.cssText.indexOf("{");
+            return `${rule.cssText.slice(0, opening)}{${serialize((rule as CSSGroupingRule).cssRules)}}`;
+        }
+        return rule.cssText;
     }).join("");
+    let scoped = "";
+    try {
+        scoped = source.sheet ? serialize(source.sheet.cssRules) : "";
+    } finally {
+        source.remove();
+    }
     if (!scoped.includes("--b3-theme-background")) {
         throw new Error("The Markdown appearance theme fixture is missing SiYuan root variables");
     }
@@ -458,13 +499,14 @@ const equivalentStyleValue = (
 const createNativeShell = (
     document: Document,
     blockDOM: string,
+    height: number,
     width: number,
     lute: {Md2BlockDOM(markdown: string): string},
 ) => {
     const shell = document.createElement("section");
     shell.className = "protyle markdown-appearance-runtime__native";
     shell.dataset.appearanceFixture = "native-shell";
-    shell.style.height = "1600px";
+    shell.style.height = `${height}px`;
     shell.style.width = `${width}px`;
     shell.innerHTML = "<div class=\"protyle-content\"><div class=\"protyle-background\"></div><div class=\"protyle-title\"><div class=\"protyle-title__input\">Appearance fixture</div></div></div>";
     const nativeRoot = createNativeAppearanceFixture(document, blockDOM);
@@ -480,13 +522,14 @@ const createNativeShell = (
 
 const createMarkdownShell = (
     document: Document,
+    height: number,
     platform: MarkdownAppearancePlatform,
     width: number,
 ) => {
     const shell = document.createElement("section");
     shell.className = "protyle markdown-editor markdown-appearance-runtime__markdown";
     shell.dataset.markdownPlatform = platform;
-    shell.style.height = "1600px";
+    shell.style.height = `${height}px`;
     shell.style.width = `${width}px`;
     shell.innerHTML = "<div class=\"protyle-content markdown-editor__content\"><div class=\"protyle-top markdown-editor__top\"><div class=\"protyle-background markdown-editor__metadata\"></div><div class=\"protyle-title markdown-editor__title\"><div class=\"protyle-title__input\">Appearance fixture</div></div></div><div class=\"markdown-editor__body\" style=\"padding:16px 16px 0 24px\"><div class=\"markdown-editor__surface b3-typography\"></div></div></div><div class=\"markdown-editor__status\"></div>";
     return shell;
@@ -558,6 +601,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         const mode = options.mode ?? "visual";
         const platform = options.platform ?? "desktop";
         const width = options.width ?? 500;
+        const height = Math.min(24_000, Math.max(1_600, markdown.split("\n").length * 48));
         const lute = createStaticProtyleLute() ?? createFallbackStaticLute(window as LuteWindow);
         if (!lute) throw new Error("Lute is required for the Markdown appearance runtime harness");
         const root = document.createElement("div");
@@ -567,7 +611,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         const grid = document.createElement("div");
         grid.className = "markdown-appearance-runtime__grid";
         grid.style.cssText = "display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));min-width:0";
-        const native = createNativeShell(document, lute.Md2BlockDOM(markdown), width, lute);
+        const native = createNativeShell(document, lute.Md2BlockDOM(markdown), height, width, lute);
         if (markdown.trim().length === 0) {
             native.nativeRoot.classList.add("protyle-wysiwyg--empty");
             native.nativeRoot.setAttribute("placeholder", window.siyuan?.languages?.emptyPlaceholder ?? "");
@@ -582,7 +626,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
             processRender(native.nativeRoot);
             highlightRender(native.nativeRoot);
         }
-        const markdownRoot = createMarkdownShell(document, platform, width);
+        const markdownRoot = createMarkdownShell(document, height, platform, width);
         const surface = markdownRoot.querySelector<HTMLElement>(".markdown-editor__surface");
         const content = markdownRoot.querySelector<HTMLElement>(".markdown-editor__content");
         if (!surface || !content) throw new Error("Markdown appearance document shell was not created");
@@ -836,6 +880,10 @@ export const installMarkdownAppearanceRuntimeHarness = (
         if (!content || !codeMirrorScroller || !title) {
             throw new Error("The Markdown document scroll structure is incomplete");
         }
+        const fixtureHeight = active.fixture.markdownRoot.style.height;
+        active.fixture.markdownRoot.style.height = "720px";
+        await waitForLayout(window);
+        await waitForLayout(window);
         const verticalOwners = [content, codeMirrorScroller].filter((element) => {
             const overflowY = window.getComputedStyle(element).overflowY;
             return /(auto|scroll)/u.test(overflowY) && element.scrollHeight > element.clientHeight;
@@ -850,6 +898,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
             renderedLineCount: active.fixture.view.contentDOM.querySelectorAll(".cm-line").length,
             titleLeavesViewport,
         };
+        active.fixture.markdownRoot.style.height = fixtureHeight;
         content.scrollTop = 0;
         await waitForLayout(window);
         return report;
@@ -937,11 +986,17 @@ export const installMarkdownAppearanceRuntimeHarness = (
         view.dispatch({selection: {anchor: quote.from}, scrollIntoView: true});
         await waitForLayout(window);
         const rail = view.dom.querySelector<HTMLElement>(
-            `.cm-markra-blockquote-rail[data-from="${quote.from}"][data-to="${quote.to}"]`,
+            `.cm-markra-blockquote-decoration[data-from="${quote.from}"][data-to="${quote.to}"]`,
         );
-        if (!rail) throw new Error("The Markdown compound blockquote does not expose a semantic rail");
+        if (!rail) throw new Error("The Markdown compound blockquote does not expose a structural decoration");
         const railRect = rail.getBoundingClientRect();
+        const decorationStyle = window.navigator.userAgent.includes("jsdom")
+            ? window.getComputedStyle(rail)
+            : window.getComputedStyle(rail, "::before");
         const lineElements = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-markra-blockquote:not(.cm-markra-callout)"));
+        const firstLineRect = lineElements[0]?.getBoundingClientRect();
+        const lastLineRect = lineElements.at(-1)?.getBoundingClientRect();
+        const rootStyle = window.getComputedStyle(active.fixture.markdownRoot);
         const roundedInternalSegmentCount = window.navigator.userAgent.includes("jsdom") ? 0 : lineElements.filter((line) => {
             try {
                 const railStyle = window.getComputedStyle(line, "::before");
@@ -957,9 +1012,19 @@ export const installMarkdownAppearanceRuntimeHarness = (
                 const linePosition = view.posAtDOM(line);
                 return linePosition >= quote.from && linePosition <= quote.to;
             }).length,
+            quoteHostBottomInset: lastLineRect ? lastLineRect.bottom - railRect.bottom : 0,
+            quoteHostTopInset: firstLineRect ? railRect.top - firstLineRect.top : 0,
+            quoteHostWidth: railRect.width,
+            quoteLineWidth: lineElements[0]?.getBoundingClientRect().width ?? 0,
+            quoteMarginBottom: Number.parseFloat(rootStyle.getPropertyValue(
+                "--b3-editor-appearance-block-blockquote-outer-margin-bottom",
+            )) || 0,
+            quoteMarginTop: Number.parseFloat(rootStyle.getPropertyValue(
+                "--b3-editor-appearance-block-blockquote-outer-margin-top",
+            )) || 0,
             quoteRailCount: 1,
-            quoteRailHeight: railRect.height || Number.parseFloat(rail.style.height),
-            quoteRailWidth: railRect.width || Number.parseFloat(window.getComputedStyle(rail).width),
+            quoteRailHeight: railRect.height || Number.parseFloat(rail.style.getPropertyValue("--markra-blockquote-span-height")),
+            quoteRailWidth: Number.parseFloat(decorationStyle.width),
             quoteSourceFrom: quote.from,
             quoteSourceTo: quote.to,
             roundedInternalSegmentCount,
@@ -971,6 +1036,10 @@ export const installMarkdownAppearanceRuntimeHarness = (
         const current = active;
         const content = current.fixture.markdownRoot.querySelector<HTMLElement>(".markdown-editor__content");
         if (!content) throw new Error("The Markdown document scroll container is missing");
+        const fixtureHeight = current.fixture.markdownRoot.style.height;
+        current.fixture.markdownRoot.style.height = "720px";
+        await waitForLayout(window);
+        await waitForLayout(window);
         content.scrollTop = Math.max(0, (content.scrollHeight - content.clientHeight) / 2);
         await waitForLayout(window);
         const contentRect = content.getBoundingClientRect();
@@ -986,6 +1055,8 @@ export const installMarkdownAppearanceRuntimeHarness = (
         const originalMode = current.mode;
         const originalSelection = view.state.selection;
         await setMode(originalMode === "visual" ? "source" : "visual");
+        await waitForLayout(window);
+        await waitForLayout(window);
         const after = current.documentScroll.captureAnchor();
         if (!after) throw new Error("The Markdown mode-switch anchor could not be restored");
         const report = {
@@ -996,6 +1067,7 @@ export const installMarkdownAppearanceRuntimeHarness = (
         };
         await setMode(originalMode);
         view.dispatch({selection: originalSelection});
+        current.fixture.markdownRoot.style.height = fixtureHeight;
         content.scrollTop = 0;
         await waitForLayout(window);
         return report;

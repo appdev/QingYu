@@ -99,7 +99,7 @@ var workspaceInfoCmd = &cobra.Command{
 }
 
 func resolveDefaultWorkspace() string {
-	if p := os.Getenv("SIYUAN_WORKSPACE_PATH"); p != "" {
+	if p := os.Getenv(util.QingYuWorkspacePathEnv); p != "" {
 		return p
 	}
 	paths, _ := util.ReadWorkspacePaths()

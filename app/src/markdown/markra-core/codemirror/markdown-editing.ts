@@ -9,7 +9,8 @@ import {
 } from "@codemirror/state";
 import {EditorView, keymap, type ViewUpdate} from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin";
-import {focusVisualTableBoundary} from "./table";
+import {readMarkraVisualBlocks} from "./plugin";
+import {adjacentMarkdownContentPosition} from "./visual-block-navigation";
 
 const listMarkerPattern = /^((?:[\t ]*>[\t ]*)*)([\t ]*)(?:[-+*]|\d+[.)])[\t ]+/u;
 const quotePrefixPattern = /^([\t ]*(?:>[\t ]*)+)/u;
@@ -303,18 +304,12 @@ function adjacentVisualSelection(
   return target;
 }
 
-function tableAtPosition(view: EditorView, position: number) {
-  let node: ReturnType<typeof syntaxTree>["topNode"] | null =
-    syntaxTree(view.state).resolveInner(position, forwardSide(position, view.state.doc.length));
-  while (node) {
-    if (node.name === "Table") return node;
-    node = node.parent;
-  }
-  return null;
-}
-
-function forwardSide(position: number, documentLength: number) {
-  return position < documentLength ? 1 : -1;
+function visualBlockAtSourcePosition(
+  view: EditorView,
+  position: number,
+) {
+  const blocks = readMarkraVisualBlocks(view.state);
+  return blocks.find((block) => block.from <= position && block.to >= position) ?? null;
 }
 
 function moveAcrossVisualBlockBoundary(view: EditorView, forward: boolean) {
@@ -322,31 +317,52 @@ function moveAcrossVisualBlockBoundary(view: EditorView, forward: boolean) {
   if (ranges.length !== 1 || !ranges[0]?.empty) return false;
 
   const range = ranges[0];
+  const direction = forward ? "forward" : "backward";
+  const sourcePosition = adjacentMarkdownContentPosition(
+    view.state,
+    range.head,
+    direction,
+  );
+  const adjacentVisualBlock = sourcePosition === null
+    ? null
+    : visualBlockAtSourcePosition(view, sourcePosition);
+  const currentVisualBlock = visualBlockAtSourcePosition(view, range.head);
+  const horizontalPosition = view.coordsAtPos(range.head)?.left ?? null;
+
+  // CodeMirror's visual height map may jump directly over a collapsed widget.
+  // Source adjacency is stable, so enter the authored block before consulting
+  // geometric movement. Do not re-enter a block while its source is active.
+  if (
+    adjacentVisualBlock &&
+    (
+      adjacentVisualBlock.from !== currentVisualBlock?.from ||
+      adjacentVisualBlock.to !== currentVisualBlock.to
+    ) &&
+    adjacentVisualBlock.enter(view, direction, horizontalPosition)
+  ) {
+    return true;
+  }
+
   const target = adjacentVisualSelection(view, range, forward);
   if (target.head === range.head) return false;
   const targetLine = view.state.doc.lineAt(target.head);
   if (targetLine.length === 0) return false;
 
-  const table = tableAtPosition(view, target.head);
   const crossedStructuralBlank = Math.abs(
     targetLine.number - view.state.doc.lineAt(range.head).number,
   ) > 1;
-  if (!table && !crossedStructuralBlank) return false;
+  if (!crossedStructuralBlank) return false;
 
-  const horizontalPosition = view.coordsAtPos(range.head)?.left ?? null;
   view.dispatch({
     selection: EditorSelection.cursor(
-      target.head,
-      target.assoc,
-      target.bidiLevel ?? undefined,
-      target.goalColumn ?? undefined,
+      sourcePosition ?? target.head,
+      sourcePosition === null ? target.assoc : 0,
+      sourcePosition === null ? target.bidiLevel ?? undefined : undefined,
+      sourcePosition === null ? target.goalColumn ?? undefined : undefined,
     ),
     scrollIntoView: true,
     userEvent: "select",
   });
-  if (table) {
-    focusVisualTableBoundary(view, table.from, forward, horizontalPosition);
-  }
   return true;
 }
 

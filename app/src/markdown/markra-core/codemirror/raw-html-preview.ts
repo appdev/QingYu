@@ -1,5 +1,5 @@
 import { syntaxTree } from "@codemirror/language";
-import type { Range } from "@codemirror/state";
+import type { EditorState, Range } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -94,15 +94,15 @@ function inlineHtmlBoundary(
   return { from, kind, parentFrom, parentTo, source, tagName, to };
 }
 
-function blockHtmlRanges(view: CodeMirrorView) {
+function blockHtmlRanges(state: EditorState) {
   const ranges: CodeMirrorHtmlRange[] = [];
-  syntaxTree(view.state).iterate({
+  syntaxTree(state).iterate({
     enter(node) {
       if (node.name !== "HTMLBlock") return;
       ranges.push({
         block: true,
         from: node.from,
-        source: view.state.sliceDoc(node.from, node.to),
+        source: state.sliceDoc(node.from, node.to),
         to: node.to,
       });
       return false;
@@ -182,9 +182,30 @@ function inlineHtmlRanges(
   return ranges.sort((left, right) => left.from - right.from);
 }
 
-function activateHtml(view: CodeMirrorView, range: CodeMirrorHtmlRange) {
+function activateHtml(
+  view: CodeMirrorView,
+  range: CodeMirrorHtmlRange,
+  direction: "backward" | "forward" = "forward",
+) {
+  const relativeAnchor = direction === "forward"
+    ? (() => {
+        const firstBreak = range.source.indexOf("\n");
+        if (firstBreak >= 0) return firstBreak + 1;
+        const openingEnd = range.source.indexOf(">");
+        return openingEnd >= 0 ? openingEnd + 1 : 1;
+      })()
+    : (() => {
+        const lastBreak = range.source.lastIndexOf("\n");
+        if (lastBreak >= 0) return lastBreak + 1;
+        const closingStart = range.source.lastIndexOf("<");
+        return closingStart > 0 ? closingStart : range.source.length - 1;
+      })();
+  const anchor = Math.max(
+    range.from + 1,
+    Math.min(range.to - 1, range.from + relativeAnchor),
+  );
   view.dispatch({
-    selection: { anchor: Math.min(range.to - 1, range.from + 1) },
+    selection: {anchor},
     scrollIntoView: true,
   });
   view.focus();
@@ -274,7 +295,7 @@ function buildRawHtmlDecorations(
   options: RawHtmlPreviewPluginOptions,
 ) {
   const ranges: Range<Decoration>[] = [];
-  const blocks = blockHtmlRanges(view);
+  const blocks = blockHtmlRanges(view.state);
   const htmlRanges = [...blocks, ...inlineHtmlRanges(view, blocks)].sort(
     (left, right) => left.from - right.from,
   );
@@ -328,6 +349,18 @@ export function rawHtmlPreviewPlugin(
 ) {
   return defineMarkraPlugin({
     id: "markra.raw-html-preview",
+    visualBlocks: [{
+      read(state) {
+        return blockHtmlRanges(state).map((range) => ({
+          from: range.from,
+          to: range.to,
+          enter(view: CodeMirrorView, direction: "backward" | "forward") {
+            activateHtml(view, range, direction);
+            return true;
+          },
+        }));
+      },
+    }],
     extension: [
       ViewPlugin.fromClass(
         class {

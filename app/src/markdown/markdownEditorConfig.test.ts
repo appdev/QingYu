@@ -3,7 +3,11 @@ import {afterEach, beforeEach, test} from "node:test";
 import {Compartment} from "@codemirror/state";
 import {EditorView, minimalSetup} from "codemirror";
 import type {MarkdownHostAdapter} from "./markra-core/adapter";
-import {getMarkraSlashMenuState} from "./markra-core/codemirror";
+import {
+    getMarkraSlashMenuState,
+    MarkdownTableInteractionController,
+    type PersistedMarkdownTableAppearance,
+} from "./markra-core/codemirror";
 import {createSiyuanMarkraExtension} from "./markraExtension";
 import {reconfigureSiyuanMarkraExtension} from "./markdownEditorExtension";
 import {MarkdownDocumentScrollController} from "./documentScroll";
@@ -75,6 +79,52 @@ test("refreshes native code settings without changing Markdown content or select
     assert.equal(line?.dataset.codeLineWrap, "false");
     assert.equal(line?.dataset.codeLigatures, "true");
     assert.equal(line?.hasAttribute("data-code-line-number"), false);
+});
+
+test("keeps the active table toolbar through a visual extension refresh", async () => {
+    const modeCompartment = new Compartment();
+    const tableInteraction = new MarkdownTableInteractionController();
+    let tableRecords: PersistedMarkdownTableAppearance[] = [];
+    const adapter: MarkdownHostAdapter = {
+        createIcon: () => document.createElementNS("http://www.w3.org/2000/svg", "svg"),
+        notifyError: () => undefined,
+        openLink: () => undefined,
+        positionPopover: () => undefined,
+        renderMath: () => document.createElement("span"),
+        renderMermaid: async () => document.createElement("div"),
+        resolveImageSource: (source) => source,
+        saveClipboardAssets: async () => [],
+    };
+    const options = {
+        adapter,
+        documentPath: () => "/test.md",
+        mode: "visual" as const,
+        tableAppearance: {
+            getRecords: () => tableRecords,
+            onSnapshot: (records: readonly PersistedMarkdownTableAppearance[]) => {
+                tableRecords = [...records];
+            },
+        },
+        tableInteraction,
+    };
+    view = new EditorView({
+        doc: "| A | B |\n| --- | --- |\n| 1 | 2 |",
+        extensions: [modeCompartment.of(createSiyuanMarkraExtension(options))],
+        parent: document.body,
+    });
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    view.dom.querySelector("table")?.dispatchEvent(new MouseEvent("pointerdown", {bubbles: true}));
+    assert.equal(view.dom.querySelector(".cm-markra-table-wrap")?.classList.contains(
+        "markra-table-controls-visible",
+    ), true);
+    assert.notEqual(tableInteraction.read().activeTableId, null);
+
+    reconfigureSiyuanMarkraExtension(view, modeCompartment, options);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    assert.notEqual(tableInteraction.read().activeTableId, null);
+    assert.equal(view.dom.querySelector(".cm-markra-table-wrap")?.classList.contains(
+        "markra-table-controls-visible",
+    ), true);
 });
 
 test("allows an independent content-attributes compartment to hot-update body spellcheck", () => {
@@ -158,7 +208,7 @@ test("restores the semantic document anchor after reconfiguration", async () => 
         documentPath: () => "/test.md",
         mode: "source",
     }, scroll);
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))));
 
     assert.equal(view.state.doc.toString(), "line one\nline two");
     assert.equal(view.state.selection.main.anchor, 5);

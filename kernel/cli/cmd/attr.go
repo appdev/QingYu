@@ -69,8 +69,8 @@ Common attributes:
   tags       Comma-separated tag names.
 
 Examples:
-  siyuan-kernel attr set --id 20260605100657-v080a4j --attr icon=1f4ca
-  siyuan-kernel attr set --id 20260605100657-v080a4j --attr title-img='background-image:url("assets/example.jpg")'`,
+  QingYu-Kernel attr set --id 20260605100657-v080a4j --attr icon=1f4ca
+  QingYu-Kernel attr set --id 20260605100657-v080a4j --attr title-img='background-image:url("assets/example.jpg")'`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, _ := cmd.Flags().GetString("id")
 		if id == "" {

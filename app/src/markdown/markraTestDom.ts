@@ -2,7 +2,7 @@ import {JSDOM} from "jsdom";
 
 const TEST_GLOBALS = [
     "window", "document", "navigator", "MutationObserver", "ResizeObserver", "requestAnimationFrame",
-    "cancelAnimationFrame", "CSSStyleSheet", "DOMParser", "Element", "Event", "FocusEvent", "HTMLElement", "KeyboardEvent", "MouseEvent", "Node", "Range", "Window",
+    "cancelAnimationFrame", "CSSStyleSheet", "DOMParser", "Element", "Event", "FocusEvent", "HTMLElement", "KeyboardEvent", "MouseEvent", "Node", "NodeFilter", "Range", "Window",
     "HTMLImageElement", "HTMLInputElement", "HTMLTextAreaElement", "SVGElement", "getComputedStyle",
 ] as const;
 
@@ -45,6 +45,7 @@ export const installMarkdownTestDom = () => {
         KeyboardEvent: dom.window.KeyboardEvent,
         MouseEvent: dom.window.MouseEvent,
         Node: dom.window.Node,
+        NodeFilter: dom.window.NodeFilter,
         Range: dom.window.Range,
         SVGElement: dom.window.SVGElement,
         Window: dom.window.Window,

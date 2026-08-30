@@ -61,3 +61,32 @@ test("does not treat an entire directory as a compatibility allowlist", (t) => {
 
     assert.equal(auditRepository(root).violations.some((item) => item.rule === "user-visible-upstream-name"), true);
 });
+
+test("rejects legacy SiYuan identifiers from the Docker runtime", (t) => {
+    const root = makeFixture({
+        Dockerfile: "WORKDIR /opt/siyuan/\nCOPY /kernel/kernel .\nENV HOME=/home/siyuan\n",
+        "kernel/entrypoint.sh": "USER_NAME=${USER_NAME:-siyuan}\nSIYUAN_WORKSPACE_PATH=value\nWORKSPACE_DIR=/siyuan/workspace\n",
+    });
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+
+    const violations = auditRepository(root).violations.filter((item) => item.rule === "upstream-docker-runtime-identity");
+    assert.equal(violations.length, 6);
+    assert.deepEqual(new Set(violations.map((item) => item.excerpt)), new Set([
+        "WORKDIR /opt/siyuan/",
+        "COPY /kernel/kernel .",
+        "ENV HOME=/home/siyuan",
+        "USER_NAME=${USER_NAME:-siyuan}",
+        "SIYUAN_WORKSPACE_PATH=value",
+        "WORKSPACE_DIR=/siyuan/workspace",
+    ]));
+});
+
+test("allows the complete QingYu Docker runtime identity", (t) => {
+    const root = makeFixture({
+        Dockerfile: "WORKDIR /opt/qingyu/\nCMD [\"/opt/qingyu/QingYu-Kernel\", \"serve\"]\n",
+        "kernel/entrypoint.sh": "HOME=/home/qingyu\nQINGYU_WORKSPACE_PATH=/qingyu/workspace\n",
+    });
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+
+    assert.deepEqual(auditRepository(root).violations, []);
+});
