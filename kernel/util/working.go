@@ -45,7 +45,7 @@ import (
 var Mode = "prod"
 
 const (
-	Ver                    = "1.0.4"
+	Ver                    = "1.0.5"
 	SiYuanCompatibleVer    = "3.7.0"
 	IsInsider              = false
 	QingYuWorkspacePathEnv = "QINGYU_WORKSPACE_PATH"
