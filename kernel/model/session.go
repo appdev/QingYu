@@ -260,7 +260,7 @@ func CheckAuth(c *gin.Context) {
 	// 未设置锁屏密码
 	if "" == Conf.AccessAuthCode {
 		// Skip the empty access authorization code check https://github.com/siyuan-note/siyuan/issues/9709
-		if util.SiYuanAccessAuthCodeBypass {
+		if util.QingYuAccessAuthCodeBypass {
 			c.Set(RoleContextKey, RoleAdministrator)
 			c.Next()
 			return

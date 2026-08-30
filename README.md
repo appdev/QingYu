@@ -74,6 +74,48 @@ QingYu remains under active development. Its feature boundaries, compatibility g
 
 For now, this repository is best suited to development, reviewing the product direction, and building from source. Recorded changes are available in the [changelog](CHANGELOG.md).
 
+## Docker
+
+The official Docker image is `apkdv/qingyu`. Replace the access authorization code before starting the container:
+
+```bash
+docker run -d \
+  --name qingyu \
+  --restart unless-stopped \
+  -p 9806:9806 \
+  -v /absolute/path/to/qingyu-workspace:/qingyu/workspace \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e QINGYU_ACCESS_AUTH_CODE=change-this-password \
+  apkdv/qingyu:latest \
+  /opt/qingyu/QingYu-Kernel serve
+```
+
+For Docker Compose or a container management panel, use the following complete command. The entrypoint intentionally rejects the abbreviated `serve` command and legacy kernel paths:
+
+```text
+/opt/qingyu/QingYu-Kernel serve
+```
+
+```yaml
+services:
+  qingyu:
+    image: apkdv/qingyu:latest
+    container_name: qingyu
+    restart: unless-stopped
+    command: ["/opt/qingyu/QingYu-Kernel", "serve"]
+    ports:
+      - "9806:9806"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      QINGYU_ACCESS_AUTH_CODE: "change-this-password"
+    volumes:
+      - /absolute/path/to/qingyu-workspace:/qingyu/workspace
+```
+
+Set `PUID` and `PGID` to the owner of the host workspace directory. QingYu stores persistent data under `/qingyu/workspace` by default; it can be changed with `QINGYU_WORKSPACE_PATH` or the `--workspace` option.
+
 ## For developers
 
 QingYu pairs a Go kernel with a TypeScript frontend. This README stays focused on the product; for implementation details, begin with:

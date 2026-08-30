@@ -45,10 +45,12 @@ import (
 var Mode = "prod"
 
 const (
-	Ver                    = "1.0.5"
-	SiYuanCompatibleVer    = "3.7.0"
-	IsInsider              = false
-	QingYuWorkspacePathEnv = "QINGYU_WORKSPACE_PATH"
+	Ver                           = "1.0.5"
+	SiYuanCompatibleVer           = "3.7.0"
+	IsInsider                     = false
+	QingYuWorkspacePathEnv        = "QINGYU_WORKSPACE_PATH"
+	QingYuAccessAuthCodeEnv       = "QINGYU_ACCESS_AUTH_CODE"
+	QingYuAccessAuthCodeBypassEnv = "QINGYU_ACCESS_AUTH_CODE_BYPASS"
 )
 
 // IsReleaseVer 判断是否为正式版（不含 alpha、beta、rc 等预发布标识）。
@@ -59,15 +61,15 @@ func IsReleaseVer(ver string) bool {
 
 var (
 	RunInContainer             = false // 是否运行在容器中
-	SiYuanAccessAuthCodeBypass = false // 是否跳过空锁屏密码检查
+	QingYuAccessAuthCodeBypass = false // 是否跳过空锁屏密码检查
 	AttachUI                   = false // 是否绑定桌面 UI 进程生命周期（Electron 拉起时为 true，手动 serve 为 false）
 )
 
 func initEnvVars() {
 	RunInContainer = isRunningInDockerContainer()
 	var err error
-	if SiYuanAccessAuthCodeBypass, err = strconv.ParseBool(os.Getenv("SIYUAN_ACCESS_AUTH_CODE_BYPASS")); err != nil {
-		SiYuanAccessAuthCodeBypass = false
+	if QingYuAccessAuthCodeBypass, err = strconv.ParseBool(os.Getenv(QingYuAccessAuthCodeBypassEnv)); err != nil {
+		QingYuAccessAuthCodeBypass = false
 	}
 }
 
@@ -148,7 +150,7 @@ func BootWithFlags(workspacePath, wdPath, port, readOnly, accessAuthCode, lang, 
 	// valid only for CLI args that default to "", as the
 	// others have explicit (sane) defaults
 	workspacePath = *coalesceToEnvVar(&workspacePath, QingYuWorkspacePathEnv)
-	accessAuthCode = *coalesceToEnvVar(&accessAuthCode, "SIYUAN_ACCESS_AUTH_CODE")
+	accessAuthCode = *coalesceToEnvVar(&accessAuthCode, QingYuAccessAuthCodeEnv)
 	lang = *coalesceToEnvVar(&lang, "SIYUAN_LANG")
 
 	if "" != lang {
@@ -167,16 +169,16 @@ func BootWithFlags(workspacePath, wdPath, port, readOnly, accessAuthCode, lang, 
 		if "" == AccessAuthCode { // Still empty?
 			interruptBoot := true
 
-			// Set the env `SIYUAN_ACCESS_AUTH_CODE_BYPASS=true` to skip checking empty access auth code https://github.com/siyuan-note/siyuan/issues/9709
-			if SiYuanAccessAuthCodeBypass {
+			// 可通过环境变量跳过空访问授权码检查。
+			if QingYuAccessAuthCodeBypass {
 				interruptBoot = false
-				fmt.Println("bypass access auth code check since the env [SIYUAN_ACCESS_AUTH_CODE_BYPASS] is set to [true]")
+				fmt.Printf("bypass access auth code check since the env [%s] is set to [true]\n", QingYuAccessAuthCodeBypassEnv)
 			}
 
 			if interruptBoot {
 				// The access authorization code command line parameter must be set when deploying via Docker https://github.com/siyuan-note/siyuan/issues/9328
 				fmt.Printf("the access authorization code command line parameter (--accessAuthCode) must be set when deploying via Docker\n")
-				fmt.Printf("or you can set the SIYUAN_ACCESS_AUTH_CODE env var")
+				fmt.Printf("or you can set the %s env var", QingYuAccessAuthCodeEnv)
 				os.Exit(logging.ExitCodeSecurityRisk)
 			}
 		}

@@ -19,6 +19,48 @@ func TestQingYuKernelIdentityDefaults(t *testing.T) {
 	if QingYuWorkspacePathEnv != "QINGYU_WORKSPACE_PATH" {
 		t.Fatalf("QingYuWorkspacePathEnv = %q, want QINGYU_WORKSPACE_PATH", QingYuWorkspacePathEnv)
 	}
+	if QingYuAccessAuthCodeEnv != "QINGYU_ACCESS_AUTH_CODE" {
+		t.Fatalf("QingYuAccessAuthCodeEnv = %q, want QINGYU_ACCESS_AUTH_CODE", QingYuAccessAuthCodeEnv)
+	}
+	if QingYuAccessAuthCodeBypassEnv != "QINGYU_ACCESS_AUTH_CODE_BYPASS" {
+		t.Fatalf("QingYuAccessAuthCodeBypassEnv = %q, want QINGYU_ACCESS_AUTH_CODE_BYPASS", QingYuAccessAuthCodeBypassEnv)
+	}
+}
+
+func TestQingYuAccessAuthCodeBypassUsesIsolatedEnvironment(t *testing.T) {
+	oldBypass := QingYuAccessAuthCodeBypass
+	oldRunInContainer := RunInContainer
+	t.Cleanup(func() {
+		QingYuAccessAuthCodeBypass = oldBypass
+		RunInContainer = oldRunInContainer
+	})
+
+	t.Setenv("SIYUAN_ACCESS_AUTH_CODE_BYPASS", "true")
+	t.Setenv(QingYuAccessAuthCodeBypassEnv, "")
+	initEnvVars()
+	if QingYuAccessAuthCodeBypass {
+		t.Fatal("legacy SiYuan access authorization bypass environment variable was accepted")
+	}
+
+	t.Setenv(QingYuAccessAuthCodeBypassEnv, "true")
+	initEnvVars()
+	if !QingYuAccessAuthCodeBypass {
+		t.Fatal("QingYu access authorization bypass environment variable was ignored")
+	}
+}
+
+func TestQingYuAccessAuthCodeUsesIsolatedEnvironment(t *testing.T) {
+	t.Setenv("SIYUAN_ACCESS_AUTH_CODE", "legacy-code")
+	t.Setenv(QingYuAccessAuthCodeEnv, "")
+	value := ""
+	if got := *coalesceToEnvVar(&value, QingYuAccessAuthCodeEnv); got != "" {
+		t.Fatalf("legacy SiYuan access authorization environment variable was accepted: %q", got)
+	}
+
+	t.Setenv(QingYuAccessAuthCodeEnv, "qingyu-code")
+	if got := *coalesceToEnvVar(&value, QingYuAccessAuthCodeEnv); got != "qingyu-code" {
+		t.Fatalf("QingYu access authorization environment variable = %q, want qingyu-code", got)
+	}
 }
 
 func TestQingYuWorkspaceHistoryUsesIsolatedConfig(t *testing.T) {

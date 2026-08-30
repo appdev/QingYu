@@ -81,8 +81,12 @@ const auditRepository = (root) => {
             const lineNumber = index + 1;
             const productSurface = /^(?:README(?:\.[^/]+)?\.md|NOTICE\.md|docs\/legal\/|app\/(?:appearance\/langs|electron|guide|guide-src)\/)/.test(relativePath);
             const dockerRuntimeSurface = relativePath === "Dockerfile" || relativePath === "kernel/entrypoint.sh";
+            const accessAuthRuntimeSurface = productSurface || dockerRuntimeSurface || relativePath === "kernel/util/working.go";
             if (dockerRuntimeSurface && /\/opt\/siyuan|\/home\/siyuan|\/siyuan\/workspace|SIYUAN_WORKSPACE_PATH|\/kernel\/kernel\b|:-siyuan}/.test(line)) {
                 addViolation(violations, "upstream-docker-runtime-identity", relativePath, lineNumber, line);
+            }
+            if (accessAuthRuntimeSurface && /SIYUAN_ACCESS_AUTH_CODE(?:_BYPASS)?/.test(line)) {
+                addViolation(violations, "upstream-access-auth-environment", relativePath, lineNumber, line);
             }
             if (/(?:release\.b3log\.org|release\.liuyun\.io|github\.com\/siyuan-note\/siyuan\/releases)/i.test(line)) {
                 addViolation(violations, "upstream-update-service", relativePath, lineNumber, line);

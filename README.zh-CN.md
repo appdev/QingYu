@@ -74,6 +74,48 @@
 
 当前仓库适合参与开发、审阅产品方向或自行构建。版本变化可查看 [CHANGELOG](CHANGELOG.md)。
 
+## Docker
+
+官方 Docker 镜像为 `apkdv/qingyu`。启动容器前，请先替换访问授权码：
+
+```bash
+docker run -d \
+  --name qingyu \
+  --restart unless-stopped \
+  -p 9806:9806 \
+  -v /absolute/path/to/qingyu-workspace:/qingyu/workspace \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e QINGYU_ACCESS_AUTH_CODE=change-this-password \
+  apkdv/qingyu:latest \
+  /opt/qingyu/QingYu-Kernel serve
+```
+
+使用 Docker Compose 或容器管理面板时，请填写下面这条完整命令。入口脚本会拒绝简写的 `serve` 命令和旧的内核路径：
+
+```text
+/opt/qingyu/QingYu-Kernel serve
+```
+
+```yaml
+services:
+  qingyu:
+    image: apkdv/qingyu:latest
+    container_name: qingyu
+    restart: unless-stopped
+    command: ["/opt/qingyu/QingYu-Kernel", "serve"]
+    ports:
+      - "9806:9806"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      QINGYU_ACCESS_AUTH_CODE: "change-this-password"
+    volumes:
+      - /absolute/path/to/qingyu-workspace:/qingyu/workspace
+```
+
+请将 `PUID` 和 `PGID` 设置为宿主机工作空间目录所有者的用户与组 ID。轻语默认将持久化数据保存在 `/qingyu/workspace`，也可以通过 `QINGYU_WORKSPACE_PATH` 或 `--workspace` 参数修改。
+
 ## 开发者入口
 
 轻语由 Go 内核与 TypeScript 前端组成，但 README 不再展开完整技术手册。需要深入时可从以下入口开始：

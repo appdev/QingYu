@@ -81,6 +81,17 @@ test("rejects legacy SiYuan identifiers from the Docker runtime", (t) => {
     ]));
 });
 
+test("rejects legacy SiYuan access authorization environment variables", (t) => {
+    const root = makeFixture({
+        "README.md": "SIYUAN_ACCESS_AUTH_CODE=value\n",
+        "kernel/util/working.go": "SIYUAN_ACCESS_AUTH_CODE_BYPASS=true\n",
+    });
+    t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+
+    const violations = auditRepository(root).violations.filter((item) => item.rule === "upstream-access-auth-environment");
+    assert.equal(violations.length, 2);
+});
+
 test("allows the complete QingYu Docker runtime identity", (t) => {
     const root = makeFixture({
         Dockerfile: "WORKDIR /opt/qingyu/\nCMD [\"/opt/qingyu/QingYu-Kernel\", \"serve\"]\n",
