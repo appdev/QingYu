@@ -1054,6 +1054,7 @@ func LockBox(boxID string) {
 // lockBoxHeld 在已持有 box 写锁的前提下执行该 box 的锁定清理（不含全局缓存刷新）。
 func lockBoxHeld(boxID string) {
 	RevokeManagedEncryptedExportsForBox(boxID)
+	RemoveDocumentCardPreviews(boxID)
 
 	cachedDEKsLock.Lock()
 	if dek, ok := cachedDEKs[boxID]; ok {

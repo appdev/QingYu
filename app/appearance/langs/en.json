@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Large preview",
+  "notebookRootMasonry": "Masonry",
+  "notebookRootList": "List",
+  "notebookRootPreviewFailed": "Preview unavailable",
+  "notebookRootEmpty": "No root documents",
   "deletedMarkdown": "Deleted Markdown",
   "restoreLocation": "Restore location",
   "markdownTargetConflict": "A Markdown file already exists at the restore location.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Welcome to QingYu",
 	"onboardingDescription": "Your first notebook is ready. Write down what's on your mind!",
 	"importExistingData": "Import existing data",
-	"boxDocEnabled": "Enable top-level notebook documents",
-	"boxDocEnabledTip": "When enabled, the notebook itself can also be used to record content",
+	"boxDocEnabled": "Notebook home",
+	"boxDocEnabledTip": "Open the direct-root document browser when clicking a notebook",
 	"insertImage": "Insert image",
 	"obsidianUnreadableFiles": "Unreadable files: ${count}; these unreferenced files could not be read and will not be imported",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "The selected Vault does not contain a readable non-hidden Markdown file",
 		"341": "The top-level notebook document cannot be removed or moved",
 		"342": "My Notebook",
-		"343": "A Fresh Start"
+		"343": "A Fresh Start",
+		"344": "The legacy home for notebook “%s” was saved to recovery; merge it manually"
 	}
 	}

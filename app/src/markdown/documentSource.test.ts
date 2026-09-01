@@ -163,25 +163,25 @@ test("workspace mutation rejects a mismatched operation ID without changing sour
     assert.deepEqual(calls[1], {url: "/api/markdown/get", body: {notebook: "box-a", path: "/note.md"}});
 });
 
-test("a dirty editor save flushes and migrates the matching editor in a second renderer", async () => {
+test("a dirty editor save flushes and updates the revision in every matching renderer", async () => {
     const phases: string[] = [];
     const coordinator = createMarkdownManagementCoordinator({timeout: 100});
     const initiator = {
         managementID: "editor-initiator", notebookId: "box", path: "/note.md", revision: "r1",
         flush: async () => { phases.push("initiator-save"); return true; },
         getRevision: () => "r1",
-        applyWorkspaceDocumentReference: (_notebook: string, path: string) => {
-            initiator.path = path;
-            phases.push("initiator-migrate");
+        applyWorkspaceDocumentRevision: (revision: string) => {
+            initiator.revision = revision;
+            phases.push("initiator-revision");
         },
     };
     const remote = {
         managementID: "editor-remote", notebookId: "box", path: "/note.md", revision: "r1",
         flush: async () => { phases.push("remote-flush"); return true; },
         getRevision: () => "r1",
-        applyWorkspaceDocumentReference: (_notebook: string, path: string) => {
-            remote.path = path;
-            phases.push("remote-migrate");
+        applyWorkspaceDocumentRevision: (revision: string) => {
+            remote.revision = revision;
+            phases.push("remote-revision");
         },
     };
     const register = (id: number, editors: typeof initiator[]) => coordinator.register(id, "workspace", async (request: any) => {
@@ -215,7 +215,9 @@ test("a dirty editor save flushes and migrates the matching editor in a second r
     const result = await source.save({content: "saved", revision: "r1"});
 
     assert.equal(result.status, "ok");
-    assert.deepEqual(phases, ["initiator-save", "remote-flush", "http-save", "initiator-migrate", "remote-migrate"]);
+    assert.deepEqual(phases, ["initiator-save", "remote-flush", "http-save", "initiator-revision", "remote-revision"]);
+    assert.equal(initiator.revision, "r2");
+    assert.equal(remote.revision, "r2");
 });
 
 test("two independently dirty renderers fail closed when the remote flush advances revision", async () => {

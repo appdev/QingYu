@@ -146,6 +146,9 @@ app.whenReady().then(async () => {
     const columns = Array.from({length: 8}, (_, index) => `<th>Column ${index + 1} with a long heading</th>`).join("");
     const cells = Array.from({length: 8}, (_, index) => `<td>Value ${index + 1} with content that keeps the table wide</td>`).join("");
     const longDocumentLines = Array.from({length: 80}, (_, index) => `<div class="cm-line">Paragraph ${index + 1}</div>`).join("");
+    const slashMenuItems = Array.from({length: 16}, (_, index) =>
+        `<button class="b3-menu__item${index === 0 ? " b3-menu__item--current" : ""}">Command ${index + 1}</button>`,
+    ).join("");
     const managementDOM = new JSDOM('<section data-fixture="markdown-history" style="display:block;width:320px"><ul></ul></section>');
     renderDeletedMarkdownList(managementDOM.window.document.querySelector("ul"), [{
         id: "deleted-1", notebook: "box", originalPath: "/deleted.md", historyPath: "history/deleted.md",
@@ -276,6 +279,9 @@ app.whenReady().then(async () => {
     <div class="protyle-wysiwyg" data-appearance-fixture="native">${nativeCodeBlockDOM}</div>
     <div class="cm-editor" data-markdown-mode="visual"><div class="cm-content"><div class="cm-line cm-markra-code-line cm-markra-code-opening-line"><span class="protyle-action cm-markra-code-actions"><button class="protyle-action--first protyle-action__language markra-code-language-control cm-markra-code-header markra-code-language-label">javascript</button><span class="fn__flex-1"></span><button class="protyle-icon protyle-action__copy markra-code-copy-button" data-copied="false"><svg class="markra-code-copy-icon"></svg><svg class="markra-code-copy-check-icon"></svg></button><button class="protyle-icon protyle-action__menu markra-code-more-button"><svg></svg></button></span></div><div class="cm-line cm-markra-code-line cm-markra-code-content-line cm-markra-code-content-first"><span class="cm-markra-code-token hljs-keyword">const</span>&nbsp;markdownValue = 1;</div><div class="cm-line cm-markra-code-line cm-markra-code-content-line cm-markra-code-content-last">return markdownValue;</div><div class="cm-line cm-markra-code-line cm-markra-code-closing-line"></div></div></div>
 </div>
+<div class="b3-menu markdown-editor__slash-menu" id="slash-menu-fixture" style="left:12px;top:12px">
+    <div class="b3-menu__items">${slashMenuItems}</div>
+</div>
 ${managementTreeHTML}
 ${managementDOM.window.document.querySelector("section").outerHTML}
 `;
@@ -401,6 +407,12 @@ ${managementDOM.window.document.querySelector("section").outerHTML}
         const markdownCopyButton = codeParityEditor.querySelector(".markra-code-copy-button");
         const markdownCopyIcon = codeParityEditor.querySelector(".markra-code-copy-icon");
         const markdownCopyCheckIcon = codeParityEditor.querySelector(".markra-code-copy-check-icon");
+        const slashMenu = document.querySelector("#slash-menu-fixture");
+        const slashMenuItems = slashMenu.querySelector(".b3-menu__items");
+        slashMenuItems.scrollTop = slashMenuItems.scrollHeight;
+        const slashMenuRect = slashMenu.getBoundingClientRect();
+        const slashMenuItemsRect = slashMenuItems.getBoundingClientRect();
+        const slashMenuLastItemRect = slashMenuItems.lastElementChild.getBoundingClientRect();
         const imageFrameRect = imageFrame.getBoundingClientRect();
         const imageHandleRect = imageHandle.getBoundingClientRect();
         return {
@@ -552,6 +564,15 @@ ${managementDOM.window.document.querySelector("section").outerHTML}
             markdownCopyButtonColor: getComputedStyle(markdownCopyButton).color,
             markdownCopyButtonOpacity: getComputedStyle(markdownCopyButton).opacity,
             nativeCopyButtonWidth: nativeCopyButton.getBoundingClientRect().width,
+            slashMenuHeight: slashMenuRect.height,
+            slashMenuItemsBottom: slashMenuItemsRect.bottom,
+            slashMenuItemsClientHeight: slashMenuItems.clientHeight,
+            slashMenuItemsOverflowY: getComputedStyle(slashMenuItems).overflowY,
+            slashMenuItemsScrollHeight: slashMenuItems.scrollHeight,
+            slashMenuItemsTop: slashMenuItemsRect.top,
+            slashMenuLastItemBottom: slashMenuLastItemRect.bottom,
+            slashMenuRectBottom: slashMenuRect.bottom,
+            slashMenuRectTop: slashMenuRect.top,
         };
     })()`);
     const managementLayout = await window.webContents.executeJavaScript(`(() => {
@@ -619,6 +640,17 @@ ${managementDOM.window.document.querySelector("section").outerHTML}
     }
     if (metrics.defaultImageWidth < 400 || metrics.defaultImageWidth > metrics.previewClientWidth) {
         console.error("Markdown image does not use its intrinsic default size", metrics);
+        app.exit(1);
+        return;
+    }
+    const slashMenuScrollsInsideItsBorder = metrics.slashMenuHeight <= 320 &&
+        metrics.slashMenuItemsOverflowY === "auto" &&
+        metrics.slashMenuItemsScrollHeight > metrics.slashMenuItemsClientHeight &&
+        metrics.slashMenuItemsTop >= metrics.slashMenuRectTop &&
+        metrics.slashMenuItemsBottom <= metrics.slashMenuRectBottom &&
+        metrics.slashMenuLastItemBottom <= metrics.slashMenuItemsBottom + 1;
+    if (!slashMenuScrollsInsideItsBorder) {
+        console.error("Markdown slash menu content escapes its border or cannot scroll", metrics);
         app.exit(1);
         return;
     }

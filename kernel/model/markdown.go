@@ -55,6 +55,7 @@ type MarkdownDocument struct {
 	Path        string `json:"path"`
 	Name        string `json:"name"`
 	Content     string `json:"content"`
+	DocumentID  string `json:"documentID"`
 	Revision    string `json:"revision"`
 	Mtime       int64  `json:"mtime"`
 	OperationID string `json:"operationID,omitempty"`
@@ -132,6 +133,18 @@ func createMarkdown(boxID, parentPath, name string, autoName bool, requestedOper
 		_ = cleanupMarkdownCreatedFile(absPath)
 		return nil, chmodErr
 	}
+	identityMutation, identityErr := EnsureMarkdownDocumentID(nil, false)
+	if identityErr != nil {
+		_ = file.Close()
+		_ = cleanupMarkdownCreatedFile(absPath)
+		return nil, identityErr
+	}
+	data := identityMutation.Data
+	if _, writeErr := file.Write(data); writeErr != nil {
+		_ = file.Close()
+		_ = cleanupMarkdownCreatedFile(absPath)
+		return nil, writeErr
+	}
 	if syncErr := file.Sync(); syncErr != nil {
 		_ = file.Close()
 		_ = cleanupMarkdownCreatedFile(absPath)
@@ -149,7 +162,7 @@ func createMarkdown(boxID, parentPath, name string, autoName bool, requestedOper
 
 	IncSync()
 	pushMarkdownFileEventWithOperation("createMarkdown", boxID, canonicalPath, "", "", operationID)
-	ret, err = markdownDocument(canonicalPath, nil, absPath)
+	ret, err = markdownDocument(canonicalPath, data, absPath)
 	if ret != nil {
 		ret.OperationID = operationID
 	}
@@ -409,6 +422,11 @@ func DuplicateMarkdownWithOperationID(boxID, p, revision, requestedOperationID s
 	if markdownRevision(data) != revision {
 		return nil, ErrMarkdownConflict
 	}
+	identityMutation, err := EnsureMarkdownDocumentID(data, true)
+	if err != nil {
+		return nil, err
+	}
+	data = identityMutation.Data
 	sourceIdentity, err := markdownIdentity(absPath)
 	if err != nil {
 		return nil, err
@@ -1121,12 +1139,68 @@ func markdownDocument(p string, data []byte, absPath string) (ret *MarkdownDocum
 		return nil, err
 	}
 	return &MarkdownDocument{
-		Path:     p,
-		Name:     path.Base(p),
-		Content:  string(data),
-		Revision: markdownRevision(data),
-		Mtime:    identity.Mtime / int64(time.Millisecond),
+		Path:       p,
+		Name:       path.Base(p),
+		Content:    string(data),
+		DocumentID: InspectMarkdownDocumentID(data).ID,
+		Revision:   markdownRevision(data),
+		Mtime:      identity.Mtime / int64(time.Millisecond),
 	}, nil
+}
+
+func EnsureMarkdownDocumentIdentity(boxID, p, revision, requestedOperationID string, forceNew bool) (ret *MarkdownDocument, err error) {
+	markdownFileOperationLock.Lock()
+	defer markdownFileOperationLock.Unlock()
+	operationID, err := resolveMarkdownOperationID(requestedOperationID)
+	if err != nil {
+		return nil, err
+	}
+	if err = recoverMarkdownTransactionsLocked(); err != nil {
+		return nil, err
+	}
+
+	canonicalPath, absPath, err := markdownFilePath(boxID, p)
+	if err != nil {
+		return nil, err
+	}
+	current, err := readMarkdownFileContained(absPath)
+	if err != nil {
+		return nil, err
+	}
+	if markdownRevision(current) != revision {
+		return nil, ErrMarkdownConflict
+	}
+	mutation, err := EnsureMarkdownDocumentID(current, forceNew)
+	if err != nil {
+		return nil, err
+	}
+	if !mutation.Changed {
+		ret, err = markdownDocument(canonicalPath, current, absPath)
+		if ret != nil {
+			ret.OperationID = operationID
+		}
+		return ret, err
+	}
+
+	tx, err := beginMarkdownTransaction("save", boxID, absPath, "", markdownRevision(mutation.Data))
+	if err != nil {
+		return nil, err
+	}
+	if err = stageMarkdownSave(tx, mutation.Data); err != nil {
+		return nil, err
+	}
+	if err = commitMarkdownSave(tx); err != nil {
+		return nil, err
+	}
+	_ = finalizeMarkdownSave(tx)
+
+	IncSync()
+	pushMarkdownFileEventWithOperation("saveMarkdown", boxID, canonicalPath, "", "", operationID)
+	ret, err = markdownDocument(canonicalPath, mutation.Data, absPath)
+	if ret != nil {
+		ret.OperationID = operationID
+	}
+	return ret, err
 }
 
 func markdownRevision(data []byte) string {

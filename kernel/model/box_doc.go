@@ -96,7 +96,7 @@ func IsBoxDocEnabled() bool {
 }
 
 func hiddenBoxDocRootIDs() (ret []string) {
-	if IsBoxDocEnabled() || nil == Conf {
+	if nil == Conf {
 		return
 	}
 	for _, box := range Conf.GetOpenedBoxes() {
@@ -106,9 +106,6 @@ func hiddenBoxDocRootIDs() (ret []string) {
 }
 
 func isHiddenBoxDocBlock(id, boxID string) bool {
-	if IsBoxDocEnabled() {
-		return false
-	}
 	var bt *treenode.BlockTree
 	if "" == boxID {
 		bt = treenode.GetBlockTree(id)
@@ -181,8 +178,8 @@ func ensureBoxDoc0(boxID string) (boxDocID string, err error) {
 func RefreshBoxDocFeature() {
 	if IsBoxDocEnabled() {
 		for _, box := range Conf.GetOpenedBoxes() {
-			if _, err := EnsureBoxDoc(box.ID); nil != err {
-				logging.LogErrorf("ensure box document [%s] after enabling feature failed: %s", box.ID, err)
+			if _, err := MigrateLegacyNotebookRootContent(box.ID); nil != err {
+				logging.LogWarnf("migrate notebook home [%s] after enabling feature failed: %s", box.ID, err)
 			}
 		}
 	}

@@ -130,7 +130,7 @@ func TestListDocTreeRunsMarkdownRecoveryGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "" {
+	if string(data) != created.Content {
 		t.Fatalf("first list committed a pre-installed transaction: %q", data)
 	}
 }

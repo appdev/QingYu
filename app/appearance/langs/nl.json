@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Grote preview",
+  "notebookRootMasonry": "Mozaïek",
+  "notebookRootList": "Lijst",
+  "notebookRootPreviewFailed": "Preview niet beschikbaar",
+  "notebookRootEmpty": "Geen documenten in de hoofdmap",
   "deletedMarkdown": "Verwijderde Markdown",
   "restoreLocation": "Herstellocatie",
   "markdownTargetConflict": "Er bestaat al een Markdown-bestand op de herstellocatie.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Welkom bij QingYu",
 	"onboardingDescription": "Je eerste notitieboek is klaar. Schrijf op wat er nu in je opkomt!",
 	"importExistingData": "Bestaande gegevens importeren",
-	"boxDocEnabled": "Notebookdocumenten op het hoogste niveau inschakelen",
-	"boxDocEnabledTip": "Indien ingeschakeld kan ook het notebook zelf worden gebruikt om inhoud vast te leggen",
+	"boxDocEnabled": "Startpagina van notebook",
+	"boxDocEnabledTip": "De documentbrowser van de hoofdmap openen bij het aanklikken van een notebook",
 	"insertImage": "Afbeelding invoegen",
 	"obsidianUnreadableFiles": "Onleesbare bestanden: ${count}; deze bestanden zonder verwijzingen konden niet worden gelezen en worden niet geïmporteerd",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "De geselecteerde Vault bevat geen leesbaar, niet-verborgen Markdown-bestand",
 		"341": "Het notebookdocument op het hoogste niveau kan niet worden verwijderd of verplaatst",
 		"342": "Mijn notitieboek",
-		"343": "Een nieuw begin"
+		"343": "Een nieuw begin",
+		"344": "De oude startpagina van notitieboek “%s” is opgeslagen in de herstelmap; voeg deze handmatig samen"
 	}
 	}

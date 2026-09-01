@@ -1414,6 +1414,25 @@ func ProcessPDF(id, p string, merge, removeAssets, watermark bool) (err error) {
 	return
 }
 
+func ProcessMarkdownPDF(p string, watermark bool) error {
+	api.DisableConfigDir()
+	font.UserFontDir = filepath.Join(util.UserHomeConfDir(), "fonts")
+	if err := os.MkdirAll(font.UserFontDir, 0755); err != nil {
+		return err
+	}
+	if err := api.LoadUserFonts(); err != nil {
+		logging.LogWarnf("load user fonts failed: %s", err)
+	}
+	pdfCtx, err := api.ReadContextFile(p)
+	if err != nil {
+		return err
+	}
+	processPDFWatermark(pdfCtx, watermark)
+	pdfcpuVer := model.VersionStr
+	model.VersionStr = "QingYu v" + util.Ver + " (pdfcpu " + pdfcpuVer + ")"
+	return api.WriteContextFile(pdfCtx, p)
+}
+
 func processPDFWatermark(pdfCtx *model.Context, watermark bool) {
 	// Support adding the watermark on export PDF https://github.com/siyuan-note/siyuan/issues/9961
 	// https://pdfcpu.io/core/watermark
@@ -2044,7 +2063,7 @@ func ExportPandocConvertZip(ids []string, pandocTo, ext string) (name, zipPath s
 	}
 
 	defBlockIDs, docPaths := prepareExportTrees(docPaths)
-	zipPath = exportPandocConvertZip(block.BoxID, baseFolderName, docPaths, defBlockIDs, "gfm+footnotes+hard_line_breaks", pandocTo, ext)
+	zipPath = exportPandocConvertZip(block.BoxID, baseFolderName, docPaths, defBlockIDs, "gfm+footnotes+hard_line_breaks", pandocTo, ext, false)
 	name = util.GetTreeID(block.Path)
 	return
 }
@@ -2070,7 +2089,7 @@ func ExportNotebookMarkdown(boxID string) (zipPath string) {
 	}
 
 	defBlockIDs, docPaths := prepareExportTrees(docPaths)
-	zipPath = exportPandocConvertZip(boxID, box.Name, docPaths, defBlockIDs, "", "", ".md")
+	zipPath = exportPandocConvertZip(boxID, box.Name, docPaths, defBlockIDs, "", "", ".md", true)
 	return
 }
 
@@ -2236,13 +2255,6 @@ func exportSYZip(boxID, rootDirPath, baseFolderName string, docPaths []string, i
 		if writeErr := os.WriteFile(filepath.Join(confDir, "conf.json"), confData, 0644); writeErr != nil {
 			logging.LogErrorf("write export notebook conf failed: %s", writeErr)
 			return
-		}
-		sourceBoxDocMetaPath := boxDocMetaPath(boxID)
-		if filelock.IsExist(sourceBoxDocMetaPath) {
-			if copyErr := filelock.Copy(sourceBoxDocMetaPath, filepath.Join(confDir, boxDocMetaName)); copyErr != nil {
-				logging.LogErrorf("copy export notebook document metadata failed: %s", copyErr)
-				return
-			}
 		}
 	}
 
@@ -2470,6 +2482,15 @@ func exportSYZip(boxID, rootDirPath, baseFolderName string, docPaths []string, i
 					}
 				}
 			}
+		}
+	}
+
+	// 完整笔记本备份保留轻语内部数据的磁盘原始字节；加密笔记本不会在这里解密首页或恢复文件。
+	internalDir := filepath.Join(util.DataDir, boxID, ".qingyu")
+	if filelock.IsExist(internalDir) {
+		if copyErr := filelock.Copy(internalDir, filepath.Join(exportDir, ".qingyu")); copyErr != nil {
+			logging.LogErrorf("copy notebook internal data [%s] failed: %s", boxID, copyErr)
+			return ""
 		}
 	}
 
@@ -3791,7 +3812,8 @@ func processFileAnnotationRef(refID string, n *ast.Node, fileAnnotationRefMode i
 	return ast.WalkSkipChildren
 }
 
-func exportPandocConvertZip(boxID, baseFolderName string, docPaths, defBlockIDs []string, pandocFrom, pandocTo, ext string) (zipPath string) {
+func exportPandocConvertZip(boxID, baseFolderName string, docPaths, defBlockIDs []string, pandocFrom, pandocTo, ext string,
+	includeNotebookHome bool) (zipPath string) {
 	defer util.ClearPushProgress(100)
 
 	dir, name := path.Split(baseFolderName)
@@ -3943,6 +3965,12 @@ func exportPandocConvertZip(boxID, baseFolderName string, docPaths, defBlockIDs 
 		wrotePathHash[writePath] = hash
 		util.PushEndlessProgress(Conf.language(65) + " " + fmt.Sprintf(Conf.language(70), fmt.Sprintf("%d/%d %s", i+1, len(docPaths), name)))
 	}
+	if includeNotebookHome {
+		if err = exportNotebookHomeMarkdown(boxID, exportFolder); err != nil {
+			logging.LogErrorf("export notebook home [%s] failed: %s", boxID, err)
+			return ""
+		}
+	}
 
 	// 加密笔记本先写 .partial 再原子 rename，并把产物登记为托管下载令牌；普通笔记本保持原行为。
 	zipBaseName := baseFolderName + ext + ".zip"
@@ -3997,6 +4025,67 @@ func exportPandocConvertZip(boxID, baseFolderName string, docPaths, defBlockIDs 
 		zipPath = "/export/" + url.PathEscape(filepath.Base(zipPath))
 	}
 	return
+}
+
+func exportNotebookHomeMarkdown(boxID, exportFolder string) error {
+	home, err := GetNotebookHome(boxID)
+	if err != nil {
+		return err
+	}
+	if !home.Exists || strings.TrimSpace(home.Content) == "" {
+		return nil
+	}
+	name := "README.md"
+	entries, err := os.ReadDir(exportFolder)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), name) {
+			name = "笔记本首页.md"
+			break
+		}
+	}
+	target := filepath.Join(exportFolder, name)
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err = file.Write([]byte(home.Content)); err != nil {
+		_ = file.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	if err = file.Close(); err != nil {
+		_ = os.Remove(target)
+		return err
+	}
+
+	engine := util.NewLute()
+	tree := parse.Parse("", []byte(home.Content), engine.ParseOptions)
+	for _, asset := range getAssetsLinkDests(tree.Root, false) {
+		asset = string(html.DecodeDestination([]byte(asset)))
+		cleanAsset := AssetPathWithoutQuery(asset)
+		if !strings.HasPrefix(cleanAsset, "assets/") {
+			continue
+		}
+		source, _ := GetAssetAbsPathInBox(strings.ReplaceAll(cleanAsset, "%20", " "), boxID)
+		if source == "" {
+			continue
+		}
+		destination := filepath.Join(exportFolder, filepath.FromSlash(cleanAsset))
+		rel, relErr := filepath.Rel(exportFolder, destination)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return ErrInvalidNotebookInternalPath
+		}
+		if err = os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+			return err
+		}
+		if err = copyAssetDecryptIfEncrypted(source, destination); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func removeAssetsID(tree *parse.Tree, assetsOldNew, assetsNewOld map[string]string) {

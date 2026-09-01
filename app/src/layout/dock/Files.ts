@@ -35,7 +35,7 @@ import {fetchPost, fetchSyncPost} from "../../util/fetch";
 import {openEmojiPanel, unicode2Emoji} from "../../emoji";
 import {newEncryptedNotebook, newNotebook, openEncryptedNotebook} from "../../util/mount";
 import {isNotCtrl, isOnlyMeta, setStorageVal, updateHotkeyAfterTip} from "../../protyle/util/compatibility";
-import {openFileById, openMarkdownFile} from "../../editor/util";
+import {openFileById, openMarkdownFile, openNotebookRoot} from "../../editor/util";
 import {
     hasClosestByAttribute,
     hasClosestByClassName,
@@ -44,6 +44,7 @@ import {
 } from "../../protyle/util/hasClosest";
 import {App} from "../../index";
 import {refreshFileTree} from "../../dialog/processSystem";
+import {isNotebookRootMoveTarget, NOTEBOOK_ROOT_DOCUMENT_MIME} from "../../notebookRoot/rules";
 /// #if !BROWSER
 import {ipcRenderer} from "electron";
 /// #endif
@@ -56,6 +57,25 @@ import {
     expandFileTree,
     isFileTreeCollapsing
 } from "./fileTreeAnimation";
+
+const openNavigationDocument = (
+    app: App,
+    item: HTMLElement,
+    notebookId: string,
+    position?: string,
+    removeCurrentTab = true,
+) => {
+    if (item.getAttribute("data-type") === "navigation-root") {
+        return openNotebookRoot(app, notebookId, item.querySelector(".b3-list-item__text")?.textContent || notebookId, position);
+    }
+    return openFileById({
+        app,
+        id: item.getAttribute("data-node-id"),
+        position,
+        removeCurrentTab,
+        action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
+    });
+};
 
 export class Files extends Model {
     public element: HTMLElement;
@@ -207,12 +227,8 @@ export class Files extends Model {
                             return openMarkdownFile(options.app, target.closest("ul[data-url]").getAttribute("data-url"),
                                 target.getAttribute("data-path"), target.getAttribute("data-name"), undefined, false);
                         }
-                        return openFileById({
-                            app: options.app,
-                            removeCurrentTab: false,
-                            id: target.getAttribute("data-node-id"),
-                            action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
-                        });
+                        return openNavigationDocument(options.app, target, target.closest("ul[data-url]")
+                            .getAttribute("data-url"), undefined, false);
                     });
                     if (!opening.started) return;
                     void opening.finished.catch(() => undefined);
@@ -247,11 +263,8 @@ export class Files extends Model {
                                 needFocus = false;
                                 this.lastSelectedElement = liElement;
                                 this.setCurrent(liElement, false);
-                                const opening = openFileTreeItem(liElement, () => openFileById({
-                                        app: options.app,
-                                        id: liElement.getAttribute("data-node-id"),
-                                        action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
-                                    }));
+                                const opening = openFileTreeItem(liElement, () => openNavigationDocument(
+                                    options.app, liElement, notebookId));
                                 if (opening.started) void opening.finished.catch(() => undefined);
                             }
                             break;
@@ -385,36 +398,14 @@ export class Files extends Model {
                                         return openMarkdownFile(options.app, notebookId, target.getAttribute("data-path"),
                                             target.getAttribute("data-name"), position);
                                     }
-                                    if (position === "right") {
-                                        return openFileById({
-                                            app: options.app,
-                                            id: target.getAttribute("data-node-id"),
-                                            position: "right",
-                                            action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
-                                        });
-                                    }
-                                    if (position === "bottom") {
-                                        return openFileById({
-                                            app: options.app,
-                                            id: target.getAttribute("data-node-id"),
-                                            position: "bottom",
-                                            action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
-                                        });
+                                    if (position === "right" || position === "bottom") {
+                                        return openNavigationDocument(options.app, target, notebookId, position);
                                     }
                                     if (window.siyuan.config.fileTree.openFilesUseCurrentTab &&
                                         event.altKey && isOnlyMeta(event) && !event.shiftKey) {
-                                        return openFileById({
-                                            app: options.app,
-                                            removeCurrentTab: false,
-                                            id: target.getAttribute("data-node-id"),
-                                            action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
-                                        });
+                                        return openNavigationDocument(options.app, target, notebookId, undefined, false);
                                     }
-                                    return openFileById({
-                                        app: options.app,
-                                        id: target.getAttribute("data-node-id"),
-                                        action: [Constants.CB_GET_FOCUS, Constants.CB_GET_SCROLL],
-                                    });
+                                    return openNavigationDocument(options.app, target, notebookId);
                                 });
                                 if (!opening.started) return;
                                 void opening.finished.catch(() => undefined);
@@ -499,6 +490,23 @@ export class Files extends Model {
             rafId: null,
             sourceOnlyRoot: null
         };
+        let notebookRootDropTarget: HTMLElement;
+        const clearNotebookRootDropTarget = () => {
+            notebookRootDropTarget?.classList.remove("file-tree__notebook-drop-target");
+            notebookRootDropTarget = undefined;
+        };
+        const notebookRootDragSource = () => {
+            try {
+                return JSON.parse(window.siyuan.dragElement?.dataset.notebookRootDocument || "") as {
+                    kind: "sy" | "markdown",
+                    notebook: string,
+                    path: string,
+                    id: string,
+                };
+            } catch {
+                return undefined;
+            }
+        };
         this.element.addEventListener("dragend", (event) => {
             if (dragOverLastObj.rafId) {
                 cancelAnimationFrame(dragOverLastObj.rafId);
@@ -507,6 +515,7 @@ export class Files extends Model {
             dragOverLastObj.element = null;
             dragOverLastObj.positionY = null;
             dragOverLastObj.sourceOnlyRoot = null;
+            clearNotebookRootDropTarget();
             this.element.querySelectorAll(".dragover, .dragover__bottom, .dragover__top").forEach((item: HTMLElement) => {
                 item.classList.remove("dragover", "dragover__bottom", "dragover__top");
             });
@@ -533,6 +542,26 @@ export class Files extends Model {
             /// #endif
         });
         this.element.addEventListener("dragover", (event: DragEvent & { target: HTMLElement }) => {
+            if (event.dataTransfer.types.includes(NOTEBOOK_ROOT_DOCUMENT_MIME)) {
+                event.preventDefault();
+                hideDragTip();
+                const source = notebookRootDragSource();
+                const target = event.target.closest<HTMLElement>('li[data-type="navigation-root"]');
+                const targetNotebook = target?.parentElement?.getAttribute("data-url") || "";
+                const valid = !window.siyuan.config.readonly && target &&
+                    isNotebookRootMoveTarget(source?.notebook || "", targetNotebook);
+                if (notebookRootDropTarget !== target || !valid) {
+                    clearNotebookRootDropTarget();
+                }
+                if (valid && target) {
+                    notebookRootDropTarget = target;
+                    target.classList.add("file-tree__notebook-drop-target");
+                    event.dataTransfer.dropEffect = "move";
+                } else {
+                    event.dataTransfer.dropEffect = "none";
+                }
+                return;
+            }
             if (window.siyuan.config.readonly || !window.siyuan.dragElement || event.dataTransfer.types.includes(Constants.SIYUAN_DROP_TAB)) {
                 event.preventDefault();
                 return;
@@ -677,6 +706,7 @@ export class Files extends Model {
         this.element.addEventListener("dragleave", () => {
             counter--;
             if (counter === 0) {
+                clearNotebookRootDropTarget();
                 this.element.querySelectorAll(".dragover, .dragover__bottom, .dragover__top").forEach((item: HTMLElement) => {
                     item.classList.remove("dragover", "dragover__bottom", "dragover__top");
                 });
@@ -690,6 +720,29 @@ export class Files extends Model {
         this.element.addEventListener("drop", async (event: DragEvent & { target: HTMLElement }) => {
             counter = 0;
             hideDragTip();
+            if (event.dataTransfer.types.includes(NOTEBOOK_ROOT_DOCUMENT_MIME)) {
+                event.preventDefault();
+                const source = notebookRootDragSource();
+                const target = notebookRootDropTarget;
+                const targetNotebook = target?.parentElement?.getAttribute("data-url") || "";
+                clearNotebookRootDropTarget();
+                if (!source || !isNotebookRootMoveTarget(source.notebook, targetNotebook)) return;
+                if (window.siyuan.dragElement?.dataset.notebookRootDocument) {
+                    window.siyuan.dragElement.dataset.notebookRootDropAccepted = "true";
+                }
+                let moved = false;
+                if (source.kind === "markdown") {
+                    moved = await moveMarkdownFileTo(source.notebook, source.path, targetNotebook, "/");
+                } else {
+                    moved = (await fetchSyncPost("/api/filetree/moveDocs", {
+                        fromPaths: [source.path],
+                        toNotebook: targetNotebook,
+                        toPath: "/",
+                    })).code === 0;
+                }
+                if (!moved) showMessage(window.siyuan.languages.transactionError, 6000, "error");
+                return;
+            }
             window.siyuan.dragTitle = "";
             const newElement = this.element.querySelector(".dragover, .dragover__bottom, .dragover__top");
             if (!newElement) {

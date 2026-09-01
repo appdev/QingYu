@@ -113,7 +113,29 @@ export const onMessage = (app: App, data: IWebSocketData) => {
                 break;
             case "flushMarkdownForAssetScan": {
                 const editor = getMobileMarkdownEditor();
-                void handleMarkdownSaveBarrier(data.data, window.siyuan.ws.sessionId, editor ? [editor] : []);
+                void handleMarkdownSaveBarrier(data.data, window.siyuan.ws.sessionId,
+                    editor && !("notebookRoot" in editor) ? [editor] : []);
+                break;
+            }
+            case "reloadNotebookRoot": {
+                const editor = getMobileMarkdownEditor() as ReturnType<typeof getMobileMarkdownEditor> & {
+                    notebookRoot?: boolean;
+                    handleEvent?(data: IWebSocketData): void;
+                };
+                if (editor?.notebookRoot && editor.notebookId === data.data.box) {
+                    editor.handleEvent?.(data);
+                }
+                break;
+            }
+            case "renamenotebook": {
+                const editor = getMobileMarkdownEditor() as ReturnType<typeof getMobileMarkdownEditor> & {
+                    notebookRoot?: boolean;
+                    applyNotebookName?(name: string): void;
+                };
+                if (editor?.notebookRoot && editor.notebookId === data.data.box) {
+                    editor.applyNotebookName?.(data.data.name);
+                    (document.getElementById("toolbarName") as HTMLInputElement).value = data.data.name;
+                }
                 break;
             }
             case "readonly":
@@ -151,6 +173,11 @@ export const onMessage = (app: App, data: IWebSocketData) => {
             case "sortMarkdown":
             case "purgeMarkdown": {
                 markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
+                const editor = getMobileMarkdownEditor() as ReturnType<typeof getMobileMarkdownEditor> & {
+                    notebookRoot?: boolean;
+                    handleEvent?(data: IWebSocketData): void;
+                };
+                if (editor?.notebookRoot) editor.handleEvent?.(data);
                 break;
             }
             case "setLocalStorageVal":

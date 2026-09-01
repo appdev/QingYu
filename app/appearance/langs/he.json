@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "תצוגה מקדימה גדולה",
+  "notebookRootMasonry": "פריסת בנייה",
+  "notebookRootList": "רשימה",
+  "notebookRootPreviewFailed": "התצוגה המקדימה אינה זמינה",
+  "notebookRootEmpty": "אין מסמכים בתיקיית השורש",
   "deletedMarkdown": "Markdown שנמחק",
   "restoreLocation": "מיקום שחזור",
   "markdownTargetConflict": "כבר קיים קובץ Markdown במיקום השחזור.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "ברוכים הבאים ל-QingYu",
 	"onboardingDescription": "המחברת הראשונה שלך מוכנה. זה הזמן לכתוב את מה שעובר לך בראש!",
 	"importExistingData": "ייבוא נתונים קיימים",
-	"boxDocEnabled": "הפעלת מסמכי מחברת ברמה העליונה",
-	"boxDocEnabledTip": "כאשר האפשרות מופעלת, ניתן להשתמש גם במחברת עצמה לתיעוד תוכן",
+	"boxDocEnabled": "דף הבית של המחברת",
+	"boxDocEnabledTip": "פתיחת דפדפן מסמכי השורש בלחיצה על מחברת",
 	"insertImage": "הוספת תמונה",
 	"obsidianUnreadableFiles": "קבצים שאינם ניתנים לקריאה: ${count}; לא ניתן היה לקרוא קבצים אלה שאינם מוזכרים, והם לא ייובאו",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "ה־Vault שנבחר אינו מכיל קובץ Markdown קריא שאינו מוסתר",
 		"341": "לא ניתן למחוק או להעביר את מסמך המחברת ברמה העליונה",
 		"342": "המחברת שלי",
-		"343": "התחלה חדשה"
+		"343": "התחלה חדשה",
+		"344": "דף הבית הישן של המחברת „%s” נשמר בתיקיית השחזור; יש למזג אותו ידנית"
 	}
 	}

@@ -27,7 +27,19 @@ export const afterExport = (exportPath: string, msgId: string) => {
     /// #endif
 };
 
-export const exportImage = (id: string) => {
+export interface MarkdownImageExportReference {
+    notebook: string;
+    path: string;
+}
+
+export const exportImage = (id: string) => exportImageFromSource({id});
+
+export const exportMarkdownImage = (reference: MarkdownImageExportReference) => exportImageFromSource(reference);
+
+const exportImageFromSource = (source: {id: string} | MarkdownImageExportReference) => {
+    const markdown = "notebook" in source;
+    const previewURL = markdown ? "/api/export/exportMarkdownPreview" : "/api/export/exportPreviewHTML";
+    const previewBody = markdown ? source : {id: source.id};
     const exportDialog = new Dialog({
         disableAnimation: true,
         title: window.siyuan.languages.exportAsImage,
@@ -38,7 +50,7 @@ export const exportImage = (id: string) => {
     </div>
 </div>
 <div class="b3-dialog__action">
-    <label class="fn__flex">
+    <label class="fn__flex ${markdown ? "fn__none" : ""}">
         ${window.siyuan.languages.exportPDF5}
         <span class="fn__space"></span>
         <input id="keepFold" class="b3-switch fn__flex-center" type="checkbox" ${window.siyuan.storage[Constants.LOCAL_EXPORTIMG].keepFold ? "checked" : ""}>
@@ -123,8 +135,8 @@ export const exportImage = (id: string) => {
         btnsElement[1].setAttribute("disabled", "disabled");
         btnsElement[1].parentElement.insertAdjacentHTML("afterend", '<div class="fn__loading"><img height="128px" width="128px" src="stage/loading-pure.svg"></div>');
         window.siyuan.storage[Constants.LOCAL_EXPORTIMG].keepFold = foldElement.checked;
-        fetchPost("/api/export/exportPreviewHTML", {
-            id,
+        fetchPost(previewURL, {
+            ...previewBody,
             keepFold: foldElement.checked,
             image: true,
         }, (response) => {
@@ -184,8 +196,8 @@ export const exportImage = (id: string) => {
         btnsElement[1].removeAttribute("disabled");
         exportDialog.element.querySelector(".fn__loading").remove();
     };
-    fetchPost("/api/export/exportPreviewHTML", {
-        id,
+    fetchPost(previewURL, {
+        ...previewBody,
         keepFold: foldElement.checked,
         image: true,
     }, (response) => {

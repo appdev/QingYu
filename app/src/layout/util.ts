@@ -21,7 +21,7 @@ import {Backlink} from "./dock/Backlink";
 import {openFileById} from "../editor/util";
 import {isWindow} from "../util/functions";
 import {showMessage} from "../dialog/message";
-import {isEncryptedBox, parseUriInfo} from "../util/pathName";
+import {getNotebookName, isEncryptedBox, parseUriInfo} from "../util/pathName";
 import {Custom} from "./dock/Custom";
 import {newDatabaseRowModel} from "../editor/databaseRow";
 import {App} from "../index";
@@ -32,6 +32,7 @@ import {adjustDockPadding} from "./dock/util";
 import {setTitle} from "../util/processTitle";
 import {activateQueuedAVLocate, queueAVLocateRequest} from "../protyle/render/av/locate";
 import {getMarkdownEditorBySourceKey, MarkdownEditor} from "../markdown/MarkdownEditor";
+import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 import {serializeMarkdownEditorSessionState} from "../markdown/sessionState";
 import {MarkdownOutline} from "../markdown/MarkdownOutline";
 import {canRestoreMarkdownOutline, collectMarkdownLayoutSourceKeys, serializeMarkdownOutline} from "../markdown/outlineLayout";
@@ -418,7 +419,7 @@ export const JSONToCenter = (
             path: json.path,
             page: json.page,
         }));
-    } else if (json.instance === "MarkdownEditor") {
+    } else if (json.instance === "MarkdownEditor" || json.instance === "NotebookRoot") {
         (layout as Tab).headElement.setAttribute("data-initdata", JSON.stringify(json));
     } else if (json.instance === "MarkdownOutline") {
         const sourceExists = Boolean(getMarkdownEditorBySourceKey(json.sourceKey)) || markdownSourceKeys.has(json.sourceKey);
@@ -681,6 +682,10 @@ export const layoutToJSON = (layout: Layout | Wnd | Tab | Model, json: any, brea
         }
         json.instance = "MarkdownEditor";
         json.markdownSession = serializeMarkdownEditorSessionState(layout.getSessionState());
+    } else if (layout instanceof NotebookRoot) {
+        json.notebookId = layout.notebookId;
+        json.name = layout.listing.name;
+        json.instance = "NotebookRoot";
     } else if (layout instanceof MarkdownOutline) {
         Object.assign(json, serializeMarkdownOutline(layout.sourceKey));
     } else if (layout instanceof Backlink) {
@@ -875,7 +880,16 @@ export const newModelByInitData = (app: App, tab: Tab, json: any) => {
         }
         model = editorModel;
     } else if (json.instance === "MarkdownEditor") {
-        model = new MarkdownEditor({
+        if (json.notebookHome) {
+            model = new NotebookRoot({
+                app,
+                tab,
+                element: tab.panelElement,
+                notebookId: json.notebookId,
+                name: getNotebookName(json.notebookId),
+            });
+        } else {
+            model = new MarkdownEditor({
             app,
             tab,
             restoredLayout: true,
@@ -888,6 +902,15 @@ export const newModelByInitData = (app: App, tab: Tab, json: any) => {
                 notebookId: json.notebookId,
                 path: json.path,
             }),
+            });
+        }
+    } else if (json.instance === "NotebookRoot") {
+        model = new NotebookRoot({
+            app,
+            tab,
+            element: tab.panelElement,
+            notebookId: json.notebookId,
+            name: json.name || json.notebookId,
         });
     } else if (json.instance === "MarkdownOutline") {
         const editor = getMarkdownEditorBySourceKey(json.sourceKey);

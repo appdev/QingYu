@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "큰 미리보기",
+  "notebookRootMasonry": "메이슨리",
+  "notebookRootList": "목록",
+  "notebookRootPreviewFailed": "미리보기를 사용할 수 없음",
+  "notebookRootEmpty": "루트 문서가 없습니다",
   "deletedMarkdown": "삭제된 Markdown",
   "restoreLocation": "복원 위치",
   "markdownTargetConflict": "복원 위치에 Markdown 파일이 이미 있습니다.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "QingYu에 오신 것을 환영합니다",
 	"onboardingDescription": "첫 번째 노트북이 준비됐어요. 지금 떠오르는 생각을 적어 보세요!",
 	"importExistingData": "기존 데이터 가져오기",
-	"boxDocEnabled": "최상위 노트북 문서 활성화",
-	"boxDocEnabledTip": "활성화하면 노트북 자체에도 내용을 기록할 수 있습니다",
+	"boxDocEnabled": "노트북 홈",
+	"boxDocEnabledTip": "노트북을 클릭하면 루트 문서 브라우저를 엽니다",
 	"insertImage": "이미지 삽입",
 	"obsidianUnreadableFiles": "읽을 수 없는 파일: ${count}; 참조되지 않은 이 파일들은 읽을 수 없어 가져오지 않습니다",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "선택한 Vault에 읽을 수 있는 숨김이 아닌 Markdown 파일이 없습니다",
 		"341": "최상위 노트북 문서는 삭제하거나 이동할 수 없습니다",
 		"342": "내 노트북",
-		"343": "새로운 시작"
+		"343": "새로운 시작",
+		"344": "노트북 “%s”의 이전 홈을 복구 폴더에 저장했습니다. 수동으로 병합하세요"
 	}
 	}

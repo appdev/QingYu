@@ -201,7 +201,7 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.54.0
-	golang.org/x/image v0.44.0 // indirect
+	golang.org/x/image v0.44.0
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/cenkalti/backoff.v1 v1.1.0 // indirect
@@ -213,6 +213,8 @@ require (
 replace github.com/mattn/go-sqlite3 => github.com/88250/go-sqlite3 v1.14.13-0.20260704101239-6ddb6e555a1e
 
 replace github.com/pdfcpu/pdfcpu => github.com/88250/pdfcpu v0.3.14-0.20250424122812-f10e8d9d8d46
+
+replace github.com/siyuan-note/dejavu => github.com/appdev/dejavu v0.0.0-20260831110010-5294e71cfd45
 
 //replace github.com/88250/lute => F:\golang\gopath\src\github.com\88250\lute
 //replace github.com/siyuan-note/dejavu => D:\88250\dejavu

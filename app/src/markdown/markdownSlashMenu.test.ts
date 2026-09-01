@@ -66,7 +66,7 @@ const createMenu = (doc: string) => {
         value: () => ({bottom: 60, height: 20, left: 40, right: 41, top: 40, width: 1, x: 40, y: 40}),
     });
     controller = new MarkdownSlashMenuController(view, scrollElement);
-    return {controller, view};
+    return {controller, scrollElement, view};
 };
 
 test("renders the selected slash command at the caret and executes it", () => {
@@ -99,6 +99,27 @@ test("tracks keyboard selection and renders an empty result", () => {
     const empty = createMenu("/not-a-command");
     empty.controller.update();
     assert.equal(document.querySelector(".markdown-editor__slash-menu-empty")?.textContent, "No matching commands");
+});
+
+test("keeps the mounted menu and its scroll position during keyboard and editor scrolling", () => {
+    const editor = createMenu("/");
+    editor.controller.update();
+    const menu = document.querySelector<HTMLElement>('[data-markdown-slash-menu="true"]');
+    const items = menu?.querySelector<HTMLElement>(".b3-menu__items");
+    assert.ok(menu);
+    assert.ok(items);
+    items.scrollTop = 12;
+
+    assert.equal(runScopeHandlers(editor.view, new KeyboardEvent("keydown", {key: "ArrowDown"}), "editor"), true);
+    editor.controller.update();
+
+    assert.equal(document.querySelector('[data-markdown-slash-menu="true"]'), menu);
+    assert.equal(menu.querySelector(".b3-menu__item--current")?.getAttribute("data-command"), "block.heading.1");
+    assert.equal(items.scrollTop, 12);
+
+    editor.scrollElement.dispatchEvent(new Event("scroll"));
+    assert.equal(document.querySelector('[data-markdown-slash-menu="true"]'), menu);
+    assert.equal(items.scrollTop, 12);
 });
 
 test("closes on outside pointer input without reopening the unchanged query", () => {

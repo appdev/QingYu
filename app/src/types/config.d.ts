@@ -1684,6 +1684,7 @@ declare namespace Config {
         | IUILayoutTab
         | IUILayoutTabEditor
         | IUILayoutTabMarkdownEditor
+        | IUILayoutTabNotebookRoot
         | IUILayoutTabMarkdownOutline
         | IUILayoutTabAsset
         | IUILayoutTabCustom
@@ -1771,7 +1772,7 @@ declare namespace Config {
         /**
          * Tab content
          */
-        children: (IUILayoutTabAsset | IUILayoutTabBacklink | IUILayoutTabCustom | IUILayoutTabEditor | IUILayoutTabMarkdownEditor | IUILayoutTabMarkdownOutline)[];
+        children: (IUILayoutTabAsset | IUILayoutTabBacklink | IUILayoutTabCustom | IUILayoutTabEditor | IUILayoutTabMarkdownEditor | IUILayoutTabNotebookRoot | IUILayoutTabMarkdownOutline)[];
         /**
          * Tab icon
          */
@@ -1925,8 +1926,15 @@ declare namespace Config {
         instance: "MarkdownEditor";
         notebookId?: string;
         path?: string;
+        notebookHome?: boolean;
         externalCapabilityId?: string;
         markdownSession?: import("../markdown/sessionState").MarkdownEditorSessionState;
+    }
+
+    export interface IUILayoutTabNotebookRoot {
+        instance: "NotebookRoot";
+        notebookId: string;
+        name?: string;
     }
 
     export interface IUILayoutTabMarkdownOutline {

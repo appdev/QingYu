@@ -25,7 +25,7 @@ type FileTree struct {
 	OpenFilesUseCurrentTab   bool   `json:"openFilesUseCurrentTab"`   // 在当前页签打开文件
 	DocIconClickExpand       bool   `json:"docIconClickExpand"`       // 单击文档图标时展开或折叠下级文档
 	ParentDocClickExpand     bool   `json:"parentDocClickExpand"`     // 单击父文档标题时展开或折叠下级文档
-	BoxDocEnabled            *bool  `json:"boxDocEnabled"`            // 是否启用顶层笔记本文档
+	BoxDocEnabled            *bool  `json:"boxDocEnabled"`            // 是否启用笔记本首页
 	RefCreateSaveBox         string `json:"refCreateSaveBox"`         // 块引时新建文档存储笔记本
 	RefCreateSavePath        string `json:"refCreateSavePath"`        // 块引时新建文档存储路径
 	DocCreateSaveBox         string `json:"docCreateSaveBox"`         // 新建文档存储笔记本

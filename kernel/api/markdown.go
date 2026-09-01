@@ -91,6 +91,29 @@ func saveMarkdown(c *gin.Context) {
 	ret.Data, _ = markdownResult(ret, document, err)
 }
 
+func ensureMarkdownDocumentIdentity(c *gin.Context) {
+	ret := gulu.Ret.NewResult()
+	defer c.JSON(http.StatusOK, ret)
+
+	arg, ok := util.JsonArg(c, ret)
+	if !ok {
+		return
+	}
+	var notebook, p, revision, operationID string
+	var forceNew bool
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("notebook", &notebook, true, true),
+		util.BindJsonArg("path", &p, true, true),
+		util.BindJsonArg("revision", &revision, true, true),
+		util.BindJsonArg("operationID", &operationID, true, true),
+		util.BindJsonArg("forceNew", &forceNew, false, false),
+	) || util.InvalidIDPattern(notebook, ret) {
+		return
+	}
+	document, err := model.EnsureMarkdownDocumentIdentity(notebook, p, revision, operationID, forceNew)
+	ret.Data, _ = markdownResult(ret, document, err)
+}
+
 func renameMarkdown(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)

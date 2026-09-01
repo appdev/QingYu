@@ -1,6 +1,6 @@
 import assert = require("node:assert/strict");
 import {test} from "node:test";
-import {MarkdownEditorRegistration, MarkdownEditorRegistry} from "./markdownEditorRegistry";
+import {flushMarkdownEditors, MarkdownEditorRegistration, MarkdownEditorRegistry} from "./markdownEditorRegistry";
 
 test("migrates source subscribers atomically when an editor is renamed", () => {
     const registry = new MarkdownEditorRegistry<object>();
@@ -67,4 +67,27 @@ test("does not resurrect an editor when an async save registers after destroy", 
     registration.register("after");
     assert.equal(registry.get("before"), undefined);
     assert.equal(registry.get("after"), undefined);
+});
+
+test("export barrier flushes every matching editor and reports a conflict", async () => {
+    const calls: string[] = [];
+    const result = await flushMarkdownEditors([{
+        focusPosition() {},
+        setOutlineOpen() {},
+        subscribeOutline: () => () => undefined,
+        async flushForExport() {
+            calls.push("first");
+            return true;
+        },
+    }, {
+        focusPosition() {},
+        setOutlineOpen() {},
+        subscribeOutline: () => () => undefined,
+        async flushForExport() {
+            calls.push("second");
+            return false;
+        },
+    }]);
+    assert.deepEqual(calls, ["first", "second"]);
+    assert.equal(result, false);
 });

@@ -178,6 +178,32 @@ func GetDocHistoryContent(historyPath, keyword string, highlight bool) (id, root
 		logging.LogErrorf("read file [%s] failed: %s", historyPath, err)
 		return
 	}
+	if strings.HasSuffix(filepath.ToSlash(historyPath), "/.qingyu/home.md") {
+		rel := strings.TrimPrefix(filepath.ToSlash(historyPath), filepath.ToSlash(util.HistoryDir))
+		parts := strings.Split(strings.TrimPrefix(rel, "/"), "/")
+		if len(parts) < 3 {
+			err = errors.New("invalid notebook home history path")
+			return
+		}
+		boxID := parts[1]
+		if IsEncryptedBox(boxID) {
+			HoldBoxReadLock(boxID)
+			defer ReleaseBoxReadLock(boxID)
+			dek, dekErr := GetDEKIfUnlocked(boxID)
+			if dekErr != nil {
+				err = errors.New(Conf.Language(314))
+				return
+			}
+			data, err = DecryptNotebookInternalFile(boxID, notebookHomePath, dek, data)
+			if err != nil {
+				return
+			}
+		}
+		id, rootID = boxID, boxID
+		isLargeDoc = 1024*1024 <= len(data)
+		content = NewLute().Md2BlockDOM(string(data), false)
+		return
+	}
 
 	// 加密笔记本的历史是密文，按路径里的 boxID 解密后解析
 	relPath := strings.TrimPrefix(filepath.ToSlash(historyPath), filepath.ToSlash(util.HistoryDir))
@@ -272,6 +298,9 @@ func RollbackDocHistory(historyPath string) (err error) {
 	historyPath, err = validateHistoryPath(historyPath)
 	if err != nil {
 		return
+	}
+	if strings.HasSuffix(filepath.ToSlash(historyPath), "/.qingyu/home.md") {
+		return rollbackNotebookHomeHistory(historyPath)
 	}
 
 	FlushTxQueue()
@@ -469,6 +498,40 @@ func RollbackDocHistory(historyPath string) (err error) {
 		}
 	}()
 	return nil
+}
+
+func rollbackNotebookHomeHistory(historyPath string) error {
+	rel := strings.TrimPrefix(filepath.ToSlash(historyPath), filepath.ToSlash(util.HistoryDir))
+	parts := strings.Split(strings.TrimPrefix(rel, "/"), "/")
+	if len(parts) < 3 {
+		return errors.New("invalid notebook home history path")
+	}
+	boxID := parts[1]
+	if nil == Conf.Box(boxID) {
+		return ErrBoxNotFound
+	}
+	data, err := filelock.ReadFile(historyPath)
+	if err != nil {
+		return err
+	}
+	if IsEncryptedBox(boxID) {
+		HoldBoxReadLock(boxID)
+		defer ReleaseBoxReadLock(boxID)
+		dek, dekErr := GetDEKIfUnlocked(boxID)
+		if dekErr != nil {
+			return errors.New(Conf.Language(314))
+		}
+		data, err = DecryptNotebookInternalFile(boxID, notebookHomePath, dek, data)
+		if err != nil {
+			return err
+		}
+	}
+	home, err := GetNotebookHome(boxID)
+	if err != nil {
+		return err
+	}
+	_, err = SaveNotebookHome(boxID, string(data), home.Revision, "history-rollback")
+	return err
 }
 
 // loadTreeByData0 从已解密的 JSON 字节数据加载 tree（不走文件系统，不涉及加解密）。
@@ -703,8 +766,10 @@ func buildSearchHistoryQueryFilter(query, op, box, table string, typ int) (stmt 
 
 	if HistoryTypeDocName == typ || HistoryTypeDoc == typ || HistoryTypeDocID == typ {
 		if HistoryTypeDocName == typ || HistoryTypeDoc == typ {
-			stmt += " AND path LIKE '%/" + box + "/%' AND path LIKE '%.sy'"
+			stmt += " AND path LIKE '%/" + box + "/%' AND (path LIKE '%.sy' OR path LIKE '%/.qingyu/home.md')"
 		}
+	} else if HistoryTypeNotebookHome == typ {
+		stmt += " AND path LIKE '%/" + box + "/.qingyu/home.md'"
 	} else if HistoryTypeAsset == typ {
 		stmt += " AND path LIKE '%/assets/%'"
 	} else if HistoryTypeDatabase == typ {
@@ -907,7 +972,17 @@ func (box *Box) recentModifiedDocs() (ret []string) {
 		if nil != err || nil == d {
 			return nil
 		}
-		if isSkipFile(d.Name()) {
+		rel := filepath.ToSlash(strings.TrimPrefix(path, filepath.Join(util.DataDir, box.ID)))
+		rel = strings.TrimPrefix(rel, "/")
+		isNotebookHome := rel == notebookHomePath
+		isNotebookInternalDir := rel == ".qingyu"
+		if strings.HasPrefix(rel, ".qingyu/") && !isNotebookHome {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !isNotebookInternalDir && !isNotebookHome && isSkipFile(d.Name()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -1070,11 +1145,12 @@ func fullReindexHistory() {
 var validOps = []string{HistoryOpClean, HistoryOpUpdate, HistoryOpDelete, HistoryOpFormat, HistoryOpSync, HistoryOpReplace, HistoryOpOutline}
 
 const (
-	HistoryTypeDocName  = 0 // Search docs by doc name
-	HistoryTypeDoc      = 1 // Search docs by doc name and content
-	HistoryTypeAsset    = 2 // Search assets
-	HistoryTypeDocID    = 3 // Search docs by doc id
-	HistoryTypeDatabase = 4 // Search databases by database id
+	HistoryTypeDocName      = 0 // Search docs by doc name
+	HistoryTypeDoc          = 1 // Search docs by doc name and content
+	HistoryTypeAsset        = 2 // Search assets
+	HistoryTypeDocID        = 3 // Search docs by doc id
+	HistoryTypeDatabase     = 4 // Search databases by database id
+	HistoryTypeNotebookHome = 5 // Search notebook homes
 )
 
 func indexHistoryDir(name string, luteEngine *lute.Lute) {
@@ -1094,9 +1170,11 @@ func indexHistoryDir(name string, luteEngine *lute.Lute) {
 	created := fmt.Sprintf("%d", tt.Unix())
 
 	entryPath := filepath.Join(util.HistoryDir, name)
-	var docs, assets, databases []string
+	var docs, assets, databases, notebookHomes []string
 	filelock.Walk(entryPath, func(path string, d fs.DirEntry, err error) error {
-		if strings.HasSuffix(d.Name(), ".sy") {
+		if strings.HasSuffix(filepath.ToSlash(path), "/.qingyu/home.md") {
+			notebookHomes = append(notebookHomes, path)
+		} else if strings.HasSuffix(d.Name(), ".sy") {
 			docs = append(docs, path)
 		} else if strings.Contains(path, "assets"+string(os.PathSeparator)) {
 			assets = append(assets, path)
@@ -1157,6 +1235,35 @@ func indexHistoryDir(name string, luteEngine *lute.Lute) {
 			Path:    p,
 			Created: created,
 		})
+	}
+	for _, homePath := range notebookHomes {
+		relHome := strings.TrimPrefix(homePath, entryPath+string(os.PathSeparator))
+		relHome = filepath.ToSlash(relHome)
+		parts := strings.SplitN(relHome, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		boxID := parts[0]
+		data, readErr := filelock.ReadFile(homePath)
+		if readErr != nil {
+			continue
+		}
+		content := string(data)
+		if IsEncryptedBox(boxID) {
+			content = ""
+			if dek, dekErr := GetDEKIfUnlocked(boxID); dekErr == nil {
+				if plaintext, decryptErr := DecryptNotebookInternalFile(boxID, notebookHomePath, dek, data); decryptErr == nil {
+					content = string(plaintext)
+				}
+			}
+		}
+		title := boxID
+		if boxConf := (&Box{ID: boxID}).GetConf(); nil != boxConf && boxConf.Name != "" {
+			title = boxConf.Name
+		}
+		p := filepath.ToSlash(strings.TrimPrefix(homePath, util.HistoryDir+string(os.PathSeparator)))
+		histories = append(histories, &sql.History{ID: boxID, Type: HistoryTypeNotebookHome, Op: op,
+			Title: title, Content: content, Path: p, Created: created})
 	}
 
 	for _, asset := range assets {

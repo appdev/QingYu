@@ -76,15 +76,15 @@ func TestMarkdownFileLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Path != "/notes.md" || created.Content != "" {
+	if created.Path != "/notes.md" || created.DocumentID == "" || InspectMarkdownDocumentID([]byte(created.Content)).State != "valid" {
 		t.Fatalf("unexpected created document: %+v", created)
 	}
 
-	saved, err := SaveMarkdown(box.ID, created.Path, "# Notes\n", created.Revision)
+	saved, err := SaveMarkdown(box.ID, created.Path, created.Content+"# Notes\n", created.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Content != "# Notes\n" || saved.Revision == created.Revision {
+	if !strings.HasSuffix(saved.Content, "# Notes\n") || saved.DocumentID != created.DocumentID || saved.Revision == created.Revision {
 		t.Fatalf("unexpected saved document: %+v", saved)
 	}
 	if _, err = SaveMarkdown(box.ID, created.Path, "stale", created.Revision); !errors.Is(err, ErrMarkdownConflict) {
@@ -95,7 +95,7 @@ func TestMarkdownFileLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renamed.Path != "/renamed.markdown" || renamed.Content != "# Notes\n" {
+	if renamed.Path != "/renamed.markdown" || renamed.Content != saved.Content || renamed.DocumentID != created.DocumentID {
 		t.Fatalf("unexpected renamed document: %+v", renamed)
 	}
 	if err = RemoveMarkdown(box.ID, renamed.Path); err != nil {
@@ -103,6 +103,67 @@ func TestMarkdownFileLifecycle(t *testing.T) {
 	}
 	if _, err = os.Stat(filepath.Join(util.DataDir, box.ID, "renamed.markdown")); !os.IsNotExist(err) {
 		t.Fatalf("Markdown file should be removed, got %v", err)
+	}
+}
+
+func TestMarkdownDocumentIdentityLifecycle(t *testing.T) {
+	box := setupMarkdownTest(t)
+	created, err := CreateMarkdown(box.ID, "/", "identity.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.DocumentID == "" {
+		t.Fatal("new Markdown document has no stable ID")
+	}
+
+	renamed, err := RenameMarkdownWithRevision(box.ID, created.Path, "renamed.md", created.Revision, "identity-rename")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.DocumentID != created.DocumentID {
+		t.Fatal("rename changed the stable ID")
+	}
+
+	duplicated, err := DuplicateMarkdownWithOperationID(box.ID, renamed.Path, renamed.Revision, "identity-duplicate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicated.DocumentID == "" || duplicated.DocumentID == renamed.DocumentID {
+		t.Fatal("duplicate did not receive a distinct stable ID")
+	}
+
+	if _, err = EnsureMarkdownDocumentIdentity(box.ID, renamed.Path, "stale", "identity-stale", false); !errors.Is(err, ErrMarkdownConflict) {
+		t.Fatalf("expected identity revision conflict, got %v", err)
+	}
+	unchanged, err := EnsureMarkdownDocumentIdentity(box.ID, renamed.Path, renamed.Revision, "identity-noop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Revision != renamed.Revision || unchanged.DocumentID != renamed.DocumentID {
+		t.Fatal("valid identity no-op changed the document")
+	}
+	forced, err := EnsureMarkdownDocumentIdentity(box.ID, renamed.Path, renamed.Revision, "identity-force", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced.DocumentID == renamed.DocumentID || forced.Revision == renamed.Revision {
+		t.Fatal("force-new did not replace the stable ID")
+	}
+
+	legacyPath := filepath.Join(util.DataDir, box.ID, "legacy.md")
+	if err = os.WriteFile(legacyPath, []byte("# Legacy\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := GetMarkdown(box.ID, "/legacy.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ensured, err := EnsureMarkdownDocumentIdentity(box.ID, legacy.Path, legacy.Revision, "identity-create", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensured.DocumentID == "" || !strings.HasSuffix(ensured.Content, "# Legacy\n") {
+		t.Fatal("legacy document identity creation lost content")
 	}
 }
 
@@ -264,7 +325,7 @@ func TestDuplicateAndMoveMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved, err := SaveMarkdown(box.ID, created.Path, "# Notes\n", created.Revision)
+	saved, err := SaveMarkdown(box.ID, created.Path, created.Content+"# Notes\n", created.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,8 +336,11 @@ func TestDuplicateAndMoveMarkdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if duplicated.Path != "/folder/notes 3.md" || duplicated.Content != saved.Content {
+	if duplicated.Path != "/folder/notes 3.md" || duplicated.Content == saved.Content || duplicated.DocumentID == saved.DocumentID {
 		t.Fatalf("unexpected duplicate: %+v", duplicated)
+	}
+	if strings.TrimSpace(strings.Replace(duplicated.Content, duplicated.DocumentID, saved.DocumentID, 1)) != strings.TrimSpace(saved.Content) {
+		t.Fatalf("duplicate changed bytes other than the stable ID: %q", duplicated.Content)
 	}
 	if _, err = DuplicateMarkdown(box.ID, saved.Path, created.Revision); !errors.Is(err, ErrMarkdownConflict) {
 		t.Fatalf("expected duplicate conflict, got %v", err)
@@ -626,7 +690,7 @@ func TestMoveMarkdownReportsRollbackCollisionAndPreservesRecoveryFile(t *testing
 	if globErr != nil || len(recoveryFiles) != 1 {
 		t.Fatalf("recovery staging missing: %v, %v", recoveryFiles, globErr)
 	}
-	if got, readErr := os.ReadFile(recoveryFiles[0]); readErr != nil || string(got) != "" {
+	if got, readErr := os.ReadFile(recoveryFiles[0]); readErr != nil || string(got) != created.Content {
 		t.Fatalf("recovery staging was not retained: %q, %v", got, readErr)
 	}
 	journals, globErr := filepath.Glob(filepath.Join(util.DataDir, box.ID, ".siyuan", "markdown-transactions", "*", "transaction.json"))
@@ -936,7 +1000,7 @@ func TestSaveMarkdownRecoversStagedTransactionOnNextEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Content != "" {
+	if recovered.Content != created.Content {
 		t.Fatalf("staged save was committed during recovery: %q", recovered.Content)
 	}
 }

@@ -134,7 +134,7 @@ export const createSiyuanMarkraExtension = ({
         }),
         placeholder(window.siyuan?.languages?.emptyPlaceholder ?? ""),
         editorTheme,
-        markdownSelectAllExtension(),
+        markdownSelectAllExtension(mode),
         codeMirrorSearchPlugin(),
         codeMirrorLocationCue(),
     ];

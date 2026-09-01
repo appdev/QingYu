@@ -117,6 +117,14 @@ class App {
                             case "syncMergeResult":
                                 reloadSync(this, data.data);
                                 break;
+                            case "reloadNotebookRoot":
+                                getAllModels().notebookRoot.forEach((root) => root.handleEvent(data));
+                                break;
+                            case "renamenotebook":
+                                getAllModels().notebookRoot.forEach((root) => {
+                                    if (root.notebookId === data.data.box) root.applyNotebookName(data.data.name);
+                                });
+                                break;
                             case "readonly":
                                 window.siyuan.config.editor.readOnly = data.data;
                                 refreshMarkdownEditorsForConfigMessage(data.cmd, getAllModels().markdown);
@@ -167,6 +175,7 @@ class App {
                             case "sortMarkdown":
                             case "purgeMarkdown": {
                                 markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
+                                getAllModels().notebookRoot.forEach((root) => root.handleEvent(data));
                                 break;
                             }
                             case "closeBox":

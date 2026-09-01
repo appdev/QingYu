@@ -40,6 +40,8 @@ import {
     renameMarkdownFile,
 } from "../markdown/fileActions";
 import {getDocumentCreateMenuItems} from "../markdown/documentCreateMenu";
+import {createMarkdownExportMenu} from "../markdown/export/menu";
+import {executeMarkdownExport} from "../markdown/export/actions";
 import {openMarkdownFile} from "../editor/util";
 /// #if !BROWSER
 import {openNewWindowByMarkdown} from "../window/openNewWindow";
@@ -549,6 +551,13 @@ export const initFileMenu = (app: App, notebookId: string, pathString: string, l
             submenu: openSubmenu,
         }).element);
         /// #endif
+        window.siyuan.menus.menu.append(new MenuItem({id: "separator_export", type: "separator"}).element);
+        window.siyuan.menus.menu.append(new MenuItem(createMarkdownExportMenu({
+            notebook: notebookId,
+            path: pathString,
+        }, (format, reference) => {
+            void executeMarkdownExport(format, reference);
+        })).element);
         return window.siyuan.menus.menu;
     }
     /// #if !MOBILE

@@ -28,6 +28,8 @@ const commandIcon = (command: string) => command.startsWith("block.heading.")
 
 export class MarkdownSlashMenuController {
     private element?: HTMLElement;
+    private items?: HTMLElement;
+    private renderedActions?: string;
     private destroyed = false;
 
     constructor(private view: EditorView, private scrollElement: HTMLElement) {
@@ -52,6 +54,7 @@ export class MarkdownSlashMenuController {
         }
         this.render(menu);
         this.position(coordinates);
+        this.scrollSelectionIntoView();
     }
 
     public close() {
@@ -74,7 +77,57 @@ export class MarkdownSlashMenuController {
 
     private render(menu: MarkraSlashMenuState) {
         const ownerDocument = this.view.dom.ownerDocument;
-        this.removeElement();
+        const items = this.ensureElement();
+        const renderedActions = JSON.stringify(menu.actions.map((action) => [action.command, action.label]));
+
+        if (renderedActions !== this.renderedActions) {
+            items.replaceChildren();
+            items.scrollTop = 0;
+            if (menu.actions.length === 0) {
+                const empty = this.view.dom.ownerDocument.createElement("div");
+                empty.className = "markdown-editor__slash-menu-empty";
+                empty.textContent = window.siyuan?.languages?.emptyContent ?? "No matching commands";
+                items.appendChild(empty);
+            } else {
+                menu.actions.forEach((action) => {
+                    const button = ownerDocument.createElement("button");
+                    button.className = "b3-menu__item";
+                    button.dataset.command = action.command;
+                    button.setAttribute("role", "menuitem");
+                    button.type = "button";
+
+                    const icon = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+                    icon.classList.add("b3-menu__icon");
+                    const use = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "use");
+                    use.setAttribute("href", `#${commandIcon(action.command)}`);
+                    icon.appendChild(use);
+                    const label = ownerDocument.createElement("span");
+                    label.className = "b3-menu__label";
+                    label.textContent = action.label;
+                    button.append(icon, label);
+                    button.addEventListener("mousedown", (event) => event.preventDefault());
+                    button.addEventListener("click", () => {
+                        runMarkraSlashMenuAction(this.view, action.command);
+                        this.update();
+                    });
+                    items.appendChild(button);
+                });
+            }
+            this.renderedActions = renderedActions;
+        }
+
+        items.querySelectorAll<HTMLElement>(".b3-menu__item").forEach((item, index) => {
+            const selected = index === menu.selectedIndex;
+            item.classList.toggle("b3-menu__item--current", selected);
+            item.setAttribute("aria-selected", String(selected));
+        });
+    }
+
+    private ensureElement() {
+        if (this.element && this.items) {
+            return this.items;
+        }
+        const ownerDocument = this.view.dom.ownerDocument;
         const element = ownerDocument.createElement("div");
         element.className = "b3-menu markdown-editor__slash-menu";
         element.dataset.markdownSlashMenu = "true";
@@ -82,44 +135,25 @@ export class MarkdownSlashMenuController {
         element.setAttribute("aria-label", window.siyuan?.languages?.insert ?? "Insert block");
         const items = ownerDocument.createElement("div");
         items.className = "b3-menu__items";
-
-        if (menu.actions.length === 0) {
-            const empty = ownerDocument.createElement("div");
-            empty.className = "markdown-editor__slash-menu-empty";
-            empty.textContent = window.siyuan?.languages?.emptyContent ?? "No matching commands";
-            items.appendChild(empty);
-        } else {
-            menu.actions.forEach((action, index) => {
-                const button = ownerDocument.createElement("button");
-                button.className = "b3-menu__item";
-                button.classList.toggle("b3-menu__item--current", index === menu.selectedIndex);
-                button.dataset.command = action.command;
-                button.setAttribute("aria-selected", String(index === menu.selectedIndex));
-                button.setAttribute("role", "menuitem");
-                button.type = "button";
-
-                const icon = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
-                icon.classList.add("b3-menu__icon");
-                const use = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "use");
-                use.setAttribute("href", `#${commandIcon(action.command)}`);
-                icon.appendChild(use);
-                const label = ownerDocument.createElement("span");
-                label.className = "b3-menu__label";
-                label.textContent = action.label;
-                button.append(icon, label);
-                button.addEventListener("mousedown", (event) => event.preventDefault());
-                button.addEventListener("click", () => {
-                    runMarkraSlashMenuAction(this.view, action.command);
-                    this.update();
-                });
-                items.appendChild(button);
-            });
-        }
-
         element.appendChild(items);
         ownerDocument.body.appendChild(element);
         this.element = element;
-        element.querySelector<HTMLElement>(".b3-menu__item--current")?.scrollIntoView?.({block: "nearest"});
+        this.items = items;
+        return items;
+    }
+
+    private scrollSelectionIntoView() {
+        const selected = this.items?.querySelector<HTMLElement>(".b3-menu__item--current");
+        if (!selected || !this.items?.clientHeight) {
+            return;
+        }
+        const selectedTop = selected.offsetTop;
+        const selectedBottom = selectedTop + selected.offsetHeight;
+        if (selectedTop < this.items.scrollTop) {
+            this.items.scrollTop = selectedTop;
+        } else if (selectedBottom > this.items.scrollTop + this.items.clientHeight) {
+            this.items.scrollTop = selectedBottom - this.items.clientHeight;
+        }
     }
 
     private position(coordinates: {bottom: number, left: number}) {
@@ -136,7 +170,16 @@ export class MarkdownSlashMenuController {
     }
 
     private updatePosition = () => {
-        this.update();
+        if (!this.element) {
+            return;
+        }
+        const menu = getMarkraSlashMenuState(this.view);
+        const coordinates = menu.open && menu.to !== null ? this.view.coordsAtPos(menu.to) : null;
+        if (!coordinates) {
+            this.removeElement();
+            return;
+        }
+        this.position(coordinates);
     };
 
     private handleOutsidePointer = (event: Event) => {
@@ -150,5 +193,7 @@ export class MarkdownSlashMenuController {
     private removeElement() {
         this.element?.remove();
         this.element = undefined;
+        this.items = undefined;
+        this.renderedActions = undefined;
     }
 }

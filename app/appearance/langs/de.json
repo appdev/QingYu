@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Große Vorschau",
+  "notebookRootMasonry": "Mosaik",
+  "notebookRootList": "Liste",
+  "notebookRootPreviewFailed": "Vorschau nicht verfügbar",
+  "notebookRootEmpty": "Keine Dokumente im Stammverzeichnis",
   "deletedMarkdown": "Gelöschtes Markdown",
   "restoreLocation": "Wiederherstellungsort",
   "markdownTargetConflict": "Am Wiederherstellungsort ist bereits eine Markdown-Datei vorhanden.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Willkommen bei QingYu",
 	"onboardingDescription": "Ihr erstes Notizbuch ist bereit. Halten Sie fest, was Ihnen gerade durch den Kopf geht!",
 	"importExistingData": "Vorhandene Daten importieren",
-	"boxDocEnabled": "Notebook-Dokumente auf oberster Ebene aktivieren",
-	"boxDocEnabledTip": "Wenn aktiviert, kann auch das Notizbuch selbst zum Erfassen von Inhalten verwendet werden",
+	"boxDocEnabled": "Notizbuch-Startseite",
+	"boxDocEnabledTip": "Beim Klicken auf ein Notizbuch den Dokumentbrowser der Stammebene öffnen",
 	"insertImage": "Bild einfügen",
 	"obsidianUnreadableFiles": "Nicht lesbare Dateien: ${count}; diese nicht referenzierten Dateien konnten nicht gelesen werden und werden nicht importiert",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "Der ausgewählte Vault enthält keine lesbare, nicht ausgeblendete Markdown-Datei",
 		"341": "Das Notizbuchdokument auf oberster Ebene kann nicht gelöscht oder verschoben werden",
 		"342": "Mein Notizbuch",
-		"343": "Ein neuer Anfang"
+		"343": "Ein neuer Anfang",
+		"344": "Die bisherige Startseite des Notizbuchs „%s“ wurde im Wiederherstellungsordner gespeichert; führen Sie sie manuell zusammen"
 	}
 	}

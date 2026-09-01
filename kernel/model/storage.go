@@ -725,20 +725,18 @@ func getRecentDocs(sortBy string) (ret []*RecentDoc, err error) {
 			logging.LogErrorf("update storage [recent-doc] failed in getRecentDocs: %s", errSet)
 		}
 	}
-	if !IsBoxDocEnabled() {
-		filtered := make([]*RecentDoc, 0, len(ret))
-		for _, doc := range ret {
-			if doc.Kind == "markdown" {
-				filtered = append(filtered, doc)
-				continue
-			}
-			bt := bts[doc.RootID]
-			if nil == bt || !IsBoxDoc(bt.BoxID, bt.RootID) {
-				filtered = append(filtered, doc)
-			}
+	filtered := make([]*RecentDoc, 0, len(ret))
+	for _, doc := range ret {
+		if doc.Kind == "markdown" {
+			filtered = append(filtered, doc)
+			continue
 		}
-		ret = filtered
+		bt := bts[doc.RootID]
+		if nil == bt || !IsBoxDoc(bt.BoxID, bt.RootID) {
+			filtered = append(filtered, doc)
+		}
 	}
+	ret = filtered
 
 	// 根据排序参数进行排序
 	switch sortBy {

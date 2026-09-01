@@ -932,10 +932,6 @@ func SetBoxIcon(boxID, icon string) {
 		logging.LogErrorf("save box icon [%s] failed: %s", boxID, err)
 		return
 	}
-	if err := setBoxDocIcon(boxID, icon); err != nil {
-		logging.LogErrorf("set box document icon [%s] failed: %s", boxID, err)
-		return
-	}
 	IncSync()
 }
 

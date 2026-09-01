@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "大预览",
+  "notebookRootMasonry": "瀑布流",
+  "notebookRootList": "列表",
+  "notebookRootPreviewFailed": "预览不可用",
+  "notebookRootEmpty": "根目录中没有文档",
   "deletedMarkdown": "已删除的 Markdown",
   "restoreLocation": "恢复位置",
   "markdownTargetConflict": "恢复位置已存在 Markdown 文件。",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "欢迎使用轻语",
 	"onboardingDescription": "你的第一个笔记本已经准备好啦，写下此刻的想法吧！",
 	"importExistingData": "导入已有数据",
-	"boxDocEnabled": "启用顶层笔记本文档",
-	"boxDocEnabledTip": "启用后笔记本本身也可用于记录内容",
+	"boxDocEnabled": "笔记本首页",
+	"boxDocEnabledTip": "点击笔记本时打开直属根级文档浏览器",
 	"insertImage": "插入图片",
 	"obsidianUnreadableFiles": "无法读取的文件：${count}，这些未被引用的文件无法读取且不会导入",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "所选 Vault 中没有可读取的非隐藏 Markdown 文件",
 		"341": "顶层笔记本文档不能被删除或移动",
 		"342": "我的笔记本",
-		"343": "全新的开始"
+		"343": "全新的开始",
+		"344": "笔记本「%s」的旧首页已保存到恢复目录，请手动合并"
 	}
 	}

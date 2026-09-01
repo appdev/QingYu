@@ -39,6 +39,7 @@ export interface MarkdownManagementCommitRequest {
         from?: MarkdownDocumentReference;
         to?: MarkdownDocumentReference;
         revision?: string;
+        title?: string;
     };
 }
 
@@ -87,6 +88,15 @@ export const handleMarkdownManagementCommit = async (
     try {
         if (mutation.kind === "remove") {
             await Promise.all(matches.map((editor) => editor.close?.()));
+        } else if (mutation.kind === "save" && mutation.revision) {
+            matches.forEach((editor) => editor.applyWorkspaceDocumentRevision?.(mutation.revision));
+        } else if (mutation.kind === "rename" && mutation.to && mutation.revision && mutation.title) {
+            matches.forEach((editor) => editor.applyWorkspaceDocumentRename?.(
+                mutation.to.notebook,
+                mutation.to.path,
+                mutation.revision,
+                mutation.title,
+            ));
         } else if (mutation.to && mutation.revision) {
             matches.forEach((editor) => editor.applyWorkspaceDocumentReference?.(
                 mutation.to.notebook,
@@ -117,7 +127,9 @@ export const markdownCoordinatorEditor = (editor: {
     const candidate = editor as typeof editor & {
         getRevision?(): string;
         isReadOnly?(): boolean;
+        applyWorkspaceDocumentRevision?(revision: string): void;
         applyWorkspaceDocumentReference?(notebook: string, path: string, revision: string): void;
+        applyWorkspaceDocumentRename?(notebook: string, path: string, revision: string, title: string): void;
         close?(): void | Promise<void>;
     };
     return ({
@@ -127,8 +139,11 @@ export const markdownCoordinatorEditor = (editor: {
         flush: () => editor.flush(),
         getRevision: () => candidate.getRevision?.() ?? "",
         isReadOnly: () => candidate.isReadOnly?.() ?? false,
+        applyWorkspaceDocumentRevision: (revision) => candidate.applyWorkspaceDocumentRevision?.(revision),
         applyWorkspaceDocumentReference: (notebook, path, revision) =>
             candidate.applyWorkspaceDocumentReference?.(notebook, path, revision),
+        applyWorkspaceDocumentRename: (notebook, path, revision, title) =>
+            candidate.applyWorkspaceDocumentRename?.(notebook, path, revision, title),
         close: () => candidate.close?.(),
     });
 };

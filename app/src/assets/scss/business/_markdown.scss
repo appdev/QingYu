@@ -1619,14 +1619,18 @@
 }
 
 .markdown-editor__slash-menu {
-  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  max-height: min(320px, calc(100vh - 24px));
   min-width: 240px;
-  overflow-y: auto;
+  overflow: hidden;
   position: fixed;
   z-index: 310;
 
   .b3-menu__items {
-    max-height: inherit;
+    min-height: 0;
+    overscroll-behavior: contain;
+    overflow-y: auto;
   }
 }
 

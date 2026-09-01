@@ -39,6 +39,33 @@ func TestGetBlocksInBoxPreservesInputOrder(t *testing.T) {
 	}
 }
 
+func TestQueryFirstContentByRootIDsInBox(t *testing.T) {
+	testDB, boxID := useEncryptedQueryTestDB(t)
+	insertEncryptedQueryTestBlock(t, testDB, "root-a", "", "root-a", "d")
+	insertEncryptedQueryTestBlock(t, testDB, "root-b", "", "root-b", "d")
+	insertEncryptedQueryTestBlock(t, testDB, "empty-a", "root-a", "root-a", "p")
+	insertEncryptedQueryTestBlock(t, testDB, "content-a", "root-a", "root-a", "p")
+	insertEncryptedQueryTestBlock(t, testDB, "later-a", "root-a", "root-a", "p")
+	insertEncryptedQueryTestBlock(t, testDB, "content-b", "root-b", "root-b", "p")
+	if _, err := testDB.Exec("UPDATE blocks SET content = ? WHERE id = ?", "第一段正文", "content-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Exec("UPDATE blocks SET content = ? WHERE id = ?", "后续正文", "later-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Exec("UPDATE blocks SET content = ? WHERE id = ?", "第二篇正文", "content-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	previews := QueryFirstContentByRootIDsInBox([]string{"root-a", "root-b"}, boxID)
+	if previews["root-a"] != "第一段正文" || previews["root-b"] != "第二篇正文" || len(previews) != 2 {
+		t.Fatalf("unexpected previews: %#v", previews)
+	}
+	if empty := QueryFirstContentByRootIDsInBox(nil, boxID); len(empty) != 0 {
+		t.Fatalf("empty root IDs returned content: %#v", empty)
+	}
+}
+
 func TestQueryRefsByDefIDInBoxContainsChildren(t *testing.T) {
 	testDB, boxID := useEncryptedQueryTestDB(t)
 	insertEncryptedQueryTestBlock(t, testDB, "root", "", "root", "d")

@@ -52,6 +52,7 @@ import {setStorageVal} from "../protyle/util/compatibility";
 import {setTitle} from "../util/processTitle";
 import {dragOverScroll} from "../boot/globalEvent/dragover";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 import {MarkdownOutline} from "../markdown/MarkdownOutline";
 import {newMarkdownFile} from "../markdown/fileActions";
 import {createMarkdownFromTabBarAction} from "../markdown/tabBarCreate";
@@ -808,6 +809,10 @@ export class Wnd {
             return;
         }
         if (model instanceof MarkdownOutline) {
+            model.destroy();
+            return;
+        }
+        if (model instanceof NotebookRoot) {
             model.destroy();
             return;
         }

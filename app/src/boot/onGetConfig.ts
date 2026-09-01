@@ -266,18 +266,19 @@ ${response.data.replace("%pages", "<span class=totalPages></span>").replace("%pa
             let pdfFilePath = path.join(savePath, replaceLocalPath(ipcData.rootTitle) + ".pdf");
             const responseUnique = await fetchSyncPost("/api/file/getUniqueFilename", {path: pdfFilePath});
             pdfFilePath = responseUnique.data.path;
-            fetchPost("/api/export/exportHTML", {
+            const exportURL = ipcData.markdown ? "/api/export/exportMarkdownHTML" : "/api/export/exportHTML";
+            const exportBody = ipcData.markdown ? {...ipcData.markdown, savePath} : {
                 id: ipcData.rootId,
                 pdf: true,
                 removeAssets: ipcData.removeAssets,
                 merge: ipcData.mergeSubdocs,
                 savePath,
-            }, () => {
+            };
+            fetchPost(exportURL, exportBody, () => {
                 fs.writeFileSync(pdfFilePath, pdfData);
                 ipcRenderer.send(Constants.SIYUAN_CMD, {cmd: "destroy", webContentsId: ipcData.webContentsId});
-                fetchPost("/api/export/processPDF", {
-                    id: ipcData.rootId,
-                    merge: ipcData.mergeSubdocs,
+                fetchPost(ipcData.markdown ? "/api/export/processMarkdownPDF" : "/api/export/processPDF", {
+                    ...(ipcData.markdown ? {} : {id: ipcData.rootId, merge: ipcData.mergeSubdocs}),
                     path: pdfFilePath,
                     removeAssets: ipcData.removeAssets,
                     watermark: ipcData.watermark

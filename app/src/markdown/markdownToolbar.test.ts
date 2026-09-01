@@ -34,3 +34,16 @@ test("more menu exposes checked editor preferences through existing commands", (
     items.forEach((item) => item.click?.(undefined as never, undefined as never));
     assert.deepEqual(commands, ["toggle-typewriter", "toggle-justify", "toggle-rtl"]);
 });
+
+test("more menu appends the shared export submenu only when available", () => {
+    const exportMenu: IMenu = {id: "export", type: "submenu", submenu: []};
+    const items = createMarkdownMoreMenuItems(
+        {justify: false, rtl: false, typewriterMode: false},
+        {justify: "Justify", rtl: "RTL", typewriterMode: "Typewriter"},
+        () => undefined,
+        exportMenu,
+    );
+    assert.deepEqual(items.map((item) => item.id), [
+        "markdownTypewriter", "markdownJustify", "markdownRTL", "separator_export", "export",
+    ]);
+});

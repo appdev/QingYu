@@ -5,8 +5,10 @@ import {
     duplicateMarkdownDocument,
     moveMarkdownDocument,
     renameMarkdownDocument,
+    renameMarkdownDocumentTitle,
     recycleMarkdownDocument,
 } from "./documentManagement";
+import {readMarkdownFrontmatter} from "./markra-core/markdown/frontmatter";
 
 const ref = {kind: "markdown" as const, notebook: "20260820000000-source", path: "/a.md"};
 
@@ -200,6 +202,103 @@ test("renames once and migrates every split editor through the shared callback",
         notebook: ref.notebook,
         path: "/renamed.md",
     }, "revision-5"]]);
+});
+
+test("renames a Markdown title only after saving the matching Front Matter title", async () => {
+    let path = ref.path;
+    let content = "Body";
+    let revision = "revision-1";
+    let operation = 0;
+    const calls: string[] = [];
+    const result = await renameMarkdownDocumentTitle(ref, "renamed.markdown", {
+        editors: [],
+        createOperationID: () => `operation-${++operation}`,
+        loadRevision: async () => revision,
+        request: async (url, body) => {
+            calls.push(url);
+            if (url === "/api/markdown/get") {
+                return {code: 0, data: {path, content, revision}};
+            }
+            if (url === "/api/markdown/save") {
+                assert.equal(body.revision, revision);
+                content = body.content as string;
+                revision = `revision-${operation + 1}`;
+                return {code: 0, data: {path, content, revision, operationID: body.operationID}};
+            }
+            assert.equal(url, "/api/markdown/rename");
+            assert.equal(body.revision, revision);
+            path = "/renamed.markdown";
+            return {code: 0, data: {path, content, revision, operationID: body.operationID}};
+        },
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, ["/api/markdown/get", "/api/markdown/save", "/api/markdown/rename"]);
+    assert.equal(path, "/renamed.markdown");
+    const metadata = readMarkdownFrontmatter(content);
+    assert.equal(metadata.status === "valid" && metadata.title, "renamed");
+});
+
+test("restores the original Front Matter when the file rename fails", async () => {
+    const originalContent = "---\ntitle: Old\n---\n\nBody";
+    let content = originalContent;
+    let revision = "revision-1";
+    let operation = 0;
+    let saves = 0;
+    const result = await renameMarkdownDocumentTitle(ref, "occupied.md", {
+        editors: [],
+        createOperationID: () => `operation-${++operation}`,
+        loadRevision: async () => revision,
+        request: async (url, body) => {
+            if (url === "/api/markdown/get") return {code: 0, data: {content, revision}};
+            if (url === "/api/markdown/save") {
+                saves++;
+                content = body.content as string;
+                revision = `revision-${saves + 1}`;
+                return {code: 0, data: {content, revision, operationID: body.operationID}};
+            }
+            return {code: 409, data: {revision}};
+        },
+    });
+
+    assert.equal(result, false);
+    assert.equal(saves, 2);
+    assert.equal(content, originalContent);
+});
+
+test("does not rename a file with malformed Front Matter", async () => {
+    const requests: string[] = [];
+    const result = await renameMarkdownDocumentTitle(ref, "renamed.md", {
+        editors: [],
+        createOperationID: () => "operation-malformed",
+        loadRevision: async () => "revision-1",
+        request: async (url) => {
+            requests.push(url);
+            return {code: 0, data: {content: "---\ntitle: [\n---\nBody", revision: "revision-1"}};
+        },
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(requests, ["/api/markdown/get"]);
+});
+
+test("does not rename when saving the Front Matter title conflicts", async () => {
+    const requests: string[] = [];
+    const result = await renameMarkdownDocumentTitle(ref, "renamed.md", {
+        editors: [],
+        createOperationID: () => "operation-conflict",
+        loadRevision: async () => "revision-1",
+        request: async (url) => {
+            requests.push(url);
+            if (url === "/api/markdown/get") {
+                return {code: 0, data: {content: "---\ntitle: Old\n---\nBody", revision: "revision-1"}};
+            }
+            return {code: 409, data: {revision: "revision-2"}};
+        },
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(requests, ["/api/markdown/get", "/api/markdown/save"]);
 });
 
 test("does not migrate split editors when rename is rejected", async () => {

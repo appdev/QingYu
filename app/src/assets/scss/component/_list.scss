@@ -14,6 +14,11 @@
       background-color: var(--b3-list-hover);
     }
 
+    &.file-tree__notebook-drop-target {
+      background-color: var(--b3-theme-primary-lightest);
+      box-shadow: inset 0 0 0 2px var(--b3-theme-primary-lighter);
+    }
+
     &.dragover,
     &.dragover__top,
     &.dragover__bottom {

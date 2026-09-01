@@ -178,7 +178,6 @@ func initDBTables() {
 			logging.LogFatalf(logging.ExitCodeUnavailableDatabase, "create fts tables failed: %s", err)
 		}
 	}
-
 	_, err = db.Exec("DROP TABLE IF EXISTS spans")
 	if err != nil {
 		logging.LogFatalf(logging.ExitCodeUnavailableDatabase, "drop table [spans] failed: %s", err)

@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Veľká ukážka",
+  "notebookRootMasonry": "Mozaika",
+  "notebookRootList": "Zoznam",
+  "notebookRootPreviewFailed": "Ukážka nie je k dispozícii",
+  "notebookRootEmpty": "V koreňovom priečinku nie sú žiadne dokumenty",
   "deletedMarkdown": "Odstránený Markdown",
   "restoreLocation": "Miesto obnovenia",
   "markdownTargetConflict": "V mieste obnovenia už existuje súbor Markdown.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Vitajte v QingYu",
 	"onboardingDescription": "Váš prvý zápisník je pripravený. Zapíšte si, čo vám práve napadlo!",
 	"importExistingData": "Importovať existujúce údaje",
-	"boxDocEnabled": "Povoliť dokumenty zápisníka najvyššej úrovne",
-	"boxDocEnabledTip": "Po povolení možno na zaznamenávanie obsahu použiť aj samotný zápisník",
+	"boxDocEnabled": "Domovská stránka zápisníka",
+	"boxDocEnabledTip": "Po kliknutí na zápisník otvoriť prehliadač koreňových dokumentov",
 	"insertImage": "Vložiť obrázok",
 	"obsidianUnreadableFiles": "Nečitateľné súbory: ${count}; tieto súbory bez odkazov sa nepodarilo prečítať a nebudú importované",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "Vybraný Vault neobsahuje čitateľný neskrývaný súbor Markdown",
 		"341": "Dokument zápisníka najvyššej úrovne nemožno odstrániť ani presunúť",
 		"342": "Môj zápisník",
-		"343": "Nový začiatok"
+		"343": "Nový začiatok",
+		"344": "Pôvodná domovská stránka zápisníka „%s“ bola uložená do priečinka obnovenia; zlúčte ju ručne"
 	}
 	}

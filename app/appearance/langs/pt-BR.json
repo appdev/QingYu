@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Visualização grande",
+  "notebookRootMasonry": "Mosaico",
+  "notebookRootList": "Lista",
+  "notebookRootPreviewFailed": "Visualização indisponível",
+  "notebookRootEmpty": "Nenhum documento na raiz",
   "deletedMarkdown": "Markdown excluído",
   "restoreLocation": "Local de restauração",
   "markdownTargetConflict": "Já existe um arquivo Markdown no local de restauração.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Boas-vindas ao QingYu",
 	"onboardingDescription": "Seu primeiro caderno está pronto. Anote o que está passando pela sua cabeça!",
 	"importExistingData": "Importar dados existentes",
-	"boxDocEnabled": "Habilitar documentos de nível superior do caderno",
-	"boxDocEnabledTip": "Quando ativado, o próprio caderno também pode ser usado para registrar conteúdo",
+	"boxDocEnabled": "Página inicial do caderno",
+	"boxDocEnabledTip": "Abrir o navegador de documentos raiz ao clicar em um caderno",
 	"insertImage": "Inserir imagem",
 	"obsidianUnreadableFiles": "Arquivos ilegíveis: ${count}; não foi possível ler estes arquivos sem referência e eles não serão importados",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "O Vault selecionado não contém um arquivo Markdown legível e não oculto",
 		"341": "O documento de nível superior do caderno não pode ser removido nem movido",
 		"342": "Meu caderno",
-		"343": "Um novo começo"
+		"343": "Um novo começo",
+		"344": "A página inicial anterior do caderno “%s” foi salva na pasta de recuperação; mescle-a manualmente"
 	}
 	}

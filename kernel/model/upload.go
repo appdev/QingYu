@@ -226,7 +226,15 @@ func Upload(c *gin.Context) {
 	}
 	assetsDirPath := filepath.Join(util.DataDir, "assets")
 	var uploadBoxID string // 记录上传目标 boxID，供 writeAssetFile 判断是否需加密
-	if nil != form.Value["id"] {
+	if nil != form.Value["notebook"] {
+		uploadBoxID = form.Value["notebook"][0]
+		if !ast.IsNodeIDPattern(uploadBoxID) || nil == Conf.Box(uploadBoxID) {
+			ret.Code = -1
+			ret.Msg = Conf.Language(71)
+			return
+		}
+		assetsDirPath = filepath.Join(util.DataDir, uploadBoxID, "assets")
+	} else if nil != form.Value["id"] {
 		id := form.Value["id"][0]
 		bt := treenode.GetBlockTree(id)
 		if nil == bt {
@@ -249,7 +257,7 @@ func Upload(c *gin.Context) {
 	}
 
 	relAssetsDirPath := "assets"
-	if nil != form.Value["assetsDirPath"] {
+	if uploadBoxID == "" && nil != form.Value["assetsDirPath"] {
 		relAssetsDirPath = form.Value["assetsDirPath"][0]
 		assetsDirPath = filepath.Join(util.DataDir, relAssetsDirPath)
 		if !util.IsAbsPathInWorkspace(assetsDirPath) {
@@ -457,12 +465,12 @@ func Upload(c *gin.Context) {
 			}
 
 			p := strings.TrimPrefix(path.Join(relAssetsDirPath, fName), "/")
-			if uploadBoxID != "" && IsEncryptedBox(uploadBoxID) {
+			if uploadBoxID != "" {
 				p += "?box=" + uploadBoxID
 			}
 			succMap[baseName] = p
-			if uploadBoxID == "" || !IsEncryptedBox(uploadBoxID) {
-				cache.SetAssetHash(hash, p) // 加密笔记本不写全局 cache
+			if uploadBoxID == "" {
+				cache.SetAssetHash(hash, p) // 笔记本级资源不写全局 cache，避免跨笔记本去重污染
 			}
 		}
 	}

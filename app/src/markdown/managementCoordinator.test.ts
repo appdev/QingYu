@@ -84,6 +84,52 @@ test("commit migrates every matching editor and acknowledges only after asynchro
     assert.deepEqual(calls, [["target", "/b.md", "r2"]]);
 });
 
+test("save commit updates revisions without migrating unchanged document references", async () => {
+    const calls: unknown[][] = [];
+    const editor = {
+        managementID: "split", notebookId: "box", path: "/a.md", revision: "r1", flush: async () => true,
+        applyWorkspaceDocumentRevision(revision: string) {
+            calls.push(["revision", revision]);
+            this.revision = revision;
+        },
+        applyWorkspaceDocumentReference(notebook: string, path: string, revision: string) {
+            calls.push(["reference", notebook, path, revision]);
+        },
+    };
+
+    assert.deepEqual(await handleMarkdownManagementCommit({
+        phase: "commit", generation: 2, operationID: "save",
+        mutation: {kind: "save", from: ref, to: ref, revision: "r2"},
+    }, [editor]), {phase: "commit", generation: 2, operationID: "save", ok: true});
+    assert.deepEqual(calls, [["revision", "r2"]]);
+    assert.equal(editor.revision, "r2");
+});
+
+test("semantic rename commits the title together with the new document reference", async () => {
+    const calls: unknown[][] = [];
+    const editor = {
+        notebookId: "box",
+        path: "/a.md",
+        flush: async () => true,
+        applyWorkspaceDocumentRename(notebook: string, path: string, revision: string, title: string) {
+            calls.push([notebook, path, revision, title]);
+        },
+        applyWorkspaceDocumentReference() {
+            throw new Error("semantic rename must not use the path-only callback");
+        },
+    };
+
+    const result = await handleMarkdownManagementCommit({
+        phase: "commit",
+        generation: 3,
+        operationID: "rename-title",
+        mutation: {kind: "rename", from: ref, to: {...ref, path: "/renamed.md"}, revision: "r2", title: "renamed"},
+    }, [editor]);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [["box", "/renamed.md", "r2", "renamed"]]);
+});
+
 test("commit waits until every matching editor closes after a remove", async () => {
     const closed: string[] = [];
     const result = await handleMarkdownManagementCommit({

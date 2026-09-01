@@ -84,6 +84,8 @@ import {isMac} from "../protyle/util/compatibility";
 import {MarkdownEditorRegistration, markdownEditorRegistry} from "./markdownEditorRegistry";
 import {MarkdownTableAppearanceController} from "./markdownTableAppearance";
 import {createMarkdownMoreMenuItems, syncMarkdownModeToggle} from "./markdownToolbar";
+import {canExportWorkspaceMarkdown, createMarkdownExportMenu} from "./export/menu";
+import {executeMarkdownExport} from "./export/actions";
 import {getAllModels} from "../layout/getAll";
 import {
     abortMarkdownMutationAcrossRenderers,
@@ -158,6 +160,7 @@ export class MarkdownEditor extends Model {
     private typewriterMode = DEFAULT_MARKDOWN_TYPEWRITER_MODE;
     private typewriterModeConfigured = false;
     private outlineOpen = false;
+    private displayName = "";
 
     constructor(options: {
         app: App,
@@ -351,6 +354,10 @@ export class MarkdownEditor extends Model {
         }
     }
 
+    public async flushForExport() {
+        return this.flush();
+    }
+
     public discardChanges() {
         this.discarded = true;
         this.dirty = false;
@@ -409,11 +416,17 @@ export class MarkdownEditor extends Model {
     }
 
     public get sourceKey() {
-        return this.externalCapabilityId ? `external:${this.externalCapabilityId}` : `workspace:${this.notebookId}:${this.path}`;
+        return this.source.key;
     }
 
     public getRevision() {
         return this.revision;
+    }
+
+    public applyWorkspaceDocumentRevision(revision: string) {
+        if (this.source.kind === "workspace") {
+            this.revision = revision;
+        }
     }
 
     public applyWorkspaceDocumentReference(notebookId: string, path: string, revision: string) {
@@ -428,6 +441,37 @@ export class MarkdownEditor extends Model {
         this.renderBreadcrumb();
         this.setPreview(this.preview, false);
         saveLayout();
+    }
+
+    public applyWorkspaceDocumentRename(notebookId: string, path: string, revision: string, title: string) {
+        if (this.source.kind !== "workspace") return;
+        this.applyWorkspaceDocumentReference(notebookId, path, revision);
+        if (!this.view) return;
+        const source = this.view.state.doc.toString();
+        const patched = upsertMarkdownFrontmatterMetadata(source, {title});
+        if (!patched.ok) return;
+        if (patched.changed) {
+            const selection = this.view.state.selection.main;
+            const anchor = this.documentScroll?.captureAnchor();
+            this.view.dispatch({
+                changes: {from: 0, to: source.length, insert: patched.source},
+                selection: {
+                    anchor: Math.min(selection.anchor, patched.source.length),
+                    head: Math.min(selection.head, patched.source.length),
+                },
+            });
+            if (anchor) this.documentScroll?.restoreAnchor(anchor);
+        }
+        window.clearTimeout(this.saveTimer);
+        window.clearTimeout(this.titleTimer);
+        this.dirty = false;
+        this.lastSaveStatus = "saved";
+        this.revision = revision;
+        this.titlePlaceholder = false;
+        this.titleElement.removeAttribute("placeholder");
+        this.setStatus("saved");
+        this.renderMetadata();
+        this.outlinePublisher.publish();
     }
 
     public hasUnsavedChanges() {
@@ -547,6 +591,12 @@ export class MarkdownEditor extends Model {
 
     private openMoreMenu(button: HTMLElement) {
         const preferences = readMarkdownEditorPreferences();
+        const sourceKind = this.externalCapabilityId ? "external" : "workspace";
+        const exportMenu = canExportWorkspaceMarkdown(sourceKind)
+            ? createMarkdownExportMenu({notebook: this.notebookId, path: this.path}, (format, reference) => {
+                void executeMarkdownExport(format, reference);
+            })
+            : undefined;
         window.siyuan.menus.menu.remove();
         createMarkdownMoreMenuItems({
             justify: preferences.justify,
@@ -556,7 +606,7 @@ export class MarkdownEditor extends Model {
             justify: window.siyuan.languages.justify,
             rtl: window.siyuan.languages.rtl,
             typewriterMode: window.siyuan.languages.typewriterMode,
-        }, (command) => executeMarkdownEditorCommand(this, command)).forEach((item) => {
+        }, (command) => executeMarkdownEditorCommand(this, command), exportMenu).forEach((item) => {
             window.siyuan.menus.menu.append(new MenuItem(item).element);
         });
         const rect = button.getBoundingClientRect();
@@ -717,6 +767,26 @@ export class MarkdownEditor extends Model {
             return false;
         }
         const previousTitle = this.fileStem();
+        if (this.source.titlePersistence === "source-name") {
+            try {
+                const response = await this.source.rename({name: title, revision: this.revision});
+                if (response.status !== "ok") {
+                    this.syncTitleElement(previousTitle);
+                    return false;
+                }
+                this.displayName = response.document.name;
+                this.syncTitleElement(this.displayName);
+                this.updateTitle(this.displayName);
+                this.renderBreadcrumb();
+                saveLayout();
+                this.titlePlaceholder = false;
+                this.titleElement.removeAttribute("placeholder");
+                return true;
+            } catch {
+                this.syncTitleElement(previousTitle);
+                return false;
+            }
+        }
         const requestedName = preserveExtension ? `${title}${this.fileExtension()}` : title;
         const lowerName = requestedName.toLowerCase();
         const requestedExtension = lowerName.endsWith(".markdown")
@@ -981,6 +1051,7 @@ export class MarkdownEditor extends Model {
             return;
         }
         this.path = document.displayPath;
+        this.displayName = document.name;
         this.revision = document.revision;
         const initialMetadata = readMarkdownFrontmatter(document.content);
         this.titlePlaceholder = this.source.kind === "workspace" && isGeneratedUntitledMarkdownTitle(
@@ -1127,6 +1198,7 @@ export class MarkdownEditor extends Model {
     }
 
     private scheduleSourceTitleSync() {
+        if (this.source.titlePersistence === "source-name") return;
         const metadata = this.view && readMarkdownFrontmatter(this.view.state.doc.toString());
         if (!metadata || metadata.status !== "valid" || !metadata.title || metadata.title === this.fileStem()) return;
         window.clearTimeout(this.titleTimer);
@@ -1192,7 +1264,9 @@ export class MarkdownEditor extends Model {
         this.metadataElement.classList.toggle("protyle-background--enable", editable);
         syncMarkdownTitleEditable(this.titleElement, editable);
         if (document.activeElement !== this.titleElement) {
-            this.syncTitleElement(metadata.status === "valid" && metadata.title || this.fileStem());
+            this.syncTitleElement(this.source.titlePersistence === "source-name"
+                ? this.displayName
+                : metadata.status === "valid" && metadata.title || this.fileStem());
         }
         const tags = metadata.status === "valid" ? metadata.tags : [];
         this.tagsElement.innerHTML = tags.map((tag) => `<span class="b3-chip b3-chip--middle b3-chip--pointer">${escapeHtml(tag)}${editable ? `<svg class="b3-chip__close" data-type="markdown-tag-remove" data-value="${escapeHtml(tag)}"><use xlink:href="#iconClose"></use></svg>` : ""}</span>`).join("");
@@ -1406,6 +1480,7 @@ export class MarkdownEditor extends Model {
     }
 
     private fileName() {
+        if (this.source?.titlePersistence === "source-name") return `${this.displayName || this.notebookId}.md`;
         return this.path.substring(this.path.lastIndexOf("/") + 1);
     }
 

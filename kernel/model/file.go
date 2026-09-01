@@ -190,7 +190,7 @@ func SearchDocs(keyword string, excludeIDs []string) (ret []map[string]string) {
 		if nil == b {
 			continue
 		}
-		if !IsBoxDocEnabled() && IsBoxDoc(rootBlock.Box, rootBlock.RootID) {
+		if IsBoxDoc(rootBlock.Box, rootBlock.RootID) {
 			continue
 		}
 		hPath := b.Name + rootBlock.HPath
@@ -324,14 +324,7 @@ func ListDocTree(boxID, listPath string, sortMode int, showHidden bool, maxListC
 		return nil, 0, errors.New(Conf.Language(0))
 	}
 
-	boxConf := box.GetConf()
-
-	if util.SortModeUnassigned == sortMode {
-		sortMode = Conf.FileTree.Sort
-		if util.SortModeFileTree != boxConf.SortMode {
-			sortMode = boxConf.SortMode
-		}
-	}
+	sortMode = EffectiveFileTreeSortMode(box, sortMode)
 
 	var files []*FileInfo
 	start := time.Now()
@@ -534,6 +527,17 @@ func ListDocTree(boxID, listPath string, sortMode int, showHidden bool, maxListC
 		logging.LogInfof("sort docs elapsed [%dms]", elapsed)
 	}
 	return
+}
+
+func EffectiveFileTreeSortMode(box *Box, requested int) int {
+	if requested != util.SortModeUnassigned {
+		return requested
+	}
+	sortMode := Conf.FileTree.Sort
+	if boxConf := box.GetConf(); util.SortModeFileTree != boxConf.SortMode {
+		sortMode = boxConf.SortMode
+	}
+	return sortMode
 }
 
 func GetDoc(startID, endID, id string, index int, query string, queryTypes, querySubTypes map[string]bool, queryMethod, mode int, size int, isBacklink bool, originalRefBlockIDs map[string]string, highlight bool) (
@@ -1361,11 +1365,6 @@ func GetFullHPathByID(id string) (hPath string, err error) {
 
 func GetIDsByHPath(hpath, boxID string) (ret []string, err error) {
 	ret = []string{}
-	if IsBoxDocEnabled() && "/" == hpath {
-		if box := Conf.Box(boxID); nil != box {
-			return []string{box.ID}, nil
-		}
-	}
 	roots := treenode.GetBlockTreeRootsByHPath(boxID, hpath)
 	if 1 > len(roots) {
 		return

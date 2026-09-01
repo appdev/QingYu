@@ -38,6 +38,7 @@ export interface MarkdownSavedAsset {
 
 export interface MarkdownDocumentSource {
     readonly kind: "workspace" | "external";
+    readonly titlePersistence: "frontmatter-and-name" | "source-name";
     readonly key: string;
     readonly readOnly: boolean;
     load(): Promise<MarkdownDocument>;
@@ -137,6 +138,7 @@ export const createWorkspaceMarkdownDocumentSource = (options: WorkspaceSourceOp
     };
     return {
         kind: "workspace",
+        titlePersistence: "frontmatter-and-name",
         get key() { return `workspace:${notebookId}:${documentPath}`; },
         get readOnly() { return isReadOnly(); },
         async load() {

@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "大預覽",
+  "notebookRootMasonry": "瀑布流",
+  "notebookRootList": "列表",
+  "notebookRootPreviewFailed": "預覽無法使用",
+  "notebookRootEmpty": "根目錄中沒有文件",
   "deletedMarkdown": "已刪除的 Markdown",
   "restoreLocation": "還原位置",
   "markdownTargetConflict": "還原位置已存在 Markdown 檔案。",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "歡迎使用轻语",
 	"onboardingDescription": "你的第一個筆記本已經準備好啦，寫下此刻的想法吧！",
 	"importExistingData": "匯入已有資料",
-	"boxDocEnabled": "啟用頂層筆記本文檔",
-	"boxDocEnabledTip": "啟用後筆記本本身也可用於記錄內容",
+	"boxDocEnabled": "筆記本首頁",
+	"boxDocEnabledTip": "點擊筆記本時開啟直屬根層文件瀏覽器",
 	"insertImage": "插入圖片",
 	"obsidianUnreadableFiles": "無法讀取的檔案：${count}，這些未被引用的檔案無法讀取且不會匯入",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "所選 Vault 中沒有可讀取的非隱藏 Markdown 檔案",
 		"341": "頂層筆記本文檔不能被刪除或移動",
 		"342": "我的筆記本",
-		"343": "全新的開始"
+		"343": "全新的開始",
+		"344": "筆記本「%s」的舊首頁已儲存到復原目錄，請手動合併"
 	}
 	}

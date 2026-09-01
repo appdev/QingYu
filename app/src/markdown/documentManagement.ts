@@ -1,3 +1,5 @@
+import {upsertMarkdownFrontmatterTitle} from "./markra-core/markdown/frontmatter";
+
 export interface MarkdownDocumentReference {
     kind: "markdown";
     notebook: string;
@@ -13,7 +15,9 @@ export interface MarkdownDocumentEditor {
     flush(): Promise<boolean>;
     getRevision?(): string;
     isReadOnly?(): boolean;
+    applyWorkspaceDocumentRevision?(revision: string): void;
     applyWorkspaceDocumentReference?(notebook: string, path: string, revision: string): void;
+    applyWorkspaceDocumentRename?(notebook: string, path: string, revision: string, title: string): void;
     close?(): void | Promise<void>;
 }
 
@@ -107,6 +111,7 @@ export interface MarkdownManagementMutation {
     from?: MarkdownDocumentReference;
     to?: MarkdownDocumentReference;
     revision?: string;
+    title?: string;
 }
 
 export interface MarkdownManagementPreparedMutation {
@@ -685,10 +690,124 @@ export const duplicateMarkdownDocument = async (
     return true;
 };
 
+const markdownTitleFromName = (name: string) => {
+    const trimmed = name.trim();
+    const lowerName = trimmed.toLowerCase();
+    const extension = lowerName.endsWith(".markdown")
+        ? ".markdown"
+        : lowerName.endsWith(".md") ? ".md" : "";
+    return extension ? trimmed.slice(0, -extension.length) : trimmed;
+};
+
+const commitPreparedMarkdownContent = async (
+    ref: MarkdownDocumentReference,
+    content: string,
+    revision: string,
+    operationID: string,
+    lease: string,
+    dependencies: MarkdownMutationDependencies,
+) => {
+    beginMarkdownManagementOperation(operationID);
+    let response: MarkdownMutationResponse;
+    try {
+        response = await dependencies.request("/api/markdown/save", {
+            notebook: ref.notebook,
+            path: ref.path,
+            content,
+            revision,
+            operationID,
+        });
+    } catch {
+        await abortPreparedMarkdownMutation(dependencies, operationID, lease);
+        failMarkdownManagementOperation(operationID);
+        return null;
+    }
+    if (response.code !== 0 || !response.data || response.data.operationID !== operationID ||
+        typeof response.data.revision !== "string") {
+        await abortPreparedMarkdownMutation(dependencies, operationID, lease);
+        failMarkdownManagementOperation(operationID);
+        return null;
+    }
+    const nextRevision = response.data.revision;
+    if (dependencies.commitMutation && !await dependencies.commitMutation(operationID, lease, {
+        kind: "save",
+        from: ref,
+        to: ref,
+        revision: nextRevision,
+    })) {
+        await abortPreparedMarkdownMutation(dependencies, operationID, lease);
+        failMarkdownManagementOperation(operationID);
+        return null;
+    }
+    completeMarkdownManagementOperation(operationID);
+    return nextRevision;
+};
+
+const saveMarkdownContent = async (
+    ref: MarkdownDocumentReference,
+    content: string,
+    dependencies: MarkdownMutationDependencies,
+) => {
+    const operationID = dependencies.createOperationID?.() ?? createMarkdownManagementOperationID();
+    const prepared = await mutationRevision(ref, dependencies, operationID);
+    if (!prepared) return null;
+    return commitPreparedMarkdownContent(ref, content, prepared.revision, operationID, prepared.lease, dependencies);
+};
+
+export const renameMarkdownDocumentTitle = async (
+    ref: MarkdownDocumentReference,
+    name: string,
+    dependencies: MarkdownMutationDependencies,
+) => {
+    const title = markdownTitleFromName(name);
+    if (!title) return false;
+
+    const saveOperationID = dependencies.createOperationID?.() ?? createMarkdownManagementOperationID();
+    const prepared = await mutationRevision(ref, dependencies, saveOperationID);
+    if (!prepared) return false;
+    let loaded: MarkdownMutationResponse;
+    try {
+        loaded = await dependencies.request("/api/markdown/get", {notebook: ref.notebook, path: ref.path});
+    } catch {
+        await abortPreparedMarkdownMutation(dependencies, saveOperationID, prepared.lease);
+        return false;
+    }
+    if (loaded.code !== 0 || !loaded.data || typeof loaded.data.content !== "string" ||
+        loaded.data.revision !== prepared.revision) {
+        await abortPreparedMarkdownMutation(dependencies, saveOperationID, prepared.lease);
+        return false;
+    }
+
+    const originalContent = loaded.data.content;
+    const patched = upsertMarkdownFrontmatterTitle(originalContent, title);
+    if (!patched.ok) {
+        await abortPreparedMarkdownMutation(dependencies, saveOperationID, prepared.lease);
+        return false;
+    }
+    if (patched.changed) {
+        const savedRevision = await commitPreparedMarkdownContent(
+            ref,
+            patched.source,
+            prepared.revision,
+            saveOperationID,
+            prepared.lease,
+            dependencies,
+        );
+        if (!savedRevision) return false;
+    } else {
+        await abortPreparedMarkdownMutation(dependencies, saveOperationID, prepared.lease);
+    }
+
+    if (await renameMarkdownDocument(ref, name, dependencies, {title})) return true;
+    if (patched.changed) await saveMarkdownContent(ref, originalContent, dependencies);
+    return false;
+};
+
 export const renameMarkdownDocument = async (
     ref: MarkdownDocumentReference,
     name: string,
     dependencies: MarkdownMutationDependencies,
+    options: {title?: string} = {},
 ) => {
     const operationID = dependencies.createOperationID?.() ?? createMarkdownManagementOperationID();
     const prepared = await mutationRevision(ref, dependencies, operationID);
@@ -718,7 +837,7 @@ export const renameMarkdownDocument = async (
     };
     const nextRevision = typeof response.data.revision === "string" ? response.data.revision : revision;
     if (dependencies.commitMutation && !await dependencies.commitMutation(operationID, lease,
-        {kind: "rename", from: ref, to: next, revision: nextRevision})) {
+        {kind: "rename", from: ref, to: next, revision: nextRevision, ...options})) {
         await abortPreparedMarkdownMutation(dependencies, operationID, lease);
         failMarkdownManagementOperation(operationID);
         return false;

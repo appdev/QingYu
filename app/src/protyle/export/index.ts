@@ -145,7 +145,8 @@ const getSnippetJS = () => {
 };
 
 /// #if !BROWSER
-const renderPDF = async (id: string) => {
+const renderPDF = async (id: string, markdown?: {notebook: string; path: string}) => {
+    const serializedMarkdown = JSON.stringify(markdown || null).replace(/</gu, "\\u003c");
     const localData = window.siyuan.storage[Constants.LOCAL_EXPORTPDF];
     if (typeof localData.paged === "undefined") {
         localData.paged = true;
@@ -333,21 +334,21 @@ const renderPDF = async (id: string) => {
             <span class="fn__hr"></span>
           <input id="landscape" class="b3-switch" type="checkbox" ${localData.landscape ? "checked" : ""}>
         </label>
-        <label class="b3-label">
+        <label class="b3-label${markdown ? " fn__none" : ""}">
             <div>
                 ${window.siyuan.languages.exportPDF4}
             </div>
             <span class="fn__hr"></span>
             <input id="removeAssets" class="b3-switch" type="checkbox" ${localData.removeAssets ? "checked" : ""}>
         </label>
-        <label class="b3-label">
+        <label class="b3-label${markdown ? " fn__none" : ""}">
             <div>
                 ${window.siyuan.languages.exportPDF5}
             </div>
             <span class="fn__hr"></span>
             <input id="keepFold" class="b3-switch" type="checkbox" ${localData.keepFold ? "checked" : ""}>
         </label>
-        <label class="b3-label">
+        <label class="b3-label${markdown ? " fn__none" : ""}">
             <div>
                 ${window.siyuan.languages.mergeSubdocs}
             </div>
@@ -521,11 +522,11 @@ ${getIconScript(servePath)}
         Protyle.htmlRender(wysElement);
         Protyle.plantumlRender(wysElement, "${servePath}stage/protyle");
     }
-    fetchPost("/api/export/exportPreviewHTML", {
+    fetchPost("${markdown ? "/api/export/exportMarkdownPreview" : "/api/export/exportPreviewHTML"}", ${markdown ? serializedMarkdown : `{
         id: "${id}",
         keepFold: ${localData.keepFold},
         merge: ${localData.mergeSubdocs},
-    }, response => {
+    }`}, response => {
         if (response.code !== 0) {
             alert(response.msg)
             return;
@@ -581,11 +582,11 @@ ${getIconScript(servePath)}
         const  watermarkElement = actionElement.querySelector('#watermark');
         const refreshPreview = () => {
             previewElement.innerHTML = '<div class="fn__loading" style="left:0;height: 100vh"><img width="48px" src="${servePath}stage/loading-pure.svg"></div>'
-            fetchPost("/api/export/exportPreviewHTML", {
+            fetchPost("${markdown ? "/api/export/exportMarkdownPreview" : "/api/export/exportPreviewHTML"}", ${markdown ? serializedMarkdown : `{
                 id: "${id}",
                 keepFold: keepFoldElement.checked,
                 merge: mergeSubdocsElement.checked,
-            }, response2 => {
+            }`}, response2 => {
                 if (response2.code !== 0) {
                     alert(response2.msg)
                     return;
@@ -651,14 +652,15 @@ ${getIconScript(servePath)}
                     pageSize: unPagedPageSize || pageSize,
                 },
                 pageSize,
-                keepFold: keepFoldElement.checked,
-                mergeSubdocs: mergeSubdocsElement.checked,
+                keepFold: ${markdown ? "false" : "keepFoldElement.checked"},
+                mergeSubdocs: ${markdown ? "false" : "mergeSubdocsElement.checked"},
                 watermark: watermarkElement.checked,
-                removeAssets: actionElement.querySelector("#removeAssets").checked,
+                removeAssets: ${markdown ? "false" : "actionElement.querySelector(\"#removeAssets\").checked"},
                 paged: !unPagedPageSize,
                 rootId: "${id}",
                 rootTitle: response.data.name,
                 parentWindowId: ${currentWindowId},
+                markdown: ${serializedMarkdown},
             };
         };
         actionElement.querySelector('.b3-button--text').addEventListener('click', () => {
@@ -711,6 +713,8 @@ ${getSnippetJS()}
         ipcRenderer.send(Constants.SIYUAN_EXPORT_NEWWINDOW, response.data.url);
     });
 };
+
+export const renderMarkdownPDF = (reference: {notebook: string; path: string}) => renderPDF(reference.notebook, reference);
 
 const getExportPath = (option: IExportOptions, removeAssets?: boolean, mergeSubdocs?: boolean, confirmed = false) => {
     fetchPost("/api/block/getBlockInfo", {

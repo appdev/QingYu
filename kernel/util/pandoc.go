@@ -58,6 +58,10 @@ func ConvertPandoc(dir string, args ...string) (path string, err error) {
 }
 
 func Pandoc(from, to, o, content string) (err error) {
+	return PandocWithResourcePath(from, to, o, content, filepath.Dir(o))
+}
+
+func PandocWithResourcePath(from, to, o, content, resourcePath string) (err error) {
 	if "" == from || "" == to || "md" == to {
 		if err = gulu.File.WriteFileSafer(o, []byte(content), 0644); err != nil {
 			logging.LogErrorf("write export markdown file [%s] failed: %s", o, err)
@@ -85,7 +89,7 @@ func Pandoc(from, to, o, content string) (err error) {
 		tmpPath,
 		"--from", from,
 		"--to", to,
-		"--resource-path", filepath.Dir(o),
+		"--resource-path", resourcePath,
 		"-s",
 		"-o", o,
 	}

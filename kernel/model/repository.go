@@ -1753,6 +1753,65 @@ func calcPetalDiff(beforeSyncPetals []*Petal, mergeResult *dejavu.MergeResult) {
 	mergeResult.RemovePetals = gulu.Str.RemoveDuplicatedElem(removePetals)
 }
 
+func notebookHomeBoxFromRepoPath(repoPath string) (string, bool) {
+	parts := strings.Split(strings.TrimPrefix(filepath.ToSlash(repoPath), "/"), "/")
+	if len(parts) != 3 || parts[1] != ".qingyu" || parts[2] != "home.md" || !ast.IsNodeIDPattern(parts[0]) {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func notebookHomeStateBoxFromRepoPath(repoPath string) (string, bool) {
+	parts := strings.Split(strings.TrimPrefix(filepath.ToSlash(repoPath), "/"), "/")
+	if len(parts) != 3 || parts[1] != ".qingyu" || (parts[2] != "home.md" && parts[2] != "home.json") ||
+		!ast.IsNodeIDPattern(parts[0]) {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func preserveNotebookHomeSyncConflict(boxID, conflictPath string, conflictTime time.Time) error {
+	data, err := os.ReadFile(conflictPath)
+	if err != nil {
+		return err
+	}
+	if IsEncryptedBox(boxID) {
+		HoldBoxReadLock(boxID)
+		dek, dekErr := GetDEKIfUnlocked(boxID)
+		if dekErr != nil {
+			ReleaseBoxReadLock(boxID)
+			return dekErr
+		}
+		data, err = DecryptNotebookInternalFile(boxID, notebookHomePath, dek, data)
+		ReleaseBoxReadLock(boxID)
+		if err != nil {
+			return err
+		}
+	}
+	current, err := GetNotebookHome(boxID)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal([]byte(current.Content), data) {
+		return nil
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(data))[:16]
+	recoveryPath := ".qingyu/recovery/sync-" + conflictTime.UTC().Format("20060102T150405Z") + "-" + hash + ".md"
+	if existing, readErr := ReadNotebookInternalFile(boxID, recoveryPath); readErr == nil {
+		if !bytes.Equal(existing, data) {
+			return errors.New("notebook home sync recovery content mismatch")
+		}
+		return nil
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	if err = WriteNotebookInternalFile(boxID, recoveryPath, data); err != nil {
+		return err
+	}
+	IncSync()
+	return nil
+}
+
 func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, trafficStat *dejavu.TrafficStat, mode string, elapsed time.Duration) {
 	logging.LogInfof("synced data repo [device=%s, kernel=%s, provider=%d, mode=%s/%t, ufc=%d, dfc=%d, ucc=%d, dcc=%d, ub=%s, db=%s] in [%.2fs], merge result [conflicts=%d, upserts=%d, removes=%d]\n\n",
 		Conf.System.ID, KernelID, Conf.Sync.Provider, mode, byHand,
@@ -1765,6 +1824,17 @@ func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, 
 	var needReloadFiletree bool
 	if 0 < len(mergeResult.Conflicts) {
 		luteEngine := util.NewLute()
+		for _, file := range mergeResult.Conflicts {
+			boxID, ok := notebookHomeBoxFromRepoPath(file.Path)
+			if !ok {
+				continue
+			}
+			absPath := filepath.Join(util.TempDir, "repo", "sync", "conflicts",
+				mergeResult.Time.Format("2006-01-02-150405"), file.Path)
+			if err := preserveNotebookHomeSyncConflict(boxID, absPath, mergeResult.Time); err != nil {
+				logging.LogWarnf("preserve notebook home conflict [%s] failed: %s", boxID, err)
+			}
+		}
 		if Conf.Sync.GenerateConflictDoc {
 			// 云端同步发生冲突时生成副本 https://github.com/siyuan-note/siyuan/issues/5687
 
@@ -1840,9 +1910,13 @@ func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, 
 	reloadPluginSet := hashset.New()     // 插件代码变更 data/plugins/
 	dataChangePluginSet := hashset.New() // 插件存储数据变更 data/storage/petal/
 	needUnindexBoxes, needIndexBoxes := map[string]bool{}, map[string]bool{}
+	notebookHomeChangedBoxes := map[string]bool{}
 	needRestoreNotebookCrypto := false // 加密笔记本备份文件随同步到达，需恢复本机启用状态
 	for _, file := range mergeResult.Upserts {
 		upserts = append(upserts, file.Path)
+		if boxID, ok := notebookHomeStateBoxFromRepoPath(file.Path); ok {
+			notebookHomeChangedBoxes[boxID] = true
+		}
 		if strings.HasPrefix(file.Path, "/assets/ocr-texts.json") {
 			needReloadOcrTexts = true
 		}
@@ -1907,6 +1981,9 @@ func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, 
 	removeWidgetDirSet, unloadPluginSet, uninstallPluginSet := hashset.New(), hashset.New(), hashset.New()
 	for _, file := range mergeResult.Removes {
 		removes = append(removes, file.Path)
+		if boxID, ok := notebookHomeStateBoxFromRepoPath(file.Path); ok {
+			notebookHomeChangedBoxes[boxID] = true
+		}
 		if strings.HasPrefix(file.Path, "/assets/ocr-texts.json") {
 			needReloadOcrTexts = true
 		}
@@ -2006,11 +2083,19 @@ func processSyncMergeResult(exit, byHand bool, mergeResult *dejavu.MergeResult, 
 	}
 	for boxID := range needIndexBoxes {
 		if box := Conf.GetBox(boxID); nil != box {
-			if _, err := EnsureBoxDoc(boxID); nil != err {
-				logging.LogErrorf("ensure box document [%s] after sync failed: %s", boxID, err)
+			if _, err := MigrateLegacyNotebookRootContent(boxID); nil != err {
+				logging.LogWarnf("migrate notebook home [%s] after sync failed: %s", boxID, err)
 			}
 			box.Index()
 		}
+	}
+	for boxID := range notebookHomeChangedBoxes {
+		if _, err := MigrateLegacyNotebookRootContent(boxID); nil != err {
+			logging.LogWarnf("migrate notebook home [%s] after sync failed: %s", boxID, err)
+		}
+		evt := util.NewCmdResult("reloadNotebookRoot", 0, util.PushModeBroadcast)
+		evt.Data = map[string]any{"box": boxID, "time": time.Now().UnixMilli()}
+		util.PushEvent(evt)
 	}
 
 	needReloadUI := 0 < len(needUnindexBoxes) || 0 < len(needIndexBoxes)

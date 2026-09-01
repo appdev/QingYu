@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Büyük önizleme",
+  "notebookRootMasonry": "Duvar düzeni",
+  "notebookRootList": "Liste",
+  "notebookRootPreviewFailed": "Önizleme kullanılamıyor",
+  "notebookRootEmpty": "Kök dizinde belge yok",
   "deletedMarkdown": "Silinen Markdown",
   "restoreLocation": "Geri yükleme konumu",
   "markdownTargetConflict": "Geri yükleme konumunda zaten bir Markdown dosyası var.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "QingYu'a hoş geldiniz",
 	"onboardingDescription": "İlk not defteriniz hazır. Şu anda aklınızdakileri yazın!",
 	"importExistingData": "Mevcut verileri içe aktar",
-	"boxDocEnabled": "Üst düzey not defteri belgelerini etkinleştir",
-	"boxDocEnabledTip": "Etkinleştirildiğinde not defterinin kendisi de içerik kaydetmek için kullanılabilir",
+	"boxDocEnabled": "Not defteri ana sayfası",
+	"boxDocEnabledTip": "Bir not defterine tıklandığında kök belge tarayıcısını aç",
 	"insertImage": "Görsel ekle",
 	"obsidianUnreadableFiles": "Okunamayan dosyalar: ${count}; başvurulmayan bu dosyalar okunamadı ve içe aktarılmayacak",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "Seçilen Vault, okunabilir ve gizli olmayan bir Markdown dosyası içermiyor",
 		"341": "Üst düzey not defteri belgesi silinemez veya taşınamaz",
 		"342": "Not Defterim",
-		"343": "Yeni Bir Başlangıç"
+		"343": "Yeni Bir Başlangıç",
+		"344": "“%s” not defterinin eski ana sayfası kurtarma klasörüne kaydedildi; el ile birleştirin"
 	}
 	}

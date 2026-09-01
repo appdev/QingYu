@@ -20,7 +20,7 @@ import {
     MarkdownDocumentReference,
     moveMarkdownDocument,
     recycleMarkdownDocument,
-    renameMarkdownDocument,
+    renameMarkdownDocumentTitle,
 } from "./documentManagement";
 import {
     abortMarkdownMutationAcrossRenderers,
@@ -154,7 +154,7 @@ export const renameMarkdownFile = (notebookId: string, path: string) => {
     const currentName = path.substring(path.lastIndexOf("/") + 1);
     markdownNameDialog(window.siyuan.languages.rename, currentName, async (name) => {
         const ref = markdownRef(notebookId, path);
-        return renameMarkdownDocument(ref, name, markdownMutationDependencies(ref));
+        return renameMarkdownDocumentTitle(ref, name, markdownMutationDependencies(ref));
     });
 };
 

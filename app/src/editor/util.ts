@@ -5,7 +5,7 @@ import {getInstanceById, getWndByLayout, newModelByInitData, pdfIsLoading, setPa
 import {getDockByType} from "../layout/tabUtil";
 import {getAllModels, getAllTabs} from "../layout/getAll";
 import {highlightById, scrollCenter} from "../util/highlightById";
-import {getDisplayName, getDocDisplayName, isEncryptedBox, pathPosix, useShell} from "../util/pathName";
+import {getDisplayName, getDocDisplayName, getNotebookIcon, isEncryptedBox, pathPosix, useShell} from "../util/pathName";
 import {Constants} from "../constants";
 import {Files} from "../layout/dock/Files";
 import {fetchPost, fetchSyncPost} from "../util/fetch";
@@ -35,6 +35,7 @@ import {clearOB} from "../layout/dock/util";
 import {Model} from "../layout/Model";
 import {hideElements} from "../protyle/ui/hideElements";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
+import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 
 const isSameCustomTab = (type: string, data: any, options: IOpenFileOptions) => {
     if (!options.custom || (options.custom.id && options.custom.id !== type)) {
@@ -110,6 +111,13 @@ export const openMarkdownFile = (app: App, notebookId: string, path: string, nam
     });
 };
 
+export const openNotebookRoot = (app: App, notebookId: string, name: string, position?: string) => openFile({
+    app,
+    notebookRoot: {notebookId, name},
+    position,
+    removeCurrentTab: false,
+});
+
 export const openExternalMarkdownFile = (
     app: App,
     descriptor: {capabilityId: string, name: string, displayPath: string},
@@ -130,7 +138,21 @@ export const openFile = async (options: IOpenFileOptions) => {
     }
     const allModels = getAllModels();
     // 文档已打开
-    if (options.markdown || options.externalMarkdown) {
+    if (options.notebookRoot) {
+        clearOB();
+        const notebookRoot = allModels.notebookRoot.find((item) => item.notebookId === options.notebookRoot.notebookId);
+        if (notebookRoot) {
+            notebookRoot.parent.parent.switchTab(notebookRoot.parent.headElement);
+            notebookRoot.parent.parent.showHeading();
+            options.afterOpen?.(notebookRoot);
+            return notebookRoot.parent;
+        }
+        const hasModel = getUnInitTab(options);
+        if (hasModel) {
+            options.afterOpen?.(hasModel.model);
+            return hasModel;
+        }
+    } else if (options.markdown || options.externalMarkdown) {
         clearOB();
         const markdownEditor = allModels.markdown.find((item) => options.externalMarkdown
             ? item.externalCapabilityId === options.externalMarkdown.capabilityId
@@ -373,9 +395,14 @@ const getUnInitTab = (options: IOpenFileOptions) => {
         const initData = item.headElement?.getAttribute("data-initdata");
         if (initData) {
             const initObj = JSON.parse(initData);
-            if (initObj.instance === "MarkdownEditor" && (options.externalMarkdown
+            if (initObj.instance === "NotebookRoot" && options.notebookRoot &&
+                initObj.notebookId === options.notebookRoot.notebookId) {
+                item.parent.switchTab(item.headElement);
+                return true;
+            } else if (initObj.instance === "MarkdownEditor" && (options.externalMarkdown
                 ? initObj.externalCapabilityId === options.externalMarkdown.capabilityId
-                : options.markdown && initObj.notebookId === options.markdown.notebookId && initObj.path === options.markdown.path)) {
+                : options.markdown && !initObj.notebookHome && initObj.notebookId === options.markdown.notebookId &&
+                        initObj.path === options.markdown.path)) {
                 item.parent.switchTab(item.headElement);
                 return true;
             } else if (initObj.instance === "Editor" &&
@@ -495,7 +522,22 @@ const switchEditor = (editor: Editor, options: IOpenFileOptions, allModels: IMod
 
 const newTab = (options: IOpenFileOptions) => {
     let tab: Tab;
-    if (options.markdown || options.externalMarkdown) {
+    if (options.notebookRoot) {
+        tab = new Tab({
+            docIcon: getNotebookIcon(options.notebookRoot.notebookId) || window.siyuan.storage[Constants.LOCAL_IMAGES].note,
+            title: options.notebookRoot.name,
+            callback(tab) {
+                tab.addModel(new NotebookRoot({
+                    app: options.app,
+                    tab,
+                    element: tab.panelElement,
+                    notebookId: options.notebookRoot.notebookId,
+                    name: options.notebookRoot.name,
+                }));
+                setPanelFocus(tab.panelElement.parentElement.parentElement);
+            },
+        });
+    } else if (options.markdown || options.externalMarkdown) {
         tab = new Tab({
             icon: "iconMarkdown",
             title: options.externalMarkdown?.name || options.markdown.name,

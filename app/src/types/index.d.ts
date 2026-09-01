@@ -716,6 +716,7 @@ interface IOpenFileOptions {
     scrollPosition?: ScrollLogicalPosition,
     assetPath?: string, // asset 必填
     markdown?: {notebookId: string, path: string, name: string},
+    notebookRoot?: {notebookId: string, name: string},
     externalMarkdown?: {capabilityId: string, name: string, displayPath: string},
     fileName?: string, // file 必填
     rootTitleEmpty?: boolean,
@@ -834,6 +835,7 @@ interface IModels {
     custom: import("../layout/dock/Custom").Custom[]
     markdown: import("../markdown/MarkdownEditor").MarkdownEditor[]
     markdownOutline: import("../markdown/MarkdownOutline").MarkdownOutline[]
+    notebookRoot: import("../notebookRoot/NotebookRoot").NotebookRoot[]
 }
 
 interface IMenu {

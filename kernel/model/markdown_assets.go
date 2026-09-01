@@ -37,28 +37,37 @@ func markdownAssetLinkDests(markdown []byte) []string {
 }
 
 func markdownFrontmatterCover(markdown []byte) string {
+	return markdownFrontmatterString(markdown, "cover")
+}
+
+func markdownFrontmatterString(markdown []byte, key string) string {
+	metadata := markdownFrontmatterMetadata(markdown)
+	value, _ := metadata[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func markdownFrontmatterMetadata(markdown []byte) map[string]any {
 	markdown = bytes.TrimPrefix(markdown, []byte{0xef, 0xbb, 0xbf})
 	var metadata map[string]any
 	if bytes.HasPrefix(markdown, []byte("---\n")) || bytes.HasPrefix(markdown, []byte("---\r\n")) {
 		content, ok := fencedMarkdownFrontmatter(markdown, "---")
 		if !ok || yaml.Unmarshal(content, &metadata) != nil {
-			return ""
+			return nil
 		}
 	} else if bytes.HasPrefix(markdown, []byte("+++\n")) || bytes.HasPrefix(markdown, []byte("+++\r\n")) {
 		content, ok := fencedMarkdownFrontmatter(markdown, "+++")
 		if !ok || toml.Unmarshal(content, &metadata) != nil {
-			return ""
+			return nil
 		}
 	} else if bytes.HasPrefix(markdown, []byte("{")) {
 		decoder := json.NewDecoder(bytes.NewReader(markdown))
 		if decoder.Decode(&metadata) != nil {
-			return ""
+			return nil
 		}
 	} else {
-		return ""
+		return nil
 	}
-	cover, _ := metadata["cover"].(string)
-	return strings.TrimSpace(cover)
+	return metadata
 }
 
 func fencedMarkdownFrontmatter(markdown []byte, delimiter string) ([]byte, bool) {

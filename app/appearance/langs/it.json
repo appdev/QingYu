@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Anteprima grande",
+  "notebookRootMasonry": "Mosaico",
+  "notebookRootList": "Elenco",
+  "notebookRootPreviewFailed": "Anteprima non disponibile",
+  "notebookRootEmpty": "Nessun documento nella radice",
   "deletedMarkdown": "Markdown eliminato",
   "restoreLocation": "Posizione di ripristino",
   "markdownTargetConflict": "Nella posizione di ripristino esiste già un file Markdown.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Benvenuto in QingYu",
 	"onboardingDescription": "Il tuo primo taccuino è pronto. Scrivi ciò che hai in mente!",
 	"importExistingData": "Importa dati esistenti",
-	"boxDocEnabled": "Abilita i documenti di primo livello del taccuino",
-	"boxDocEnabledTip": "Se abilitato, anche il taccuino stesso può essere usato per registrare contenuti",
+	"boxDocEnabled": "Pagina iniziale del taccuino",
+	"boxDocEnabledTip": "Apri il browser dei documenti radice facendo clic su un taccuino",
 	"insertImage": "Inserisci immagine",
 	"obsidianUnreadableFiles": "File illeggibili: ${count}; questi file senza riferimenti non possono essere letti e non verranno importati",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "Il Vault selezionato non contiene file Markdown leggibili e non nascosti",
 		"341": "Il documento di primo livello del taccuino non può essere eliminato o spostato",
 		"342": "Il mio taccuino",
-		"343": "Un nuovo inizio"
+		"343": "Un nuovo inizio",
+		"344": "La pagina iniziale precedente del taccuino “%s” è stata salvata nella cartella di ripristino; uniscila manualmente"
 	}
 	}

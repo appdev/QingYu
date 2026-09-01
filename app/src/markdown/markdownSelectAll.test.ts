@@ -55,6 +55,22 @@ const pressSelectAll = (editor: EditorView) => runScopeHandlers(editor, new Keyb
     metaKey: true,
 }), "editor");
 
+const copySelection = (editor: EditorView) => {
+    let copied = "";
+    editor.focus();
+    const event = new Event("copy", {bubbles: true, cancelable: true});
+    Object.defineProperty(event, "clipboardData", {value: {
+        clearData() {
+            copied = "";
+        },
+        setData(type: string, value: string) {
+            if (type === "text/plain") copied = value;
+        },
+    }});
+    editor.contentDOM.dispatchEvent(event);
+    return copied;
+};
+
 test("selects the current logical line before the whole Markdown document", () => {
     const editor = createView("first line\nsecond line\nthird line", 15);
 
@@ -116,6 +132,28 @@ test("uses the same select-all behavior in source mode", () => {
     pressSelectAll(editor);
 
     assert.equal(editor.state.sliceDoc(editor.state.selection.main.from, editor.state.selection.main.to), "beta");
+});
+
+test("excludes hidden frontmatter when copying the whole visual document", () => {
+    const source = "---\ntitle: Hidden\n---\n\nVisible body";
+    const editor = createView(source, source.length);
+
+    pressSelectAll(editor);
+    pressSelectAll(editor);
+
+    assert.equal(editor.state.selection.main.from, source.indexOf("Visible body"));
+    assert.equal(copySelection(editor), "Visible body");
+});
+
+test("keeps frontmatter when copying the whole source document", () => {
+    const source = "---\ntitle: Visible\n---\n\nVisible body";
+    const editor = createView(source, source.length, "source");
+
+    pressSelectAll(editor);
+    pressSelectAll(editor);
+
+    assert.equal(editor.state.selection.main.from, 0);
+    assert.equal(copySelection(editor), source);
 });
 
 test("resets select-all escalation when the Markdown mode changes", () => {

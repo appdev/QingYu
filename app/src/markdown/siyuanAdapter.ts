@@ -82,13 +82,17 @@ export const resolveMarkdownCoverSource = (source: string) => {
     return resolveMarkdownImageSource(value);
 };
 
-export const uploadMarkdownAssets = async ({files}: MarkdownClipboardAssetRequest) => {
+export const uploadMarkdownAssets = async ({files}: MarkdownClipboardAssetRequest, notebookId?: string) => {
     if (files.length === 0) {
         return [];
     }
     const form = new FormData();
     files.forEach((file) => form.append("file[]", file));
-    form.append("assetsDirPath", "/assets/");
+    if (notebookId) {
+        form.append("notebook", notebookId);
+    } else {
+        form.append("assetsDirPath", "/assets/");
+    }
     const response = await fetch("/api/asset/upload", {body: form, method: "POST"});
     if (!response.ok) {
         throw new Error(`Asset upload failed with HTTP ${response.status}`);

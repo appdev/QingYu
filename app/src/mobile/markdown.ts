@@ -1,6 +1,7 @@
 import {App} from "../index";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
 import {closePanel} from "./util/closePanel";
+import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 import {setEditor} from "./util/setEmpty";
 import {
     closeMobileMarkdownEditor,
@@ -24,6 +25,27 @@ export const openMobileMarkdownFile = (app: App, notebookId: string, path: strin
         path,
     });
     setMobileMarkdownEditor(editor, hiddenElements);
+    const toolbarNameElement = document.getElementById("toolbarName") as HTMLInputElement;
+    toolbarNameElement.value = name;
+    setEditor();
+    closePanel();
+};
+
+export const openMobileNotebookRoot = (app: App, notebookId: string, name: string) => {
+    closeMobileMarkdownEditor();
+    const containerElement = document.getElementById("editor");
+    const hiddenElements = Array.from(containerElement.children) as HTMLElement[];
+    hiddenElements.forEach((item) => item.classList.add("fn__none"));
+    const rootElement = document.createElement("div");
+    rootElement.className = "fn__flex-1 fn__flex-column";
+    containerElement.append(rootElement);
+    const root = new NotebookRoot({app, element: rootElement, notebookId, name});
+    setMobileMarkdownEditor(Object.assign(root, {
+        path: "",
+        flush: async () => true,
+        rename: async () => false,
+        notebookRoot: true,
+    }), hiddenElements);
     const toolbarNameElement = document.getElementById("toolbarName") as HTMLInputElement;
     toolbarNameElement.value = name;
     setEditor();

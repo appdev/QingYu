@@ -26,6 +26,7 @@ import {isWindow} from "../util/functions";
 import {Wnd} from "./Wnd";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
 import {MarkdownOutline} from "../markdown/MarkdownOutline";
+import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 
 export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
     const isWindowMode = isWindow();
@@ -379,6 +380,14 @@ export const copyTab = (app: App, tab: Tab) => {
                         notebookId: tab.model.notebookId,
                         path: tab.model.path,
                     }),
+                });
+            } else if (tab.model instanceof NotebookRoot) {
+                model = new NotebookRoot({
+                    app,
+                    tab: newTab,
+                    element: newTab.panelElement,
+                    notebookId: tab.model.notebookId,
+                    name: tab.model.listing.name,
                 });
             } else if (tab.model instanceof MarkdownOutline) {
                 const sourceKey = tab.model.sourceKey;

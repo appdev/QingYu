@@ -1025,8 +1025,8 @@ func InitBoxes() {
 	blockCount := treenode.CountBlocks()
 	initialized := 0 < blockCount
 	for _, box := range Conf.GetOpenedBoxes() {
-		if _, err := EnsureBoxDoc(box.ID); nil != err {
-			logging.LogErrorf("ensure box document [%s] failed: %s", box.ID, err)
+		if _, err := MigrateLegacyNotebookRootContent(box.ID); nil != err {
+			logging.LogWarnf("migrate notebook home [%s] failed: %s", box.ID, err)
 		}
 		box.UpdateHistoryGenerated() // 初始化历史生成时间为当前时间
 

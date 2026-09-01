@@ -4,6 +4,7 @@ export interface RegisteredMarkdownEditor {
     focusPosition(position: number): void;
     setOutlineOpen(open: boolean): void;
     subscribeOutline(listener: (items: readonly import("./outlineModel").MarkdownOutlineItemWithPosition[]) => void): () => void;
+    flushForExport(): Promise<boolean>;
 }
 
 export class MarkdownEditorRegistry<T extends object> {
@@ -13,6 +14,10 @@ export class MarkdownEditorRegistry<T extends object> {
     get(sourceKey: string) {
         const editors = this.editors.get(sourceKey);
         return editors ? Array.from(editors).at(-1) : undefined;
+    }
+
+    getAll(sourceKey: string) {
+        return Array.from(this.editors.get(sourceKey) || []);
     }
 
     register(sourceKey: string, editor: T) {
@@ -78,3 +83,8 @@ export class MarkdownEditorRegistration<T extends object> {
 }
 
 export const markdownEditorRegistry = new MarkdownEditorRegistry<RegisteredMarkdownEditor>();
+
+export const flushMarkdownEditors = async (editors: readonly RegisteredMarkdownEditor[]) => {
+    const results = await Promise.all(editors.map((editor) => editor.flushForExport()));
+    return results.every(Boolean);
+};

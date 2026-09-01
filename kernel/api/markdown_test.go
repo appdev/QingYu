@@ -58,6 +58,29 @@ func TestRemoveMarkdownRequiresRevision(t *testing.T) {
 		`{"notebook":"20260811000000-abcdefg","path":"/a.md"}`)
 }
 
+func TestEnsureMarkdownDocumentIdentityRequiresArgumentsAndChecksRevision(t *testing.T) {
+	boxID := setupFileTreeAPIBox(t)
+	created, err := model.CreateMarkdown(boxID, "/", "identity.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMarkdownHandlerRejects(t, ensureMarkdownDocumentIdentity,
+		`{"notebook":"`+boxID+`","path":"/identity.md","revision":"`+created.Revision+`"}`)
+
+	conflict := postMarkdownHandler(t, ensureMarkdownDocumentIdentity,
+		`{"notebook":"`+boxID+`","path":"/identity.md","revision":"stale","operationID":"identity-conflict"}`)
+	if code, _ := conflict["code"].(float64); code != http.StatusConflict {
+		t.Fatalf("stale identity request did not return conflict: %#v", conflict)
+	}
+
+	success := postMarkdownHandler(t, ensureMarkdownDocumentIdentity,
+		`{"notebook":"`+boxID+`","path":"/identity.md","revision":"`+created.Revision+`","operationID":"identity-force","forceNew":true}`)
+	data, _ := success["data"].(map[string]any)
+	if success["code"] != float64(0) || data["documentID"] == created.DocumentID || data["operationID"] != "identity-force" {
+		t.Fatalf("identity request failed: %#v", success)
+	}
+}
+
 func TestRenameMarkdownRequiresAndChecksRevision(t *testing.T) {
 	boxID := setupFileTreeAPIBox(t)
 	created, err := model.CreateMarkdown(boxID, "/", "a.md")

@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "Grande prévisualisation",
+  "notebookRootMasonry": "Mosaïque",
+  "notebookRootList": "Liste",
+  "notebookRootPreviewFailed": "Aperçu indisponible",
+  "notebookRootEmpty": "Aucun document à la racine",
   "deletedMarkdown": "Markdown supprimé",
   "restoreLocation": "Emplacement de restauration",
   "markdownTargetConflict": "Un fichier Markdown existe déjà à l’emplacement de restauration.",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "Bienvenue dans QingYu",
 	"onboardingDescription": "Votre premier carnet est prêt. Notez ce qui vous passe par la tête !",
 	"importExistingData": "Importer des données existantes",
-	"boxDocEnabled": "Activer les documents de carnet de niveau supérieur",
-	"boxDocEnabledTip": "Lorsque cette option est activée, le carnet lui-même peut également servir à consigner du contenu",
+	"boxDocEnabled": "Page d'accueil du carnet",
+	"boxDocEnabledTip": "Ouvrir le navigateur des documents racine en cliquant sur un carnet",
 	"insertImage": "Insérer une image",
 	"obsidianUnreadableFiles": "Fichiers illisibles : ${count} ; ces fichiers non référencés n’ont pas pu être lus et ne seront pas importés",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "Le Vault sélectionné ne contient aucun fichier Markdown lisible et non masqué",
 		"341": "Le document de niveau supérieur du carnet ne peut pas être supprimé ni déplacé",
 		"342": "Mon carnet",
-		"343": "Un nouveau départ"
+		"343": "Un nouveau départ",
+		"344": "L’ancienne page d’accueil du carnet « %s » a été enregistrée dans le dossier de récupération ; fusionnez-la manuellement"
 	}
 	}

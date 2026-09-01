@@ -124,9 +124,13 @@ func renameNotebook(c *gin.Context) {
 	evt := util.NewCmdResult("renamenotebook", 0, util.PushModeBroadcast)
 	evt.Data = map[string]any{
 		"box":  notebook,
-		"name": name,
+		"name": model.Conf.Box(notebook).Name,
 	}
 	util.PushEvent(evt)
+	ret.Data = map[string]any{
+		"notebook": notebook,
+		"name":     model.Conf.Box(notebook).Name,
+	}
 }
 
 func removeNotebook(c *gin.Context) {

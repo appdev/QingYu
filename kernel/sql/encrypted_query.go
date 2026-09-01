@@ -91,6 +91,38 @@ func GetBlocksInBox(ids []string, boxID string) (ret []*Block) {
 	return
 }
 
+// QueryFirstContentByRootIDsInBox 批量返回每个根文档的首个非空正文块内容。
+func QueryFirstContentByRootIDsInBox(rootIDs []string, boxID string) (ret map[string]string) {
+	ret = map[string]string{}
+	if len(rootIDs) == 0 {
+		return
+	}
+	placeholders := strings.Repeat("?,", len(rootIDs)-1) + "?"
+	args := make([]any, len(rootIDs))
+	for i, rootID := range rootIDs {
+		args[i] = rootID
+	}
+	stmt := "SELECT root_id, content FROM blocks WHERE root_id IN (" + placeholders + ") " +
+		"AND type != 'd' AND trim(content) != '' ORDER BY root_id, rowid"
+	rows, err := queryForBox(boxID, stmt, args...)
+	if err != nil {
+		logging.LogErrorf("query document preview text failed: %s", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rootID, content string
+		if err = rows.Scan(&rootID, &content); err != nil {
+			logging.LogErrorf("query document preview text scan failed: %s", err)
+			continue
+		}
+		if _, exists := ret[rootID]; !exists {
+			ret[rootID] = content
+		}
+	}
+	return
+}
+
 // GetRefTextInBox 按 defBlockID 在指定 box 的 db 里查引用文本。
 func GetRefTextInBox(defBlockID, boxID string) (ret string) {
 	row := queryRowForBox(boxID, "SELECT content FROM blocks WHERE id = ?", defBlockID)

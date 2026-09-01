@@ -1,4 +1,9 @@
 {
+  "notebookRootLargePreview": "大きなプレビュー",
+  "notebookRootMasonry": "メーソンリー",
+  "notebookRootList": "リスト",
+  "notebookRootPreviewFailed": "プレビューを利用できません",
+  "notebookRootEmpty": "ルートに文書がありません",
   "deletedMarkdown": "削除された Markdown",
   "restoreLocation": "復元先",
   "markdownTargetConflict": "復元先に Markdown ファイルが既に存在します。",
@@ -48,8 +53,8 @@
 	"onboardingWelcome": "QingYuへようこそ",
 	"onboardingDescription": "最初のノートブックができました。今のアイデアを書き留めてみましょう！",
 	"importExistingData": "既存データをインポート",
-	"boxDocEnabled": "最上位のノートブック文書を有効にする",
-	"boxDocEnabledTip": "有効にすると、ノートブック自体にも内容を記録できます",
+	"boxDocEnabled": "ノートブックのホーム",
+	"boxDocEnabledTip": "ノートブックをクリックしたときにルート文書ブラウザーを開きます",
 	"insertImage": "画像を挿入",
 	"obsidianUnreadableFiles": "読み取れないファイル：${count}。これらの参照されていないファイルは読み取れないため、インポートされません",
 	"obsidianStatsSeparator": " · ",
@@ -1931,6 +1936,7 @@
 		"340": "選択した Vault に読み取り可能な非表示ではない Markdown ファイルがありません",
 		"341": "最上位のノートブック文書は削除または移動できません",
 		"342": "マイノートブック",
-		"343": "新しい始まり"
+		"343": "新しい始まり",
+		"344": "ノートブック「%s」の以前のホームを復元フォルダーに保存しました。手動で統合してください"
 	}
 	}

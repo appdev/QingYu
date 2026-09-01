@@ -50,6 +50,8 @@ github.com/andybalholm/brotli v1.2.2/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUS
 github.com/andybalholm/cascadia v1.0.0/go.mod h1:GsXiBklL0woXo1j/WYWtSYYC4ouU9PqHO0sqidkEA4Y=
 github.com/andybalholm/cascadia v1.3.3 h1:AG2YHrzJIm4BZ19iwJ/DAua6Btl3IwJX+VI4kktS1LM=
 github.com/andybalholm/cascadia v1.3.3/go.mod h1:xNd9bqTn98Ln4DwST8/nG+H0yuB8Hmgu1YHNnWw0GeA=
+github.com/appdev/dejavu v0.0.0-20260831110010-5294e71cfd45 h1:TvC9d+2rCP93KogbmEHgJDxkMsN5McDfTDRkY+F2mIs=
+github.com/appdev/dejavu v0.0.0-20260831110010-5294e71cfd45/go.mod h1:7yPSZX7EvgUx0Zh6FXlsXtFt3IFUq0WVMxyKRNd9STI=
 github.com/araddon/dateparse v0.0.0-20180729174819-cfd92a431d0e/go.mod h1:SLqhdZcd+dF3TEVL2RMoob5bBP5R1P1qkox+HtCBgGI=
 github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de h1:FxWPpzIjnTlhPwqqXc4/vE0f7GvRjuAsbW+HOIe8KnA=
 github.com/araddon/dateparse v0.0.0-20210429162001-6b43995a97de/go.mod h1:DCaWoUhZrYW9p1lxo/cm8EmUOOzAPSEZNGF2DK1dJgw=
@@ -381,8 +383,6 @@ github.com/shurcooL/gofontwoff v0.0.0-20181114050219-180f79e6909d/go.mod h1:05Ut
 github.com/simplereach/timeutils v1.2.0/go.mod h1:VVbQDfN/FHRZa1LSqcwo4kNZ62OOyqLLGQKYB3pB0Q8=
 github.com/siyuan-note/dataparser v0.0.0-20260115084335-b57cb8bc7c17 h1:cZbH1QcW/LWYtaKBv2i0O96qVm6HXKeEE3Z74VYdUHM=
 github.com/siyuan-note/dataparser v0.0.0-20260115084335-b57cb8bc7c17/go.mod h1:zE2SJ4t+2lFAeLgmhi27YtfzdyOWh3l9DXXUr9m/xU0=
-github.com/siyuan-note/dejavu v0.0.0-20260715095305-8462fe30163c h1:/GC339L/W/ypcxZClrW+FJ1wUKOvJyjGLz9p9QvPRcc=
-github.com/siyuan-note/dejavu v0.0.0-20260715095305-8462fe30163c/go.mod h1:7yPSZX7EvgUx0Zh6FXlsXtFt3IFUq0WVMxyKRNd9STI=
 github.com/siyuan-note/encryption v0.0.0-20260715062728-9cb8e9548044 h1:b1/Q4DSREDvGh1/NbzR9873EKrjakdoUtsNlghWxUOI=
 github.com/siyuan-note/encryption v0.0.0-20260715062728-9cb8e9548044/go.mod h1:t6jXpJdrXzRsdQF+XGaw35f16JVZcDyIkk5/6//ywnY=
 github.com/siyuan-note/eventbus v0.0.0-20260530125927-d77c74260dce h1:356bfC3pucxXuYpZIwaQ3viVCbq5RbRuvBhb4xtoBR0=

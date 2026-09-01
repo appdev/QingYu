@@ -81,14 +81,6 @@ func CreateBox(name string) (id string, err error) {
 	if err := box.SaveConf(boxConf); err != nil {
 		logging.LogErrorf("save box conf [%s] failed: %s", id, err)
 	}
-	if _, err = ensureBoxDoc0(id); err != nil {
-		treenode.RemoveBlockTreesByBoxID(id)
-		sql.DeleteBoxQueue(id)
-		if removeErr := filelock.Remove(boxLocalPath); nil != removeErr {
-			logging.LogErrorf("remove box [%s] after initializing box document failed: %s", id, removeErr)
-		}
-		return "", err
-	}
 	IncSync()
 	logging.LogInfof("created box [%s]", id)
 	return
@@ -112,10 +104,6 @@ func RenameBox(boxID, name string) (err error) {
 	box.Name = name
 	if err = box.SaveConf(boxConf); err != nil {
 		logging.LogErrorf("save box conf [%s] failed: %s", boxID, err)
-		return
-	}
-	if err = renameBoxDoc(boxID, name); err != nil {
-		logging.LogErrorf("rename box document [box=%s] failed: %s", boxID, err)
 		return
 	}
 	IncSync()
@@ -372,8 +360,8 @@ func Mount(boxID string) (alreadyMount bool, err error) {
 	if err := box.SaveConf(boxConf); err != nil {
 		logging.LogErrorf("save box conf [%s] failed: %s", boxID, err)
 	}
-	if _, ensureErr := EnsureBoxDoc(boxID); nil != ensureErr {
-		logging.LogErrorf("ensure box document [%s] failed: %s", boxID, ensureErr)
+	if _, migrationErr := MigrateLegacyNotebookRootContent(boxID); nil != migrationErr {
+		logging.LogWarnf("migrate notebook home [%s] failed: %s", boxID, migrationErr)
 	}
 
 	// 缓存根一级的文档树展开

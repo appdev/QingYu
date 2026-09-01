@@ -1,5 +1,6 @@
 import {EditorSelection, Prec, StateEffect, StateField, type Extension} from "@codemirror/state";
 import {EditorView, keymap} from "@codemirror/view";
+import {initialVisualMarkdownSelection} from "./markra-core/codemirror/frontmatter-preview";
 
 const setMarkdownLineSelection = StateEffect.define<boolean>();
 
@@ -17,12 +18,13 @@ const markdownLineSelection = StateField.define<boolean>({
     },
 });
 
-const selectMarkdownLineOrDocument = (view: EditorView) => {
+const selectMarkdownLineOrDocument = (view: EditorView, mode: "source" | "visual") => {
     if (view.state.selection.ranges.length !== 1 || view.state.field(markdownLineSelection)) {
+        const from = mode === "visual" ? initialVisualMarkdownSelection(view.state.doc.toString()) : 0;
         view.dispatch({
             effects: setMarkdownLineSelection.of(false),
             scrollIntoView: true,
-            selection: EditorSelection.range(0, view.state.doc.length),
+            selection: EditorSelection.range(from, view.state.doc.length),
         });
         return true;
     }
@@ -36,9 +38,9 @@ const selectMarkdownLineOrDocument = (view: EditorView) => {
     return true;
 };
 
-export const markdownSelectAllExtension = (): Extension => [
+export const markdownSelectAllExtension = (mode: "source" | "visual"): Extension => [
     markdownLineSelection,
-    Prec.highest(keymap.of([{key: "Mod-a", run: selectMarkdownLineOrDocument}])),
+    Prec.highest(keymap.of([{key: "Mod-a", run: (view) => selectMarkdownLineOrDocument(view, mode)}])),
     EditorView.domEventHandlers({
         blur(_event, view) {
             view.dispatch({effects: setMarkdownLineSelection.of(false)});

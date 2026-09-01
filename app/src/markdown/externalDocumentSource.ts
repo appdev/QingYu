@@ -28,6 +28,7 @@ export const createExternalMarkdownDocumentSource = ({
     const isReadOnly = () => typeof readOnly === "function" ? readOnly() : readOnly;
     return {
     kind: "external",
+    titlePersistence: "frontmatter-and-name",
     key: `external:${capabilityId}`,
     get readOnly() { return isReadOnly(); },
     async load() {

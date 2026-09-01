@@ -13,6 +13,7 @@ import {Tag} from "./dock/Tag";
 import {Custom} from "./dock/Custom";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
 import {MarkdownOutline} from "../markdown/MarkdownOutline";
+import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 import {Wnd} from "./Wnd";
 /// #endif
 
@@ -73,6 +74,7 @@ export const getAllModels = () => {
         custom: [],
         markdown: [],
         markdownOutline: [],
+        notebookRoot: [],
     };
     /// #if !MOBILE
     const getTabs = (layout: Layout) => {
@@ -102,6 +104,8 @@ export const getAllModels = () => {
                     models.markdown.push(model);
                 } else if (model instanceof MarkdownOutline) {
                     models.markdownOutline.push(model);
+                } else if (model instanceof NotebookRoot) {
+                    models.notebookRoot.push(model);
                 }
             } else {
                 getTabs(item as Layout);

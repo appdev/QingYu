@@ -884,6 +884,11 @@ func importSY(zipPath, boxID, toPath string, createNotebook, autoDetect bool) (c
 		sql.IndexTreeQueue(tree)
 		util.PushEndlessProgress(Conf.language(73) + " " + fmt.Sprintf(Conf.language(70), tree.Root.IALAttr("title")))
 	}
+	if importedBoxDoc {
+		if _, migrationErr := MigrateLegacyNotebookRootContent(boxID); migrationErr != nil {
+			return createdBoxID, migrationErr
+		}
+	}
 
 	IncSync()
 

@@ -26,7 +26,9 @@ export const createMarkdownMoreMenuItems = (
     state: MarkdownMoreMenuState,
     labels: MarkdownMoreMenuLabels,
     execute: (command: MarkdownMoreCommand) => void,
-): IMenu[] => [{
+    exportMenu?: IMenu,
+): IMenu[] => {
+    const items: IMenu[] = [{
     id: "markdownTypewriter",
     icon: "iconFocus",
     label: labels.typewriterMode,
@@ -44,4 +46,7 @@ export const createMarkdownMoreMenuItems = (
     label: labels.rtl,
     checked: state.rtl,
     click: () => execute("toggle-rtl"),
-}];
+    }];
+    if (exportMenu) items.push({id: "separator_export", type: "separator"}, exportMenu);
+    return items;
+};

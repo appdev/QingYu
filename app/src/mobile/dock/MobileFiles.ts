@@ -12,7 +12,7 @@ import {
 import {fetchPost, fetchSyncPost} from "../../util/fetch";
 import {genUUID} from "../../util/genID";
 import {openMobileFileById} from "../editor";
-import {openMobileMarkdownFile} from "../markdown";
+import {openMobileMarkdownFile, openMobileNotebookRoot} from "../markdown";
 import {unicode2Emoji} from "../../emoji";
 import {newNotebook, openEncryptedNotebook} from "../../util/mount";
 import {newFileInTree} from "../../util/newFile";
@@ -243,7 +243,8 @@ export class MobileFiles extends Model {
                     } else if (target.getAttribute("data-type") === "navigation-root") {
                         const boxDocID = target.getAttribute("data-node-id");
                         if (boxDocID) {
-                            openMobileFileById(app, boxDocID, [Constants.CB_GET_SCROLL], undefined, notebookId);
+                            openMobileNotebookRoot(app, notebookId,
+                                target.querySelector(".b3-list-item__text")?.textContent || notebookId);
                         } else if (ulElement) {
                             this.getLeaf(target, notebookId);
                         }
