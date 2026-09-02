@@ -306,11 +306,23 @@ func SaveMarkdownDocumentAsTemplate(boxID, p, name string, overwrite bool) (int,
 }
 
 func ExportMarkdownDocumentPreview(boxID, p string) (name, content string, missing []string, err error) {
+	return exportMarkdownDocumentPreview(boxID, p, false)
+}
+
+func ExportMarkdownDocumentCardPreview(boxID, p string) (name, content string, missing []string, err error) {
+	return exportMarkdownDocumentPreview(boxID, p, true)
+}
+
+func exportMarkdownDocumentPreview(boxID, p string, hideFrontmatter bool) (name, content string, missing []string, err error) {
 	doc, err := LoadMarkdownExportDocument(boxID, p)
 	if err != nil {
 		return "", "", nil, err
 	}
-	content = MarkdownToProtylePreviewHTML(string(doc.Content))
+	previewContent := doc.Content
+	if hideFrontmatter {
+		previewContent = markdownDocumentPreviewContent(previewContent)
+	}
+	content = MarkdownToProtylePreviewHTML(string(previewContent))
 	for _, resource := range doc.Resources {
 		if resource.Missing {
 			missing = append(missing, resource.Raw)
@@ -329,6 +341,17 @@ func ExportMarkdownDocumentPreview(boxID, p string) (name, content string, missi
 		content = strings.ReplaceAll(content, html.EscapeString(resource.Raw), dataURL)
 	}
 	return doc.Title, content, missing, nil
+}
+
+func markdownDocumentPreviewContent(data []byte) []byte {
+	frontmatter := inspectMarkdownDocumentIDFrontmatter(data)
+	if !frontmatter.valid || frontmatter.kind == "none" || frontmatter.blockEnd <= frontmatter.bomLen {
+		return data
+	}
+	ret := make([]byte, 0, len(data)-(frontmatter.blockEnd-frontmatter.bomLen))
+	ret = append(ret, data[:frontmatter.bomLen]...)
+	ret = append(ret, data[frontmatter.blockEnd:]...)
+	return ret
 }
 
 func ExportMarkdownDocumentHTML(boxID, p, savePath string) (name, content string, missing []string, err error) {

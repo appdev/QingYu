@@ -36,7 +36,13 @@ const canvasWebP = (canvas: HTMLCanvasElement, quality = 0.82) => new Promise<Bl
 export const renderDocumentCardPreview = async (input: PreviewRenderInput): Promise<Blob> => {
     const markdown = input.reference.kind === "markdown";
     const response = await fetchSyncPost(markdown ? "/api/export/exportMarkdownPreview" : "/api/export/exportPreviewHTML",
-        markdown ? {notebook: input.reference.notebook, path: input.reference.path, image: true, keepFold: false} :
+        markdown ? {
+            notebook: input.reference.notebook,
+            path: input.reference.path,
+            image: true,
+            keepFold: false,
+            cardPreview: true,
+        } :
             {id: input.reference.id, image: true, keepFold: false});
     if (response.code !== 0) throw new Error(response.msg || "preview export failed");
 

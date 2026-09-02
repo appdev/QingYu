@@ -1,31 +1,62 @@
 import {escapeAttr, escapeHtml} from "../util/escape";
-import {unicode2Emoji} from "../emoji";
 import type {NotebookRootDocument, NotebookRootListing, NotebookRootView} from "./types";
-import {formatNotebookRootUpdated, notebookRootCardLayout, notebookRootCardRatio} from "./rules";
+import {notebookRootDocumentKey} from "./documentKey";
+import {
+    formatNotebookRootUpdated,
+    notebookRootCardLayout,
+    notebookRootCardRatio,
+    notebookRootTimeGroup,
+    notebookRootTimeGroupField,
+} from "./rules";
 
 const placeholder = () => `<div class="notebook-root__placeholder" aria-hidden="true">
     <span class="notebook-root__preview-brand">${escapeHtml(window.siyuan.languages.siyuanNote || "QingYu")}</span>
     <span class="notebook-root__preview-status">${escapeHtml(window.siyuan.languages.notebookRootPreviewFailed || "预览不可用")}</span>
 </div>`;
 
-const notebookIcon = (listing: Pick<NotebookRootListing, "icon">) => listing.icon ?
-    `<span class="notebook-root__notebook-icon" aria-hidden="true">${unicode2Emoji(listing.icon)}</span>` :
-    "<svg class=\"notebook-root__notebook-icon\" aria-hidden=\"true\"><use xlink:href=\"#iconFolder\"></use></svg>";
+const timeGroupHeading = (label: string) =>
+    `<div class="notebook-root__time-group" role="heading" aria-level="2">${escapeHtml(label)}</div>`;
 
 export const renderNotebookRootDocuments = (
     documents: NotebookRootDocument[],
     view: NotebookRootView,
-    listing: Pick<NotebookRootListing, "name" | "icon">,
+    listing: Pick<NotebookRootListing, "sortMode">,
     nowMilliseconds = Date.now(),
 ) => {
     if (documents.length === 0) {
         return `<div class="notebook-root__empty">${escapeHtml(window.siyuan.languages.notebookRootEmpty || "根目录中没有文档")}</div>`;
     }
+    const locale = window.siyuan.config.appearance.lang;
+    const groupField = view === "masonry" ? undefined : notebookRootTimeGroupField(listing.sortMode);
+    const groupLabels = {
+        today: window.siyuan.languages._kernel["261"] || "今天",
+        yesterday: window.siyuan.languages._kernel["260"] || "昨天",
+        past7Days: window.siyuan.languages.notebookRootPast7Days || "过去 7 天",
+        past30Days: window.siyuan.languages.notebookRootPast30Days || "过去 30 天",
+    };
+    let previousGroupKey: string | undefined;
     const renderedDocuments = documents.map((document) => {
+        let heading = "";
+        if (groupField) {
+            const group = notebookRootTimeGroup(document[groupField], nowMilliseconds, locale, groupLabels);
+            if (!group) {
+                previousGroupKey = undefined;
+            } else if (group.key !== previousGroupKey) {
+                heading = timeGroupHeading(group.label);
+                previousGroupKey = group.key;
+            }
+        }
         const ratio = notebookRootCardRatio(view, document.cardRatio);
         const layout = notebookRootCardLayout(view);
+        const previewKey = notebookRootDocumentKey({
+            kind: document.kind,
+            notebook: document.notebook,
+            id: document.documentID,
+            path: document.path,
+        });
         const sharedAttributes = `tabindex="0" data-kind="${escapeAttr(document.kind)}" data-notebook="${escapeAttr(document.notebook)}"
  data-path="${escapeAttr(document.path)}" data-id="${escapeAttr(document.documentID)}"
+ data-preview-key="${escapeAttr(previewKey)}"
  data-identity-conflict="${document.identityConflict}"
  data-identity-state="${escapeAttr(document.identityState)}" data-revision="${escapeAttr(document.revision)}"
  data-updated="${document.updated}" data-source-size="${document.size}"
@@ -41,7 +72,7 @@ export const renderNotebookRootDocuments = (
                 nowMilliseconds,
                 window.siyuan.config.appearance.lang,
             );
-            return `<article class="notebook-root__document notebook-root__document--list" ${sharedAttributes}>
+            return heading + `<article class="notebook-root__document notebook-root__document--list" ${sharedAttributes}>
     <div class="notebook-root__list-name">
         <div class="notebook-root__preview-box">${placeholder()}</div>
         <div class="notebook-root__list-copy">
@@ -53,19 +84,9 @@ export const renderNotebookRootDocuments = (
     <time class="notebook-root__list-time">${escapeHtml(created)}</time>
 </article>`;
         }
-        const updated = formatNotebookRootUpdated(
-            document.updated,
-            nowMilliseconds,
-            window.siyuan.config.appearance.lang,
-        );
-        return `<article class="notebook-root__document notebook-root__document--${view}" ${sharedAttributes}>
+        return heading + `<article class="notebook-root__document notebook-root__document--${view}" ${sharedAttributes}>
     <div class="notebook-root__paper-header">
         <div class="notebook-root__document-title">${escapeHtml(document.title)}</div>
-        <div class="notebook-root__paper-meta">
-            ${notebookIcon(listing)}
-            <span class="notebook-root__notebook-name">${escapeHtml(listing.name)}</span>
-            ${updated ? `<span aria-hidden="true">•</span><time class="notebook-root__updated">${escapeHtml(updated)}</time>` : ""}
-        </div>
         <div class="notebook-root__paper-separator"></div>
     </div>
     <div class="notebook-root__preview-box">

@@ -59,11 +59,27 @@ func saveMarkdownDocumentAsTemplate(c *gin.Context) {
 func exportMarkdownDocumentPreview(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
-	boxID, p, ok := markdownExportArgs(c, ret)
+	arg, ok := util.JsonArg(c, ret)
 	if !ok {
 		return
 	}
-	name, content, missing, err := model.ExportMarkdownDocumentPreview(boxID, p)
+	var boxID, p string
+	var cardPreview bool
+	if !util.ParseJsonArgs(arg, ret,
+		util.BindJsonArg("notebook", &boxID, true, true),
+		util.BindJsonArg("path", &p, true, true),
+		util.BindJsonArg("cardPreview", &cardPreview, false, false),
+	) {
+		return
+	}
+	var name, content string
+	var missing []string
+	var err error
+	if cardPreview {
+		name, content, missing, err = model.ExportMarkdownDocumentCardPreview(boxID, p)
+	} else {
+		name, content, missing, err = model.ExportMarkdownDocumentPreview(boxID, p)
+	}
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = util.EscapeHTML(err.Error())

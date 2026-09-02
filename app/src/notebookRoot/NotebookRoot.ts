@@ -13,9 +13,14 @@ import type {NotebookRootListing, NotebookRootView} from "./types";
 import {DocumentCardPreviewController} from "./previewController";
 import {NotebookRootDragController} from "./drag";
 import {sortMenu} from "../menus/navigation";
-import {goBack} from "../util/backForward";
 import {Constants} from "../constants";
 import {setNotebookName} from "../util/pathName";
+import {notebookRootDocumentKey, notebookRootElementKey} from "./documentKey";
+import {
+    captureNotebookRootLayoutSnapshot,
+    hydrateNotebookRootLayout,
+    restoreNotebookRootScrollAnchor,
+} from "./layoutSwitch";
 /// #if !MOBILE
 import {openSearch} from "../search/spread";
 /// #else
@@ -30,7 +35,7 @@ export class NotebookRoot extends Model {
     private destroyed = false;
     private previewController: DocumentCardPreviewController;
     private dragController: NotebookRootDragController;
-    private selectedDocumentPath?: string;
+    private selectedDocumentKey?: string;
     private themeMode: string;
     private readonly themeObserver: MutationObserver;
 
@@ -102,8 +107,7 @@ export class NotebookRoot extends Model {
         this.element.innerHTML = `<div class="notebook-root" data-notebook="${escapeAttr(this.notebookId)}" data-view="${this.view}">
     <header class="notebook-root__toolbar">
         <div class="notebook-root__toolbar-group notebook-root__toolbar-group--leading">
-            <button class="notebook-root__action b3-tooltips__n" data-action="back" aria-label="${escapeAttr(window.siyuan.languages.goBack)}"><svg aria-hidden="true"><use xlink:href="#iconBack"></use></svg></button>
-            <button class="notebook-root__action notebook-root__new b3-tooltips__n" data-action="new" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.newFile)}"${window.siyuan.config.readonly ? " disabled" : ""}><svg aria-hidden="true"><use xlink:href="#iconAdd"></use></svg></button>
+            <button class="notebook-root__action b3-tooltips__n" data-action="new" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.newFile)}"${window.siyuan.config.readonly ? " disabled" : ""}><svg aria-hidden="true"><use xlink:href="#iconAdd"></use></svg></button>
             <div class="notebook-root__title"><span>${icon}</span><span class="notebook-root__title-editable" data-action="rename" contenteditable="${window.siyuan.config.readonly ? "false" : "plaintext-only"}" role="textbox" aria-label="${escapeAttr(window.siyuan.languages.rename)}" spellcheck="false">${escapeHtml(this.listing.name)}</span></div>
         </div>
         <div class="fn__flex-1"></div>
@@ -119,30 +123,49 @@ export class NotebookRoot extends Model {
     </header>
     <main class="notebook-root__documents notebook-root__documents--${this.view}">${renderNotebookRootDocuments(this.listing.documents, this.view, this.listing)}</main>
 </div>`;
-        if (this.selectedDocumentPath) {
+        if (this.selectedDocumentKey) {
             const selected = Array.from(this.element.querySelectorAll<HTMLElement>(".notebook-root__document"))
-                .find((document) => document.dataset.path === this.selectedDocumentPath);
+                .find((document) => notebookRootElementKey(document) === this.selectedDocumentKey);
             if (selected) {
                 selected.classList.add("notebook-root__document--selected");
             } else {
-                this.selectedDocumentPath = undefined;
+                this.selectedDocumentKey = undefined;
             }
         }
-        this.bindEvents();
-        this.previewController = new DocumentCardPreviewController();
-        this.element.querySelectorAll<HTMLElement>(".notebook-root__document").forEach((document) => {
-            this.previewController.observe(document, {
-                kind: document.dataset.kind as "sy" | "markdown",
-                notebook: document.dataset.notebook,
-                path: document.dataset.path,
-                id: document.dataset.id,
-                identityState: document.dataset.identityState,
-                identityConflict: document.dataset.identityConflict === "true",
-                revision: document.dataset.revision,
-                updated: Number(document.dataset.updated) || 0,
-                sourceSize: Number(document.dataset.sourceSize) || 0,
-            });
+        this.bindShellEvents();
+        const documents = this.element.querySelector<HTMLElement>(".notebook-root__documents");
+        if (!documents) return;
+        this.bindDocumentEvents(documents);
+        this.previewController = new DocumentCardPreviewController({
+            onIdentityCreated: (identity) => {
+                const document = this.listing.documents.find((item) => item.kind === "markdown" &&
+                    item.notebook === identity.notebook && item.path === identity.path);
+                if (!document) return;
+                const previousKey = notebookRootDocumentKey({
+                    kind: document.kind,
+                    notebook: document.notebook,
+                    id: document.documentID,
+                    path: document.path,
+                });
+                document.documentID = identity.documentID;
+                document.identityState = "valid";
+                document.identityConflict = false;
+                document.revision = identity.revision;
+                if (this.selectedDocumentKey === previousKey) {
+                    this.selectedDocumentKey = notebookRootDocumentKey({
+                        kind: document.kind,
+                        notebook: document.notebook,
+                        id: document.documentID,
+                        path: document.path,
+                    });
+                }
+            },
         });
+        this.previewController.rebind(documents.querySelectorAll<HTMLElement>(".notebook-root__document"));
+        this.createDragController();
+    }
+
+    private createDragController() {
         this.dragController = new NotebookRootDragController({
             element: this.element,
             notebook: this.notebookId,
@@ -156,10 +179,7 @@ export class NotebookRoot extends Model {
         return `<button class="b3-tooltips__n${view === this.view ? " notebook-root__view--active" : ""}" data-view="${view}" aria-label="${escapeAttr(label)}" aria-pressed="${view === this.view}"><svg aria-hidden="true"><use xlink:href="#${icon}"></use></svg></button>`;
     }
 
-    private bindEvents() {
-        this.element.querySelector<HTMLElement>("[data-action='back']")?.addEventListener("click", () => {
-            void goBack(this.app);
-        });
+    private bindShellEvents() {
         this.element.querySelector<HTMLElement>("[data-action='new']")?.addEventListener("click", (event) => {
             const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
             openNewFileMenu(this.app, {notebookId: this.notebookId, currentPath: "/", position: {x: rect.left, y: rect.bottom}});
@@ -230,15 +250,15 @@ export class NotebookRoot extends Model {
         });
         this.element.querySelectorAll<HTMLElement>(".notebook-root__views [data-view]").forEach((button) => button.addEventListener("click", () => {
             const view = button.dataset.view as NotebookRootView;
-            if (!view || view === this.view) return;
-            this.view = view;
-            setNotebookRootView(this.notebookId, view);
-            this.renderShell();
+            if (view) this.switchView(view);
         }));
-        this.element.querySelectorAll<HTMLElement>(".notebook-root__document").forEach((document) => {
+    }
+
+    private bindDocumentEvents(documents: HTMLElement) {
+        documents.querySelectorAll<HTMLElement>(".notebook-root__document").forEach((document) => {
             document.addEventListener("pointerdown", (event) => {
                 if (event.button !== 0) return;
-                this.selectedDocumentPath = document.dataset.path;
+                this.selectedDocumentKey = notebookRootElementKey(document);
                 this.element.querySelectorAll(".notebook-root__document--selected").forEach((item) => {
                     item.classList.remove("notebook-root__document--selected");
                 });
@@ -258,6 +278,37 @@ export class NotebookRoot extends Model {
                     open();
                 }
             });
+        });
+    }
+
+    private switchView(view: NotebookRootView) {
+        const root = this.element.querySelector<HTMLElement>(".notebook-root");
+        const current = root?.querySelector<HTMLElement>(".notebook-root__documents");
+        if (!root || !current || view === this.view) return;
+
+        const snapshot = captureNotebookRootLayoutSnapshot(root, current);
+        const next = document.createElement("main");
+        next.className = `notebook-root__documents notebook-root__documents--${view}`;
+        next.innerHTML = renderNotebookRootDocuments(this.listing.documents, view, this.listing);
+        hydrateNotebookRootLayout(next, snapshot);
+
+        this.dragController?.destroy();
+        current.replaceWith(next);
+        this.view = view;
+        root.dataset.view = view;
+        this.updateViewButtons(view);
+        restoreNotebookRootScrollAnchor(root, next, snapshot);
+        this.bindDocumentEvents(next);
+        this.previewController.rebind(next.querySelectorAll<HTMLElement>(".notebook-root__document"));
+        this.createDragController();
+        setNotebookRootView(this.notebookId, view);
+    }
+
+    private updateViewButtons(view: NotebookRootView) {
+        this.element.querySelectorAll<HTMLElement>(".notebook-root__views [data-view]").forEach((button) => {
+            const active = button.dataset.view === view;
+            button.classList.toggle("notebook-root__view--active", active);
+            button.setAttribute("aria-pressed", String(active));
         });
     }
 }

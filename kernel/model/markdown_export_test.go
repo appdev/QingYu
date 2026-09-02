@@ -70,6 +70,60 @@ func TestExportMarkdownDocumentPreviewResolvesGlobalAsset(t *testing.T) {
 	}
 }
 
+func TestMarkdownDocumentPreviewContentHidesValidFrontmatter(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{
+			name:   "yaml",
+			input:  "---\ntitle: Preview title\nqingyu-document-id: 01a05c11-1111-7111-8111-111111111111\n---\n\n# Body\n",
+			expect: "\n# Body\n",
+		},
+		{
+			name:   "toml with bom",
+			input:  "\xef\xbb\xbf+++\ntitle = \"Preview title\"\nqingyu-document-id = \"01a05c11-1111-7111-8111-111111111111\"\n+++\nBody\n",
+			expect: "\xef\xbb\xbfBody\n",
+		},
+		{
+			name:   "malformed remains visible",
+			input:  "---\ntitle: [broken\n---\nBody\n",
+			expect: "---\ntitle: [broken\n---\nBody\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := string(markdownDocumentPreviewContent([]byte(test.input))); got != test.expect {
+				t.Fatalf("unexpected preview content:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestExportMarkdownDocumentPreviewHidesFrontmatterAndKeepsBody(t *testing.T) {
+	box := setupMarkdownTest(t)
+	content := []byte("---\ntitle: Preview title\nqingyu-document-id: 01a05c11-1111-7111-8111-111111111111\n---\n\n# Visible body\n")
+	writeMarkdownExportFixture(t, filepath.Join(util.DataDir, box.ID, "preview.md"), content)
+
+	name, preview, _, err := ExportMarkdownDocumentCardPreview(box.ID, "/preview.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "Preview title" || !strings.Contains(preview, "Visible body") {
+		t.Fatalf("preview lost title metadata or body: name=%q preview=%s", name, preview)
+	}
+	if strings.Contains(preview, MarkdownDocumentIDKey) || strings.Contains(preview, "01a05c11-1111-7111-8111-111111111111") {
+		t.Fatalf("frontmatter leaked into preview: %s", preview)
+	}
+	_, regularPreview, _, err := ExportMarkdownDocumentPreview(box.ID, "/preview.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(regularPreview, MarkdownDocumentIDKey) {
+		t.Fatalf("regular Markdown preview unexpectedly hid frontmatter: %s", regularPreview)
+	}
+}
+
 func TestMarkdownExportResourcesWarnForMissingAndRejectEscape(t *testing.T) {
 	box := setupMarkdownTest(t)
 	documentPath := filepath.Join(util.DataDir, box.ID, "note.md")

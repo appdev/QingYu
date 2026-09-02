@@ -22,7 +22,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-const documentCardPreviewRendererVersion = 4
+const documentCardPreviewRendererVersion = 5
 
 type DocumentCardReference struct {
 	Kind     string `json:"kind"`

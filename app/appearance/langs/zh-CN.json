@@ -1,4 +1,6 @@
 {
+  "notebookRootPast7Days": "过去 7 天",
+  "notebookRootPast30Days": "过去 30 天",
   "notebookRootLargePreview": "大预览",
   "notebookRootMasonry": "瀑布流",
   "notebookRootList": "列表",

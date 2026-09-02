@@ -19,6 +19,49 @@ test("large and masonry views use paper cards while list stays compact", async (
     assert.equal(notebookRootCardLayout("list"), "list");
 });
 
+test("paper cards use the Craft Mac hierarchy without metadata", () => {
+    const renderer = readFileSync(resolve(process.cwd(), "src/notebookRoot/render.ts"), "utf8");
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const paperBranch = renderer.slice(renderer.indexOf("notebook-root__paper-header"), renderer.indexOf("}).join"));
+    assert.match(paperBranch, /notebook-root__document-title/);
+    assert.match(paperBranch, /notebook-root__paper-separator/);
+    assert.match(paperBranch, /notebook-root__preview-box/);
+    assert.doesNotMatch(paperBranch, /notebook-root__paper-meta|notebook-root__notebook-name|notebook-root__updated/);
+    assert.doesNotMatch(renderer, /notebookIcon|unicode2Emoji/);
+    assert.doesNotMatch(styles, /&__paper-meta|&__notebook-icon|&__notebook-name|&__updated/);
+    assert.match(renderer, /notebook-root__list-time/);
+    assert.match(renderer, /notebookRootTimeGroup\(document\[groupField\]/);
+});
+
+test("paper card density follows the Craft Mac measurements", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const toolbar = styles.slice(styles.indexOf("&__toolbar {"), styles.indexOf("&__toolbar-group {"));
+    const documents = styles.slice(styles.indexOf("&__documents {"), styles.indexOf("&__document {"));
+    const paper = styles.slice(styles.indexOf("&__document {"), styles.indexOf("&__preview-box {"));
+    assert.match(toolbar, /width: 100%;[\s\S]*?max-width: 1280px;[\s\S]*?margin-inline: auto;/);
+    assert.match(documents, /width: 100%;[\s\S]*?max-width: 1280px;[\s\S]*?margin-inline: auto;[\s\S]*?padding: 24px 16px 48px;/);
+    assert.match(documents, /&--large \{[\s\S]*?repeat\(auto-fill, minmax\(200px, 1fr\)\);[\s\S]*?gap: 20px;/);
+    assert.match(documents, /&--masonry \{[\s\S]*?column-count: 5;[\s\S]*?column-gap: 20px;/);
+    assert.match(styles, /@container \(max-width: 1111px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 4;/);
+    assert.match(styles, /@container \(max-width: 891px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 3;/);
+    assert.match(styles, /@container \(max-width: 671px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 2;/);
+    assert.match(styles, /@container \(max-width: 451px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 1;/);
+    assert.doesNotMatch(styles, /repeat\([234], minmax\(0, 300px\)\)/);
+    assert.doesNotMatch(styles, /notebook-root__documents--large \{\s*grid-template-columns: minmax\(0, 1fr\);/);
+    assert.match(paper, /border-radius: 14px;/);
+    assert.match(paper, /&__paper-header > &__document-title \{[\s\S]*?font-size: 16px;[\s\S]*?line-height: 1\.25;/);
+    assert.match(paper, /&__paper-separator \{[\s\S]*?margin-top: 9px;/);
+});
+
+test("preview placeholders stay transparent across themes", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const previewBox = styles.slice(styles.indexOf("&__preview-box {"), styles.indexOf("&__placeholder {"));
+    const placeholder = styles.slice(styles.indexOf("&__placeholder {", styles.indexOf("&__preview-box {")), styles.indexOf("&__preview-status {"));
+    assert.match(previewBox, /background: transparent;/);
+    assert.match(placeholder, /background: transparent;/);
+    assert.doesNotMatch(placeholder, /linear-gradient/);
+});
+
 test("preview rendering ignores the display pixel ratio", async () => {
     const {
         notebookRootPreviewCanvasOptions,
@@ -63,6 +106,51 @@ test("updated timestamps use deterministic localized relative units", async () =
     assert.equal(formatNotebookRootUpdated(nowSeconds - 2 * 60 * 60, now, "en"), "2 hours ago");
     assert.equal(formatNotebookRootUpdated(nowSeconds - 3 * 24 * 60 * 60, now, "en"), "3 days ago");
     assert.equal(formatNotebookRootUpdated(nowSeconds + 2 * 60 * 60, now, "en"), "in 2 hours");
+});
+
+test("notebook root time grouping follows the active time sort and local calendar boundaries", async () => {
+    const {notebookRootTimeGroup, notebookRootTimeGroupField} = await import("./rules");
+    assert.equal(notebookRootTimeGroupField(2), "updated");
+    assert.equal(notebookRootTimeGroupField(3), "updated");
+    assert.equal(notebookRootTimeGroupField(9), "created");
+    assert.equal(notebookRootTimeGroupField(10), "created");
+    [0, 1, 4, 5, 6, 7, 8, 11, 12, 13].forEach((sortMode) => {
+        assert.equal(notebookRootTimeGroupField(sortMode), undefined);
+    });
+
+    const labels = {
+        today: "Today",
+        yesterday: "Yesterday",
+        past7Days: "Past 7 days",
+        past30Days: "Past 30 days",
+    };
+    const now = new Date(2026, 8, 1, 12).getTime();
+    const atLocalNoon = (daysAgo: number) => new Date(2026, 8, 1 - daysAgo, 12).getTime() / 1000;
+    assert.equal(notebookRootTimeGroup(atLocalNoon(-1), now, "en", labels)?.key, "today");
+    assert.equal(notebookRootTimeGroup(atLocalNoon(0), now, "en", labels)?.key, "today");
+    assert.equal(notebookRootTimeGroup(atLocalNoon(1), now, "en", labels)?.key, "yesterday");
+    assert.equal(notebookRootTimeGroup(atLocalNoon(2), now, "en", labels)?.key, "past-7-days");
+    assert.equal(notebookRootTimeGroup(atLocalNoon(6), now, "en", labels)?.key, "past-7-days");
+    assert.equal(notebookRootTimeGroup(atLocalNoon(7), now, "en", labels)?.key, "past-30-days");
+    assert.equal(notebookRootTimeGroup(atLocalNoon(29), now, "en", labels)?.key, "past-30-days");
+    const monthGroup = notebookRootTimeGroup(atLocalNoon(30), now, "en", labels);
+    assert.match(monthGroup?.key || "", /^month-\d{4}-\d{2}$/);
+    assert.equal(monthGroup?.label, new Intl.DateTimeFormat("en", {
+        year: "numeric",
+        month: "long",
+    }).format(new Date(atLocalNoon(30) * 1000)));
+    const crossYearTimestamp = new Date(2025, 11, 15, 12).getTime() / 1000;
+    const crossYearGroup = notebookRootTimeGroup(crossYearTimestamp, now, "en", labels);
+    assert.equal(crossYearGroup?.key, "month-2025-12");
+    assert.equal(crossYearGroup?.label, "December 2025");
+    assert.equal(notebookRootTimeGroup(0, now, "en", labels), undefined);
+    assert.equal(notebookRootTimeGroup(Number.NaN, now, "en", labels), undefined);
+
+    const groupKeys = [0, 1, 6, 7, 30].map((daysAgo) =>
+        notebookRootTimeGroup(atLocalNoon(daysAgo), now, "en", labels)?.key,
+    );
+    assert.deepEqual(groupKeys, ["today", "yesterday", "past-7-days", "past-30-days", monthGroup?.key]);
+    assert.deepEqual([...groupKeys].reverse(), [monthGroup?.key, "past-30-days", "past-7-days", "yesterday", "today"]);
 });
 
 test("preview images are not draggable while the document card owns dragging", async () => {
@@ -120,7 +208,10 @@ test("document card previews are generated and uploaded as WebP", () => {
     const controller = readFileSync(resolve(process.cwd(), "src/notebookRoot/previewController.ts"), "utf8");
     assert.match(renderer, /"image\/webp"/);
     assert.doesNotMatch(renderer, /"image\/jpeg"/);
+    assert.match(renderer, /cardPreview: true/);
     assert.match(controller, /`\$\{descriptor\.cacheKey\}\.webp`/);
+    assert.match(controller, /installImage\(job\.key, descriptor\.url\)/);
+    assert.doesNotMatch(controller, /URL\.createObjectURL|revokeObjectURL/);
 });
 
 test("all notebook root views reuse the medium document preview", () => {
@@ -153,6 +244,16 @@ test("view switching binds only the toolbar buttons", () => {
     assert.doesNotMatch(source, /data-action="more"/);
 });
 
+test("toolbar actions and the view switcher share one geometric system", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    assert.match(styles, /&__action \{[\s\S]*?flex: 0 0 40px;[\s\S]*?width: 40px;[\s\S]*?height: 40px;/);
+    assert.match(styles, /&__action \{[\s\S]*?background: var\(--b3-theme-surface\);[\s\S]*?border-radius: 10px;/);
+    assert.match(styles, /&__action\[data-action="new"\] \{[\s\S]*?background: var\(--b3-theme-primary\);/);
+    assert.match(styles, /&__views \{[\s\S]*?height: 40px;[\s\S]*?border-radius: 10px;/);
+    assert.match(styles, /&__view--active \{[\s\S]*?background: var\(--b3-theme-background\) !important;/);
+    assert.doesNotMatch(styles, /&__action \{[\s\S]*?border-radius: 50%;/);
+});
+
 test("notebook titles edit inline and new notebooks default to masonry", () => {
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
     const viewState = readFileSync(resolve(process.cwd(), "src/notebookRoot/viewState.ts"), "utf8");
@@ -163,20 +264,70 @@ test("notebook titles edit inline and new notebooks default to masonry", () => {
     assert.match(viewState, /\? value as NotebookRootView : "masonry"/);
 });
 
+test("notebook root toolbar uses unified navigation-free controls and themed title typography", () => {
+    const component = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const titleStyles = styles.slice(styles.indexOf("&__title-editable"), styles.indexOf("&__views"));
+    assert.doesNotMatch(component, /data-action="back"|\bgoBack\b/);
+    assert.match(component, /class="notebook-root__action b3-tooltips__n" data-action="new"/);
+    assert.doesNotMatch(component, /notebook-root__new/);
+    assert.match(titleStyles, /font-family: var\(--b3-font-family-protyle\);/);
+    assert.match(titleStyles, /font-size: calc\(var\(--b3-font-size-editor\) \* 1\.25\);/);
+    assert.doesNotMatch(titleStyles, /&:hover:not|box-shadow/);
+});
+
 test("notebook cards keep one selected document across view renders", () => {
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
-    assert.match(source, /private selectedDocumentPath\?: string;/);
+    assert.match(source, /private selectedDocumentKey\?: string;/);
     assert.match(source, /document\.addEventListener\("pointerdown"/);
+    assert.match(source, /notebookRootElementKey\(document\)/);
     assert.match(source, /notebook-root__document--selected/);
     assert.match(styles, /&--selected \{/);
     assert.match(styles, /&\.notebook-root__document--selected/);
+});
+
+test("notebook root documents emit stable preview keys", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/render.ts"), "utf8");
+    assert.match(source, /notebookRootDocumentKey\(\{/);
+    assert.match(source, /data-preview-key="\$\{escapeAttr\(previewKey\)\}"/);
+});
+
+test("view switching replaces only the document region and keeps preview jobs alive", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
+    const switchStart = source.indexOf("private switchView(view: NotebookRootView)");
+    const updateStart = source.indexOf("private updateViewButtons", switchStart);
+    const viewHandlerSource = source.slice(switchStart, updateStart);
+    assert.match(viewHandlerSource, /captureNotebookRootLayoutSnapshot/);
+    assert.match(viewHandlerSource, /hydrateNotebookRootLayout/);
+    assert.match(viewHandlerSource, /current\.replaceWith\(next\)/);
+    assert.match(viewHandlerSource, /restoreNotebookRootScrollAnchor/);
+    assert.match(viewHandlerSource, /this\.previewController\.rebind/);
+    assert.doesNotMatch(viewHandlerSource, /this\.renderShell\(\)|previewController\.destroy\(\)/);
 });
 
 test("list rows render escaped preview text and omit empty previews", () => {
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/render.ts"), "utf8");
     assert.match(source, /document\.previewText \? `<span class="notebook-root__document-preview-text">\$\{escapeHtml\(document\.previewText\)\}<\/span>` : ""/);
     assert.doesNotMatch(source, /\$\{document\.previewText\}/);
+});
+
+test("time groups render only for large and list time-sorted notebook roots", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/render.ts"), "utf8");
+    assert.match(source, /Pick<NotebookRootListing, "sortMode">/);
+    assert.match(source, /view === "masonry" \? undefined : notebookRootTimeGroupField\(listing\.sortMode\)/);
+    assert.match(source, /class="notebook-root__time-group" role="heading" aria-level="2"/);
+    assert.match(source, /notebookRootTimeGroup\(document\[groupField\], nowMilliseconds, locale, groupLabels\)/);
+    const headingTemplate = source.slice(source.indexOf("const timeGroupHeading"), source.indexOf("export const renderNotebookRootDocuments"));
+    assert.doesNotMatch(headingTemplate, /notebook-root__document|data-path|draggable/);
+});
+
+test("time group headings span large grids and use theme tokens", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    assert.match(styles, /&__time-group \{[\s\S]*?grid-column: 1 \/ -1;/);
+    assert.match(styles, /&__time-group \{[\s\S]*?color: var\(--b3-theme-on-surface-light\);/);
+    const groupStyles = styles.slice(styles.indexOf("&__time-group"), styles.indexOf("&__list-header"));
+    assert.doesNotMatch(groupStyles, /#[0-9a-fA-F]{3,8}|rgb\(/);
 });
 
 test("list rows keep a stable height while previews load", () => {

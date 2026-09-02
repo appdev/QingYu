@@ -1,4 +1,6 @@
 {
+  "notebookRootPast7Days": "Последние 7 дней",
+  "notebookRootPast30Days": "Последние 30 дней",
   "notebookRootLargePreview": "Большой предпросмотр",
   "notebookRootMasonry": "Мозаика",
   "notebookRootList": "Список",

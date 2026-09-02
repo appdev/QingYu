@@ -1,4 +1,6 @@
 {
+  "notebookRootPast7Days": "7 derniers jours",
+  "notebookRootPast30Days": "30 derniers jours",
   "notebookRootLargePreview": "Grande prévisualisation",
   "notebookRootMasonry": "Mosaïque",
   "notebookRootList": "Liste",

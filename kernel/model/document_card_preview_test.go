@@ -43,7 +43,7 @@ func TestMarkdownDocumentCardPreviewCache(t *testing.T) {
 	if descriptor.Exists || len(descriptor.CacheKey) != 64 || descriptor.DocumentID != document.DocumentID {
 		t.Fatalf("unexpected descriptor: %#v", descriptor)
 	}
-	if descriptor.RendererVersion != 4 || !strings.HasSuffix(descriptor.URL, ".webp") {
+	if descriptor.RendererVersion != 5 || !strings.HasSuffix(descriptor.URL, ".webp") {
 		t.Fatalf("preview does not use WebP: %#v", descriptor)
 	}
 	encoded := bytes.NewReader(documentCardPreviewWebP(t, mediumDocumentCardPreviewWebP))
