@@ -21,10 +21,11 @@ func prepareDocumentCardPreview(c *gin.Context) {
 		return
 	}
 	var refArg map[string]any
-	var theme, size string
+	var theme, appearanceKey, size string
 	if !util.ParseJsonArgs(arg, ret,
 		util.BindJsonArg("reference", &refArg, true, true),
 		util.BindJsonArg("theme", &theme, true, true),
+		util.BindJsonArg("appearanceKey", &appearanceKey, true, true),
 		util.BindJsonArg("size", &size, true, true),
 	) {
 		return
@@ -41,7 +42,7 @@ func prepareDocumentCardPreview(c *gin.Context) {
 		ret.Msg = err.Error()
 		return
 	}
-	descriptor, err := model.PrepareDocumentCardPreview(ref, theme, size)
+	descriptor, err := model.PrepareDocumentCardPreview(ref, theme, appearanceKey, size)
 	if err != nil {
 		ret.Code = -1
 		ret.Msg = err.Error()

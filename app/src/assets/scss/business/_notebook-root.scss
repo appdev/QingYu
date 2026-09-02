@@ -116,17 +116,9 @@
   }
 
   &__action[data-action="new"] {
-    color: var(--b3-theme-on-primary);
-    background: var(--b3-theme-primary);
-    border-color: var(--b3-theme-primary);
-
-    @media (hover: hover) and (pointer: fine) {
-      &:hover {
-        color: var(--b3-theme-on-primary);
-        background: var(--b3-theme-primary);
-        opacity: .88;
-      }
-    }
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+    border-color: var(--b3-border-color);
   }
 
   &__title {
@@ -219,8 +211,8 @@
   }
 
   &__view--active {
-    color: var(--b3-theme-primary) !important;
-    background: var(--b3-theme-background) !important;
+    color: var(--b3-theme-on-background) !important;
+    background: var(--b3-list-hover) !important;
     box-shadow: var(--b3-point-shadow);
   }
 

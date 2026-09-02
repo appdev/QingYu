@@ -22,7 +22,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-const documentCardPreviewRendererVersion = 5
+const documentCardPreviewRendererVersion = 6
 
 type DocumentCardReference struct {
 	Kind     string `json:"kind"`
@@ -36,6 +36,7 @@ type DocumentCardPreviewDescriptor struct {
 	ContentRevision  string `json:"contentRevision"`
 	ResourceRevision string `json:"resourceRevision"`
 	Theme            string `json:"theme"`
+	AppearanceKey    string `json:"appearanceKey"`
 	Size             string `json:"size"`
 	RendererVersion  int    `json:"rendererVersion"`
 	CacheKey         string `json:"cacheKey"`
@@ -43,9 +44,15 @@ type DocumentCardPreviewDescriptor struct {
 	Exists           bool   `json:"exists"`
 }
 
-func PrepareDocumentCardPreview(ref DocumentCardReference, theme, size string) (*DocumentCardPreviewDescriptor, error) {
+func PrepareDocumentCardPreview(ref DocumentCardReference, theme, appearanceKey, size string) (*DocumentCardPreviewDescriptor, error) {
 	if theme != "light" && theme != "dark" {
 		return nil, errors.New("invalid document card preview theme")
+	}
+	if len(appearanceKey) != sha256.Size*2 || strings.ToLower(appearanceKey) != appearanceKey {
+		return nil, errors.New("invalid document card preview appearance key")
+	}
+	if _, err := hex.DecodeString(appearanceKey); err != nil {
+		return nil, errors.New("invalid document card preview appearance key")
 	}
 	if size != "medium" && size != "small" {
 		return nil, errors.New("invalid document card preview size")
@@ -53,7 +60,9 @@ func PrepareDocumentCardPreview(ref DocumentCardReference, theme, size string) (
 	if !validNotebookRootReference(ref) {
 		return nil, errors.New("invalid document card reference")
 	}
-	descriptor := &DocumentCardPreviewDescriptor{Theme: theme, Size: size, RendererVersion: documentCardPreviewRendererVersion}
+	descriptor := &DocumentCardPreviewDescriptor{
+		Theme: theme, AppearanceKey: appearanceKey, Size: size, RendererVersion: documentCardPreviewRendererVersion,
+	}
 	if ref.Kind == "markdown" {
 		document, err := LoadMarkdownExportDocument(ref.Notebook, ref.Path)
 		if err != nil {
@@ -85,10 +94,11 @@ func PrepareDocumentCardPreview(ref DocumentCardReference, theme, size string) (
 		ContentRevision  string
 		ResourceRevision string
 		Theme            string
+		AppearanceKey    string
 		Size             string
 		RendererVersion  int
 	}{descriptor.DocumentID, descriptor.ContentRevision, descriptor.ResourceRevision, descriptor.Theme,
-		descriptor.Size, descriptor.RendererVersion})
+		descriptor.AppearanceKey, descriptor.Size, descriptor.RendererVersion})
 	sum := sha256.Sum256(canonical)
 	descriptor.CacheKey = hex.EncodeToString(sum[:])
 	descriptor.URL = "/card-preview/" + ref.Notebook + "/" + descriptor.CacheKey + ".webp"
@@ -98,7 +108,7 @@ func PrepareDocumentCardPreview(ref DocumentCardReference, theme, size string) (
 }
 
 func StoreDocumentCardPreview(ref DocumentCardReference, descriptor DocumentCardPreviewDescriptor, reader io.Reader) error {
-	current, err := PrepareDocumentCardPreview(ref, descriptor.Theme, descriptor.Size)
+	current, err := PrepareDocumentCardPreview(ref, descriptor.Theme, descriptor.AppearanceKey, descriptor.Size)
 	if err != nil {
 		return err
 	}

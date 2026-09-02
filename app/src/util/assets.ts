@@ -19,7 +19,33 @@ import {setCodeTheme} from "../protyle/render/util";
 import {getBackend, getFrontend} from "./functions";
 import {getWorkspaceName} from "./processTitle";
 
+const waitForThemeStyle = (element: HTMLLinkElement, reload = false) => new Promise<void>((resolve) => {
+    if (!reload && element.sheet) {
+        resolve();
+        return;
+    }
+    element.addEventListener("load", () => resolve(), {once: true});
+    element.addEventListener("error", () => resolve(), {once: true});
+});
+
+const dispatchThemeApplied = (assetsReady: Promise<unknown>[], data: Config.IAppearance) => {
+    const timeout = new Promise<void>((resolve) => globalThis.setTimeout(resolve, 3000));
+    void Promise.race([Promise.all(assetsReady), timeout]).then(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            window.dispatchEvent(new CustomEvent("siyuan-theme-applied", {
+                detail: {
+                    mode: data.mode,
+                    themeLight: data.themeLight,
+                    themeDark: data.themeDark,
+                    themeVer: data.themeVer,
+                },
+            }));
+        }));
+    });
+};
+
 export const loadAssets = (data: Config.IAppearance) => {
+    const themeAssetsReady: Promise<unknown>[] = [];
     const htmlElement = document.getElementsByTagName("html")[0];
     htmlElement.setAttribute("lang", window.siyuan.config.appearance.lang);
     htmlElement.setAttribute("data-frontend", getFrontend()); // https://github.com/siyuan-note/siyuan/issues/12549
@@ -41,28 +67,30 @@ export const loadAssets = (data: Config.IAppearance) => {
         if (!defaultStyleElement.getAttribute("href").startsWith(defaultThemeAddress)) {
             const newStyleElement = document.createElement("link");
             // 等待新样式表加载完成再移除旧样式表
-            new Promise((resolve) => {
-                newStyleElement.rel = "stylesheet";
-                newStyleElement.href = defaultThemeAddress;
-                newStyleElement.onload = resolve;
-                defaultStyleElement.parentNode.insertBefore(newStyleElement, defaultStyleElement);
-            }).then(() => {
+            newStyleElement.rel = "stylesheet";
+            newStyleElement.href = defaultThemeAddress;
+            const styleReady = waitForThemeStyle(newStyleElement).then(() => {
                 defaultStyleElement.remove();
                 newStyleElement.id = "themeDefaultStyle";
             });
+            themeAssetsReady.push(styleReady);
+            defaultStyleElement.parentNode.insertBefore(newStyleElement, defaultStyleElement);
         }
     } else {
         addStyle(defaultThemeAddress, "themeDefaultStyle");
+        themeAssetsReady.push(waitForThemeStyle(document.getElementById("themeDefaultStyle") as HTMLLinkElement));
     }
     const styleElement = document.getElementById("themeStyle");
     if ((data.mode === 1 && data.themeDark !== "midnight") || (data.mode === 0 && data.themeLight !== "daylight")) {
         const themeAddress = `/appearance/themes/${data.mode === 1 ? data.themeDark : data.themeLight}/theme.css?v=${data.themeVer}`;
         if (styleElement) {
             if (!styleElement.getAttribute("href").startsWith(themeAddress)) {
+                themeAssetsReady.push(waitForThemeStyle(styleElement as HTMLLinkElement, true));
                 styleElement.setAttribute("href", themeAddress);
             }
         } else {
             addStyle(themeAddress, "themeStyle");
+            themeAssetsReady.push(waitForThemeStyle(document.getElementById("themeStyle") as HTMLLinkElement));
         }
     } else if (styleElement) {
         styleElement.remove();
@@ -98,11 +126,18 @@ export const loadAssets = (data: Config.IAppearance) => {
     if (themeScriptElement) {
         if (!themeScriptElement.getAttribute("src").startsWith(themeScriptAddress)) {
             themeScriptElement.remove();
-            addScript(themeScriptAddress, "themeScript");
+            const themeScriptReady = addScript(themeScriptAddress, "themeScript");
+            if (data.themeJS) {
+                themeAssetsReady.push(themeScriptReady);
+            }
         }
     } else {
-        addScript(themeScriptAddress, "themeScript");
+        const themeScriptReady = addScript(themeScriptAddress, "themeScript");
+        if (data.themeJS) {
+            themeAssetsReady.push(themeScriptReady);
+        }
     }
+    dispatchThemeApplied(themeAssetsReady, data);
 
     // load icons
     const isBuiltInIcon = data.icon === "litheness";

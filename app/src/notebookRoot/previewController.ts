@@ -1,11 +1,13 @@
 import {notebookRootDocumentKey, notebookRootElementKey} from "./documentKey";
 import {notebookRootNeedsMarkdownIdentity} from "./rules";
+import {documentCardPreviewAppearanceKey} from "./theme";
 
 interface PreviewDescriptor {
     cacheKey: string;
     url: string;
     exists: boolean;
     theme: "light" | "dark";
+    appearanceKey: string;
     size: "medium" | "small";
 }
 
@@ -24,6 +26,7 @@ export interface PreviewReference {
 interface PreviewJob {
     key: string;
     reference: PreviewReference;
+    placeholder?: HTMLElement;
 }
 
 export interface DocumentCardPreviewControllerOptions {
@@ -41,6 +44,7 @@ const maximumSessionPreviewDescriptors = 512;
 export const documentCardPreviewSessionKey = (
     reference: PreviewReference,
     theme: PreviewDescriptor["theme"],
+    appearanceKey: string,
     size: PreviewDescriptor["size"],
 ) => [
     reference.kind,
@@ -50,6 +54,7 @@ export const documentCardPreviewSessionKey = (
     reference.updated || 0,
     reference.sourceSize || 0,
     theme,
+    appearanceKey,
     size,
 ].join("\u001f");
 
@@ -127,6 +132,9 @@ export class DocumentCardPreviewController {
     private readonly queue: string[] = [];
     private activeJob?: PreviewJob;
     private destroyed = false;
+    private generation = 0;
+    private appearanceRefreshToken = 0;
+    private appearanceKeyPromise?: Promise<string>;
 
     constructor(options: DocumentCardPreviewControllerOptions = {}) {
         this.options = options;
@@ -154,10 +162,34 @@ export class DocumentCardPreviewController {
             element.dataset.previewKey = key;
             this.targets.set(key, element);
             if (!this.jobs.has(key)) {
-                this.jobs.set(key, {key, reference: previewReferenceFromElement(element)});
+                const placeholder = element.querySelector<HTMLElement>(".notebook-root__placeholder")?.cloneNode(true) as HTMLElement;
+                this.jobs.set(key, {key, reference: previewReferenceFromElement(element), placeholder});
             }
             this.observer.observe(element);
         }
+    }
+
+    public async refreshAppearance() {
+        const refreshToken = ++this.appearanceRefreshToken;
+        const appearanceKey = await documentCardPreviewAppearanceKey();
+        const previousAppearanceKey = await this.currentAppearanceKey();
+        if (this.destroyed || refreshToken !== this.appearanceRefreshToken || appearanceKey === previousAppearanceKey) {
+            return;
+        }
+        this.appearanceKeyPromise = Promise.resolve(appearanceKey);
+        this.generation++;
+        this.queue.length = 0;
+        this.targets.forEach((target, key) => {
+            const preview = target.querySelector<HTMLElement>(".notebook-root__preview");
+            const placeholder = this.jobs.get(key)?.placeholder;
+            if (preview && placeholder) {
+                preview.replaceWith(placeholder.cloneNode(true));
+            }
+            delete target.dataset.previewReady;
+            target.dataset.previewState = "loading";
+            this.observer.unobserve(target);
+            this.observer.observe(target);
+        });
     }
 
     public destroy() {
@@ -171,6 +203,11 @@ export class DocumentCardPreviewController {
     private target(job: PreviewJob) {
         const target = this.targets.get(job.key);
         return target?.isConnected ? target : undefined;
+    }
+
+    private currentAppearanceKey() {
+        this.appearanceKeyPromise ||= documentCardPreviewAppearanceKey();
+        return this.appearanceKeyPromise;
     }
 
     private async drain() {
@@ -222,12 +259,13 @@ export class DocumentCardPreviewController {
     }
 
     private async render(job: PreviewJob) {
+        const generation = this.generation;
         try {
             await waitForPreviewPaint();
             await waitForPreviewIdle();
-            if (this.destroyed || !this.target(job)) return;
+            if (this.isStale(job, generation)) return;
             const {fetchSyncPost} = await import("../util/fetch");
-            if (this.destroyed || !this.target(job)) return;
+            if (this.isStale(job, generation)) return;
             if (notebookRootNeedsMarkdownIdentity(job.reference.kind, job.reference.identityState,
                 Boolean(job.reference.identityConflict))) {
                 if (window.siyuan.config.readonly) {
@@ -236,7 +274,7 @@ export class DocumentCardPreviewController {
                     return;
                 }
                 const {createMarkdownManagementOperationID} = await import("../markdown/documentManagement");
-                if (this.destroyed || !this.target(job)) return;
+                if (this.isStale(job, generation)) return;
                 const identity = await fetchSyncPost("/api/markdown/ensureDocumentIdentity", {
                     notebook: job.reference.notebook,
                     path: job.reference.path,
@@ -245,7 +283,7 @@ export class DocumentCardPreviewController {
                     forceNew: Boolean(job.reference.identityConflict),
                 });
                 if (identity.code !== 0) throw new Error(identity.msg || "document identity creation failed");
-                if (this.destroyed || !this.target(job)) return;
+                if (this.isStale(job, generation)) return;
                 this.migrateJobIdentity(job, {
                     documentID: identity.data.documentID,
                     revision: identity.data.revision,
@@ -253,29 +291,32 @@ export class DocumentCardPreviewController {
             }
             const size = "medium";
             const theme = window.siyuan.config.appearance.mode === 1 ? "dark" : "light";
-            const sessionKey = documentCardPreviewSessionKey(job.reference, theme, size);
+            const appearanceKey = await this.currentAppearanceKey();
+            if (this.isStale(job, generation)) return;
+            const sessionKey = documentCardPreviewSessionKey(job.reference, theme, appearanceKey, size);
             let descriptor = sessionPreviewDescriptors.get(sessionKey);
             if (!descriptor) {
                 const prepared = await fetchSyncPost("/api/notebook/prepareDocumentCardPreview", {
                     reference: job.reference,
                     theme,
+                    appearanceKey,
                     size,
                 });
                 if (prepared.code !== 0) throw new Error(prepared.msg || "preview preparation failed");
-                if (this.destroyed || !this.target(job)) return;
+                if (this.isStale(job, generation)) return;
                 descriptor = prepared.data as PreviewDescriptor;
                 if (descriptor.exists) {
                     cacheSessionPreviewDescriptor(sessionKey, descriptor);
                 }
             }
             if (descriptor.exists) {
-                await this.installImage(job.key, descriptor.url);
+                await this.installImage(job.key, descriptor.url, generation);
                 return;
             }
             const {renderDocumentCardPreview} = await import("./previewRenderer");
-            if (this.destroyed || !this.target(job)) return;
+            if (this.isStale(job, generation)) return;
             const blob = await renderDocumentCardPreview({reference: job.reference, size});
-            if (this.destroyed || !this.target(job)) return;
+            if (this.isStale(job, generation)) return;
             const formData = new FormData();
             formData.append("reference", JSON.stringify(job.reference));
             formData.append("descriptor", JSON.stringify(descriptor));
@@ -283,18 +324,22 @@ export class DocumentCardPreviewController {
             const stored = await fetchSyncPost("/api/notebook/storeDocumentCardPreview", formData);
             if (stored.code !== 0) throw new Error(stored.msg || "preview store failed");
             cacheSessionPreviewDescriptor(sessionKey, {...descriptor, exists: true});
-            if (this.destroyed) return;
-            await this.installImage(job.key, descriptor.url);
+            if (this.isStale(job, generation)) return;
+            await this.installImage(job.key, descriptor.url, generation);
         } catch {
-            const target = this.target(job);
+            const target = this.isStale(job, generation) ? undefined : this.target(job);
             if (target) target.dataset.previewState = "failed";
         }
     }
 
-    private async installImage(key: string, url: string) {
+    private isStale(job: PreviewJob, generation: number) {
+        return this.destroyed || generation !== this.generation || !this.target(job);
+    }
+
+    private async installImage(key: string, url: string, generation = this.generation) {
         const image = await decodeDocumentCardPreviewImage(url);
         const target = this.targets.get(key);
-        if (this.destroyed || !target?.isConnected) return;
+        if (this.destroyed || generation !== this.generation || !target?.isConnected) return;
         if (installDocumentCardPreviewImage(target, url, image)) {
             target.dataset.previewReady = "true";
             target.dataset.previewState = "ready";

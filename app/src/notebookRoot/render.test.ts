@@ -184,7 +184,7 @@ test("preview images are not draggable while the document card owns dragging", a
     }
 });
 
-test("preview session keys change with content, theme, and preview size", async () => {
+test("preview session keys change with content, appearance, theme, and preview size", async () => {
     const {documentCardPreviewSessionKey} = await import("./previewController");
     const reference = {
         kind: "markdown" as const,
@@ -195,12 +195,41 @@ test("preview session keys change with content, theme, and preview size", async 
         updated: 100,
         sourceSize: 200,
     };
-    const key = documentCardPreviewSessionKey(reference, "light", "medium");
-    assert.notEqual(documentCardPreviewSessionKey({...reference, revision: "revision-b"}, "light", "medium"), key);
-    assert.notEqual(documentCardPreviewSessionKey({...reference, updated: 101}, "light", "medium"), key);
-    assert.notEqual(documentCardPreviewSessionKey({...reference, sourceSize: 201}, "light", "medium"), key);
-    assert.notEqual(documentCardPreviewSessionKey(reference, "dark", "medium"), key);
-    assert.notEqual(documentCardPreviewSessionKey(reference, "light", "small"), key);
+    const appearance = "appearance-a";
+    const key = documentCardPreviewSessionKey(reference, "light", appearance, "medium");
+    assert.notEqual(documentCardPreviewSessionKey({...reference, revision: "revision-b"}, "light", appearance, "medium"), key);
+    assert.notEqual(documentCardPreviewSessionKey({...reference, updated: 101}, "light", appearance, "medium"), key);
+    assert.notEqual(documentCardPreviewSessionKey({...reference, sourceSize: 201}, "light", appearance, "medium"), key);
+    assert.notEqual(documentCardPreviewSessionKey(reference, "dark", appearance, "medium"), key);
+    assert.notEqual(documentCardPreviewSessionKey(reference, "light", "appearance-b", "medium"), key);
+    assert.notEqual(documentCardPreviewSessionKey(reference, "light", appearance, "small"), key);
+});
+
+test("preview appearance keys include active theme assets, attributes, and semantic colors", async () => {
+    const {JSDOM} = await import("jsdom");
+    const dom = new JSDOM(`<!doctype html><html data-theme-mode="light"><head>
+        <link id="themeDefaultStyle" href="/appearance/themes/daylight/theme.css?v=1">
+    </head><body></body></html>`);
+    const previousDocument = globalThis.document;
+    const previousWindow = globalThis.window;
+    Object.defineProperty(globalThis, "document", {configurable: true, value: dom.window.document});
+    Object.defineProperty(globalThis, "window", {configurable: true, value: dom.window});
+    Object.assign(dom.window, {
+        siyuan: {config: {appearance: {mode: 0, themeLight: "daylight", themeDark: "midnight", themeVer: "1"}}},
+    });
+    dom.window.document.documentElement.style.setProperty("--b3-theme-background", "rgb(255, 255, 255)");
+    try {
+        const {documentCardPreviewAppearanceKey} = await import("./theme");
+        const initial = await documentCardPreviewAppearanceKey();
+        assert.match(initial, /^[0-9a-f]{64}$/);
+        dom.window.document.documentElement.setAttribute("data-custom-theme", "savor");
+        dom.window.document.documentElement.style.setProperty("--b3-theme-background", "rgb(250, 248, 240)");
+        assert.notEqual(await documentCardPreviewAppearanceKey(), initial);
+    } finally {
+        Object.defineProperty(globalThis, "document", {configurable: true, value: previousDocument});
+        Object.defineProperty(globalThis, "window", {configurable: true, value: previousWindow});
+        dom.window.close();
+    }
 });
 
 test("document card previews are generated and uploaded as WebP", () => {
@@ -210,7 +239,7 @@ test("document card previews are generated and uploaded as WebP", () => {
     assert.doesNotMatch(renderer, /"image\/jpeg"/);
     assert.match(renderer, /cardPreview: true/);
     assert.match(controller, /`\$\{descriptor\.cacheKey\}\.webp`/);
-    assert.match(controller, /installImage\(job\.key, descriptor\.url\)/);
+    assert.match(controller, /installImage\(job\.key, descriptor\.url, generation\)/);
     assert.doesNotMatch(controller, /URL\.createObjectURL|revokeObjectURL/);
 });
 
@@ -246,11 +275,13 @@ test("view switching binds only the toolbar buttons", () => {
 
 test("toolbar actions and the view switcher share one geometric system", () => {
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
     assert.match(styles, /&__action \{[\s\S]*?flex: 0 0 40px;[\s\S]*?width: 40px;[\s\S]*?height: 40px;/);
     assert.match(styles, /&__action \{[\s\S]*?background: var\(--b3-theme-surface\);[\s\S]*?border-radius: 10px;/);
-    assert.match(styles, /&__action\[data-action="new"\] \{[\s\S]*?background: var\(--b3-theme-primary\);/);
+    assert.match(styles, /&__action\[data-action="new"\] \{[\s\S]*?background: var\(--b3-theme-surface\);/);
     assert.match(styles, /&__views \{[\s\S]*?height: 40px;[\s\S]*?border-radius: 10px;/);
-    assert.match(styles, /&__view--active \{[\s\S]*?background: var\(--b3-theme-background\) !important;/);
+    assert.match(styles, /&__view--active \{[\s\S]*?background: var\(--b3-list-hover\) !important;/);
+    assert.match(source, /notebook-root__action block__icon block__icon--show/);
     assert.doesNotMatch(styles, /&__action \{[\s\S]*?border-radius: 50%;/);
 });
 
@@ -269,7 +300,7 @@ test("notebook root toolbar uses unified navigation-free controls and themed tit
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     const titleStyles = styles.slice(styles.indexOf("&__title-editable"), styles.indexOf("&__views"));
     assert.doesNotMatch(component, /data-action="back"|\bgoBack\b/);
-    assert.match(component, /class="notebook-root__action b3-tooltips__n" data-action="new"/);
+    assert.match(component, /class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="new"/);
     assert.doesNotMatch(component, /notebook-root__new/);
     assert.match(titleStyles, /font-family: var\(--b3-font-family-protyle\);/);
     assert.match(titleStyles, /font-size: calc\(var\(--b3-font-size-editor\) \* 1\.25\);/);
@@ -338,13 +369,17 @@ test("list rows keep a stable height while previews load", () => {
     assert.match(source, /&__document-preview-text \{[\s\S]*?text-overflow: ellipsis;[\s\S]*?white-space: nowrap;[\s\S]*?var\(--b3-theme-on-surface-light\)/);
 });
 
-test("notebook root owns scrolling and previews refresh with the theme", () => {
+test("notebook root owns scrolling and refreshes only previews after themes are applied", () => {
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
+    const assets = readFileSync(resolve(process.cwd(), "src/util/assets.ts"), "utf8");
     assert.match(styles, /\.notebook-root \{[\s\S]*?height: 100%;\s+overflow-y: auto;/);
     assert.doesNotMatch(styles, /&__documents \{[\s\S]*?overflow-y: auto;/);
-    assert.match(source, /attributeFilter: \["data-theme-mode"\]/);
-    assert.match(source, /root\.scrollTop = scrollTop/);
+    assert.match(source, /window\.addEventListener\("siyuan-theme-applied", this\.handleThemeApplied\)/);
+    assert.match(source, /this\.previewController\?\.refreshAppearance\(\)/);
+    assert.doesNotMatch(source, /attributeFilter: \["data-theme-mode"\]/);
+    assert.match(assets, /window\.dispatchEvent\(new CustomEvent\("siyuan-theme-applied"/);
+    assert.match(styles, /&__placeholder \{[\s\S]*?background: transparent;/);
 });
 
 test("large preview grid rows follow card height inside the scrolling notebook root", () => {

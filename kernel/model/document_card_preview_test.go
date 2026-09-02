@@ -16,6 +16,7 @@ import (
 
 const mediumDocumentCardPreviewWebP = "UklGRjwAAABXRUJQVlA4TDAAAAAvf8LvAAfQ+ta3vv8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9//EAA="
 const invalidSizeDocumentCardPreviewWebP = "UklGRh4AAABXRUJQVlA4TBEAAAAvCUACAAfQ+ta3vv+BiOh/AAA="
+const testDocumentCardPreviewAppearanceKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func documentCardPreviewWebP(t *testing.T, encoded string) []byte {
 	t.Helper()
@@ -36,27 +37,46 @@ func TestMarkdownDocumentCardPreviewCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	descriptor, err := PrepareDocumentCardPreview(ref, "light", "medium")
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if descriptor.Exists || len(descriptor.CacheKey) != 64 || descriptor.DocumentID != document.DocumentID {
 		t.Fatalf("unexpected descriptor: %#v", descriptor)
 	}
-	if descriptor.RendererVersion != 5 || !strings.HasSuffix(descriptor.URL, ".webp") {
+	if descriptor.RendererVersion != 6 || !strings.HasSuffix(descriptor.URL, ".webp") {
 		t.Fatalf("preview does not use WebP: %#v", descriptor)
 	}
 	encoded := bytes.NewReader(documentCardPreviewWebP(t, mediumDocumentCardPreviewWebP))
 	if err = StoreDocumentCardPreview(ref, *descriptor, encoded); err != nil {
 		t.Fatal(err)
 	}
-	preparedAgain, err := PrepareDocumentCardPreview(ref, "light", "medium")
+	preparedAgain, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
 	if err != nil || !preparedAgain.Exists || preparedAgain.CacheKey != descriptor.CacheKey {
 		t.Fatalf("stored preview was not reused: %#v, %v", preparedAgain, err)
 	}
-	dark, err := PrepareDocumentCardPreview(ref, "dark", "medium")
+	dark, err := PrepareDocumentCardPreview(ref, "dark", testDocumentCardPreviewAppearanceKey, "medium")
 	if err != nil || dark.CacheKey == descriptor.CacheKey || dark.Exists {
 		t.Fatalf("theme variant was not isolated: %#v, %v", dark, err)
+	}
+	otherAppearance, err := PrepareDocumentCardPreview(ref, "light", strings.Repeat("a", 64), "medium")
+	if err != nil || otherAppearance.CacheKey == descriptor.CacheKey || otherAppearance.Exists {
+		t.Fatalf("appearance variant was not isolated: %#v, %v", otherAppearance, err)
+	}
+}
+
+func TestDocumentCardPreviewRejectsInvalidAppearanceKey(t *testing.T) {
+	box := setupMarkdownTest(t)
+	document, err := CreateMarkdown(box.ID, "/", "invalid-appearance.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
+	if _, err = PrepareDocumentCardPreview(ref, "light", "Savor", "medium"); err == nil {
+		t.Fatal("invalid appearance key was accepted")
+	}
+	if _, err = PrepareDocumentCardPreview(ref, "light", strings.Repeat("A", 64), "medium"); err == nil {
+		t.Fatal("uppercase appearance key was accepted")
 	}
 }
 
@@ -70,7 +90,7 @@ func TestDocumentCardPreviewRejectsWrongDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	descriptor, err := PrepareDocumentCardPreview(ref, "light", "medium")
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +110,7 @@ func TestDocumentCardPreviewRejectsJPEG(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	descriptor, err := PrepareDocumentCardPreview(ref, "light", "medium")
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,8 +36,9 @@ export class NotebookRoot extends Model {
     private previewController: DocumentCardPreviewController;
     private dragController: NotebookRootDragController;
     private selectedDocumentKey?: string;
-    private themeMode: string;
     private readonly themeObserver: MutationObserver;
+    private themeRefreshFrame = 0;
+    private readonly handleThemeApplied = () => this.scheduleThemeRefresh();
 
     constructor(options: {app: App, tab?: Tab, element: HTMLElement, notebookId: string, name: string}) {
         super({app: options.app});
@@ -45,23 +46,15 @@ export class NotebookRoot extends Model {
         this.element = options.element;
         this.view = notebookRootView(this.notebookId);
         this.listing = {notebook: this.notebookId, name: options.name, icon: "", sortMode: 0, documents: []};
-        this.themeMode = document.documentElement.dataset.themeMode || "";
-        this.themeObserver = new MutationObserver(() => {
-            const themeMode = document.documentElement.dataset.themeMode || "";
-            if (this.destroyed || themeMode === this.themeMode) {
-                return;
+        this.themeObserver = new MutationObserver((records) => {
+            const standardThemeAttributes = ["data-theme-mode", "data-light-theme", "data-dark-theme"];
+            if (records.some((record) => record.attributeName === "class" ||
+                (record.attributeName?.includes("theme") && !standardThemeAttributes.includes(record.attributeName)))) {
+                this.scheduleThemeRefresh();
             }
-            this.themeMode = themeMode;
-            const scrollTop = this.element.querySelector<HTMLElement>(".notebook-root")?.scrollTop || 0;
-            this.renderShell();
-            requestAnimationFrame(() => {
-                const root = this.element.querySelector<HTMLElement>(".notebook-root");
-                if (root) {
-                    root.scrollTop = scrollTop;
-                }
-            });
         });
-        this.themeObserver.observe(document.documentElement, {attributes: true, attributeFilter: ["data-theme-mode"]});
+        this.themeObserver.observe(document.documentElement, {attributes: true});
+        window.addEventListener("siyuan-theme-applied", this.handleThemeApplied);
         this.renderShell();
         void this.reload();
     }
@@ -95,6 +88,10 @@ export class NotebookRoot extends Model {
     public destroy() {
         this.destroyed = true;
         this.themeObserver.disconnect();
+        window.removeEventListener("siyuan-theme-applied", this.handleThemeApplied);
+        if (this.themeRefreshFrame) {
+            cancelAnimationFrame(this.themeRefreshFrame);
+        }
         this.previewController?.destroy();
         this.dragController?.destroy();
         this.element.replaceChildren();
@@ -107,7 +104,7 @@ export class NotebookRoot extends Model {
         this.element.innerHTML = `<div class="notebook-root" data-notebook="${escapeAttr(this.notebookId)}" data-view="${this.view}">
     <header class="notebook-root__toolbar">
         <div class="notebook-root__toolbar-group notebook-root__toolbar-group--leading">
-            <button class="notebook-root__action b3-tooltips__n" data-action="new" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.newFile)}"${window.siyuan.config.readonly ? " disabled" : ""}><svg aria-hidden="true"><use xlink:href="#iconAdd"></use></svg></button>
+            <button class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="new" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.newFile)}"${window.siyuan.config.readonly ? " disabled" : ""}><svg aria-hidden="true"><use xlink:href="#iconAdd"></use></svg></button>
             <div class="notebook-root__title"><span>${icon}</span><span class="notebook-root__title-editable" data-action="rename" contenteditable="${window.siyuan.config.readonly ? "false" : "plaintext-only"}" role="textbox" aria-label="${escapeAttr(window.siyuan.languages.rename)}" spellcheck="false">${escapeHtml(this.listing.name)}</span></div>
         </div>
         <div class="fn__flex-1"></div>
@@ -117,8 +114,8 @@ export class NotebookRoot extends Model {
                 ${this.viewButton("large", "iconGallery", window.siyuan.languages.notebookRootLargePreview || "大预览")}
                 ${this.viewButton("list", "iconList", window.siyuan.languages.notebookRootList || "列表")}
             </div>
-            <button class="notebook-root__action b3-tooltips__n" data-action="sort" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.sort)}"><svg aria-hidden="true"><use xlink:href="#iconSort"></use></svg></button>
-            <button class="notebook-root__action b3-tooltips__n" data-action="search" aria-label="${escapeAttr(window.siyuan.languages.search)}"><svg aria-hidden="true"><use xlink:href="#iconSearch"></use></svg></button>
+            <button class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="sort" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.sort)}"><svg aria-hidden="true"><use xlink:href="#iconSort"></use></svg></button>
+            <button class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="search" aria-label="${escapeAttr(window.siyuan.languages.search)}"><svg aria-hidden="true"><use xlink:href="#iconSearch"></use></svg></button>
         </div>
     </header>
     <main class="notebook-root__documents notebook-root__documents--${this.view}">${renderNotebookRootDocuments(this.listing.documents, this.view, this.listing)}</main>
@@ -176,7 +173,15 @@ export class NotebookRoot extends Model {
     }
 
     private viewButton(view: NotebookRootView, icon: string, label: string) {
-        return `<button class="b3-tooltips__n${view === this.view ? " notebook-root__view--active" : ""}" data-view="${view}" aria-label="${escapeAttr(label)}" aria-pressed="${view === this.view}"><svg aria-hidden="true"><use xlink:href="#${icon}"></use></svg></button>`;
+        return `<button class="block__icon block__icon--show b3-tooltips__n${view === this.view ? " notebook-root__view--active" : ""}" data-view="${view}" aria-label="${escapeAttr(label)}" aria-pressed="${view === this.view}"><svg aria-hidden="true"><use xlink:href="#${icon}"></use></svg></button>`;
+    }
+
+    private scheduleThemeRefresh() {
+        if (this.destroyed || this.themeRefreshFrame) return;
+        this.themeRefreshFrame = requestAnimationFrame(() => {
+            this.themeRefreshFrame = 0;
+            void this.previewController?.refreshAppearance();
+        });
     }
 
     private bindShellEvents() {

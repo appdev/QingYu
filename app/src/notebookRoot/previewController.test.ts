@@ -115,6 +115,36 @@ test("in-flight image decoding installs only into the latest target", async () =
     });
 });
 
+test("theme refresh restores placeholders without rebuilding document cards", async () => {
+    await withDom(async (dom) => {
+        Object.assign(dom.window, {
+            siyuan: {config: {appearance: {mode: 0, themeLight: "daylight", themeDark: "midnight", themeVer: "1"}}},
+        });
+        dom.window.document.documentElement.style.setProperty("--b3-theme-background", "rgb(255, 255, 255)");
+        const {DocumentCardPreviewController} = await import("./previewController");
+        const {notebookRootElementKey} = await import("./documentKey");
+        const controller = new DocumentCardPreviewController();
+        const card = createCard(dom.window.document);
+        controller.rebind([card]);
+        const key = notebookRootElementKey(card);
+        const internals = controller as unknown as {
+            currentAppearanceKey: () => Promise<string>;
+            installImage: (key: string, url: string) => Promise<void>;
+        };
+        await internals.currentAppearanceKey();
+        await internals.installImage(key, "/preview.webp");
+        assert.ok(card.querySelector("img"));
+        dom.window.document.documentElement.style.setProperty("--b3-theme-background", "rgb(250, 248, 240)");
+        await controller.refreshAppearance();
+        assert.strictEqual(card, dom.window.document.querySelector("article"));
+        assert.equal(card.querySelector("img"), null);
+        assert.ok(card.querySelector(".notebook-root__placeholder"));
+        assert.equal(card.dataset.previewReady, undefined);
+        assert.equal(card.dataset.previewState, "loading");
+        controller.destroy();
+    });
+});
+
 test("Markdown identity migration updates the stable job key and owning listing", async () => {
     await withDom(async (dom) => {
         const {DocumentCardPreviewController} = await import("./previewController");
