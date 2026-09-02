@@ -1,7 +1,7 @@
 {
   "name": "QingYu",
   "desktopName": "com.apkdv.qingyu",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "QingYu · Clear windows, a quiet desk, words softly spoken.",
   "homepage": "https://apkdv.com/",
   "main": "./electron/main.js",
