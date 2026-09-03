@@ -145,6 +145,41 @@ func TestMarkdownExportResourcesWarnForMissingAndRejectEscape(t *testing.T) {
 	}
 }
 
+func TestMarkdownExportResourcesIgnoreAbsoluteFileLinks(t *testing.T) {
+	box := setupMarkdownTest(t)
+	documentPath := filepath.Join(util.DataDir, box.ID, "note.md")
+	content := []byte("[POSIX source](/Users/evan/project/file.go:20-105)\n" +
+		"[Windows source](C:/Users/evan/project/file.go:20-105)\n" +
+		"[file URI](file:///Users/evan/project/file.go)\n")
+	writeMarkdownExportFixture(t, documentPath, content)
+
+	doc, err := LoadMarkdownExportDocument(box.ID, "/note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Resources) != 0 {
+		t.Fatalf("absolute file links were treated as resources: %+v", doc.Resources)
+	}
+	name, preview, missing, err := ExportMarkdownDocumentCardPreview(box.ID, "/note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "note" || len(missing) != 0 || !strings.Contains(preview, "POSIX source") {
+		t.Fatalf("card preview failed: name=%q missing=%v preview=%s", name, missing, preview)
+	}
+}
+
+func TestMarkdownExportResourcesRejectAbsoluteImagePaths(t *testing.T) {
+	box := setupMarkdownTest(t)
+	documentPath := filepath.Join(util.DataDir, box.ID, "note.md")
+	for _, target := range []string{"/Users/evan/image.png", "C:/Users/evan/image.png", "file:///Users/evan/image.png"} {
+		writeMarkdownExportFixture(t, documentPath, []byte("![image]("+target+")"))
+		if _, err := LoadMarkdownExportDocument(box.ID, "/note.md"); !errors.Is(err, ErrInvalidMarkdownPath) {
+			t.Fatalf("absolute image target %q was accepted: %v", target, err)
+		}
+	}
+}
+
 func TestMarkdownExportResourcesRejectSymlink(t *testing.T) {
 	box := setupMarkdownTest(t)
 	outside := filepath.Join(t.TempDir(), "outside.png")

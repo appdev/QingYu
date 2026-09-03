@@ -10,6 +10,7 @@ import (
 
 	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
+	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
@@ -81,6 +82,12 @@ func exportMarkdownDocumentPreview(c *gin.Context) {
 		name, content, missing, err = model.ExportMarkdownDocumentPreview(boxID, p)
 	}
 	if err != nil {
+		previewType := "document"
+		if cardPreview {
+			previewType = "card"
+		}
+		logging.LogErrorf("export Markdown %s preview failed [notebook=%q, path=%q]: %s",
+			previewType, boxID, p, err)
 		ret.Code = -1
 		ret.Msg = util.EscapeHTML(err.Error())
 		return

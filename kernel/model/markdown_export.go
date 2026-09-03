@@ -48,6 +48,11 @@ type MarkdownExportArtifact struct {
 	Missing []string `json:"missing"`
 }
 
+type markdownExportDestination struct {
+	raw   string
+	image bool
+}
+
 var markdownPandocFormats = map[string]string{
 	"rst":       ".rst",
 	"asciidoc":  ".adoc",
@@ -97,20 +102,26 @@ func markdownExportResources(boxID, documentPath string, content []byte) ([]Mark
 	engine := util.NewStdLute()
 	engine.SetLinkRef(true)
 	tree := parse.Parse("", append([]byte(nil), content...), engine.ParseOptions)
-	dests := []string{}
+	dests := []markdownExportDestination{}
 	ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
 		if entering && node.Type == ast.NodeLinkDest {
-			dests = append(dests, string(node.Tokens))
+			dests = append(dests, markdownExportDestination{
+				raw:   string(node.Tokens),
+				image: node.ParentIs(ast.NodeImage),
+			})
 		}
 		return ast.WalkContinue
 	})
 	if cover := markdownFrontmatterCover(content); cover != "" {
-		dests = append(dests, cover)
+		dests = append(dests, markdownExportDestination{raw: cover, image: true})
 	}
 	seen := map[string]struct{}{}
 	resources := make([]MarkdownExportResource, 0, len(dests))
-	for _, raw := range dests {
-		resource, local, err := resolveMarkdownExportResource(boxID, documentPath, raw)
+	for _, dest := range dests {
+		if !dest.image && markdownLinkTargetsAbsolutePath(dest.raw) {
+			continue
+		}
+		resource, local, err := resolveMarkdownExportResource(boxID, documentPath, dest.raw)
 		if err != nil {
 			return nil, err
 		}
@@ -125,6 +136,32 @@ func markdownExportResources(boxID, documentPath string, content []byte) ([]Mark
 	}
 	sort.Slice(resources, func(i, j int) bool { return resources[i].ArchivePath < resources[j].ArchivePath })
 	return resources, nil
+}
+
+func markdownLinkTargetsAbsolutePath(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) >= 3 && ((trimmed[0] >= 'a' && trimmed[0] <= 'z') || (trimmed[0] >= 'A' && trimmed[0] <= 'Z')) &&
+		trimmed[1] == ':' && (trimmed[2] == '/' || trimmed[2] == '\\') {
+		return true
+	}
+	if strings.HasPrefix(trimmed, `\\`) {
+		return true
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(parsed.Scheme, "file") {
+		return true
+	}
+	if parsed.Scheme != "" {
+		return false
+	}
+	decoded, err := url.PathUnescape(parsed.Path)
+	if err != nil {
+		return false
+	}
+	return path.IsAbs(decoded) || filepath.IsAbs(decoded)
 }
 
 func resolveMarkdownExportResource(boxID, documentPath, raw string) (MarkdownExportResource, bool, error) {
