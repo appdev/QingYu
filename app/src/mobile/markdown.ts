@@ -3,6 +3,7 @@ import {MarkdownEditor} from "../markdown/MarkdownEditor";
 import {closePanel} from "./util/closePanel";
 import {NotebookRoot} from "../notebookRoot/NotebookRoot";
 import {setEditor} from "./util/setEmpty";
+import {openMobileFileById} from "./editor";
 import {
     closeMobileMarkdownEditor,
     setMobileMarkdownEditor,
@@ -23,6 +24,9 @@ export const openMobileMarkdownFile = (app: App, notebookId: string, path: strin
         element: markdownElement,
         notebookId,
         path,
+        openNotebookRoot: (targetNotebookId, targetNotebookName) => {
+            openMobileNotebookRoot(app, targetNotebookId, targetNotebookName);
+        },
     });
     setMobileMarkdownEditor(editor, hiddenElements);
     const toolbarNameElement = document.getElementById("toolbarName") as HTMLInputElement;
@@ -39,7 +43,19 @@ export const openMobileNotebookRoot = (app: App, notebookId: string, name: strin
     const rootElement = document.createElement("div");
     rootElement.className = "fn__flex-1 fn__flex-column";
     containerElement.append(rootElement);
-    const root = new NotebookRoot({app, element: rootElement, notebookId, name});
+    const root = new NotebookRoot({
+        app,
+        element: rootElement,
+        notebookId,
+        name,
+        openDocument: (document) => {
+            if (document.kind === "markdown") {
+                openMobileMarkdownFile(app, document.notebook, document.path, document.title);
+            } else {
+                openMobileFileById(app, document.documentID);
+            }
+        },
+    });
     setMobileMarkdownEditor(Object.assign(root, {
         path: "",
         flush: async () => true,

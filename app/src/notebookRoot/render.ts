@@ -87,7 +87,6 @@ export const renderNotebookRootDocuments = (
         return heading + `<article class="notebook-root__document notebook-root__document--${view}" ${sharedAttributes}>
     <div class="notebook-root__paper-header">
         <div class="notebook-root__document-title">${escapeHtml(document.title)}</div>
-        <div class="notebook-root__paper-separator"></div>
     </div>
     <div class="notebook-root__preview-box">
         ${placeholder()}

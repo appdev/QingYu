@@ -36,6 +36,8 @@ export interface DocumentCardPreviewControllerOptions {
         documentID: string;
         revision: string;
     }) => void;
+    request?: (url: string, data?: any, headers?: Record<string, string>) => Promise<IWebSocketData>;
+    renderPreview?: (input: import("./previewRenderer").PreviewRenderInput) => Promise<Blob>;
 }
 
 const sessionPreviewDescriptors = new Map<string, PreviewDescriptor>();
@@ -264,7 +266,7 @@ export class DocumentCardPreviewController {
             await waitForPreviewPaint();
             await waitForPreviewIdle();
             if (this.isStale(job, generation)) return;
-            const {fetchSyncPost} = await import("../util/fetch");
+            const request = this.options.request || (await import("../util/fetch")).fetchSyncPost;
             if (this.isStale(job, generation)) return;
             if (notebookRootNeedsMarkdownIdentity(job.reference.kind, job.reference.identityState,
                 Boolean(job.reference.identityConflict))) {
@@ -275,7 +277,7 @@ export class DocumentCardPreviewController {
                 }
                 const {createMarkdownManagementOperationID} = await import("../markdown/documentManagement");
                 if (this.isStale(job, generation)) return;
-                const identity = await fetchSyncPost("/api/markdown/ensureDocumentIdentity", {
+                const identity = await request("/api/markdown/ensureDocumentIdentity", {
                     notebook: job.reference.notebook,
                     path: job.reference.path,
                     revision: job.reference.revision,
@@ -294,38 +296,43 @@ export class DocumentCardPreviewController {
             const appearanceKey = await this.currentAppearanceKey();
             if (this.isStale(job, generation)) return;
             const sessionKey = documentCardPreviewSessionKey(job.reference, theme, appearanceKey, size);
-            let descriptor = sessionPreviewDescriptors.get(sessionKey);
-            if (!descriptor) {
-                const prepared = await fetchSyncPost("/api/notebook/prepareDocumentCardPreview", {
-                    reference: job.reference,
-                    theme,
-                    appearanceKey,
-                    size,
-                });
-                if (prepared.code !== 0) throw new Error(prepared.msg || "preview preparation failed");
+            const renderPreview = this.options.renderPreview ||
+                (await import("./previewRenderer")).renderDocumentCardPreview;
+            for (let attempt = 0; attempt < 2; attempt++) {
                 if (this.isStale(job, generation)) return;
-                descriptor = prepared.data as PreviewDescriptor;
-                if (descriptor.exists) {
-                    cacheSessionPreviewDescriptor(sessionKey, descriptor);
+                let descriptor = attempt === 0 ? sessionPreviewDescriptors.get(sessionKey) : undefined;
+                if (!descriptor) {
+                    const prepared = await request("/api/notebook/prepareDocumentCardPreview", {
+                        reference: job.reference,
+                        theme,
+                        appearanceKey,
+                        size,
+                    });
+                    if (prepared.code !== 0) throw new Error(prepared.msg || "preview preparation failed");
+                    if (this.isStale(job, generation)) return;
+                    descriptor = prepared.data as PreviewDescriptor;
+                    if (descriptor.exists) {
+                        cacheSessionPreviewDescriptor(sessionKey, descriptor);
+                    }
                 }
-            }
-            if (descriptor.exists) {
+                if (descriptor.exists) {
+                    await this.installImage(job.key, descriptor.url, generation);
+                    return;
+                }
+                const blob = await renderPreview({reference: job.reference, size});
+                if (this.isStale(job, generation)) return;
+                const formData = new FormData();
+                formData.append("reference", JSON.stringify(job.reference));
+                formData.append("descriptor", JSON.stringify(descriptor));
+                formData.append("file", blob, `${descriptor.cacheKey}.webp`);
+                const stored = await request("/api/notebook/storeDocumentCardPreview", formData);
+                if (stored.code === 409 && attempt === 0) continue;
+                if (stored.code !== 0) throw new Error(stored.msg || "preview store failed");
+                cacheSessionPreviewDescriptor(sessionKey, {...descriptor, exists: true});
+                if (this.isStale(job, generation)) return;
                 await this.installImage(job.key, descriptor.url, generation);
                 return;
             }
-            const {renderDocumentCardPreview} = await import("./previewRenderer");
-            if (this.isStale(job, generation)) return;
-            const blob = await renderDocumentCardPreview({reference: job.reference, size});
-            if (this.isStale(job, generation)) return;
-            const formData = new FormData();
-            formData.append("reference", JSON.stringify(job.reference));
-            formData.append("descriptor", JSON.stringify(descriptor));
-            formData.append("file", blob, `${descriptor.cacheKey}.webp`);
-            const stored = await fetchSyncPost("/api/notebook/storeDocumentCardPreview", formData);
-            if (stored.code !== 0) throw new Error(stored.msg || "preview store failed");
-            cacheSessionPreviewDescriptor(sessionKey, {...descriptor, exists: true});
-            if (this.isStale(job, generation)) return;
-            await this.installImage(job.key, descriptor.url, generation);
         } catch {
             const target = this.isStale(job, generation) ? undefined : this.target(job);
             if (target) target.dataset.previewState = "failed";

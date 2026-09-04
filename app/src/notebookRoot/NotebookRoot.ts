@@ -9,13 +9,17 @@ import {openNewFileMenu} from "../markdown/fileActions";
 import {replaceFileName, validateName} from "../editor/rename";
 import {notebookRootView, setNotebookRootView} from "./viewState";
 import {renderNotebookRootDocuments} from "./render";
-import type {NotebookRootListing, NotebookRootView} from "./types";
+import type {NotebookRootDocument, NotebookRootListing, NotebookRootView} from "./types";
 import {DocumentCardPreviewController} from "./previewController";
 import {NotebookRootDragController} from "./drag";
+import {updateNotebookRootTitleLayout} from "./titleLayout";
 import {sortMenu} from "../menus/navigation";
 import {Constants} from "../constants";
 import {setNotebookName} from "../util/pathName";
+import {isMobile} from "../util/functions";
 import {notebookRootDocumentKey, notebookRootElementKey} from "./documentKey";
+import {openNotebookRootContextMenu} from "./contextMenu";
+import {NotebookRootMasonryController} from "./masonryController";
 import {
     captureNotebookRootLayoutSnapshot,
     hydrateNotebookRootLayout,
@@ -35,16 +39,28 @@ export class NotebookRoot extends Model {
     private destroyed = false;
     private previewController: DocumentCardPreviewController;
     private dragController: NotebookRootDragController;
+    private masonryController?: NotebookRootMasonryController;
     private selectedDocumentKey?: string;
     private readonly themeObserver: MutationObserver;
     private themeRefreshFrame = 0;
+    private readonly titleLayoutObserver: ResizeObserver;
+    private titleLayoutFrame = 0;
     private readonly handleThemeApplied = () => this.scheduleThemeRefresh();
+    private readonly openDocument?: (document: NotebookRootDocument) => void;
 
-    constructor(options: {app: App, tab?: Tab, element: HTMLElement, notebookId: string, name: string}) {
+    constructor(options: {
+        app: App,
+        tab?: Tab,
+        element: HTMLElement,
+        notebookId: string,
+        name: string,
+        openDocument?: (document: NotebookRootDocument) => void,
+    }) {
         super({app: options.app});
         this.notebookId = options.notebookId;
         this.element = options.element;
         this.view = notebookRootView(this.notebookId);
+        this.openDocument = options.openDocument;
         this.listing = {notebook: this.notebookId, name: options.name, icon: "", sortMode: 0, documents: []};
         this.themeObserver = new MutationObserver((records) => {
             const standardThemeAttributes = ["data-theme-mode", "data-light-theme", "data-dark-theme"];
@@ -54,6 +70,8 @@ export class NotebookRoot extends Model {
             }
         });
         this.themeObserver.observe(document.documentElement, {attributes: true});
+        this.titleLayoutObserver = new ResizeObserver(() => this.scheduleTitleLayout());
+        this.titleLayoutObserver.observe(this.element);
         window.addEventListener("siyuan-theme-applied", this.handleThemeApplied);
         this.renderShell();
         void this.reload();
@@ -88,18 +106,25 @@ export class NotebookRoot extends Model {
     public destroy() {
         this.destroyed = true;
         this.themeObserver.disconnect();
+        this.titleLayoutObserver.disconnect();
         window.removeEventListener("siyuan-theme-applied", this.handleThemeApplied);
         if (this.themeRefreshFrame) {
             cancelAnimationFrame(this.themeRefreshFrame);
         }
+        if (this.titleLayoutFrame) {
+            cancelAnimationFrame(this.titleLayoutFrame);
+        }
         this.previewController?.destroy();
         this.dragController?.destroy();
+        this.masonryController?.destroy();
         this.element.replaceChildren();
     }
 
     private renderShell() {
         this.previewController?.destroy();
         this.dragController?.destroy();
+        this.masonryController?.destroy();
+        this.masonryController = undefined;
         const icon = this.listing.icon ? unicode2Emoji(this.listing.icon) : "";
         this.element.innerHTML = `<div class="notebook-root" data-notebook="${escapeAttr(this.notebookId)}" data-view="${this.view}">
     <header class="notebook-root__toolbar">
@@ -118,7 +143,9 @@ export class NotebookRoot extends Model {
             <button class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="search" aria-label="${escapeAttr(window.siyuan.languages.search)}"><svg aria-hidden="true"><use xlink:href="#iconSearch"></use></svg></button>
         </div>
     </header>
-    <main class="notebook-root__documents notebook-root__documents--${this.view}">${renderNotebookRootDocuments(this.listing.documents, this.view, this.listing)}</main>
+    <div class="notebook-root__content">
+        <main class="notebook-root__documents notebook-root__documents--${this.view}">${renderNotebookRootDocuments(this.listing.documents, this.view, this.listing)}</main>
+    </div>
 </div>`;
         if (this.selectedDocumentKey) {
             const selected = Array.from(this.element.querySelectorAll<HTMLElement>(".notebook-root__document"))
@@ -132,6 +159,7 @@ export class NotebookRoot extends Model {
         this.bindShellEvents();
         const documents = this.element.querySelector<HTMLElement>(".notebook-root__documents");
         if (!documents) return;
+        this.createMasonryController(documents);
         this.bindDocumentEvents(documents);
         this.previewController = new DocumentCardPreviewController({
             onIdentityCreated: (identity) => {
@@ -160,6 +188,7 @@ export class NotebookRoot extends Model {
         });
         this.previewController.rebind(documents.querySelectorAll<HTMLElement>(".notebook-root__document"));
         this.createDragController();
+        this.scheduleTitleLayout();
     }
 
     private createDragController() {
@@ -182,6 +211,24 @@ export class NotebookRoot extends Model {
             this.themeRefreshFrame = 0;
             void this.previewController?.refreshAppearance();
         });
+    }
+
+    private scheduleTitleLayout() {
+        if (this.destroyed || this.titleLayoutFrame) return;
+        this.titleLayoutFrame = requestAnimationFrame(() => {
+            this.titleLayoutFrame = 0;
+            const root = this.element.querySelector<HTMLElement>(".notebook-root");
+            if (root) updateNotebookRootTitleLayout(root);
+            this.masonryController?.schedule();
+        });
+    }
+
+    private createMasonryController(documents: HTMLElement) {
+        this.masonryController?.destroy();
+        this.masonryController = undefined;
+        if (this.view !== "masonry") return;
+        this.masonryController = new NotebookRootMasonryController(documents);
+        this.masonryController.layoutNow();
     }
 
     private bindShellEvents() {
@@ -259,53 +306,85 @@ export class NotebookRoot extends Model {
         }));
     }
 
+    private selectDocument(document: HTMLElement) {
+        this.selectedDocumentKey = notebookRootElementKey(document);
+        this.element.querySelectorAll(".notebook-root__document--selected").forEach((item) => {
+            item.classList.remove("notebook-root__document--selected");
+        });
+        document.classList.add("notebook-root__document--selected");
+    }
+
     private bindDocumentEvents(documents: HTMLElement) {
         documents.querySelectorAll<HTMLElement>(".notebook-root__document").forEach((document) => {
-            document.addEventListener("pointerdown", (event) => {
-                if (event.button !== 0) return;
-                this.selectedDocumentKey = notebookRootElementKey(document);
-                this.element.querySelectorAll(".notebook-root__document--selected").forEach((item) => {
-                    item.classList.remove("notebook-root__document--selected");
-                });
-                document.classList.add("notebook-root__document--selected");
-            });
+            const resolveSource = () => this.listing.documents.find((item) => notebookRootDocumentKey({
+                kind: item.kind,
+                notebook: item.notebook,
+                id: item.documentID,
+                path: item.path,
+            }) === notebookRootElementKey(document));
+            document.addEventListener("click", () => this.selectDocument(document));
             const open = () => {
+                const source = resolveSource();
+                if (source && this.openDocument) {
+                    this.openDocument(source);
+                    return;
+                }
                 if (document.dataset.kind === "markdown") {
                     void openMarkdownFile(this.app, this.notebookId, document.dataset.path, document.querySelector(".notebook-root__document-title")?.textContent || "Markdown");
                 } else {
                     void openFileById({app: this.app, id: document.dataset.id});
                 }
             };
-            document.addEventListener("dblclick", open);
+            document.addEventListener(isMobile() ? "click" : "dblclick", open);
             document.addEventListener("keydown", (event) => {
                 if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     open();
                 }
             });
+            if (!isMobile()) {
+                document.addEventListener("contextmenu", (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const source = resolveSource();
+                    if (!source) return;
+                    this.selectDocument(document);
+                    openNotebookRootContextMenu({
+                        app: this.app,
+                        document: source,
+                        position: {x: event.clientX, y: event.clientY},
+                        open,
+                    });
+                });
+            }
         });
     }
 
     private switchView(view: NotebookRootView) {
         const root = this.element.querySelector<HTMLElement>(".notebook-root");
+        const scroller = root?.querySelector<HTMLElement>(".notebook-root__content");
         const current = root?.querySelector<HTMLElement>(".notebook-root__documents");
-        if (!root || !current || view === this.view) return;
+        if (!root || !scroller || !current || view === this.view) return;
 
-        const snapshot = captureNotebookRootLayoutSnapshot(root, current);
+        const snapshot = captureNotebookRootLayoutSnapshot(scroller, current);
         const next = document.createElement("main");
         next.className = `notebook-root__documents notebook-root__documents--${view}`;
         next.innerHTML = renderNotebookRootDocuments(this.listing.documents, view, this.listing);
         hydrateNotebookRootLayout(next, snapshot);
 
         this.dragController?.destroy();
+        this.masonryController?.destroy();
+        this.masonryController = undefined;
         current.replaceWith(next);
         this.view = view;
         root.dataset.view = view;
         this.updateViewButtons(view);
-        restoreNotebookRootScrollAnchor(root, next, snapshot);
+        this.createMasonryController(next);
+        restoreNotebookRootScrollAnchor(scroller, next, snapshot);
         this.bindDocumentEvents(next);
         this.previewController.rebind(next.querySelectorAll<HTMLElement>(".notebook-root__document"));
         this.createDragController();
+        this.scheduleTitleLayout();
         setNotebookRootView(this.notebookId, view);
     }
 

@@ -18,7 +18,7 @@ import {hasClosestByClassName} from "../protyle/util/hasClosest";
 import {Constants} from "../constants";
 import {saveScroll} from "../protyle/scroll/saveScroll";
 import {Backlink} from "./dock/Backlink";
-import {openFileById} from "../editor/util";
+import {openFileById, openNotebookRoot} from "../editor/util";
 import {isWindow} from "../util/functions";
 import {showMessage} from "../dialog/message";
 import {getNotebookName, isEncryptedBox, parseUriInfo} from "../util/pathName";
@@ -890,18 +890,21 @@ export const newModelByInitData = (app: App, tab: Tab, json: any) => {
             });
         } else {
             model = new MarkdownEditor({
-            app,
-            tab,
-            restoredLayout: true,
-            sessionState: json.markdownSession
-                ? serializeMarkdownEditorSessionState(json.markdownSession)
-                : undefined,
-            ...(json.externalCapabilityId ? {
-                externalCapabilityId: json.externalCapabilityId,
-            } : {
-                notebookId: json.notebookId,
-                path: json.path,
-            }),
+                app,
+                tab,
+                restoredLayout: true,
+                openNotebookRoot: (notebookId, notebookName) => {
+                    void openNotebookRoot(app, notebookId, notebookName);
+                },
+                sessionState: json.markdownSession
+                    ? serializeMarkdownEditorSessionState(json.markdownSession)
+                    : undefined,
+                ...(json.externalCapabilityId ? {
+                    externalCapabilityId: json.externalCapabilityId,
+                } : {
+                    notebookId: json.notebookId,
+                    path: json.path,
+                }),
             });
         }
     } else if (json.instance === "NotebookRoot") {

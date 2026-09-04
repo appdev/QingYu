@@ -203,3 +203,74 @@ test("Markdown identity migration updates the stable job key and owning listing"
         controller.destroy();
     });
 });
+
+test("preview controller retries one stale store with a fresh descriptor", async () => {
+    await withDom(async (dom) => {
+        const previousRequestAnimationFrame = globalThis.requestAnimationFrame;
+        Object.defineProperty(globalThis, "requestAnimationFrame", {
+            configurable: true,
+            value: (callback: FrameRequestCallback) => globalThis.setTimeout(callback, 0),
+        });
+        Object.assign(dom.window, {
+            siyuan: {config: {appearance: {mode: 0}, readonly: false}},
+            requestIdleCallback: (callback: IdleRequestCallback) => globalThis.setTimeout(callback, 0),
+        });
+        try {
+            const {DocumentCardPreviewController} = await import("./previewController");
+            let prepareCount = 0;
+            let storeCount = 0;
+            let renderCount = 0;
+            let installCount = 0;
+            const controller = new DocumentCardPreviewController({
+                request: async (url) => {
+                    if (url.endsWith("prepareDocumentCardPreview")) {
+                        prepareCount++;
+                        return {
+                            code: 0,
+                            msg: "",
+                            data: {
+                                cacheKey: `cache-${prepareCount}`,
+                                url: `/preview-${prepareCount}.webp`,
+                                exists: false,
+                                theme: "light",
+                                appearanceKey: "appearance",
+                                size: "medium",
+                            },
+                        } as IWebSocketData;
+                    }
+                    storeCount++;
+                    return {code: storeCount === 1 ? 409 : 0, msg: "", data: null} as IWebSocketData;
+                },
+                renderPreview: async () => {
+                    renderCount++;
+                    return new Blob(["preview"], {type: "image/webp"});
+                },
+            });
+            const card = createCard(dom.window.document);
+            card.dataset.kind = "sy";
+            controller.rebind([card]);
+            const internals = controller as unknown as {
+                jobs: Map<string, object>;
+                appearanceKeyPromise: Promise<string>;
+                render: (job: object) => Promise<void>;
+                installImage: (key: string, url: string, generation: number) => Promise<void>;
+            };
+            internals.appearanceKeyPromise = Promise.resolve("appearance");
+            internals.installImage = async () => {
+                installCount++;
+            };
+            await internals.render(internals.jobs.values().next().value);
+            assert.equal(prepareCount, 2);
+            assert.equal(storeCount, 2);
+            assert.equal(renderCount, 2);
+            assert.equal(installCount, 1);
+            assert.notEqual(card.dataset.previewState, "failed");
+            controller.destroy();
+        } finally {
+            Object.defineProperty(globalThis, "requestAnimationFrame", {
+                configurable: true,
+                value: previousRequestAnimationFrame,
+            });
+        }
+    });
+});

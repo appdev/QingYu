@@ -3,6 +3,15 @@
 .markdown-editor {
   background-color: var(--b3-theme-background);
 
+  &__breadcrumb {
+    .protyle-breadcrumb__item,
+    .protyle-breadcrumb__item:hover,
+    .protyle-breadcrumb__item--active {
+      background-color: transparent;
+      box-shadow: none;
+    }
+  }
+
   &__content {
     display: flex;
     flex-direction: column;

@@ -13,7 +13,7 @@ import {isMobile} from "../../util/functions";
 import {zoomOut} from "../../menus/protyle";
 import {getEditorRange} from "../util/selection";
 /// #if !MOBILE
-import {openFileById} from "../../editor/util";
+import {openFileById, openNotebookRoot} from "../../editor/util";
 import {saveLayout} from "../../layout/util";
 import {openOutline} from "../../layout/dock/util";
 /// #endif
@@ -28,10 +28,11 @@ import {getNoContainerElement} from "../wysiwyg/getBlock";
 import {openTitleMenu} from "../header/openTitleMenu";
 import {emitOpenMenu} from "../../plugin/EventBus";
 import {isInAndroid, isInHarmony, isIPad, isMac, updateHotkeyTip} from "../util/compatibility";
-import {isEncryptedBox} from "../../util/pathName";
+import {getNotebookName, isEncryptedBox} from "../../util/pathName";
 import {resize} from "../util/resize";
 import {listIndent, listOutdent} from "../wysiwyg/list";
 import {improveBreadcrumbAppearance} from "../wysiwyg/renderBacklink";
+import {renderNotebookRootBreadcrumbItem} from "../../notebookRoot/breadcrumb";
 
 export class Breadcrumb {
     public element: HTMLElement;
@@ -85,6 +86,13 @@ ${outlineHTML}
                     }
                     /// #endif
                     event.preventDefault();
+                    break;
+                } else if (type === "notebook-root") {
+                    /// #if !MOBILE
+                    void openNotebookRoot(protyle.app, protyle.notebookId, getNotebookName(protyle.notebookId));
+                    /// #endif
+                    event.preventDefault();
+                    event.stopPropagation();
                     break;
                 } else if (type === "mobile-menu") {
                     this.genMobileMenu(protyle);
@@ -650,25 +658,28 @@ ${outlineHTML}
             breadcrumbParam.notebook = protyle.notebookId;
         }
         fetchPost("/api/block/getBlockBreadcrumb", breadcrumbParam, (response) => {
-            let html = "";
-            response.data.forEach((item: IBreadcrumb, index: number) => {
+            const items: IBreadcrumb[] = protyle.options.render.breadcrumbDocName
+                ? response.data
+                : response.data.slice(1);
+            let html = renderNotebookRootBreadcrumbItem(
+                protyle.notebookId,
+                getNotebookName(protyle.notebookId),
+            );
+            if (items.length > 0) {
+                html += '<svg class="protyle-breadcrumb__arrow"><use xlink:href="#iconRight"></use></svg>';
+            }
+            items.forEach((item: IBreadcrumb, index: number) => {
                 let isCurrent = false;
                 if (!protyle.block.showAll && item.id === protyle.block.parentID) {
                     isCurrent = true;
                 } else if (protyle.block.showAll && item.id === protyle.block.id) {
                     isCurrent = true;
                 }
-                if (index === 0 && !protyle.options.render.breadcrumbDocName) {
-                    html += `<span class="protyle-breadcrumb__item${isCurrent ? " protyle-breadcrumb__item--active" : ""}" data-node-id="${item.id}"${response.data.length === 1 ? ' style="max-width:none"' : ""}>
-    <svg class="popover__block" data-id="${item.id}"><use xlink:href="#${getIconByType(item.type, item.subType)}"></use></svg>
-</span>`;
-                } else {
-                    html += `<span class="protyle-breadcrumb__item${isCurrent ? " protyle-breadcrumb__item--active" : ""}" data-node-id="${item.id}"${(response.data.length === 1 || index === 0) ? ' style="max-width:none"' : ""}>
+                html += `<span class="protyle-breadcrumb__item${isCurrent ? " protyle-breadcrumb__item--active" : ""}" data-node-id="${item.id}"${(items.length === 1 || index === 0) ? ' style="max-width:none"' : ""}>
     <svg class="popover__block" data-id="${item.id}"><use xlink:href="#${getIconByType(item.type, item.subType)}"></use></svg>
     ${item.name ? `<span class="protyle-breadcrumb__text" title="${item.name}">${item.name}</span>` : ""}
 </span>`;
-                }
-                if (index !== response.data.length - 1) {
+                if (index !== items.length - 1) {
                     html += '<svg class="protyle-breadcrumb__arrow"><use xlink:href="#iconRight"></use></svg>';
                 }
             });

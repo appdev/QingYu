@@ -27,6 +27,7 @@ import {Wnd} from "./Wnd";
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
 import {MarkdownOutline} from "../markdown/MarkdownOutline";
 import {NotebookRoot} from "../notebookRoot/NotebookRoot";
+import {openNotebookRoot} from "../editor/util";
 
 export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
     const isWindowMode = isWindow();
@@ -373,6 +374,9 @@ export const copyTab = (app: App, tab: Tab) => {
                 model = new MarkdownEditor({
                     app,
                     tab: newTab,
+                    openNotebookRoot: (notebookId, notebookName) => {
+                        void openNotebookRoot(app, notebookId, notebookName);
+                    },
                     sessionState: tab.model.getSessionState(),
                     ...(tab.model.externalCapabilityId ? {
                         externalCapabilityId: tab.model.externalCapabilityId,

@@ -19,12 +19,26 @@ test("large and masonry views use paper cards while list stays compact", async (
     assert.equal(notebookRootCardLayout("list"), "list");
 });
 
+test("paper card titles reserve preview space and clamp only at complete lines", async () => {
+    const {notebookRootTitleLineCount} = await import("./titleLayout");
+    assert.equal(notebookRootTitleLineCount(375, 96, 24, 20), 12);
+    assert.equal(notebookRootTitleLineCount(240, 96, 24, 20), 6);
+    assert.equal(notebookRootTitleLineCount(120, 96, 24, 20), 1);
+    assert.equal(notebookRootTitleLineCount(375, 96, 24, 0), 1);
+
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const header = styles.slice(styles.indexOf("&__paper-header {"), styles.indexOf("&__preview-box {"));
+    assert.doesNotMatch(header, /max-height: 45%|overflow: hidden;\s+background/);
+    assert.match(header, /-webkit-line-clamp: var\(--notebook-title-lines, 2\);/);
+    assert.match(styles, /&__preview-box \{[\s\S]*?min-height: 96px;/);
+});
+
 test("paper cards use the Craft Mac hierarchy without metadata", () => {
     const renderer = readFileSync(resolve(process.cwd(), "src/notebookRoot/render.ts"), "utf8");
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     const paperBranch = renderer.slice(renderer.indexOf("notebook-root__paper-header"), renderer.indexOf("}).join"));
     assert.match(paperBranch, /notebook-root__document-title/);
-    assert.match(paperBranch, /notebook-root__paper-separator/);
+    assert.doesNotMatch(paperBranch, /notebook-root__paper-separator/);
     assert.match(paperBranch, /notebook-root__preview-box/);
     assert.doesNotMatch(paperBranch, /notebook-root__paper-meta|notebook-root__notebook-name|notebook-root__updated/);
     assert.doesNotMatch(renderer, /notebookIcon|unicode2Emoji/);
@@ -39,27 +53,41 @@ test("paper card density follows the Craft Mac measurements", () => {
     const documents = styles.slice(styles.indexOf("&__documents {"), styles.indexOf("&__document {"));
     const paper = styles.slice(styles.indexOf("&__document {"), styles.indexOf("&__preview-box {"));
     assert.match(toolbar, /width: 100%;[\s\S]*?max-width: 1280px;[\s\S]*?margin-inline: auto;/);
-    assert.match(documents, /width: 100%;[\s\S]*?max-width: 1280px;[\s\S]*?margin-inline: auto;[\s\S]*?padding: 24px 16px 48px;/);
+    assert.match(documents, /width: 100%;[\s\S]*?max-width: 1280px;[\s\S]*?margin-inline: auto;[\s\S]*?padding: 28px 16px 48px;/);
     assert.match(documents, /&--large \{[\s\S]*?repeat\(auto-fill, minmax\(200px, 1fr\)\);[\s\S]*?gap: 20px;/);
-    assert.match(documents, /&--masonry \{[\s\S]*?column-count: 5;[\s\S]*?column-gap: 20px;/);
-    assert.match(styles, /@container \(max-width: 1111px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 4;/);
-    assert.match(styles, /@container \(max-width: 891px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 3;/);
-    assert.match(styles, /@container \(max-width: 671px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 2;/);
-    assert.match(styles, /@container \(max-width: 451px\) \{[\s\S]*?notebook-root__documents--masonry[\s\S]*?column-count: 1;/);
+    assert.match(documents, /&--masonry \{[\s\S]*?position: relative;/);
+    assert.match(paper, /&--masonry \{[\s\S]*?position: absolute;[\s\S]*?margin: 0;/);
+    assert.doesNotMatch(styles, /column-count|break-inside/);
     assert.doesNotMatch(styles, /repeat\([234], minmax\(0, 300px\)\)/);
     assert.doesNotMatch(styles, /notebook-root__documents--large \{\s*grid-template-columns: minmax\(0, 1fr\);/);
     assert.match(paper, /border-radius: 14px;/);
+    assert.match(paper, /border: 1px solid color-mix\(in srgb, var\(--b3-border-color\) 36%, transparent\);/);
+    assert.match(paper, /&:hover:not\(\.notebook-root__document--selected\)/);
     assert.match(paper, /&__paper-header > &__document-title \{[\s\S]*?font-size: 16px;[\s\S]*?line-height: 1\.25;/);
-    assert.match(paper, /&__paper-separator \{[\s\S]*?margin-top: 9px;/);
+    assert.doesNotMatch(styles, /&__paper-separator/);
+});
+
+test("notebook canvas and paper cards use distinct theme layers", () => {
+    const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
+    const canvas = styles.slice(styles.indexOf(".notebook-root {"), styles.indexOf("&__toolbar {"));
+    const toolbar = styles.slice(styles.indexOf("&__toolbar {"), styles.indexOf("&__toolbar-group {"));
+    const card = styles.slice(styles.indexOf("&__document {"), styles.indexOf("&--list {", styles.indexOf("&__document {")));
+    const header = styles.slice(styles.indexOf("&__paper-header {"), styles.indexOf("&__paper-header >"));
+    assert.match(canvas, /background: var\(--b3-theme-surface\);/);
+    assert.match(toolbar, /background: var\(--b3-theme-surface\);/);
+    assert.match(card, /background: var\(--b3-theme-background\);/);
+    assert.match(header, /background: var\(--b3-theme-background\);/);
 });
 
 test("preview placeholders stay transparent across themes", () => {
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     const previewBox = styles.slice(styles.indexOf("&__preview-box {"), styles.indexOf("&__placeholder {"));
     const placeholder = styles.slice(styles.indexOf("&__placeholder {", styles.indexOf("&__preview-box {")), styles.indexOf("&__preview-status {"));
+    const imageFader = styles.slice(styles.indexOf("&__image-fader {"), styles.indexOf("&__document-meta {"));
     assert.match(previewBox, /background: transparent;/);
     assert.match(placeholder, /background: transparent;/);
     assert.doesNotMatch(placeholder, /linear-gradient/);
+    assert.doesNotMatch(imageFader, /background|linear-gradient/);
 });
 
 test("preview rendering ignores the display pixel ratio", async () => {
@@ -276,10 +304,10 @@ test("view switching binds only the toolbar buttons", () => {
 test("toolbar actions and the view switcher share one geometric system", () => {
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
-    assert.match(styles, /&__action \{[\s\S]*?flex: 0 0 40px;[\s\S]*?width: 40px;[\s\S]*?height: 40px;/);
-    assert.match(styles, /&__action \{[\s\S]*?background: var\(--b3-theme-surface\);[\s\S]*?border-radius: 10px;/);
+    assert.match(styles, /&__action \{[\s\S]*?flex: 0 0 34px;[\s\S]*?width: 34px;[\s\S]*?height: 34px;/);
+    assert.match(styles, /&__action \{[\s\S]*?background: var\(--b3-theme-surface\);[\s\S]*?border-radius: 8px;/);
     assert.match(styles, /&__action\[data-action="new"\] \{[\s\S]*?background: var\(--b3-theme-surface\);/);
-    assert.match(styles, /&__views \{[\s\S]*?height: 40px;[\s\S]*?border-radius: 10px;/);
+    assert.match(styles, /&__views \{[\s\S]*?height: 34px;[\s\S]*?border-radius: 8px;/);
     assert.match(styles, /&__view--active \{[\s\S]*?background: var\(--b3-list-hover\) !important;/);
     assert.match(source, /notebook-root__action block__icon block__icon--show/);
     assert.doesNotMatch(styles, /&__action \{[\s\S]*?border-radius: 50%;/);
@@ -311,11 +339,32 @@ test("notebook cards keep one selected document across view renders", () => {
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     assert.match(source, /private selectedDocumentKey\?: string;/);
-    assert.match(source, /document\.addEventListener\("pointerdown"/);
+    assert.match(source, /document\.addEventListener\("click"/);
     assert.match(source, /notebookRootElementKey\(document\)/);
     assert.match(source, /notebook-root__document--selected/);
-    assert.match(styles, /&--selected \{/);
     assert.match(styles, /&\.notebook-root__document--selected/);
+});
+
+test("desktop card context menus select the card without changing open gestures", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
+    assert.match(source, /private selectDocument\(document: HTMLElement\)/);
+    assert.match(source, /document\.addEventListener\("contextmenu"/);
+    assert.match(source, /event\.preventDefault\(\)/);
+    assert.match(source, /event\.stopPropagation\(\)/);
+    assert.match(source, /this\.selectDocument\(document\)/);
+    assert.match(source, /openNotebookRootContextMenu\(\{/);
+    assert.match(source, /position: \{x: event\.clientX, y: event\.clientY\}/);
+    assert.match(source, /if \(!isMobile\(\)\) \{[\s\S]*?addEventListener\("contextmenu"/);
+});
+
+test("notebook cards open with desktop double click and mobile single click", () => {
+    const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
+    const mobileSource = readFileSync(resolve(process.cwd(), "src/mobile/markdown.ts"), "utf8");
+    assert.match(source, /document\.addEventListener\(isMobile\(\) \? "click" : "dblclick", open\);/);
+    assert.match(source, /if \(source && this\.openDocument\)/);
+    assert.match(mobileSource, /openDocument: \(document\) =>/);
+    assert.match(mobileSource, /openMobileMarkdownFile\(app, document\.notebook, document\.path, document\.title\)/);
+    assert.match(mobileSource, /openMobileFileById\(app, document\.documentID\)/);
 });
 
 test("notebook root documents emit stable preview keys", () => {
@@ -333,6 +382,7 @@ test("view switching replaces only the document region and keeps preview jobs al
     assert.match(viewHandlerSource, /hydrateNotebookRootLayout/);
     assert.match(viewHandlerSource, /current\.replaceWith\(next\)/);
     assert.match(viewHandlerSource, /restoreNotebookRootScrollAnchor/);
+    assert.match(viewHandlerSource, /this\.createMasonryController\(next\);[\s\S]*?restoreNotebookRootScrollAnchor/);
     assert.match(viewHandlerSource, /this\.previewController\.rebind/);
     assert.doesNotMatch(viewHandlerSource, /this\.renderShell\(\)|previewController\.destroy\(\)/);
 });
@@ -369,12 +419,17 @@ test("list rows keep a stable height while previews load", () => {
     assert.match(source, /&__document-preview-text \{[\s\S]*?text-overflow: ellipsis;[\s\S]*?white-space: nowrap;[\s\S]*?var\(--b3-theme-on-surface-light\)/);
 });
 
-test("notebook root owns scrolling and refreshes only previews after themes are applied", () => {
+test("notebook root keeps a fixed compact toolbar above the scrolling content", () => {
     const styles = readFileSync(resolve(process.cwd(), "src/assets/scss/business/_notebook-root.scss"), "utf8");
     const source = readFileSync(resolve(process.cwd(), "src/notebookRoot/NotebookRoot.ts"), "utf8");
     const assets = readFileSync(resolve(process.cwd(), "src/util/assets.ts"), "utf8");
-    assert.match(styles, /\.notebook-root \{[\s\S]*?height: 100%;\s+overflow-y: auto;/);
+    assert.match(styles, /\.notebook-root \{[\s\S]*?display: flex;[\s\S]*?height: 100%;[\s\S]*?overflow: hidden;/);
+    assert.match(styles, /&__toolbar \{[\s\S]*?min-height: 56px;[\s\S]*?padding: 4px 8px;/);
+    assert.match(styles, /&__content \{[\s\S]*?min-height: 0;[\s\S]*?overflow-y: auto;/);
     assert.doesNotMatch(styles, /&__documents \{[\s\S]*?overflow-y: auto;/);
+    assert.match(source, /class="notebook-root__content"/);
+    assert.match(source, /captureNotebookRootLayoutSnapshot\(scroller, current\)/);
+    assert.match(source, /restoreNotebookRootScrollAnchor\(scroller, next, snapshot\)/);
     assert.match(source, /window\.addEventListener\("siyuan-theme-applied", this\.handleThemeApplied\)/);
     assert.match(source, /this\.previewController\?\.refreshAppearance\(\)/);
     assert.doesNotMatch(source, /attributeFilter: \["data-theme-mode"\]/);

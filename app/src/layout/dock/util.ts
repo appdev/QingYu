@@ -11,6 +11,7 @@ import {Files} from "./Files";
 import {Editor} from "../../editor";
 import {Constants} from "../../constants";
 import {getDocDisplayName} from "../../util/pathName";
+import {MarkdownEditor} from "../../markdown/MarkdownEditor";
 
 export const openBacklink = async (options: {
     app: App,
@@ -188,6 +189,9 @@ export const selectOpenTab = async () => {
             tab.model.editor.protyle.wysiwyg.element.blur();
             tab.model.editor.protyle.title.editElement.blur();
             await files.selectItem(tab.model.editor.protyle.notebookId, tab.model.editor.protyle.path);
+            files.lastSelectedElement = files.element.querySelector(".b3-list-item--focus");
+        } else if (tab?.model instanceof MarkdownEditor && !tab.model.externalCapabilityId) {
+            await files.selectItem(tab.model.notebookId, tab.model.path);
             files.lastSelectedElement = files.element.querySelector(".b3-list-item--focus");
         }
     }

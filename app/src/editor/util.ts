@@ -545,6 +545,9 @@ const newTab = (options: IOpenFileOptions) => {
                 tab.addModel(new MarkdownEditor({
                     app: options.app,
                     tab,
+                    openNotebookRoot: (notebookId, notebookName) => {
+                        void openNotebookRoot(options.app, notebookId, notebookName);
+                    },
                     ...(options.externalMarkdown ? {
                         externalCapabilityId: options.externalMarkdown.capabilityId,
                         externalName: options.externalMarkdown.name,

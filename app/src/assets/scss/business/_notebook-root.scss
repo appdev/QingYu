@@ -5,27 +5,28 @@
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 .notebook-root {
   container-type: inline-size;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   height: 100%;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   color: var(--b3-theme-on-background);
-  background: var(--b3-theme-background);
+  background: var(--b3-theme-surface);
 
   &__toolbar {
-    position: sticky;
-    z-index: 2;
-    top: 0;
     display: flex;
+    flex: 0 0 auto;
     box-sizing: border-box;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     width: 100%;
     max-width: 1280px;
     min-width: 0;
-    min-height: 72px;
+    min-height: 56px;
     margin-inline: auto;
-    padding: 16px;
-    background: var(--b3-theme-background);
+    padding: 4px 8px;
+    background: var(--b3-theme-surface);
 
     button {
       font-family: inherit;
@@ -41,7 +42,7 @@
   &__toolbar-group {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
 
     &--leading {
@@ -56,17 +57,17 @@
   &__action {
     position: relative;
     display: inline-flex;
-    flex: 0 0 40px;
+    flex: 0 0 34px;
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    width: 40px;
-    height: 40px;
+    width: 34px;
+    height: 34px;
     padding: 0;
     color: var(--b3-theme-on-surface);
     background: var(--b3-theme-surface);
     border: 1px solid var(--b3-border-color);
-    border-radius: 10px;
+    border-radius: 8px;
     outline: 0;
     transition: opacity 120ms, transform 120ms;
 
@@ -152,23 +153,23 @@
   &__views {
     display: flex;
     box-sizing: border-box;
-    height: 40px;
-    padding: 4px;
+    height: 34px;
+    padding: 2px;
     background: var(--b3-theme-surface);
     border: 1px solid var(--b3-border-color);
-    border-radius: 10px;
+    border-radius: 8px;
 
     button {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      height: 30px;
-      padding: 4px 8px;
+      width: 30px;
+      height: 28px;
+      padding: 4px 6px;
       color: var(--b3-theme-on-surface);
       background: transparent;
       border: 0;
-      border-radius: 7px;
+      border-radius: 6px;
       outline: 0;
       transition: opacity 120ms, transform 120ms;
 
@@ -216,13 +217,20 @@
     box-shadow: var(--b3-point-shadow);
   }
 
+  &__content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
   &__documents {
     box-sizing: border-box;
     width: 100%;
     max-width: 1280px;
     min-width: 0;
     margin-inline: auto;
-    padding: 24px 16px 48px;
+    padding: 28px 16px 48px;
 
     &--large {
       display: grid;
@@ -235,8 +243,7 @@
     }
 
     &--masonry {
-      column-count: 5;
-      column-gap: 20px;
+      position: relative;
     }
 
     &--list {
@@ -252,19 +259,19 @@
     min-width: 0;
     color: var(--b3-theme-on-background);
     background: var(--b3-theme-background);
-    border: 1px solid color-mix(in srgb, var(--b3-border-color) 58%, transparent);
+    border: 1px solid color-mix(in srgb, var(--b3-border-color) 36%, transparent);
     border-radius: 14px;
-    box-shadow: 0 1px 4px color-mix(in srgb, var(--b3-theme-on-background) 5%, transparent);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--b3-theme-on-background) 3%, transparent);
     outline: 0;
     transition: opacity 150ms, transform 150ms, box-shadow 150ms, border-color 150ms;
 
-    &:hover {
-      border-color: color-mix(in srgb, var(--b3-border-color) 82%, transparent);
+    &:hover:not(.notebook-root__document--selected) {
+      border-color: color-mix(in srgb, var(--b3-border-color) 64%, transparent);
       box-shadow: 0 4px 12px color-mix(in srgb, var(--b3-theme-on-background) 8%, transparent);
     }
 
     &:focus-visible,
-    &--selected {
+    &.notebook-root__document--selected {
       border-color: var(--b3-theme-primary);
       box-shadow: 0 0 0 2px var(--b3-theme-primary), 0 8px 22px color-mix(in srgb, var(--b3-theme-on-background) 13%, transparent);
     }
@@ -286,9 +293,8 @@
     }
 
     &--masonry {
-      width: 100%;
-      margin-bottom: 20px;
-      break-inside: avoid;
+      position: absolute;
+      margin: 0;
     }
 
     &--list {
@@ -372,33 +378,29 @@
   &__paper-header {
     position: relative;
     z-index: 1;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     box-sizing: border-box;
-    max-height: 45%;
     padding: 14px 14px 0;
-    overflow: hidden;
     background: var(--b3-theme-background);
   }
 
   &__paper-header > &__document-title {
+    display: -webkit-box;
+    overflow: hidden;
     overflow-wrap: anywhere;
     min-width: 0;
     font-size: 16px;
     font-weight: 600;
     line-height: 1.25;
-  }
-
-  &__paper-separator {
-    height: 1px;
-    margin-top: 9px;
-    background: var(--b3-border-color);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--notebook-title-lines, 2);
   }
 
   &__preview-box {
     position: relative;
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 0;
+    min-height: 96px;
     overflow: hidden;
     background: transparent;
   }
@@ -449,7 +451,6 @@
     left: 0;
     height: 38%;
     pointer-events: none;
-    background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--b3-theme-background) 38%, transparent) 48%, color-mix(in srgb, var(--b3-theme-background) 94%, transparent));
   }
 
   &__document-meta {
@@ -543,24 +544,6 @@
   }
 }
 
-@container (max-width: 1111px) {
-  .notebook-root__documents--masonry {
-    column-count: 4;
-  }
-}
-
-@container (max-width: 891px) {
-  .notebook-root__documents--masonry {
-    column-count: 3;
-  }
-}
-
-@container (max-width: 671px) {
-  .notebook-root__documents--masonry {
-    column-count: 2;
-  }
-}
-
 @keyframes notebook-root-spring-back {
   0% {
     opacity: .72;
@@ -617,12 +600,6 @@
   .notebook-root__list-header span:not(:first-child),
   .notebook-root__list-time {
     display: none;
-  }
-}
-
-@container (max-width: 451px) {
-  .notebook-root__documents--masonry {
-    column-count: 1;
   }
 }
 

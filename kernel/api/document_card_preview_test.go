@@ -5,8 +5,11 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"testing"
 
+	"github.com/88250/gulu"
 	"github.com/siyuan-note/siyuan/kernel/model"
 )
 
@@ -33,5 +36,18 @@ func TestPrepareDocumentCardPreviewAcceptsObjectReference(t *testing.T) {
 	ret := postMarkdownHandler(t, prepareDocumentCardPreview, string(body))
 	if ret["code"] != float64(0) {
 		t.Fatalf("object reference was rejected: %#v", ret)
+	}
+}
+
+func TestDocumentCardPreviewConflictUsesRetryableCode(t *testing.T) {
+	ret := gulu.Ret.NewResult()
+	setDocumentCardPreviewError(ret, errors.Join(errors.New("store failed"), model.ErrMarkdownConflict))
+	if ret.Code != http.StatusConflict || ret.Msg == "" {
+		t.Fatalf("conflict was not marked retryable: %#v", ret)
+	}
+
+	setDocumentCardPreviewError(ret, errors.New("invalid preview"))
+	if ret.Code != -1 {
+		t.Fatalf("non-conflict error code changed: %#v", ret)
 	}
 }

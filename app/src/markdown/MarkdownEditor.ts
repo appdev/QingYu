@@ -161,6 +161,7 @@ export class MarkdownEditor extends Model {
     private typewriterModeConfigured = false;
     private outlineOpen = false;
     private displayName = "";
+    private readonly openNotebookRootAction: (notebookId: string, notebookName: string) => void;
 
     constructor(options: {
         app: App,
@@ -173,6 +174,7 @@ export class MarkdownEditor extends Model {
         externalDisplayPath?: string,
         sessionState?: MarkdownEditorSessionState,
         restoredLayout?: boolean,
+        openNotebookRoot?: (notebookId: string, notebookName: string) => void,
     }) {
         super({app: options.app});
         this.element = options.tab?.panelElement || options.element;
@@ -182,6 +184,7 @@ export class MarkdownEditor extends Model {
         this.path = options.externalDisplayPath || options.path || options.externalName || "";
         this.pendingSessionState = options.sessionState;
         this.restoredLayout = options.restoredLayout === true;
+        this.openNotebookRootAction = options.openNotebookRoot || (() => undefined);
         if (options.externalCapabilityId) {
             /// #if !BROWSER
             this.source = createExternalMarkdownDocumentSource({
@@ -945,7 +948,11 @@ export class MarkdownEditor extends Model {
             const target = event.target as HTMLElement;
             const button = target.closest("button");
             const action = button || target.closest<HTMLElement>("[data-type]");
-            if (action?.dataset.type === "markdown-mode") {
+            if (action?.dataset.type === "notebook-root") {
+                const notebook = window.siyuan.notebooks.find((item) => item.id === this.notebookId);
+                this.openNotebookRootAction(this.notebookId, notebook?.name || this.notebookId);
+                event.preventDefault();
+            } else if (action?.dataset.type === "markdown-mode") {
                 this.setPreview(!this.preview);
             } else if (action?.dataset.type === "markdown-outline") {
                 this.openOutline();
@@ -1463,7 +1470,10 @@ export class MarkdownEditor extends Model {
         const parts = this.source.kind === "external"
             ? [window.siyuan.languages.externalMarkdown, ...this.path.split(/[\\/]/).filter(Boolean)]
             : [notebook?.name || this.notebookId, ...this.path.split("/").filter(Boolean)];
-        this.element.querySelector(".protyle-breadcrumb__bar").innerHTML = renderMarkdownBreadcrumb(parts);
+        this.element.querySelector(".protyle-breadcrumb__bar").innerHTML = renderMarkdownBreadcrumb(
+            parts,
+            this.source.kind === "workspace" ? this.notebookId : undefined,
+        );
     }
 
     private setStatus(status: "saved" | "saving" | "dirty" | "conflict" | "error") {

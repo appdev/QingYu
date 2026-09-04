@@ -4,6 +4,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,14 @@ import (
 func logDocumentCardPreviewError(stage string, ref model.DocumentCardReference, err error) {
 	logging.LogErrorf("document card preview %s failed [kind=%q, notebook=%q, path=%q, id=%q]: %s",
 		stage, ref.Kind, ref.Notebook, ref.Path, ref.ID, err)
+}
+
+func setDocumentCardPreviewError(ret *gulu.Result, err error) {
+	ret.Code = -1
+	if errors.Is(err, model.ErrMarkdownConflict) {
+		ret.Code = http.StatusConflict
+	}
+	ret.Msg = err.Error()
 }
 
 func prepareDocumentCardPreview(c *gin.Context) {
@@ -94,8 +103,7 @@ func storeDocumentCardPreview(c *gin.Context) {
 	defer opened.Close()
 	if err = model.StoreDocumentCardPreview(ref, descriptor, opened); err != nil {
 		logDocumentCardPreviewError("store", ref, err)
-		ret.Code = -1
-		ret.Msg = err.Error()
+		setDocumentCardPreviewError(ret, err)
 	}
 }
 
