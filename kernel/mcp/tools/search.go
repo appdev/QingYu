@@ -38,7 +38,7 @@ var SearchTool = &Tool{
 			"type":     {Type: "string", Description: "Comma-separated block types to filter, e.g. 'document,heading,paragraph' (optional, fulltext only)"},
 			"subtype":  {Type: "string", Description: "Comma-separated block subtypes to filter, e.g. 'o,u,t' (optional, fulltext only)"},
 			"ext":      {Type: "string", Description: "Comma-separated asset file extensions to filter, e.g. 'pdf,docx,xlsx' (optional, asset only)"},
-			"method":   {Type: "number", Description: "Search method: fulltext/asset 0=keyword 1=query-syntax 2=sql 3=regex (default 0)"},
+			"method":   {Type: "number", Description: "Search method: fulltext/asset 0=keyword 1=query-syntax 3=regex (default 0)"},
 			"orderBy":  {Type: "number", Description: "Sort order — fulltext: 0=type 1=created-asc 2=created-desc 3=updated-asc 4=updated-desc 5=content 6=relevance-asc 7=relevance-desc; asset: 0=relevance-desc 1=relevance-asc 2=updated-asc 3=updated-desc (default 0)"},
 			"groupBy":  {Type: "number", Description: "Group by (fulltext only): 0=none 1=document (default 0)"},
 		},

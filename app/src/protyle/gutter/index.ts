@@ -61,9 +61,8 @@ import {appearanceMenu} from "../toolbar/Font";
 import {setPosition} from "../../util/setPosition";
 import {emitOpenMenu} from "../../plugin/EventBus";
 import {insertAttrViewBlockAnimation, updateHeader} from "../render/av/row";
-import {avContextmenu, duplicateCompletely} from "../render/av/action";
+import {avContextmenu} from "../render/av/action";
 import {getPlainText} from "../util/paste";
-import {addEditorToDatabase} from "../render/av/addToDatabase";
 import {processClonePHElement} from "../render/util";
 /// #if !MOBILE
 import {openFileById} from "../../editor/util";
@@ -1048,15 +1047,7 @@ export class Gutter {
                     });
                 }
             }).element);
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "addToDatabase",
-                label: window.siyuan.languages.addToDatabase,
-                accelerator: window.siyuan.config.keymap.general.addToDatabase.custom,
-                icon: "iconDatabase",
-                click: () => {
-                    addEditorToDatabase(protyle, getEditorRange(selectsElement[0]));
-                }
-            }).element);
+
             window.siyuan.menus.menu.append(new MenuItem({
                 id: "delete",
                 label: window.siyuan.languages.delete,
@@ -1557,7 +1548,6 @@ export class Gutter {
                 }
             }).element);
         }
-        this.appendAddToDatabaseMenu(protyle, nodeElement);
         if (allowRemoval) {
             window.siyuan.menus.menu.append(new MenuItem({
                 id: "delete",
@@ -2601,21 +2591,6 @@ export class Gutter {
         }).element);
     }
 
-    private appendAddToDatabaseMenu(protyle: IProtyle, nodeElement: Element) {
-        if (protyle.disabled) {
-            return;
-        }
-        window.siyuan.menus.menu.append(new MenuItem({
-            id: "addToDatabase",
-            icon: "iconDatabase",
-            label: window.siyuan.languages.addToDatabase,
-            accelerator: window.siyuan.config.keymap.general.addToDatabase.custom,
-            click: () => {
-                addEditorToDatabase(protyle, getEditorRange(nodeElement));
-            }
-        }).element);
-    }
-
     private appendFoldMenu(protyle: IProtyle, nodeElement: Element) {
         window.siyuan.menus.menu.append(new MenuItem({
             id: "fold",
@@ -2673,6 +2648,7 @@ export class Gutter {
             copyMenu.splice(7, 0, copyTextRefMenu);
         }
         if (type === "NodeAttributeView") {
+            copyMenu.pop();
             copyMenu.splice(6, 0, {
                 iconHTML: "",
                 label: window.siyuan.languages.copyAVID,
@@ -2680,26 +2656,7 @@ export class Gutter {
                     writeText(nodeElement.getAttribute("data-av-id"));
                 }
             });
-            if (allowDuplicate) {
-                copyMenu.push({
-                    id: "duplicateMirror",
-                    iconHTML: "",
-                    label: window.siyuan.languages.duplicateMirror,
-                    accelerator: window.siyuan.config.keymap.editor.general.duplicate.custom,
-                    click() {
-                        duplicateBlock([nodeElement], protyle);
-                    }
-                });
-                copyMenu.push({
-                    id: "duplicateCompletely",
-                    iconHTML: "",
-                    label: window.siyuan.languages.duplicateCompletely,
-                    accelerator: window.siyuan.config.keymap.editor.general.duplicateCompletely.custom,
-                    click() {
-                        duplicateCompletely(protyle, nodeElement as HTMLElement);
-                    }
-                });
-            }
+
         } else if (allowDuplicate) {
             copyMenu.push({
                 id: "duplicate",
@@ -2739,6 +2696,10 @@ export class Gutter {
     }
 
     public render(protyle: IProtyle, element: Element, target?: Element) {
+        if (element.closest('[data-type="NodeAttributeView"]')) {
+            this.element.innerHTML = "";
+            return;
+        }
         // https://github.com/siyuan-note/siyuan/issues/4659
         if (protyle.title && protyle.title.element.getAttribute("data-render") !== "true") {
             return;
@@ -2768,24 +2729,7 @@ export class Gutter {
                     type = nodeElement.getAttribute("data-type");
                 }
                 let dataNodeId = nodeElement.getAttribute("data-node-id");
-                if (type === "NodeAttributeView" && target && !embedContext) {
-                    const rowElement = hasClosestByClassName(target, "av__row");
-                    if (rowElement && !rowElement.classList.contains("av__row--header") && rowElement.dataset.id) {
-                        element = rowElement;
-                        const bodyElement = hasClosestByClassName(rowElement, "av__body") as HTMLElement;
-                        let iconAriaLabel = isMac() ? window.siyuan.languages.rowTip : window.siyuan.languages.rowTip.replace("⇧", "Shift+");
-                        if (protyle.disabled) {
-                            iconAriaLabel = window.siyuan.languages.rowTip.substring(0, window.siyuan.languages.rowTip.indexOf("<br"));
-                        } else if (rowElement.querySelector('[data-dtype="block"]')?.getAttribute("data-detached") === "true") {
-                            iconAriaLabel = window.siyuan.languages.rowTip.substring(0, window.siyuan.languages.rowTip.lastIndexOf("<br"));
-                        }
-                        html = `<button data-type="NodeAttributeViewRowMenu" data-node-id="${dataNodeId}" data-row-id="${rowElement.dataset.id}" data-group-id="${bodyElement.dataset.groupId || ""}" class="ariaLabel" data-position="parentW" aria-label="${iconAriaLabel}"><svg><use xlink:href="#iconDrag"></use></svg><span ${protyle.disabled ? "" : 'draggable="true" class="fn__grab"'}></span></button>`;
-                        if (!protyle.disabled) {
-                            html = `<button data-type="NodeAttributeViewRow" data-node-id="${dataNodeId}" data-row-id="${rowElement.dataset.id}" data-group-id="${bodyElement.dataset.groupId || ""}" class="ariaLabel" data-position="parentW" aria-label="${isMac() ? window.siyuan.languages.addBelowAbove : window.siyuan.languages.addBelowAbove.replace("⌥", "Alt+")}"><svg><use xlink:href="#iconAdd"></use></svg></button>${html}`;
-                        }
-                        break;
-                    }
-                }
+
                 if (index === 0) {
                     // 不单独显示，要不然在块的间隔中，gutter 会跳来跳去的
                     if (["NodeBlockquote", "NodeList", "NodeCallout", "NodeSuperBlock"].includes(type)) {

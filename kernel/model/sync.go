@@ -419,108 +419,10 @@ func SetSyncProviderWebDAV(webdav *conf.WebDAV) (err error) {
 	return
 }
 
-func SetSyncProviderLocal(local *conf.Local) (err error) {
-	local.Endpoint = strings.TrimSpace(local.Endpoint)
-	local.Endpoint = util.NormalizeLocalPath(local.Endpoint)
-
-	absPath, err := filepath.Abs(local.Endpoint)
-	if nil != err {
-		msg := fmt.Sprintf("get endpoint [%s] abs path failed: %s", local.Endpoint, err)
-		logging.LogError(msg)
-		err = fmt.Errorf(Conf.Language(77), msg)
-		return
-	}
-	if !gulu.File.IsExist(absPath) {
-		msg := fmt.Sprintf("endpoint [%s] not exist", local.Endpoint)
-		logging.LogError(msg)
-		err = fmt.Errorf(Conf.Language(77), msg)
-		return
-	}
-	if util.IsAbsPathInWorkspace(absPath) || filepath.Clean(absPath) == filepath.Clean(util.WorkspaceDir) {
-		msg := fmt.Sprintf("endpoint [%s] is in workspace", local.Endpoint)
-		logging.LogError(msg)
-		err = fmt.Errorf(Conf.Language(77), msg)
-		return
-	}
-
-	if gulu.File.IsSubPath(absPath, util.WorkspaceDir) {
-		msg := fmt.Sprintf("endpoint [%s] is parent of workspace", local.Endpoint)
-		logging.LogError(msg)
-		err = fmt.Errorf(Conf.Language(77), msg)
-		return
-	}
-
-	local.Timeout = util.NormalizeTimeout(local.Timeout)
-	local.ConcurrentReqs = util.NormalizeConcurrentReqs(local.ConcurrentReqs, conf.ProviderLocal)
-
-	Conf.Sync.Local = local
-	Conf.Save()
-	return
-}
-
 var (
 	syncLock  = sync.Mutex{}
 	isSyncing = atomic.Bool{}
 )
-
-func CreateCloudSyncDir(name string) (err error) {
-	switch Conf.Sync.Provider {
-	case conf.ProviderLocal:
-		break
-	default:
-		err = errors.New(Conf.Language(131))
-		return
-	}
-
-	name = util.RemoveInvalid(name)
-	if !cloud.IsValidCloudDirName(name) {
-		return errors.New(Conf.Language(37))
-	}
-
-	repo, err := newRepository()
-	if err != nil {
-		return
-	}
-
-	err = repo.CreateCloudRepo(name)
-	if err != nil {
-		err = errors.New(formatRepoErrorMsg(err))
-		return
-	}
-	return
-}
-
-func RemoveCloudSyncDir(name string) (err error) {
-	switch Conf.Sync.Provider {
-	case conf.ProviderLocal:
-		break
-	default:
-		err = errors.New(Conf.Language(131))
-		return
-	}
-
-	msgId := util.PushMsg(Conf.Language(116), 15000)
-
-	repo, err := newRepository()
-	if err != nil {
-		return
-	}
-
-	err = repo.RemoveCloudRepo(name)
-	if err != nil {
-		err = errors.New(formatRepoErrorMsg(err))
-		return
-	}
-
-	util.PushClearMsg(msgId)
-	time.Sleep(500 * time.Millisecond)
-	if Conf.Sync.CloudName == name {
-		Conf.Sync.CloudName = "main"
-		Conf.Save()
-		util.PushMsg(Conf.Language(155), 5000)
-	}
-	return
-}
 
 type Sync struct {
 	Size      int64  `json:"size"`
@@ -704,6 +606,9 @@ func getSyncIgnoreLines() (ret []string) {
 	dataStr = strings.ReplaceAll(dataStr, "\r\n", "\n")
 	ret = strings.Split(dataStr, "\n")
 
+	// 本机事务记录包含绝对路径与文件身份，不能在其他设备执行恢复。
+	ret = append(ret, "**/.siyuan/markdown-transactions/**")
+
 	// 忽略用户指南
 	ret = append(ret, "20210808180117-6v0mkxr/**/*")
 	ret = append(ret, "20210808180117-czj9bvb/**/*")
@@ -739,8 +644,6 @@ func isProviderOnline(byHand bool) (ret bool) {
 	case conf.ProviderWebDAV:
 		checkURL = Conf.Sync.WebDAV.Endpoint
 		skipTlsVerify = Conf.Sync.WebDAV.SkipTlsVerify
-	case conf.ProviderLocal:
-		checkURL = "file://" + Conf.Sync.Local.Endpoint
 	default:
 		logging.LogWarnf("unknown provider: %d", Conf.Sync.Provider)
 		return false

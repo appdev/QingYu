@@ -41,6 +41,7 @@ type markdownFileIdentity struct {
 }
 
 type markdownTransaction struct {
+	Annotations   *markdownAnnotationChange   `json:"annotations,omitempty"`
 	ID            string                      `json:"id"`
 	Kind          string                      `json:"kind"`
 	Phase         string                      `json:"phase"`
@@ -122,10 +123,21 @@ func beginMarkdownTransaction(kind, boxID, sourcePath, destinationPath, newRevis
 		return nil, err
 	}
 	markdownDurabilityHook("transaction-parent-synced", tx.dirPath)
+	if kind == "rename" || kind == "move" {
+		if err = prepareMarkdownAnnotationMove(tx); err != nil {
+			_ = finishMarkdownTransaction(tx)
+			return nil, err
+		}
+	}
 	return tx, nil
 }
 
 func beginMarkdownInstallTransaction(kind, boxID, destinationPath string, data []byte, mode os.FileMode) (*markdownTransaction, error) {
+	if _, err := os.Lstat(destinationPath + markdownAnnotationsSuffix); err == nil {
+		return nil, os.ErrExist
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 	id := fmt.Sprintf("%d-%s", time.Now().UnixNano(), gulu.Rand.String(8))
 	dirPath := filepath.Join(util.DataDir, boxID, ".siyuan", "markdown-transactions", id)
 	if err := mkdirAllMarkdownContained(dirPath, 0700); err != nil {
@@ -223,6 +235,9 @@ func rollbackMarkdownInstall(tx *markdownTransaction) error {
 }
 
 func finalizeMarkdownInstall(tx *markdownTransaction) error {
+	if err := commitMarkdownAnnotations(tx); err != nil {
+		return err
+	}
 	if tx.Phase == "metadata-committed" {
 		if err := removeMarkdownFileWithIdentity(tx.Staging, tx.TargetID); err != nil && !os.IsNotExist(err) {
 			return err
@@ -308,6 +323,9 @@ func removeMarkdownPath(filePath string) error {
 func finishMarkdownTransaction(tx *markdownTransaction) error {
 	if tx == nil {
 		return nil
+	}
+	if err := cleanupMarkdownAnnotations(tx); err != nil {
+		return err
 	}
 	rootPath, relPath, err := markdownRootAndRelative(tx.dirPath)
 	if err != nil {
@@ -507,6 +525,9 @@ func recoverMarkdownSavePrecommit(tx *markdownTransaction) error {
 }
 
 func finalizeMarkdownSave(tx *markdownTransaction) error {
+	if err := commitMarkdownAnnotations(tx); err != nil {
+		return err
+	}
 	if tx.Phase == "installed" {
 		if err := removeMarkdownFileWithIdentity(tx.Quarantine, tx.SourceID); err != nil && !os.IsNotExist(err) {
 			return err
@@ -540,6 +561,9 @@ func markMarkdownMetadataCommitted(tx *markdownTransaction) error {
 }
 
 func finalizeMarkdownMove(tx *markdownTransaction) error {
+	if err := commitMarkdownAnnotations(tx); err != nil {
+		return err
+	}
 	if tx.Phase == "metadata-committed" {
 		if err := removeMarkdownFileWithIdentity(tx.Staging, tx.SourceID); err != nil && !os.IsNotExist(err) {
 			return err

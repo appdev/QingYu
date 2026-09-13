@@ -151,6 +151,11 @@ export const renderKanban = async (options: {
             targetItemID: locateParams?.targetItemID || "",
             targetGroupID: locateParams?.targetGroupID || "",
         });
+        if (response.code !== 0 || !response.data?.view) {
+            options.blockElement.firstElementChild.textContent = response.msg || window.siyuan.languages.emptyContent;
+            options.blockElement.setAttribute("data-render", "true");
+            return;
+        }
         data = response.data;
     }
     if (!isCurrentAVRender(options.blockElement, renderToken)) {

@@ -151,7 +151,12 @@ func flushTx(tx *Transaction) {
 	}
 }
 
-func PerformTransactions(transactions *[]*Transaction) {
+func PerformTransactions(transactions *[]*Transaction) error {
+	for _, tx := range *transactions {
+		if err := checkDatabaseOperations(tx.DoOperations); err != nil {
+			return err
+		}
+	}
 	txQueueLock.Lock()
 	defer txQueueLock.Unlock()
 	for _, tx := range *transactions {
@@ -161,6 +166,7 @@ func PerformTransactions(transactions *[]*Transaction) {
 	sort.SliceStable(txQueue, func(i, j int) bool {
 		return txQueue[i].Timestamp < txQueue[j].Timestamp
 	})
+	return nil
 }
 
 func takeQueuedTransactions() (ret []*Transaction) {
@@ -208,6 +214,10 @@ func (e *TxErr) Code() int {
 func performTx(tx *Transaction) (ret *TxErr) {
 	if 1 > len(tx.DoOperations) {
 		return
+	}
+
+	if err := checkDatabaseOperations(tx.DoOperations); err != nil {
+		return &TxErr{code: TxErrCodePushMsg, msg: err.Error()}
 	}
 
 	//os.MkdirAll("pprof", 0755)
@@ -276,132 +286,7 @@ func performTx(tx *Transaction) (ret *TxErr) {
 				ret = tx.doSetAttrs(op)
 			case "doUpdateUpdated":
 				ret = tx.doUpdateUpdated(op)
-			case "setAttrViewName":
-				ret = tx.doSetAttrViewName(op)
-			case "setAttrViewNewItemTemplates":
-				ret = tx.doSetAttrViewNewItemTemplates(op)
-			case "setAttrViewFilters":
-				ret = tx.doSetAttrViewFilters(op)
-			case "setAttrViewSorts":
-				ret = tx.doSetAttrViewSorts(op)
-			case "setAttrViewPageSize":
-				ret = tx.doSetAttrViewPageSize(op)
-			case "setAttrViewColWidth":
-				ret = tx.doSetAttrViewColumnWidth(op)
-			case "setAttrViewColAlign":
-				ret = tx.doSetAttrViewColumnAlign(op)
-			case "setAttrViewColWrap":
-				ret = tx.doSetAttrViewColumnWrap(op)
-			case "setAttrViewColHidden":
-				ret = tx.doSetAttrViewColumnHidden(op)
-			case "setAttrViewColPin":
-				ret = tx.doSetAttrViewColumnPin(op)
-			case "setAttrViewColIcon":
-				ret = tx.doSetAttrViewColumnIcon(op)
-			case "setAttrViewColDesc":
-				ret = tx.doSetAttrViewColumnDesc(op)
-			case "insertAttrViewBlock":
-				ret = tx.doInsertAttrViewBlock(op)
-			case "removeAttrViewBlock":
-				ret = tx.doRemoveAttrViewBlock(op)
-			case "addAttrViewCol":
-				ret = tx.doAddAttrViewColumn(op)
-			case "updateAttrViewCol":
-				ret = tx.doUpdateAttrViewColumn(op)
-			case "removeAttrViewCol":
-				ret = tx.doRemoveAttrViewColumn(op)
-			case "sortAttrViewRow":
-				ret = tx.doSortAttrViewRow(op)
-			case "sortAttrViewCol":
-				ret = tx.doSortAttrViewColumn(op)
-			case "sortAttrViewKey":
-				ret = tx.doSortAttrViewKey(op)
-			case "updateAttrViewCell":
-				ret = tx.doUpdateAttrViewCell(op)
-			case "updateAttrViewColOptions":
-				ret = tx.doUpdateAttrViewColOptions(op)
-			case "removeAttrViewColOption":
-				ret = tx.doRemoveAttrViewColOption(op)
-			case "updateAttrViewColOption":
-				ret = tx.doUpdateAttrViewColOption(op)
-			case "setAttrViewColOptionDesc":
-				ret = tx.doSetAttrViewColOptionDesc(op)
-			case "setAttrViewColCalc":
-				ret = tx.doSetAttrViewColCalc(op)
-			case "updateAttrViewColNumberFormat":
-				ret = tx.doUpdateAttrViewColNumberFormat(op)
-			case "replaceAttrViewBlock":
-				ret = tx.doReplaceAttrViewBlock(op)
-			case "updateAttrViewColTemplate":
-				ret = tx.doUpdateAttrViewColTemplate(op)
-			case "addAttrViewView":
-				ret = tx.doAddAttrViewView(op)
-			case "removeAttrViewView":
-				ret = tx.doRemoveAttrViewView(op)
-			case "setAttrViewViewName":
-				ret = tx.doSetAttrViewViewName(op)
-			case "setAttrViewViewIcon":
-				ret = tx.doSetAttrViewViewIcon(op)
-			case "setAttrViewViewDesc":
-				ret = tx.doSetAttrViewViewDesc(op)
-			case "duplicateAttrViewView":
-				ret = tx.doDuplicateAttrViewView(op)
-			case "duplicateAttrViewRow":
-				ret = tx.doDuplicateAttrViewRow(op)
-			case "sortAttrViewView":
-				ret = tx.doSortAttrViewView(op)
-			case "updateAttrViewColRelation":
-				ret = tx.doUpdateAttrViewColRelation(op)
-			case "updateAttrViewColRollup":
-				ret = tx.doUpdateAttrViewColRollup(op)
-			case "hideAttrViewName":
-				ret = tx.doHideAttrViewName(op)
-			case "setAttrViewColDateFillCreated":
-				ret = tx.doSetAttrViewColDateFillCreated(op)
-			case "setAttrViewColDateFillSpecificTime":
-				ret = tx.doSetAttrViewColDateFillSpecificTime(op)
-			case "setAttrViewCreatedIncludeTime":
-				ret = tx.doSetAttrViewCreatedIncludeTime(op)
-			case "setAttrViewUpdatedIncludeTime":
-				ret = tx.doSetAttrViewUpdatedIncludeTime(op)
-			case "duplicateAttrViewKey":
-				ret = tx.doDuplicateAttrViewKey(op)
-			case "setAttrViewCoverFrom":
-				ret = tx.doSetAttrViewCoverFrom(op)
-			case "setAttrViewCoverFromAssetKeyID":
-				ret = tx.doSetAttrViewCoverFromAssetKeyID(op)
-			case "setAttrViewCardSize":
-				ret = tx.doSetAttrViewCardSize(op)
-			case "setAttrViewFitImage":
-				ret = tx.doSetAttrViewFitImage(op)
-			case "setAttrViewDisplayFieldName":
-				ret = tx.doSetAttrViewDisplayFieldName(op)
-			case "setAttrViewFillColBackgroundColor":
-				ret = tx.doSetAttrViewFillColBackgroundColor(op)
-			case "setAttrViewShowIcon":
-				ret = tx.doSetAttrViewShowIcon(op)
-			case "setAttrViewWrapField":
-				ret = tx.doSetAttrViewWrapField(op)
-			case "changeAttrViewLayout":
-				ret = tx.doChangeAttrViewLayout(op)
-			case "setAttrViewBlockView":
-				ret = tx.doSetAttrViewBlockView(op)
-			case "setAttrViewCardAspectRatio":
-				ret = tx.doSetAttrViewCardAspectRatio(op)
-			case "setAttrViewGroup":
-				ret = tx.doSetAttrViewGroup(op)
-			case "hideAttrViewGroup":
-				ret = tx.doHideAttrViewGroup(op)
-			case "hideAttrViewAllGroups":
-				ret = tx.doHideAttrViewAllGroups(op)
-			case "foldAttrViewGroup":
-				ret = tx.doFoldAttrViewGroup(op)
-			case "syncAttrViewTableColWidth":
-				ret = tx.doSyncAttrViewTableColWidth(op)
-			case "removeAttrViewGroup":
-				ret = tx.doRemoveAttrViewGroup(op)
-			case "sortAttrViewGroup":
-				ret = tx.doSortAttrViewGroup(op)
+
 			}
 
 			if nil != ret {

@@ -19,7 +19,6 @@ import {openSearch} from "../../search/spread";
 import {openDocHistory} from "../../history/doc";
 import {openNewWindowById} from "../../window/openNewWindow";
 import {transferBlockRef} from "../../menus/block";
-import {addEditorToDatabase} from "../render/av/addToDatabase";
 import {openFileById} from "../../editor/util";
 import {hasTopClosestByClassName} from "../util/hasClosest";
 import {showMessage} from "../../dialog/message";
@@ -87,16 +86,7 @@ export const openTitleMenu = (protyle: IProtyle, position: IPosition, from: stri
             if (!isBoxDoc) {
                 window.siyuan.menus.menu.append(movePathToMenu([protyle.path]));
             }
-            const range = getSelection().rangeCount > 0 ? getSelection().getRangeAt(0) : undefined;
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "addToDatabase",
-                label: window.siyuan.languages.addToDatabase,
-                accelerator: window.siyuan.config.keymap.general.addToDatabase.custom,
-                icon: "iconDatabase",
-                click: () => {
-                    addEditorToDatabase(protyle, range, "title");
-                }
-            }).element);
+
             if (!isBoxDoc) {
                 window.siyuan.menus.menu.append(new MenuItem({
                     id: "delete",

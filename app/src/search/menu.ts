@@ -358,15 +358,6 @@ export const queryMenu = (config: Config.IUILayoutTabSearchConfig, cb: () => voi
         }
     }).element);
     window.siyuan.menus.menu.append(new MenuItem({
-        icon: "iconDatabase",
-        label: "SQL",
-        current: config.method === 2,
-        click() {
-            config.method = 2;
-            cb();
-        }
-    }).element);
-    window.siyuan.menus.menu.append(new MenuItem({
         icon: "iconRegex",
         label: window.siyuan.languages.regex,
         current: config.method === 3,
@@ -556,15 +547,6 @@ export const moreMenu = async (config: Config.IUILayoutTabSearchConfig,
         current: config.method === 1,
         click() {
             config.method = 1;
-            config.page = 1;
-            updateSearchResult(config, element, true);
-        }
-    }, {
-        icon: "iconDatabase",
-        label: "SQL",
-        current: config.method === 2,
-        click() {
-            config.method = 2;
             config.page = 1;
             updateSearchResult(config, element, true);
         }

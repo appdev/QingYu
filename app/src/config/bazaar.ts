@@ -27,7 +27,6 @@ export const collectBazaarTabSearchStrings = (): string[] => [
     window.siyuan.languages.theme,
     window.siyuan.languages.icon,
     window.siyuan.languages.template,
-    window.siyuan.languages.widget,
 ];
 
 /** 集市 Tab 挂载（面板页，不走注册表渲染） */
@@ -48,7 +47,6 @@ export const mountBazaarTab = (root: HTMLElement, keywords?: string, app?: App) 
             {type: "theme", label: window.siyuan.languages.theme},
             {type: "icon", label: window.siyuan.languages.icon},
             {type: "template", label: window.siyuan.languages.template},
-            {type: "widget", label: window.siyuan.languages.widget},
         ]);
     }
 };
@@ -120,7 +118,6 @@ export const bazaar = {
     <div data-type="theme" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.theme}</span><span class="fn__flex-1"></span></div>
     <div data-type="icon" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.icon}</span><span class="fn__flex-1"></span></div>
     <div data-type="template" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.template}</span><span class="fn__flex-1"></span></div>
-    <div data-type="widget" class="item item--full"><span class="fn__flex-1"></span><span class="item__text">${window.siyuan.languages.widget}</span><span class="fn__flex-1"></span></div>
 </div>
 <div class="fn__flex-1">
     <div class="config-bazaar__panel" data-type="downloaded" data-init="true">
@@ -134,7 +131,6 @@ export const bazaar = {
             <div class="fn__space"></div>
             <button data-type="myTemplate" class="b3-button b3-button--outline">${window.siyuan.languages.template}</button>
             <div class="fn__space"></div>
-            <button data-type="myWidget" class="b3-button b3-button--outline">${window.siyuan.languages.widget}</button>
             <div class="fn__space"></div>
             <input class="b3-text-field" placeholder="${window.siyuan.languages.enterKey} ${window.siyuan.languages.search}">
             <div class="fn__space"></div>
@@ -379,7 +375,6 @@ export const bazaar = {
                 ...response.data.themes,
                 ...response.data.icons,
                 ...response.data.templates,
-                ...response.data.widgets,
             ];
             const updateElement = this.element.querySelector('[data-type="downloaded-update"]');
             if (!items.length) {
@@ -765,7 +760,7 @@ type="checkbox">
                         pkgItem = bazaar._data[sidePackageType]?.find((i) => i.repoURL === repo);
                     }
                 } else if (hasClosestByAttribute(repoElement, "data-type", "downloaded-update")) {
-                    for (const bazaarType of ["plugins", "themes", "icons", "templates", "widgets"] as TBazaarType[]) {
+                    for (const bazaarType of ["plugins", "themes", "icons", "templates"] as TBazaarType[]) {
                         const item = bazaar._data.update[bazaarType]?.find((i) => i.repoURL === repo);
                         if (item) {
                             pkgType = bazaarType;
@@ -784,7 +779,7 @@ type="checkbox">
                         }
                     }
                 } else {
-                    for (const bazaarType of ["plugins", "themes", "icons", "templates", "widgets"] as TBazaarType[]) {
+                    for (const bazaarType of ["plugins", "themes", "icons", "templates"] as TBazaarType[]) {
                         const item = bazaar._data[bazaarType]?.find((i) => i.repoURL === repo);
                         if (item) {
                             pkgType = bazaarType;

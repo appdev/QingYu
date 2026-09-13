@@ -11,6 +11,21 @@ import {
 
 const {createMarkdownManagementCoordinator} = require("../../electron/markdownManagementCoordinator.js");
 
+test("workspace annotation source preserves BOM and CRLF when saving", async () => {
+    let saved: Record<string, unknown>;
+    const source = createWorkspaceMarkdownDocumentSource({notebookId: "box", path: "/note.md", readOnly: false,
+        request: async (url, body) => {
+            if (url.endsWith("/save")) saved = body;
+            return {code: 0, data: {operationID: body.operationID, name: "note.md", path: "/note.md",
+                content: "\uFEFF甲\r\n乙", revision: "r1", mtime: 1}};
+        }});
+    const doc = await source.load();
+    assert.equal(doc.content, "甲\r\n乙");
+    assert.equal(doc.lineEnding, "\r\n");
+    await source.save({content: doc.content, revision: doc.revision});
+    assert.equal(saved.content, "\uFEFF甲\r\n乙");
+});
+
 test("workspace source preserves the current Markdown HTTP contract", async () => {
     const calls: Array<{url: string, body: Record<string, unknown>}> = [];
     const source = createWorkspaceMarkdownDocumentSource({

@@ -67,7 +67,7 @@ export const escapePlainTextMarkdown = (text: string) => {
 
 const clipboardData = (text: string) => ({
     files: Object.assign([], {item: () => null}),
-    getData: (type: string) => type === plainTextPasteMime ? "true" : type === "text/plain" ? escapePlainTextMarkdown(text) : "",
+    getData: (type: string) => type === plainTextPasteMime ? "true" : type === "text/plain" ? text : "",
     types: [plainTextPasteMime, "text/plain"],
 });
 
@@ -90,10 +90,11 @@ const selectedEditable = (target: HTMLElement) => {
     return (origin && target.contains(origin) ? origin : target).closest<HTMLElement>("input, textarea, [contenteditable]");
 };
 
-export const dispatchPlainTextPaste = (target: HTMLElement, text: string): boolean => {
+export const dispatchMarkdownTextPaste = (target: HTMLElement, text: string, intent: "plain" | "escaped"): boolean => {
+    if (intent === "escaped") text = escapePlainTextMarkdown(text);
     const editable = selectedEditable(target);
     if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
-        if (editable.disabled) return false;
+        if (editable.disabled || editable.readOnly) return false;
         editable.setRangeText(text, editable.selectionStart || 0, editable.selectionEnd || editable.selectionStart || 0, "end");
         editable.dispatchEvent(new Event("input", {bubbles: true}));
         return true;
@@ -108,7 +109,7 @@ export const dispatchPlainTextPaste = (target: HTMLElement, text: string): boole
         range.deleteContents();
         const fragment = editable.ownerDocument.createDocumentFragment();
         let lastNode: Node | null = null;
-        escapePlainTextMarkdown(text).split(/\r\n?|\n/u).forEach((line, index) => {
+        text.split(/\r\n?|\n/u).forEach((line, index) => {
             if (index) {
                 const lineBreak = editable.ownerDocument.createElement("br");
                 lineBreak.dataset.markraSourceBreak = "true";
@@ -133,6 +134,9 @@ export const dispatchPlainTextPaste = (target: HTMLElement, text: string): boole
     target.dispatchEvent(event);
     return event.defaultPrevented;
 };
+
+export const dispatchPlainTextPaste = (target: HTMLElement, text: string): boolean =>
+    dispatchMarkdownTextPaste(target, text, "plain");
 
 export const handlePendingPlainTextPasteEvent = (event: ClipboardEvent, target: HTMLElement) => {
     const intent = consumeNextPlainTextPaste(target);

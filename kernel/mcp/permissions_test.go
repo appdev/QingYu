@@ -63,8 +63,8 @@ func TestReadOnlyToolCallPermissions(t *testing.T) {
 		{name: "markdown save", tool: "markdown", action: "save", allowed: false},
 		{name: "markdown rename", tool: "markdown", action: "rename", allowed: false},
 		{name: "markdown remove", tool: "markdown", action: "remove", allowed: false},
-		{name: "sql query", tool: "sql", action: "query", allowed: true},
-		{name: "legacy sql query", tool: "sql", allowed: true},
+		{name: "sql query", tool: "sql", action: "query", allowed: false},
+		{name: "legacy sql query", tool: "sql", allowed: false},
 		{name: "unzip", tool: "unzip", allowed: false},
 		{name: "unknown action", tool: "document", action: "unknown", allowed: false},
 	}

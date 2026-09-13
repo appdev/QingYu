@@ -16,6 +16,8 @@
     "test:markdown-live-preview": "node ./scripts/testMarkdownLivePreview.cjs",
     "test:external-markdown": "node --test electron/externalMarkdownOpen.test.cjs electron/externalMarkdownService.test.cjs electron/externalMarkdownWindowLifecycle.test.cjs scripts/qingyu-file-association.test.cjs && node --import tsx --test src/markdown/documentSource.test.ts src/markdown/externalConflictDialog.test.ts src/markdown/externalDocumentSource.test.ts src/markdown/externalEditorRegistry.test.ts src/markdown/externalMarkdownClose.test.ts src/markdown/externalTab.test.ts src/markdown/initialMetadata.test.ts src/markdown/siyuanAdapterInjection.test.ts",
     "test:markdown-paste-benchmark": "node ./scripts/benchmarkMarkdownPaste.cjs",
+    "test:markdown-annotations": "node --import tsx --test src/markdown/annotations/*.test.ts",
+    "test:markdown-annotations-benchmark": "electron ./scripts/benchmarkMarkdownAnnotations.cjs",
     "dev": "webpack --mode development",
     "dev:mac": "node ./scripts/devMac.js",
     "dev:mobile": "webpack --mode development --config webpack.mobile.js",

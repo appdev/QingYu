@@ -52,13 +52,14 @@ var (
 )
 
 type MarkdownDocument struct {
-	Path        string `json:"path"`
-	Name        string `json:"name"`
-	Content     string `json:"content"`
-	DocumentID  string `json:"documentID"`
-	Revision    string `json:"revision"`
-	Mtime       int64  `json:"mtime"`
-	OperationID string `json:"operationID,omitempty"`
+	Annotations *MarkdownAnnotations `json:"annotations,omitempty"`
+	Path        string               `json:"path"`
+	Name        string               `json:"name"`
+	Content     string               `json:"content"`
+	DocumentID  string               `json:"documentID"`
+	Revision    string               `json:"revision"`
+	Mtime       int64                `json:"mtime"`
+	OperationID string               `json:"operationID,omitempty"`
 }
 
 func CreateMarkdown(boxID, parentPath, name string, autoName ...bool) (ret *MarkdownDocument, err error) {
@@ -182,11 +183,10 @@ func cleanupMarkdownCreatedFile(filePath string) error {
 
 func GetMarkdown(boxID, p string) (ret *MarkdownDocument, err error) {
 	markdownFileOperationLock.Lock()
+	defer markdownFileOperationLock.Unlock()
 	if err = recoverMarkdownTransactionsLocked(); err != nil {
-		markdownFileOperationLock.Unlock()
 		return nil, err
 	}
-	markdownFileOperationLock.Unlock()
 	canonicalPath, absPath, err := markdownFilePath(boxID, p)
 	if err != nil {
 		return nil, err
@@ -203,6 +203,10 @@ func SaveMarkdown(boxID, p, content, revision string) (ret *MarkdownDocument, er
 }
 
 func SaveMarkdownWithOperationID(boxID, p, content, revision, requestedOperationID string) (ret *MarkdownDocument, err error) {
+	return SaveMarkdownWithAnnotations(boxID, p, content, revision, requestedOperationID, nil)
+}
+
+func SaveMarkdownWithAnnotations(boxID, p, content, revision, requestedOperationID string, annotations *MarkdownAnnotations) (ret *MarkdownDocument, err error) {
 	markdownFileOperationLock.Lock()
 	defer markdownFileOperationLock.Unlock()
 	operationID, err := resolveMarkdownOperationID(requestedOperationID)
@@ -225,12 +229,21 @@ func SaveMarkdownWithOperationID(boxID, p, content, revision, requestedOperation
 		return nil, ErrMarkdownConflict
 	}
 	data := []byte(content)
+	if _, err = readMarkdownAnnotations(absPath); err != nil {
+		return nil, err
+	}
 	tx, err := beginMarkdownTransaction("save", boxID, absPath, "", markdownRevision(data))
 	if err != nil {
 		return nil, err
 	}
 	if err = stageMarkdownSave(tx, data); err != nil {
 		return nil, err
+	}
+	if annotations != nil {
+		if err = prepareMarkdownAnnotationSave(tx, annotations, content); err != nil {
+			_ = finishMarkdownTransaction(tx)
+			return nil, err
+		}
 	}
 	if err = markdownTransactionCrashHook("save", "staged"); err != nil {
 		return nil, err
@@ -239,6 +252,9 @@ func SaveMarkdownWithOperationID(boxID, p, content, revision, requestedOperation
 		return nil, err
 	}
 	// 文件已安装即为逻辑提交；事务清理可由恢复门禁重试，不阻止成功通知。
+	if err = commitMarkdownAnnotations(tx); err != nil {
+		return nil, err
+	}
 	_ = finalizeMarkdownSave(tx)
 
 	IncSync()
@@ -370,6 +386,9 @@ func renameMarkdown(boxID, p, name, revision string, checkRevision bool, operati
 	if err = markdownTransactionCrashHook("rename", "metadata-committed"); err != nil {
 		return nil, err
 	}
+	if err = commitMarkdownAnnotations(tx); err != nil {
+		return nil, err
+	}
 	_ = finalizeMarkdownMove(tx)
 	migrateWorkspaceMarkdownTableAppearance(boxID, canonicalPath, boxID, canonicalNewPath)
 
@@ -422,11 +441,21 @@ func DuplicateMarkdownWithOperationID(boxID, p, revision, requestedOperationID s
 	if markdownRevision(data) != revision {
 		return nil, ErrMarkdownConflict
 	}
+	originalContent := string(data)
 	identityMutation, err := EnsureMarkdownDocumentID(data, true)
 	if err != nil {
 		return nil, err
 	}
 	data = identityMutation.Data
+	annotations, err := readMarkdownAnnotations(absPath)
+	if err != nil {
+		return nil, err
+	}
+	if annotations != nil {
+		annotations.DocumentID = gulu.Rand.String(32)
+		annotations.Revision = 1
+		rebaseMarkdownAnnotations(annotations, originalContent, string(data))
+	}
 	sourceIdentity, err := markdownIdentity(absPath)
 	if err != nil {
 		return nil, err
@@ -447,7 +476,14 @@ func DuplicateMarkdownWithOperationID(boxID, p, revision, requestedOperationID s
 		}
 		tx, beginErr := beginMarkdownInstallTransaction("duplicate", boxID, newAbsPath, data, sourceIdentity.Mode)
 		if beginErr != nil {
+			if os.IsExist(beginErr) {
+				continue
+			}
 			return nil, beginErr
+		}
+		if err = stageMarkdownAnnotations(tx, "", newAbsPath+markdownAnnotationsSuffix, annotations); err != nil {
+			_ = finishMarkdownTransaction(tx)
+			return nil, err
 		}
 		if err = recordMarkdownTransactionMetadata(tx, sortSnapshot, nil, nil); err != nil {
 			return nil, err
@@ -465,6 +501,9 @@ func DuplicateMarkdownWithOperationID(boxID, p, revision, requestedOperationID s
 		}
 		if err = markMarkdownMetadataCommitted(tx); err != nil {
 			return nil, errors.Join(err, rollbackMarkdownInstall(tx), restoreMarkdownSort(sortSnapshot))
+		}
+		if err = commitMarkdownAnnotations(tx); err != nil {
+			return nil, err
 		}
 		_ = finalizeMarkdownInstall(tx)
 
@@ -631,6 +670,9 @@ func MoveMarkdown(boxID, p, revision, toBoxID, toParentPath string, operationIDs
 	document, err := markdownDocument(canonicalNewPath, data, newAbsPath)
 	if err != nil {
 		return nil, errors.Join(err, rollback(), setRecentDocs(recentSnapshot))
+	}
+	if err = commitMarkdownAnnotations(tx); err != nil {
+		return nil, err
 	}
 	_ = finalizeMarkdownMove(tx)
 	migrateWorkspaceMarkdownTableAppearance(boxID, canonicalPath, toBoxID, canonicalNewPath)
@@ -1015,6 +1057,18 @@ func validateStableRootComponents(root *os.Root, rootPath, relPath string, allow
 }
 
 func RemoveMarkdown(boxID, p string) error {
+	document, err := GetMarkdown(boxID, p)
+	if err != nil {
+		return err
+	}
+	if document.Annotations != nil {
+		_, err = RecycleMarkdown(MarkdownDocumentRef{Notebook: boxID, Path: p}, document.Revision)
+		return err
+	}
+	return removeUnannotatedMarkdown(boxID, p)
+}
+
+func removeUnannotatedMarkdown(boxID, p string) error {
 	markdownFileOperationLock.Lock()
 	defer markdownFileOperationLock.Unlock()
 	if err := recoverMarkdownTransactionsLocked(); err != nil {
@@ -1024,6 +1078,13 @@ func RemoveMarkdown(boxID, p string) error {
 	canonicalPath, absPath, err := markdownFilePath(boxID, p)
 	if err != nil {
 		return err
+	}
+	annotations, err := readMarkdownAnnotations(absPath)
+	if err != nil {
+		return err
+	}
+	if annotations != nil {
+		return ErrMarkdownConflict
 	}
 	recentDocLock.Lock()
 	defer recentDocLock.Unlock()
@@ -1138,13 +1199,18 @@ func markdownDocument(p string, data []byte, absPath string) (ret *MarkdownDocum
 	if err != nil {
 		return nil, err
 	}
+	annotations, err := readMarkdownAnnotations(absPath)
+	if err != nil {
+		return nil, err
+	}
 	return &MarkdownDocument{
-		Path:       p,
-		Name:       path.Base(p),
-		Content:    string(data),
-		DocumentID: InspectMarkdownDocumentID(data).ID,
-		Revision:   markdownRevision(data),
-		Mtime:      identity.Mtime / int64(time.Millisecond),
+		Annotations: annotations,
+		Path:        p,
+		Name:        path.Base(p),
+		Content:     string(data),
+		DocumentID:  InspectMarkdownDocumentID(data).ID,
+		Revision:    markdownRevision(data),
+		Mtime:       identity.Mtime / int64(time.Millisecond),
 	}, nil
 }
 

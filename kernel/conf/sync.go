@@ -27,7 +27,6 @@ type Sync struct {
 	Provider            int     `json:"provider"`            // 云端存储服务提供者
 	S3                  *S3     `json:"s3"`                  // S3 对象存储服务配置
 	WebDAV              *WebDAV `json:"webdav"`              // WebDAV 服务配置
-	Local               *Local  `json:"local"`               // 本地文件系统 服务配置
 }
 
 func NewSync() *Sync {
@@ -36,7 +35,7 @@ func NewSync() *Sync {
 		Enabled:             false,
 		Mode:                1,
 		GenerateConflictDoc: false,
-		Provider:            ProviderLocal,
+		Provider:            ProviderS3,
 		Interval:            30,
 	}
 }
@@ -62,20 +61,21 @@ type WebDAV struct {
 	ConcurrentReqs int    `json:"concurrentReqs"` // 并发请求数
 }
 
-type Local struct {
-	Endpoint       string `json:"endpoint"`       // 服务端点 (本地文件系统目录)
-	Timeout        int    `json:"timeout"`        // 超时时间，单位：秒
-	ConcurrentReqs int    `json:"concurrentReqs"` // 并发请求数
-}
-
 const (
 	ProviderS3     = 0 // ProviderS3 为 S3 协议对象存储提供的云端存储服务
 	ProviderWebDAV = 1 // ProviderWebDAV 为 WebDAV 协议提供的云端存储服务
-	ProviderLocal  = 2 // ProviderLocal 为本地文件系统提供的存储服务
 )
 
 func IsValidSyncProvider(provider int) bool {
-	return provider == ProviderS3 || provider == ProviderWebDAV || provider == ProviderLocal
+	return provider == ProviderS3 || provider == ProviderWebDAV
+}
+
+// NormalizeProvider 将不再支持的同步服务重置为 S3，并关闭同步以等待重新配置。
+func (sync *Sync) NormalizeProvider() {
+	if !IsValidSyncProvider(sync.Provider) {
+		sync.Provider = ProviderS3
+		sync.Enabled = false
+	}
 }
 
 func ProviderToStr(provider int) string {
@@ -84,8 +84,6 @@ func ProviderToStr(provider int) string {
 		return "S3"
 	case ProviderWebDAV:
 		return "WebDAV"
-	case ProviderLocal:
-		return "Local File System"
 	}
 	return "Unknown"
 }

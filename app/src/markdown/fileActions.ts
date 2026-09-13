@@ -7,8 +7,7 @@ import {openMarkdownFile} from "../editor/util";
 import {confirmDialog} from "../dialog/confirmDialog";
 import {escapeHtml} from "../util/escape";
 import {getAllModels} from "../layout/getAll";
-import {MenuItem} from "../menus/Menu";
-import {newFile, newFileInTree, getNewFilePath} from "../util/newFile";
+import {getNewFilePath} from "../util/newFile";
 import {isEncryptedBox} from "../util/pathName";
 import {closeMobileMarkdownEditor, getMobileMarkdownEditor, openMobileMarkdownFile} from "../mobile/markdown";
 import {movePathTo} from "../util/pathName";
@@ -69,7 +68,7 @@ const markdownNameDialog = (title: string, initialName: string, callback: (name:
     });
 };
 
-export const newMarkdownFile = async (app: App, notebookId?: string, parentPath?: string) => {
+export const newMarkdownFile = async (app: App, notebookId?: string, parentPath?: string, name?: string) => {
     if (!notebookId) {
         const target = getNewFilePath();
         notebookId = target.notebookId;
@@ -83,7 +82,7 @@ export const newMarkdownFile = async (app: App, notebookId?: string, parentPath?
     const data = await createMarkdownDocument({
         notebook: notebookId,
         parentPath: parentPath || "/",
-        name: `${window.siyuan.languages.untitled}.md`,
+        name: name ? `${name.replace(/\.md$/i, "")}.md` : `${window.siyuan.languages.untitled}.md`,
         autoName: true,
     }, {
         request: (url, body) => fetchSyncPost(url, body),
@@ -119,35 +118,6 @@ export const newMarkdownFile = async (app: App, notebookId?: string, parentPath?
         await openMarkdownFile(app, notebookId, data.path as string, data.name as string);
     }
     return true;
-};
-
-export const openNewFileMenu = (app: App, options: {
-    notebookId?: string;
-    currentPath?: string;
-    position?: {x: number, y: number};
-    mobile?: boolean;
-} = {}) => {
-    window.siyuan.menus.menu.remove();
-    window.siyuan.menus.menu.append(new MenuItem({
-        id: "newDocument",
-        label: window.siyuan.languages.newFile,
-        icon: "iconAddDoc",
-        click: () => options.notebookId ?
-            newFileInTree(app, options.notebookId, options.currentPath || "/") : newFile(app),
-    }).element);
-    if (!options.notebookId || !isEncryptedBox(options.notebookId)) {
-        window.siyuan.menus.menu.append(new MenuItem({
-            id: "newMarkdown",
-            label: `${window.siyuan.languages.newFile} Markdown`,
-            icon: "iconMarkdown",
-            click: () => void newMarkdownFile(app, options.notebookId, options.currentPath),
-        }).element);
-    }
-    if (options.mobile) {
-        window.siyuan.menus.menu.fullscreen("bottom");
-    } else {
-        window.siyuan.menus.menu.popup(options.position);
-    }
 };
 
 export const renameMarkdownFile = (notebookId: string, path: string) => {

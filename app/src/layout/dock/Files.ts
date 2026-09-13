@@ -576,13 +576,11 @@ export class Files extends Model {
                     gutterType = item.type;
                 }
             }
-            // 标题/列表项等块标源拖到文档树的提示在下方 rAF 回调中根据高亮类判定
-            // 其余无法转换的块标源（如段落）不显示提示
+            // 文档树不接受将原生块转换成新文档。
             if (gutterType) {
-                const gutterTypes = gutterType.replace(Constants.SIYUAN_DROP_GUTTER, "").split(Constants.ZWSP);
-                if (!["nodelistitem", "nodeheading"].includes(gutterTypes[0])) {
-                    hideDragTip();
-                }
+                hideDragTip();
+                event.dataTransfer.dropEffect = "none";
+                return;
             }
             // 文档→文档拖拽的提示在下方 rAF 回调中根据高亮类判定（需等高亮类确定后再显示）
             dragOverLastObj.rafId = requestAnimationFrame(() => {
@@ -763,42 +761,6 @@ export class Files extends Model {
             }
             // 块标拖拽
             if (gutterType) {
-                const gutterTypes = gutterType.replace(Constants.SIYUAN_DROP_GUTTER, "").split(Constants.ZWSP);
-                if (["nodelistitem", "nodeheading"].includes(gutterTypes[0])) {
-                    const toDocOptions: {
-                        targetNoteBook: string;
-                        pushMode: number;
-                        toTop?: boolean;
-                        srcHeadingID?: string;
-                        srcListItemID?: string;
-                        targetPath?: string;
-                        previousPath?: string;
-                    } = {
-                        targetNoteBook: toURL,
-                        pushMode: 0,
-                    };
-                    if (newElement.classList.contains("dragover")) {
-                        toDocOptions.targetPath = toPath;
-                    } else if (newElement.classList.contains("dragover__bottom")) {
-                        toDocOptions.previousPath = toPath;
-                    } else if (newElement.classList.contains("dragover__top")) {
-                        if (newElement.previousElementSibling) {
-                            toDocOptions.previousPath = newElement.previousElementSibling.getAttribute("data-path");
-                        } else {
-                            // 拖到第一个子文档上方，作为父文档的第一个子文档
-                            const parentLi = newElement.parentElement.previousElementSibling as HTMLElement;
-                            toDocOptions.targetPath = parentLi.getAttribute("data-path");
-                            toDocOptions.toTop = true;
-                        }
-                    }
-                    if (gutterTypes[0] === "nodeheading") {
-                        toDocOptions.srcHeadingID = gutterTypes[2].split(",")[0];
-                        fetchPost("/api/filetree/heading2Doc", toDocOptions);
-                    } else {
-                        toDocOptions.srcListItemID = gutterTypes[2].split(",")[0];
-                        fetchPost("/api/filetree/li2Doc", toDocOptions);
-                    }
-                }
                 newElement.classList.remove("dragover", "dragover__bottom", "dragover__top");
                 window.siyuan.dragElement = undefined;
                 return;

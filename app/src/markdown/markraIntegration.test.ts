@@ -72,12 +72,149 @@ const createView = (doc: string, mode: "source" | "visual" = "visual") => {
     return view;
 };
 
+test("repairs an escaped table header IME range without moving an in-cell composition", async () => {
+    Object.assign(globalThis, {HTMLTableCellElement: window.HTMLTableCellElement, InputEvent: window.InputEvent});
+    const source = "| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\nEdit";
+    const editor = createView(source);
+    const table = editor.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const cell = table.querySelector<HTMLTableCellElement>("thead th:nth-child(2)");
+    cell.focus();
+    table.dispatchEvent(new window.CompositionEvent("compositionstart", {bubbles: true}));
+    table.focus();
+    const selection = document.getSelection();
+    selection.collapse(cell.parentElement, 1);
+    const beforeInput = () => table.dispatchEvent(new InputEvent("beforeinput", {
+        bubbles: true, cancelable: true, data: "中文", inputType: "insertCompositionText", isComposing: true,
+    }));
+    beforeInput();
+    assert.equal(document.activeElement, cell);
+    assert.equal(cell.contains(selection.anchorNode), true);
+    const text = selection.anchorNode as Text;
+    selection.collapse(text, 2);
+    beforeInput();
+    assert.equal(selection.anchorNode, text);
+    assert.equal(selection.anchorOffset, 2);
+    text.insertData(2, "中文");
+    selection.collapse(text, 4);
+    table.dispatchEvent(new InputEvent("input", {bubbles: true, isComposing: true}));
+    assert.equal(editor.state.doc.toString(), source);
+    table.dispatchEvent(new window.CompositionEvent("compositionend", {bubbles: true, data: "中文"}));
+    await Promise.resolve();
+    assert.ok(editor.state.doc.toString().includes("| Name | Va中文lue |"));
+    assert.equal(editor.dom.querySelectorAll("thead th").length, 2);
+    assert.equal(editor.dom.querySelectorAll("tbody td").length, 2);
+});
+
+test("keeps empty header IME text inside the cell and omits its caret placeholder from Markdown", async () => {
+    Object.assign(globalThis, {HTMLTableCellElement: window.HTMLTableCellElement, InputEvent: window.InputEvent});
+    const source = "| 1 |  |\n| --- | --- |\n| 2 | 2 |\n\nEdit";
+    const editor = createView(source);
+    focusVisualTableCell(editor, 0, -1, 1, true, 0);
+    await Promise.resolve();
+    const cell = editor.dom.querySelector<HTMLTableCellElement>("thead th:nth-child(2)");
+    const table = cell.closest("table");
+    table.dispatchEvent(new window.CompositionEvent("compositionstart", {bubbles: true}));
+    const text = document.getSelection().anchorNode;
+    assert.equal(text.parentElement.dataset.markraTableCaretHost, "true");
+    assert.equal(text.textContent, "\u200b");
+    text.textContent = "\u200b苏打水";
+    table.dispatchEvent(new InputEvent("input", {bubbles: true, isComposing: true}));
+    assert.equal(editor.state.doc.toString(), source);
+    table.dispatchEvent(new window.CompositionEvent("compositionend", {bubbles: true, data: "苏打水"}));
+    await Promise.resolve();
+    assert.ok(editor.state.doc.toString().includes("| 1 | 苏打水 |"));
+    assert.equal(editor.state.doc.toString().includes("\u200b"), false);
+    assert.equal(editor.dom.querySelectorAll("thead th").length, 2);
+});
+
 test("renders Markdown source without a line-number gutter", () => {
     const editor = createView("# Heading\n\nBody", "source");
     assert.equal(editor.dom.getAttribute("data-markdown-mode"), "source");
     assert.equal(editor.dom.querySelector(".cm-gutters"), null);
     assert.ok(editor.dom.querySelector(".cm-activeLine"));
     assert.equal(editor.state.doc.toString(), "# Heading\n\nBody");
+});
+
+test("renders table formulas without changing Markdown or inline code", () => {
+    const source = "| Math | Code |\n| --- | --- |\n" + String.raw`| $\mathbf{A}x$ and \(x^2\) | \$x$ and ` + "`$y$` |\n\nEdit";
+    const editor = createView(source);
+    const cells = editor.dom.querySelectorAll("tbody td");
+    assert.equal(cells[0].querySelectorAll(".katex").length, 2);
+    assert.equal(cells[0].querySelectorAll(".katex-mathml").length, 0);
+    assert.equal(cells[1].querySelector(".katex"), null);
+    assert.equal(cells[1].querySelector("code").textContent, "$y$");
+    assert.equal(editor.state.doc.toString(), source);
+});
+
+test("preserves formulas and the following caret when editing surrounding table text", async () => {
+    Object.assign(globalThis, {HTMLTableCellElement: window.HTMLTableCellElement, InputEvent: window.InputEvent});
+    const editor = createView("| Name | Value |\n| --- | --- |\n| Row | Before $x^2$ after |\n\nEdit");
+    const cell = editor.dom.querySelector<HTMLTableCellElement>("tbody td:nth-child(2)");
+    cell.focus();
+    cell.lastChild.textContent = " updated";
+    document.getSelection().collapse(cell.lastChild, 8);
+    cell.dispatchEvent(new InputEvent("input", {bubbles: true}));
+    await Promise.resolve();
+    const updatedCell = editor.dom.querySelector("tbody td:nth-child(2)");
+    assert.ok(editor.state.doc.toString().includes("| Row | Before $x^2$ updated |"));
+    assert.ok(updatedCell.querySelector(".katex"));
+    assert.equal(document.getSelection().anchorNode.parentNode, updatedCell);
+    assert.equal(document.getSelection().anchorNode.textContent, " updated");
+    assert.equal(document.getSelection().anchorOffset, 8);
+});
+
+for (const key of ["Enter", "Escape", "Tab"]) {
+    test(`finishes table math source through shared-table ${key} without losing table appearance`, async () => {
+        Object.assign(globalThis, {HTMLTableCellElement: window.HTMLTableCellElement, InputEvent: window.InputEvent});
+        const original = "| Formula | Next |\n| --- | --- |\n| $x$ | Target |\n\nEdit";
+        const editor = createView(original);
+        const initialID = editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap").dataset.tableId;
+        editor.dom.querySelector<HTMLButtonElement>(".markra-table-width-button").click();
+        await Promise.resolve();
+        const cell = editor.dom.querySelector<HTMLTableCellElement>("tbody td");
+        cell.querySelector<HTMLButtonElement>("[data-markra-math-markdown]").click();
+        const source = cell.querySelector<HTMLElement>("[data-markra-table-math-source]");
+        assert.equal(source.textContent, "$x$");
+        source.textContent = "$y^2$";
+        document.getSelection().collapse(source.firstChild, 2);
+        cell.dispatchEvent(new InputEvent("input", {bubbles: true}));
+        await Promise.resolve();
+        const table = editor.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+        assert.equal(table.querySelector("[data-markra-table-math-source]").textContent, "$y^2$");
+        table.focus();
+        table.dispatchEvent(new KeyboardEvent("keydown", {bubbles: true, cancelable: true, key}));
+        await Promise.resolve();
+        const expected = key === "Escape" ? "$x$" : "$y^2$";
+        assert.equal(editor.state.doc.toString(), original.replace("$x$", expected));
+        assert.equal(editor.dom.querySelector<HTMLElement>("[data-markra-math-markdown]").dataset.markraMathMarkdown, expected);
+        assert.equal(editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap").dataset.tableId, initialID);
+        assert.equal(editor.dom.querySelector<HTMLElement>(".cm-markra-table-wrap").dataset.widthMode, "even");
+        if (key === "Tab") {
+            assert.equal(editor.dom.querySelector("tbody td:nth-child(2)").contains(document.getSelection().anchorNode), true);
+        }
+    });
+}
+
+test("switches only the active table formula and closes source when clicking outside", async () => {
+    Object.assign(globalThis, {HTMLTableCellElement: window.HTMLTableCellElement, InputEvent: window.InputEvent});
+    const editor = createView("| Formula |\n| --- |\n| Before $x$ plus $z$ after |\n\nEdit");
+    let cell = editor.dom.querySelector<HTMLTableCellElement>("tbody td");
+    const click = (element: Element) => element.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true, cancelable: true, button: 0,
+    }));
+    click(cell.querySelector("[data-markra-math-markdown]"));
+    cell.querySelector("[data-markra-table-math-source]").textContent = "$yx$";
+    cell.dispatchEvent(new InputEvent("input", {bubbles: true}));
+    await Promise.resolve();
+    cell = editor.dom.querySelector<HTMLTableCellElement>("tbody td");
+    assert.equal(cell.querySelectorAll(".katex").length, 1);
+    click(cell.querySelector("[data-markra-math-markdown]"));
+    assert.equal(cell.querySelector("[data-markra-table-math-source]").textContent, "$z$");
+    assert.equal(cell.querySelector<HTMLElement>("[data-markra-math-markdown]").dataset.markraMathMarkdown, "$yx$");
+    click(document.body);
+    assert.equal(cell.querySelector("[data-markra-table-math-source]"), null);
+    assert.equal(cell.querySelectorAll(".katex").length, 2);
+    assert.ok(editor.state.doc.toString().includes("Before $yx$ plus $z$ after"));
 });
 
 test("converts copied rich tables to complete GFM Markdown", () => {
@@ -351,7 +488,7 @@ test("keeps a cross-cell plain-text paste inside the starting visual table cell"
     assert.equal(handlePendingPlainTextPasteEvent(paste as ClipboardEvent, editor.contentDOM), true);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(paste.defaultPrevented, true);
-    assert.match(editor.state.doc.toString(), /\| o\\# literalne \| two \|/u);
+    assert.match(editor.state.doc.toString(), /\| o# literalne \| two \|/u);
 });
 
 test("gives only the selected authored blank line an active empty-line row", async () => {

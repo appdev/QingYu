@@ -20,7 +20,6 @@ const registerSyncGroup = (tab: SettingTabBuilder) => {
         options: [
             {value: 0, label: "S3"},
             {value: 1, label: "WebDAV"},
-            ...(["std", "docker"].includes(window.siyuan.config.system.container) ? [{value: 2, label: window.siyuan.languages.localFileSystem}] : []),
         ],
         save: (value) => patchSyncConfig("sync.provider", value),
     });

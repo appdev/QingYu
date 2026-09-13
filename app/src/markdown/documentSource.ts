@@ -1,4 +1,7 @@
+import type {MarkdownAnnotations} from "./annotations/types";
+
 export interface MarkdownDocument {
+    annotations?: MarkdownAnnotations;
     name: string;
     displayPath: string;
     content: string;
@@ -10,6 +13,7 @@ export interface MarkdownDocument {
 }
 
 export interface MarkdownSaveRequest {
+    annotations?: MarkdownAnnotations;
     content: string;
     revision: string;
     overwriteRevision?: string;
@@ -75,18 +79,20 @@ interface WorkspaceSourceOptions {
 }
 
 const workspaceDocument = (value: Record<string, unknown>): MarkdownDocument => ({
+    ...(value.annotations ? {annotations: value.annotations as MarkdownAnnotations} : {}),
     name: value.name as string,
     displayPath: value.path as string,
-    content: value.content as string,
+    content: (value.content as string).replace(/^\uFEFF/u, ""),
     revision: value.revision as string,
     mtime: value.mtime as number,
-    utf8Bom: false,
-    lineEnding: "\n",
+    utf8Bom: (value.content as string).startsWith("\uFEFF"),
+    lineEnding: ((value.content as string).match(/\r\n|\r|\n/u)?.[0] ?? "\n") as MarkdownDocument["lineEnding"],
 });
 
 export const createWorkspaceMarkdownDocumentSource = (options: WorkspaceSourceOptions): MarkdownDocumentSource => {
     let notebookId = options.notebookId;
     let documentPath = options.path;
+    let utf8Bom = false;
     const isReadOnly = () => typeof options.readOnly === "function" ? options.readOnly() : options.readOnly;
     const mutate = async (
         url: string,
@@ -144,10 +150,13 @@ export const createWorkspaceMarkdownDocumentSource = (options: WorkspaceSourceOp
         async load() {
             const response = await options.request("/api/markdown/get", {notebook: notebookId, path: documentPath});
             if (response.code !== 0 || !response.data) throw new Error(`HTTP_${response.code}`);
-            return workspaceDocument(response.data);
+            const document = workspaceDocument(response.data);
+            utf8Bom = document.utf8Bom;
+            return document;
         },
         save(request) {
-            return mutate("/api/markdown/save", {notebook: notebookId, path: documentPath, ...request},
+            return mutate("/api/markdown/save", {notebook: notebookId, path: documentPath, ...request,
+                content: utf8Bom && !request.content.startsWith("\uFEFF") ? `\uFEFF${request.content}` : request.content},
                 "save", request.revision);
         },
         rename(request) {

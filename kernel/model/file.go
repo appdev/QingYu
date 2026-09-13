@@ -1144,42 +1144,8 @@ func renameWriteJSONQueue(tree *parse.Tree) (err error) {
 	return
 }
 
-func DuplicateDoc(tree *parse.Tree) {
-	msgId := util.PushMsg(Conf.Language(116), 30000)
-	defer util.PushClearMsg(msgId)
-
-	isBoxDoc := IsBoxDoc(tree.Box, tree.ID)
-	previousPath := tree.Path
-	resetTree(tree, "Duplicated", false)
-	if isBoxDoc {
-		removeBoxDocHiddenAttr(tree)
-	}
-
-	ast.Walk(tree.Root, func(n *ast.Node, entering bool) ast.WalkStatus {
-		if !entering || !n.IsBlock() {
-			return ast.WalkContinue
-		}
-
-		// 复制为副本时移除数据库绑定状态 https://github.com/siyuan-note/siyuan/issues/12294
-		n.RemoveIALAttr(av.NodeAttrNameAvs)
-		n.RemoveIALAttr(av.NodeAttrViewNames)
-		n.RemoveIALAttrsByPrefix(av.NodeAttrViewStaticText)
-
-		// 复制为副本时移除闪卡相关属性 https://github.com/siyuan-note/siyuan/issues/13987
-
-		return ast.WalkContinue
-	})
-
-	createTreeTx(tree)
-	box := Conf.Box(tree.Box)
-	if nil != box {
-		box.addSort(previousPath, tree.ID)
-	}
-
-	FlushTxQueue()
-	arg := map[string]any{}
-	arg["listDocTree"] = true
-	PushCreate(box, tree.Path, arg)
+func DuplicateDoc(tree *parse.Tree) error {
+	return checkDatabaseOperations([]*Operation{{Action: "create", Tree: tree}})
 }
 
 func createTreeTx(tree *parse.Tree) {
@@ -1900,6 +1866,12 @@ func renameDoc0(boxID, p, title string) (err error) {
 }
 
 func createDoc(boxID, p, title, dom string, titleEmpty bool) (tree *parse.Tree, err error) {
+	if databaseWritePayload(dom) {
+		return nil, ErrDatabaseReadOnly
+	}
+	if util.GetTreeID(p) != boxID || boxID == "" {
+		return nil, ErrNativeDocumentCreationDisabled
+	}
 	p = normalizeBoxDocPath(boxID, p)
 	title = normalizeDocTitle(title)
 	if 512 < utf8.RuneCountInString(title) {

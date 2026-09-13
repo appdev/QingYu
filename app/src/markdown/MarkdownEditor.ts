@@ -1,5 +1,11 @@
 import {EditorView, minimalSetup} from "codemirror";
-import {Compartment, EditorState} from "@codemirror/state";
+import {Compartment, EditorState, Text, Transaction} from "@codemirror/state";
+import {annotationExtension, annotationField, annotationSelectionToolbar, loadAnnotations} from "./annotations/extension";
+import {mountSelectionActions} from "./selectionActions";
+import {resolveSafeLinkTarget} from "./markra-core/codemirror/links";
+import {showMessage} from "../dialog/message";
+import {MarkdownAnnotationController} from "./annotations/controller";
+import {MarkdownAnnotationSidebar} from "./annotations/sidebar";
 import {indentUnit} from "@codemirror/language";
 /// #if !BROWSER
 import {ipcRenderer} from "electron";
@@ -113,6 +119,12 @@ export class MarkdownEditor extends Model {
     public path: string;
     public externalCapabilityId?: string;
     public view: EditorView;
+    private annotations: MarkdownAnnotationController;
+    private annotationSidebar: MarkdownAnnotationSidebar;
+    private selectionActions: ReturnType<typeof mountSelectionActions>;
+    private applyingRemoteAnnotations = false;
+    private annotationReload = 0;
+    private readonly annotationFocus = () => { void this.refreshAnnotations(); };
     private revision: string;
     private saveTimer: number;
     private saving = false;
@@ -427,8 +439,48 @@ export class MarkdownEditor extends Model {
     }
 
     public applyWorkspaceDocumentRevision(revision: string) {
-        if (this.source.kind === "workspace") {
-            this.revision = revision;
+        if (this.source.kind === "workspace" && revision) {
+            if (this.saving || this.dirty) return;
+            void this.refreshAnnotations();
+        }
+    }
+
+    public async refreshAnnotations() {
+        const view = this.view;
+        if (!view || this.saving || this.destroyed) return;
+        const sourceKey = this.source.key;
+        const token = ++this.annotationReload;
+        const doc = view.state.doc;
+        const records = view.state.field(annotationField);
+        try {
+            const loaded = await this.source.load();
+            if (token !== this.annotationReload || this.destroyed || this.saving || this.source.key !== sourceKey || this.view !== view) return;
+            if (this.dirty) {
+                const local = this.annotations.snapshot(view.state.field(annotationField));
+                if (loaded.revision !== this.revision || loaded.annotations?.etag !== local?.etag) {
+                    this.lastSaveStatus = "conflict";
+                    this.setStatus("conflict");
+                }
+                return;
+            }
+            if (view.state.doc !== doc ||
+                view.state.field(annotationField) !== records) return;
+            const text = loaded.content.replace(/^\uFEFF/u, "").replace(/\r\n?/gu, "\n");
+            const controller = new MarkdownAnnotationController(loaded.annotations, text);
+            this.applyingRemoteAnnotations = true;
+            try {
+                view.dispatch({
+                    ...(text !== doc.toString() ? {changes: {from: 0, to: doc.length, insert: Text.of(text.split("\n"))}} : {}),
+                    effects: loadAnnotations.of(controller.initial),
+                    annotations: Transaction.addToHistory.of(false),
+                });
+            } finally { this.applyingRemoteAnnotations = false; }
+            this.annotations = controller;
+            this.revision = loaded.revision;
+            this.lastSaveStatus = "saved";
+            this.setStatus("saved");
+        } catch {
+            // 远端读取失败时保留当前内容和版本，下一次保存仍会检查冲突。
         }
     }
 
@@ -457,7 +509,7 @@ export class MarkdownEditor extends Model {
             const selection = this.view.state.selection.main;
             const anchor = this.documentScroll?.captureAnchor();
             this.view.dispatch({
-                changes: {from: 0, to: source.length, insert: patched.source},
+                changes: {from: 0, to: source.length, insert: Text.of(patched.source.split("\n"))},
                 selection: {
                     anchor: Math.min(selection.anchor, patched.source.length),
                     head: Math.min(selection.head, patched.source.length),
@@ -601,6 +653,17 @@ export class MarkdownEditor extends Model {
             })
             : undefined;
         window.siyuan.menus.menu.remove();
+        window.siyuan.menus.menu.append(new MenuItem({
+            label: window.siyuan.languages.markdownAnnotationAdd,
+            icon: "iconEdit",
+            disabled: this.source.readOnly,
+            click: () => { this.annotationSidebar?.add(); },
+        }).element);
+        window.siyuan.menus.menu.append(new MenuItem({
+            label: window.siyuan.languages.markdownAnnotations,
+            icon: "iconEdit",
+            click: () => { this.annotationSidebar?.toggle(); },
+        }).element);
         createMarkdownMoreMenuItems({
             justify: preferences.justify,
             rtl: preferences.rtl,
@@ -636,11 +699,14 @@ export class MarkdownEditor extends Model {
         this.saving = true;
         this.setStatus("saving");
         const content = view.state.sliceDoc();
+        const records = view.state.field(annotationField);
+        const annotations = this.annotations.snapshot(records);
         let response;
         try {
             response = await this.source.save({
                 content,
                 revision: this.revision,
+                ...(annotations ? {annotations} : {}),
                 ...(overwriteRevision ? {overwriteRevision} : {}),
             });
         } catch {
@@ -653,11 +719,18 @@ export class MarkdownEditor extends Model {
         if (response.status === "ok") {
             const document = response.document;
             this.revision = document.revision;
+            try {
+                this.annotations.saved(annotations, document.annotations);
+            } catch {
+                this.lastSaveStatus = "error";
+                if (!this.destroyed) this.setStatus("error");
+                return false;
+            }
             this.path = document.displayPath;
             if (this.source.kind === "external") {
                 this.registerSourceKey();
             }
-            this.dirty = view.state.sliceDoc() !== content;
+            this.dirty = view.state.sliceDoc() !== content || view.state.field(annotationField) !== records;
             this.lastSaveStatus = "saved";
             if (!this.destroyed) {
                 this.setStatus(this.dirty ? "dirty" : "saved");
@@ -698,6 +771,10 @@ export class MarkdownEditor extends Model {
     }
 
     private async reloadDocument() {
+        this.selectionActions?.destroy();
+        this.selectionActions = undefined;
+        this.annotationSidebar?.destroy();
+        this.annotationSidebar = undefined;
         this.slashMenu?.destroy();
         this.searchController?.destroy();
         this.slashMenu = undefined;
@@ -837,6 +914,9 @@ export class MarkdownEditor extends Model {
     }
 
     public destroy() {
+        this.selectionActions?.destroy();
+        window.removeEventListener("focus", this.annotationFocus);
+        this.annotationSidebar?.destroy();
         window.clearTimeout(this.saveTimer);
         window.clearTimeout(this.titleTimer);
         window.clearTimeout(this.fontZoomTimer);
@@ -1084,6 +1164,9 @@ export class MarkdownEditor extends Model {
             selection: hasRestoredSession ? restored.selection : {anchor: initialVisualMarkdownSelection(document.content)},
             extensions: [
                 minimalSetup,
+                ...(isMobile() ? [annotationSelectionToolbar(window.siyuan.languages.markdownAnnotationAdd, () => this.annotationSidebar?.add())] : []),
+                annotationExtension((this.annotations = new MarkdownAnnotationController(document.annotations,
+                    document.content.replace(/^\uFEFF/u, "").replace(/\r\n?/gu, "\n"))).initial),
                 EditorState.lineSeparator.of(document.lineEnding),
                 this.readOnlyCompartment.of(EditorState.readOnly.of(this.source.readOnly)),
                 this.indentationCompartment.of(indentUnit.of(preferences.codeIndentation)),
@@ -1096,19 +1179,27 @@ export class MarkdownEditor extends Model {
                     spellcheck: String(preferences.spellcheck),
                 })),
                 EditorView.updateListener.of((update) => {
-                    if (update.docChanged) {
+                    if (!this.applyingRemoteAnnotations && !update.docChanged && update.startState.field(annotationField) !== update.state.field(annotationField)) {
                         this.dirty = true;
                         this.setStatus("dirty");
+                        this.scheduleSave();
+                    }
+                    if (update.docChanged) {
+                        if (!this.applyingRemoteAnnotations) {
+                            this.dirty = true;
+                            this.setStatus("dirty");
+                            this.scheduleSave();
+                        }
                         this.renderMetadata();
                         if (!this.preview) {
                             this.scheduleSourceTitleSync();
                         }
-                        this.scheduleSave();
                         this.outlinePublisher.publish();
                     }
                     this.searchController?.refreshAfterViewUpdate(update);
                     if (update.docChanged || update.selectionSet || update.focusChanged) this.scheduleStatistics();
                     this.slashMenu?.update();
+                    this.annotationSidebar?.update(update);
                 }),
             ],
             parent: this.surfaceElement,
@@ -1122,6 +1213,22 @@ export class MarkdownEditor extends Model {
         this.searchController = new MarkdownSearchController(this.view, this.element.querySelector(".markdown-editor__breadcrumb"));
         this.slashMenu.update();
         this.documentScroll = new MarkdownDocumentScrollController(() => this.view, this.contentElement);
+        const languages = window.siyuan.languages;
+        this.annotationSidebar = new MarkdownAnnotationSidebar(this.view, this.element, this.contentElement, {
+            title: languages.markdownAnnotations, add: languages.markdownAnnotationAdd,
+            orphan: languages.markdownAnnotationOrphan, reattach: languages.markdownAnnotationReattach,
+            select: languages.markdownAnnotationSelect, all: languages.markdownAnnotationAll,
+            margin: languages.markdownAnnotationMargin, edit: languages.edit, remove: languages.delete,
+            save: languages.save, cancel: languages.cancel, close: languages.close,
+        }, () => this.setPreview(false));
+        if (!isMobile()) this.selectionActions = mountSelectionActions(this.view, {
+            mode: () => this.preview ? "visual" : "source",
+            isAlive: () => !this.destroyed && Boolean(this.view),
+            addAnnotation: () => this.annotationSidebar?.add() ?? false,
+            report: (result) => showMessage(result === "stale" ? languages.markdownAnnotationSelect : languages.clipboardPermissionDenied),
+            requestLink: (initial) => this.requestSelectionLink(initial),
+        });
+        window.addEventListener("focus", this.annotationFocus);
         if (process.env.NODE_ENV === "development") {
             Object.defineProperty(this.element, "__markdownEditorView", {
                 configurable: true,
@@ -1243,6 +1350,45 @@ export class MarkdownEditor extends Model {
         }
     }
 
+    private requestSelectionLink(initial: string): Promise<string | null> {
+        return new Promise((resolve) => {
+            const lang = window.siyuan.languages;
+            let settled = false;
+            const finish = (value: string | null) => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+                dialog.destroy();
+            };
+            const dialog = new Dialog({title: lang.link, width: "420px",
+                content: `<div class="b3-dialog__content"><input class="b3-text-field fn__block" aria-label="${escapeHtml(lang.link)}"></div>
+<div class="b3-dialog__action"><button class="b3-button b3-button--cancel">${lang.cancel}</button><div class="fn__space"></div><button class="b3-button b3-button--text">${lang.confirm}</button></div>`,
+                destroyCallback: () => { if (!settled) { settled = true; resolve(null); } },
+            });
+            const input = dialog.element.querySelector("input");
+            input.value = initial;
+            const confirm = () => {
+                if (!resolveSafeLinkTarget(input.value) || /[\r\n]/u.test(input.value)) {
+                    input.setCustomValidity(lang.invalid);
+                    input.reportValidity();
+                    return;
+                }
+                finish(input.value);
+            };
+            input.addEventListener("input", () => input.setCustomValidity(""));
+            input.addEventListener("keydown", (event) => {
+                if (event.isComposing) return;
+                if (event.key === "Enter") { event.preventDefault(); confirm(); }
+                if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finish(null); }
+            });
+            const buttons = dialog.element.querySelectorAll(".b3-dialog__action button");
+            buttons[0].addEventListener("click", () => finish(null));
+            buttons[1].addEventListener("click", confirm);
+            input.focus();
+            input.select();
+        });
+    }
+
     private metadataEditable() {
         return !window.siyuan.config.readonly && !window.siyuan.config.editor.readOnly;
     }
@@ -1257,7 +1403,7 @@ export class MarkdownEditor extends Model {
             return false;
         }
         if (result.changed) {
-            this.view.dispatch({changes: {from: 0, to: source.length, insert: result.source}});
+            this.view.dispatch({changes: {from: 0, to: source.length, insert: Text.of(result.source.split("\n"))}});
         } else {
             this.renderMetadata();
         }

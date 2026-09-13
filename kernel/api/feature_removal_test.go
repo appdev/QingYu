@@ -21,6 +21,7 @@ func TestRemovedProductRoutesAndPreservedBoundaries(t *testing.T) {
 		}
 	}
 	for _, removed := range []string{
+		"/api/sync/setSyncProviderLocal", "/api/sync/createCloudSyncDir", "/api/sync/removeCloudSyncDir",
 		"/api/filetree/createDailyNote", "/api/block/appendDailyNoteBlock", "/api/block/prependDailyNoteBlock",
 		"/api/cloud/getCloudSpace", "/api/cloud/setCloudReminder",
 		"/api/setting/getCloudUser", "/api/setting/logoutCloudUser", "/api/setting/login2faCloudUser",
@@ -33,7 +34,7 @@ func TestRemovedProductRoutesAndPreservedBoundaries(t *testing.T) {
 		}
 	}
 	for _, preserved := range []string{
-		"/api/sync/setSyncProviderS3", "/api/sync/setSyncProviderWebDAV", "/api/sync/setSyncProviderLocal",
+		"/api/sync/setSyncProviderS3", "/api/sync/setSyncProviderWebDAV",
 		"/api/system/loginAuth", "/api/system/setAPIToken", "/api/system/setMCP",
 	} {
 		if !routes[preserved] {

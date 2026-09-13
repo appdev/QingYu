@@ -774,6 +774,7 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
             } else if (target.classList.contains("b3-list-item__action") && type === "rollback" && !window.siyuan.config.readonly) {
                 const liElement = target.closest(".b3-list-item");
                 const dataType = target.parentElement.getAttribute("data-type") || liElement.getAttribute("data-type");
+                if (dataType === "av") return;
                 let name;
                 let time;
                 if (dataType === "notebook") {
@@ -798,10 +799,6 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
                             });
                         } else if (dataType === "doc") {
                             fetchPost("/api/history/rollbackDocHistory", {
-                                historyPath: target.parentElement.getAttribute("data-path")
-                            });
-                        } else if (dataType === "av") {
-                            fetchPost("/api/history/rollbackAttributeViewHistory", {
                                 historyPath: target.parentElement.getAttribute("data-path")
                             });
                         } else if (dataType === "notebook") {
@@ -939,7 +936,7 @@ const bindEvent = (app: App, element: Element, dialog?: Dialog) => {
     <span class="${opElement.value === "all" ? "" : "fn__none"}${chipClass}ariaLabel" data-position="6south" aria-label="${ariaLabel}">${docItem.op.substring(0, 1).toUpperCase()}</span>
     <span class="b3-list-item__text" title="${escapeAttr(docItem.title)}">${escapeHtml(docItem.title)}</span>
     <span class="fn__space"></span>
-    <span class="b3-list-item__action ariaLabel" data-type="rollback" data-position="6south" aria-label="${window.siyuan.languages.rollback}">
+    <span class="b3-list-item__action ariaLabel${typeElement.value === "4" ? " fn__none" : ""}" data-type="rollback" data-position="6south" aria-label="${window.siyuan.languages.rollback}">
         <svg><use xlink:href="#iconUndo"></use></svg>
     </span>
 </li>`;

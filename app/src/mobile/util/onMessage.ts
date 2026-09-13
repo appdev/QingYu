@@ -99,8 +99,22 @@ export const onMessage = (app: App, data: IWebSocketData) => {
                 reloadEmoji();
                 break;
             case "syncMergeResult":
-                reloadSync(app, data.data);
+            case "removeDoc": {
+                if (data.cmd === "syncMergeResult") reloadSync(app, data.data);
+                if (data.cmd === "removeDoc" && window.siyuan.config.onboarding?.newUser &&
+                    !window.siyuan.config.onboarding.dismissed &&
+                    data.data.ids.includes(window.siyuan.config.onboarding.documentID)) {
+                    void activateOnboarding(app, window.siyuan.config.onboarding);
+                }
+                const editor = getMobileMarkdownEditor() as ReturnType<typeof getMobileMarkdownEditor> & {
+                    notebookRoot?: boolean;
+                    refreshAnnotations?(): Promise<void>;
+                    handleEvent?(data: IWebSocketData): void;
+                };
+                if (editor?.notebookRoot) editor.handleEvent?.(data);
+                else if (data.cmd === "syncMergeResult") void editor?.refreshAnnotations?.();
                 break;
+            }
             case "setConf":
                 window.siyuan.config = data.data;
                 break;
@@ -160,12 +174,6 @@ export const onMessage = (app: App, data: IWebSocketData) => {
             case "onboarding":
                 void activateOnboarding(app, data.data);
                 break;
-            case "removeDoc":
-                if (window.siyuan.config.onboarding?.newUser && !window.siyuan.config.onboarding.dismissed &&
-                    data.data.ids.includes(window.siyuan.config.onboarding.documentID)) {
-                    void activateOnboarding(app, window.siyuan.config.onboarding);
-                }
-                break;
             case "createMarkdown":
             case "saveMarkdown":
             case "renameMarkdown":
@@ -175,9 +183,11 @@ export const onMessage = (app: App, data: IWebSocketData) => {
                 markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
                 const editor = getMobileMarkdownEditor() as ReturnType<typeof getMobileMarkdownEditor> & {
                     notebookRoot?: boolean;
+                    refreshAnnotations?(): Promise<void>;
                     handleEvent?(data: IWebSocketData): void;
                 };
                 if (editor?.notebookRoot) editor.handleEvent?.(data);
+                else if (data.cmd === "saveMarkdown") void editor?.refreshAnnotations?.();
                 break;
             }
             case "setLocalStorageVal":

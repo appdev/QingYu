@@ -14,7 +14,7 @@ import {
 import {Constants} from "../../constants";
 import {highlightRender} from "../render/highlightRender";
 import {scrollCenter} from "../../util/highlightById";
-import {updateAttrViewCellAnimation, updateAVName} from "../render/av/action";
+import {updateAttrViewCellAnimation} from "../render/av/action";
 import {updateCellsValue} from "../render/av/cell";
 import {input} from "../wysiwyg/input";
 import {updateListOrder} from "../wysiwyg/list";
@@ -260,7 +260,7 @@ const processAV = (range: Range, html: string, protyle: IProtyle, blockElement: 
             range.setEnd(node, text.length);
             range.collapse(false);
             focusByRange(range);
-            updateAVName(protyle, blockElement);
+
         }
     });
 };

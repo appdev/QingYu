@@ -18,6 +18,12 @@ const markdownLineSelection = StateField.define<boolean>({
     },
 });
 
+export const selectMarkdownDocument = (view: EditorView, mode: "source" | "visual") => {
+    const from = mode === "visual" ? initialVisualMarkdownSelection(view.state.doc.toString()) : 0;
+    view.dispatch({scrollIntoView: true, selection: EditorSelection.range(from, view.state.doc.length)});
+    return true;
+};
+
 const selectMarkdownLineOrDocument = (view: EditorView, mode: "source" | "visual") => {
     if (view.state.selection.ranges.length !== 1 || view.state.field(markdownLineSelection)) {
         const from = mode === "visual" ? initialVisualMarkdownSelection(view.state.doc.toString()) : 0;

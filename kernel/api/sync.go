@@ -514,52 +514,6 @@ func listCloudSyncDir(c *gin.Context) {
 	}
 }
 
-func removeCloudSyncDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	var name string
-	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("name", &name, true, true)) {
-		return
-	}
-	err := model.RemoveCloudSyncDir(name)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]any{"closeTimeout": 5000}
-		return
-	}
-
-	ret.Data = model.Conf.Sync.CloudName
-}
-
-func createCloudSyncDir(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	var name string
-	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("name", &name, true, true)) {
-		return
-	}
-	err := model.CreateCloudSyncDir(name)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]any{"closeTimeout": 5000}
-		return
-	}
-}
-
 func setSyncGenerateConflictDoc(c *gin.Context) {
 	ret := gulu.Ret.NewResult()
 	defer c.JSON(http.StatusOK, ret)
@@ -734,48 +688,6 @@ func setSyncProviderWebDAV(c *gin.Context) {
 
 	ret.Data = map[string]any{
 		"webdav": model.Conf.Sync.WebDAV,
-	}
-}
-
-func setSyncProviderLocal(c *gin.Context) {
-	ret := gulu.Ret.NewResult()
-	defer c.JSON(http.StatusOK, ret)
-
-	arg, ok := util.JsonArg(c, ret)
-	if !ok {
-		return
-	}
-
-	var localArg map[string]any
-	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("local", &localArg, true, false)) {
-		return
-	}
-	data, err := gulu.JSON.MarshalJSON(localArg)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]any{"closeTimeout": 5000}
-		return
-	}
-
-	local := &conf.Local{}
-	if err = gulu.JSON.UnmarshalJSON(data, local); err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]any{"closeTimeout": 5000}
-		return
-	}
-
-	err = model.SetSyncProviderLocal(local)
-	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		ret.Data = map[string]any{"closeTimeout": 5000}
-		return
-	}
-
-	ret.Data = map[string]any{
-		"local": model.Conf.Sync.Local,
 	}
 }
 

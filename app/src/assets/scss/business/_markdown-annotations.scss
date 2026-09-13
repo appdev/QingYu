@@ -1,0 +1,119 @@
+.markdown-editor--annotations {
+  position: relative;
+
+  &:not(.markdown-editor--annotations-narrow) > .markdown-editor__content {
+    margin-inline-end: 288px;
+  }
+}
+
+.markdown-annotations {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block: 40px 0;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: var(--b3-theme-background);
+  color: var(--b3-theme-on-background);
+  border-inline-start: 1px solid var(--b3-border-color);
+  font-family: var(--b3-font-family);
+  font-size: 13px;
+  z-index: 3;
+
+  &[hidden] { display: none; }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+
+    strong { flex: 1; }
+  }
+
+  &__hint {
+    color: var(--b3-theme-on-surface);
+    white-space: pre-wrap;
+  }
+
+  &__cards {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  &--list .markdown-annotation-card {
+    position: relative;
+    margin-block-end: 8px;
+  }
+}
+
+.markdown-editor--annotations-narrow .markdown-annotations {
+  max-width: calc(100% - 32px);
+  box-shadow: var(--b3-dialog-shadow);
+}
+
+.markdown-annotation-card {
+  position: absolute;
+  inset-inline: 0;
+  padding: 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-surface);
+  color: var(--b3-theme-on-background);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+
+  &--active { border-color: var(--b3-theme-primary); }
+
+  &__quote {
+    display: block;
+    max-height: 4.5em;
+    overflow: hidden;
+    width: 100%;
+    border: 0;
+    border-inline-start: 2px solid var(--b3-theme-primary);
+    padding: 0 8px;
+    margin-block-end: 8px;
+    font: inherit;
+    text-align: start;
+    white-space: pre-wrap;
+    color: var(--b3-theme-on-surface);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  &__note {
+    white-space: pre-wrap;
+
+    textarea { min-height: 96px; resize: vertical; font: inherit; }
+  }
+
+  &__status { color: var(--b3-theme-on-surface); }
+}
+
+.markdown-annotation-mark {
+  background-color: var(--b3-theme-primary-lightest);
+  text-decoration: underline;
+  text-decoration-color: var(--b3-theme-primary);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.markdown-editor .cm-tooltip.markdown-annotation-toolbar {
+  background: var(--b3-theme-background);
+  color: var(--b3-theme-on-background);
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+}
+
+.cm-editor[data-markdown-mode="visual"] .markdown-annotation-block {
+  border-inline-start: 2px solid var(--b3-theme-primary);
+  cursor: pointer;
+}

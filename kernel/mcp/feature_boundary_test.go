@@ -28,7 +28,7 @@ func TestMCPServerBoundary(t *testing.T) {
 			t.Fatalf("preserved MCP tool is missing: %s", preserved)
 		}
 	}
-	for _, removed := range []string{"dailynote", "inbox", "image", "frontend", "question", "todo_write", "skill", "http_request", "web_fetch", "web_search"} {
+	for _, removed := range []string{"sql", "dailynote", "inbox", "image", "frontend", "question", "todo_write", "skill", "http_request", "web_fetch", "web_search"} {
 		if tools.LookupTool(removed) != nil {
 			t.Fatalf("removed MCP tool remains: %s", removed)
 		}

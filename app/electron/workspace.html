@@ -361,7 +361,6 @@
 
     const langSelect = document.querySelector(".lang")
     langSelect.value = currentLang
-    document.querySelector(".version").textContent = `v${getSearch("v")}`
     document.querySelector(".icon").src = decodeURIComponent(`${getSearch("icon")}`)
     document.querySelector(".missing").textContent = decodeURIComponent(getSearch("missing"))
 

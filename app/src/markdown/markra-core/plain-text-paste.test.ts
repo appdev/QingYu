@@ -72,6 +72,6 @@ test("routes a pending native plain-text paste through the CodeMirror paste entr
     }});
     view.contentDOM.dispatchEvent(event);
     assert.equal(event.defaultPrevented, true);
-    assert.equal(view.state.doc.toString(), "\\#\\#\\# literal");
+    assert.equal(view.state.doc.toString(), "### literal");
     view.destroy();
 });

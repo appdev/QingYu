@@ -1,3 +1,4 @@
+import {newMarkdownFile} from "../markdown/fileActions";
 import {showMessage} from "../dialog/message";
 import {hasTopClosestByTag} from "../protyle/util/hasClosest";
 /// #if !MOBILE
@@ -13,7 +14,7 @@ import {replaceFileName, validateName} from "../editor/rename";
 import {hideElements} from "../protyle/ui/hideElements";
 import {openMobileFileById} from "../mobile/editor";
 import {App} from "../index";
-import {NewDocTargetByHPath, NewDocTargetSubDoc, getNewDocTargetFromSavePath, getNewDocTargetFromTree} from "./parseNewDocTarget";
+import {NewDocTargetByHPath, NewDocTargetSubDoc, getNewDocTargetFromSavePath} from "./parseNewDocTarget";
 /// #if !MOBILE
 import {MarkdownEditor} from "../markdown/MarkdownEditor";
 /// #endif
@@ -44,24 +45,8 @@ export const newFile = (app: App, name?: string) => {
         showMessage(window.siyuan.languages.newFileTip);
         return;
     }
-    const {notebookId, currentPath, hasFocusTarget} = getNewFilePath();
-    if (name === undefined) {
-        runNewDoc({
-            app,
-            notebookId,
-            currentPath,
-            hasFocusTarget,
-        });
-    } else {
-        runNewDoc({
-            app,
-            notebookId,
-            currentPath,
-            hasFocusTarget,
-            name: replaceFileName(name.trim()),
-            onCreated: () => hideElements(["dialog"]),
-        });
-    }
+    const {notebookId, currentPath} = getNewFilePath();
+    void newMarkdownFile(app, notebookId, currentPath, name);
 };
 
 export const newFileInProtyle = (protyle: IProtyle, onCreated: (id: string, title: string) => void) => {
@@ -74,15 +59,8 @@ export const newFileInProtyle = (protyle: IProtyle, onCreated: (id: string, titl
     });
 };
 
-export const newFileInTree = (app: App, notebookId: string, currentPath: string, paths?: string[]) => {
-    runNewDocInTree({
-        app,
-        notebookId,
-        currentPath,
-        hasFocusTarget: true,
-        paths,
-        listDocTree: true,
-    });
+export const newFileInTree = (app: App, notebookId: string, currentPath: string) => {
+    void newMarkdownFile(app, notebookId, currentPath);
 };
 
 export const newFileBySelect = (protyle: IProtyle, selectText: string, nodeElement: HTMLElement, pathDir: string, targetNotebookId: string) => {
@@ -240,18 +218,6 @@ function createNewDoc(request: NewDocRequest, templatePath: string, targetNotebo
     } else if (target.kind === "subDoc") {
         createNewDocAsSubDoc(request, target);
     }
-}
-
-function runNewDocInTree(request: NewDocRequest) {
-    fetchPost("/api/filetree/getDocCreateSavePath", {notebook: request.notebookId}, (savePathResponse) => {
-        const target = getNewDocTargetFromTree({
-            templatePath: savePathResponse.data.path as string,
-            currentNotebookId: request.notebookId,
-            currentPath: request.currentPath,
-            name: request.name,
-        });
-        createNewDocAsSubDoc(request, target);
-    });
 }
 
 /** 同笔记本 + 有聚焦 + 非根路径 时取当前文档 ID */

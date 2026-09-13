@@ -60,7 +60,6 @@ func RenderGoTemplateAt(templateContent string, now time.Time) (ret string, err 
 	tmpl := template.New("")
 	tplFuncMap := filesys.BuiltInTemplateFuncs()
 	tplFuncMap["now"] = func() time.Time { return now }
-	sql.SQLTemplateFuncs(&tplFuncMap)
 	tmpl = tmpl.Funcs(tplFuncMap)
 	tpl, err := tmpl.Parse(templateContent)
 	if err != nil {
@@ -325,7 +324,6 @@ func RenderDynamicIconContentTemplate(content, id string) (ret string) {
 
 	goTpl := template.New("").Delims(".action{", "}")
 	tplFuncMap := filesys.BuiltInTemplateFuncs()
-	sql.SQLTemplateFuncs(&tplFuncMap)
 	goTpl = goTpl.Funcs(tplFuncMap)
 	tpl, err := goTpl.Funcs(tplFuncMap).Parse(content)
 	if err != nil {
@@ -375,7 +373,6 @@ func RenderTemplate(p, id string, preview bool) (tree *parse.Tree, dom string, e
 
 	goTpl := template.New("").Delims(".action{", "}")
 	tplFuncMap := filesys.BuiltInTemplateFuncs()
-	sql.SQLTemplateFuncs(&tplFuncMap)
 	goTpl = goTpl.Funcs(tplFuncMap)
 	tpl, err := goTpl.Funcs(tplFuncMap).Parse(gulu.Str.FromBytes(md))
 	if err != nil {

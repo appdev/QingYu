@@ -16,7 +16,6 @@ import {Files} from "../../../layout/dock/Files";
 import {Search} from "../../../search";
 import {openSearch} from "../../../search/spread";
 /// #endif
-import {addEditorToDatabase, addFilesToDatabase} from "../../../protyle/render/av/addToDatabase";
 import {hasClosestBlock, hasClosestByClassName, hasTopClosestByTag} from "../../../protyle/util/hasClosest";
 import {onlyProtyleCommand} from "./protyle";
 import {globalCommand} from "./global";
@@ -55,11 +54,11 @@ export const commandPanel = (app: App) => {
     Object.keys(window.siyuan.config.keymap.general).forEach((key) => {
         let keys;
         /// #if MOBILE
-        keys = ["addToDatabase", "fileTree", "outline", "bookmark", "tag", "backlinks",
+        keys = ["fileTree", "outline", "bookmark", "tag", "backlinks",
             "dataHistory", "editReadonly", "enter", "enterBack", "globalSearch", "lockScreen", "mainMenu", "move",
             "newFile", "recentDocs", "replace", "search", "selectOpen1", "syncNow"];
         /// #else
-        keys = ["addToDatabase", "fileTree", "outline", "bookmark", "tag", "backlinks",
+        keys = ["fileTree", "outline", "bookmark", "tag", "backlinks",
             "closeAll", "closeLeft", "closeOthers", "closeRight", "closeTab",
             "closeUnmodified", "config", "dataHistory", "editReadonly", "enter", "enterBack", "globalSearch", "goBack",
             "goForward", "goToEditTabNext", "goToEditTabPrev", "goToTab1", "goToTab2", "goToTab3", "goToTab4",
@@ -419,13 +418,6 @@ export const execByCommand = async (options: {
                     });
                 }
                 /// #endif
-            }
-            break;
-        case "addToDatabase":
-            if (!isFileFocus) {
-                addEditorToDatabase(protyle, range);
-            } else {
-                addFilesToDatabase(fileLiElements);
             }
             break;
         case "move":

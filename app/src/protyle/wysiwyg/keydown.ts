@@ -47,7 +47,7 @@ import {
 } from "./transaction";
 import {fontEvent} from "../toolbar/Font";
 import {addSubList, listIndent, listOutdent, toggleTaskListItem} from "./list";
-import {newFileContentBySelect, rename, replaceFileName} from "../../editor/rename";
+import {rename, replaceFileName} from "../../editor/rename";
 import {cancelSB, insertEmptyBlock, jumpToParent} from "../../block/util";
 import {isEncryptedBox, isLocalPath} from "../../util/pathName";
 /// #if !MOBILE
@@ -67,7 +67,6 @@ import {countBlockWord} from "../../layout/status";
 import {moveToDown, moveToUp} from "./move";
 import {beforePaste, pasteAsPlainText} from "../util/paste";
 import {preventScroll} from "../scroll/preventScroll";
-import {getRefCreateSavePath, newFileBySelect} from "../../util/newFile";
 import {removeSearchMark} from "../toolbar/util";
 import {avKeydown} from "../render/av/keydown";
 import {checkFold} from "../../util/noRelyPCFunction";
@@ -1235,43 +1234,6 @@ export const keydown = (protyle: IProtyle, editorElement: HTMLElement) => {
             return;
         }
 
-        const isNewNameFile = matchHotKey(window.siyuan.config.keymap.editor.general.newNameFile.custom, event);
-        if (isNewNameFile || matchHotKey(window.siyuan.config.keymap.editor.general.newNameSettingFile.custom, event)) {
-            if (!selectText.trim() && (nodeElement.querySelector("tr") || nodeElement.querySelector("span"))) {
-                // 没选中时，都是纯文本就创建子文档 https://ld246.com/article/1663073488381/comment/1664804353295#comments
-            } else {
-                if (!selectText.trim() &&
-                    getContenteditableElement(nodeElement).textContent  // https://github.com/siyuan-note/siyuan/issues/8099
-                ) {
-                    selectAll(protyle, nodeElement, range);
-                }
-                // 同步 toolbar.range，避免 DOM 已被其他操作（undo/enter 等）替换后变为 detached，
-                // 导致后续异步回调中 setInlineMark 读到无效 range https://github.com/siyuan-note/siyuan/issues/17896
-                protyle.toolbar.range = range;
-                if (isNewNameFile) {
-                    fetchPost("/api/filetree/getHPathByPath", {
-                        notebook: protyle.notebookId,
-                        path: protyle.path,
-                    }, (response) => {
-                        newFileBySelect(protyle, selectText, nodeElement, response.data, protyle.notebookId);
-                    });
-                } else {
-                    getRefCreateSavePath(protyle.notebookId, protyle.path, (targetNotebookId, hPath) => {
-                        newFileBySelect(protyle, selectText, nodeElement, hPath, targetNotebookId);
-                    });
-                }
-            }
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-        }
-
-        if (matchHotKey(window.siyuan.config.keymap.editor.general.newContentFile.custom, event)) {
-            newFileContentBySelect(protyle);
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-        }
         if (matchHotKey(window.siyuan.config.keymap.editor.general.alignLeft.custom, event)) {
             const imgSelectElements = nodeElement.querySelectorAll(".img--select");
             if (imgSelectElements.length > 0) {

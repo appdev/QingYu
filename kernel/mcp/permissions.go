@@ -35,7 +35,6 @@ var readOnlyActions = map[string]map[string]bool{
 	"ref":       actionSet("backlinks", "mentions"),
 	"repo":      actionSet("list", "diff", "search", "file_get", "file_open"),
 	"search":    actionSet("fulltext", "asset", "getasset"),
-	"sql":       actionSet("", "query"),
 	"sync":      actionSet("status"),
 	"system":    actionSet("version", "current_time", "workspace"),
 	"tag":       actionSet("list"),

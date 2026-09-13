@@ -79,7 +79,7 @@ import {removeSearchMark} from "../toolbar/util";
 import {activeBlur} from "../../mobile/util/keyboardToolbar";
 import {commonClick} from "./commonClick";
 import {calculateSiyuanImageWidth} from "../util/imageResize";
-import {avClick, avContextmenu, updateAVName} from "../render/av/action";
+import {avClick, avContextmenu} from "../render/av/action";
 import {selectRow, stickyRow, updateHeader} from "../render/av/row";
 import {updateAVRowSelect} from "../render/av/virtualScroll";
 import {showColMenu} from "../render/av/col";
@@ -2372,9 +2372,7 @@ export class WYSIWYG {
                             tempElement.append(range.cloneContents());
                             let parentElement: false | Element = getContenteditableElement(nodeElement);
                             // https://ld246.com/article/1647689760545
-                            if (nodeElement.classList.contains("av")) {
-                                updateAVName(protyle, nodeElement);
-                            } else if (nodeElement.classList.contains("table")) {
+                            if (nodeElement.classList.contains("table")) {
                                 parentElement = hasClosestByTag(range.startContainer, "TD") || hasClosestByTag(range.startContainer, "TH");
                             } else if (cloneElement.querySelector('.img, [data-type="inline-math"]')) {
                                 textPlain = "";

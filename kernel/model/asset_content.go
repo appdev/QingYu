@@ -18,6 +18,7 @@ package model
 
 import (
 	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -122,10 +123,7 @@ func FullTextSearchAssetContent(query string, types map[string]bool, method, ord
 		filter, filterArgs := buildAssetContentTypeFilter(types)
 		ret, matchedAssetCount = fullTextSearchAssetContentByQuerySyntax(query, filter, filterArgs, orderByClause, page, pageSize)
 	case 2: // SQL
-		ret, matchedAssetCount, err = searchAssetContentBySQL(query, page, pageSize)
-		if err != nil {
-			return
-		}
+		return []*AssetContent{}, 0, 0, fmt.Errorf("SQL search is no longer supported")
 	case 3: // 正则表达式
 		typeFilter, typeArgs := buildAssetContentTypeFilter(types)
 		ret, matchedAssetCount = fullTextSearchAssetContentByRegexp(query, typeFilter, typeArgs, orderByClause, page, pageSize)

@@ -1,3 +1,5 @@
+import {bindDatabaseReadOnly} from "./readOnly";
+import {avClick} from "./action";
 import {fetchSyncPost} from "../../../util/fetch";
 import {getColIconByType} from "./col";
 import {Constants} from "../../../constants";
@@ -400,6 +402,7 @@ const afterRenderTable = (options: ITableOptions) => {
 };
 
 export const avRender = async (element: Element, protyle: IProtyle, cb?: (data: IAV) => void, renderAll = true, avData?: IAV) => {
+    protyle = {...protyle, disabled: true};
     let avElements: Element[] = [];
     if (element.getAttribute("data-type") === "NodeAttributeView") {
         avElements = [element];
@@ -411,6 +414,7 @@ export const avRender = async (element: Element, protyle: IProtyle, cb?: (data: 
     }
     for (let i = 0; i < avElements.length; i++) {
         const e = avElements[i] as HTMLElement;
+        bindDatabaseReadOnly(e, event => avClick(protyle, event as MouseEvent & {target: HTMLElement}));
         e.removeAttribute("data-rendering");
         if (e.getAttribute("data-render") === "true" || hasClosestByClassName(e, "av__gallery-content")) {
             continue;
@@ -533,10 +537,15 @@ export const avRender = async (element: Element, protyle: IProtyle, cb?: (data: 
                 viewID: locateParams?.viewID || e.getAttribute(Constants.CUSTOM_SY_AV_VIEW) || "",
                 query: resetData.query.trim(),
                 blockID: e.getAttribute("data-node-id"),
-                createIfNotExist: !protyle.block.action?.includes(Constants.CB_GET_AV_NO_CREATE),
+                createIfNotExist: false,
                 targetItemID: locateParams?.targetItemID || "",
                 targetGroupID: locateParams?.targetGroupID || "",
             });
+            if (response.code !== 0 || !response.data?.view) {
+                e.firstElementChild.textContent = response.msg || window.siyuan.languages.emptyContent;
+                e.setAttribute("data-render", "true");
+                continue;
+            }
             data = response.data;
         } else {
             data = avData;

@@ -18,6 +18,69 @@ const fixture = async (t, bytes = Buffer.from("# Note\n")) => {
     return {root, file, service};
 };
 
+const annotationFixture = () => ({schemaVersion: 1, documentId: "doc", revision: 0, contentHash: "", records: [
+    {id: "a", from: 0, to: 2, quote: "甲乙", prefix: "", suffix: "丙", status: "attached",
+        note: "旁注", createdAt: 1, updatedAt: 1},
+]});
+
+test("annotation sidecars save with the document, reject stale versions and follow rename", async (t) => {
+    const {file, service} = await fixture(t, Buffer.from("甲乙丙"));
+    const {capabilityId} = await service.grantFromSystem(file);
+    const doc = await service.read(capabilityId);
+    let result = await service.save(capabilityId, {content: doc.content, revision: doc.revision, annotations: annotationFixture()});
+    assert.equal(result.status, "ok");
+    assert.equal(result.document.annotations.revision, 1);
+    const saved = result.document;
+    result = await service.save(capabilityId, {content: doc.content, revision: saved.revision, annotations: annotationFixture()});
+    assert.equal(result.status, "conflict");
+    result = await service.rename(capabilityId, {name: "renamed.md", revision: saved.revision});
+    assert.equal(result.status, "ok");
+    assert.equal(result.document.annotations.records[0].note, "旁注");
+    await assert.rejects(fs.stat(file + ".annotations.json"), {code: "ENOENT"});
+});
+
+test("unknown sidecar and symbolic link cannot be overwritten by annotation save", async (t) => {
+    const {file, service, root} = await fixture(t, Buffer.from("甲乙丙"));
+    const {capabilityId} = await service.grantFromSystem(file);
+    const doc = await service.read(capabilityId);
+    const privateFile = path.join(root, "private.json");
+    await fs.writeFile(privateFile, "untouched");
+    await fs.symlink(privateFile, file + ".annotations.json");
+    const result = await service.save(capabilityId, {content: "甲乙丙", revision: doc.revision, annotations: annotationFixture()});
+    assert.equal(result.status, "error");
+    assert.equal(await fs.readFile(privateFile, "utf8"), "untouched");
+    assert.equal(await fs.readFile(file, "utf8"), "甲乙丙");
+});
+
+test("an interrupted annotated save recovers after service restart", async (t) => {
+    const {file, service, root} = await fixture(t, Buffer.from("甲乙丙"));
+    const {capabilityId} = await service.grantFromSystem(file);
+    const doc = await service.read(capabilityId);
+    service.afterAnnotatedBody = () => { throw Object.assign(new Error("interrupted"), {code: "TEST_INTERRUPTED"}); };
+    const result = await service.save(capabilityId, {content: doc.content, revision: doc.revision, annotations: annotationFixture()});
+    assert.equal(result.code, "TEST_INTERRUPTED");
+    const restarted = await ExternalMarkdownService.create({registryPath: path.join(root, "registry.json")});
+    const restored = await restarted.read(capabilityId);
+    assert.equal(restored.content, "甲乙丙");
+    assert.equal(restored.annotations.revision, 1);
+    assert.equal(restored.annotations.records[0].note, "旁注");
+    assert.equal(restarted.capabilities.get(capabilityId).annotationTransaction, undefined);
+});
+
+test("equal annotation counters with different contents still conflict", async (t) => {
+    const {file, service} = await fixture(t, Buffer.from("甲乙丙"));
+    const {capabilityId} = await service.grantFromSystem(file);
+    const doc = await service.read(capabilityId);
+    const result = await service.save(capabilityId, {content: doc.content, revision: doc.revision, annotations: annotationFixture()});
+    const remote = JSON.parse(await fs.readFile(file + ".annotations.json", "utf8"));
+    remote.records[0].note = "another device";
+    await fs.writeFile(file + ".annotations.json", JSON.stringify(remote));
+    const conflict = await service.save(capabilityId, {content: doc.content, revision: result.document.revision,
+        annotations: result.document.annotations});
+    assert.equal(conflict.status, "conflict");
+    assert.equal(JSON.parse(await fs.readFile(file + ".annotations.json", "utf8")).records[0].note, "another device");
+});
+
 test("file identity keeps a usable inode when the platform device number is zero", () => {
     assert.equal(fileIdentity({dev: 0, ino: 42}), "0:42");
     assert.equal(fileIdentity({dev: 0, ino: 0}), undefined);

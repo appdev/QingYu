@@ -66,7 +66,6 @@ import {filterHotkey} from "./commonHotkey";
 import {editorConfigApi} from "../../config/tabs/editorRuntime";
 import {copyPNGByLink} from "../../menus/util";
 import {globalCommand} from "./command/global";
-import {duplicateCompletely} from "../../protyle/render/av/action";
 import {copyTextByType} from "../../protyle/toolbar/util";
 import {onlyProtyleCommand} from "./command/protyle";
 import {cancelDrag} from "./dragover";
@@ -278,16 +277,7 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         event.preventDefault();
         return true;
     }
-    if (!isFileFocus && matchHotKey(window.siyuan.config.keymap.general.addToDatabase.custom, event)) {
-        execByCommand({
-            command: "addToDatabase",
-            app,
-            protyle,
-            previousRange: range
-        });
-        event.preventDefault();
-        return true;
-    }
+
     if (!isFileFocus && matchHotKey(window.siyuan.config.keymap.general.move.custom, event)) {
         execByCommand({
             command: "move",
@@ -410,15 +400,7 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         event.preventDefault();
         return true;
     }
-    if (matchHotKey(window.siyuan.config.keymap.editor.general.duplicateCompletely.custom, event)) {
-        const nodeElement = hasClosestBlock(range.startContainer);
-        if (!nodeElement || !nodeElement.classList.contains("av")) {
-            return false;
-        }
-        duplicateCompletely(protyle, nodeElement);
-        event.preventDefault();
-        return true;
-    }
+
     if (matchHotKey(window.siyuan.config.keymap.editor.general.refresh.custom, event)) {
         reloadProtyle(protyle, true);
         event.preventDefault();
@@ -553,15 +535,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         }
     });
 
-    if (matchHotKey(window.siyuan.config.keymap.general.addToDatabase.custom, event)) {
-        execByCommand({
-            command: "addToDatabase",
-            app,
-            fileLiElements: liElements
-        });
-        event.preventDefault();
-        return true;
-    }
+
 
     if (matchHotKey(window.siyuan.config.keymap.editor.general.rename.custom, event)) {
         window.siyuan.menus.menu.remove();
@@ -606,16 +580,6 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         return true;
     }
 
-    if (!event.repeat && matchHotKey(window.siyuan.config.keymap.editor.general.duplicate.custom, event)) {
-        event.preventDefault();
-        event.stopPropagation();
-        ids.forEach(item => {
-            fetchPost("/api/filetree/duplicateDoc", {
-                id: item,
-            });
-        });
-        return true;
-    }
 
     if (!event.repeat && matchHotKey(window.siyuan.config.keymap.editor.general.copyBlockRef.custom, event)) {
         event.preventDefault();

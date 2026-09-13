@@ -20,7 +20,6 @@ import {hideElements} from "../ui/hideElements";
 import {hasClosestByAttribute, hasClosestByClassName} from "../util/hasClosest";
 import {fetchPost, fetchSyncPost} from "../../util/fetch";
 import {headingTurnIntoList, turnIntoTaskList} from "./turnIntoList";
-import {updateAVName} from "../render/av/action";
 import {setFold} from "../util/blockFold";
 
 export const input = async (protyle: IProtyle, blockElement: HTMLElement, range: Range, needRender = true, event?: InputEvent) => {
@@ -32,8 +31,6 @@ export const input = async (protyle: IProtyle, blockElement: HTMLElement, range:
         const avCursorElement = hasClosestByClassName(range.startContainer, "av__cursor");
         if (avCursorElement) {
             avCursorElement.textContent = Constants.ZWSP;
-        } else {
-            updateAVName(protyle, blockElement);
         }
         return;
     }

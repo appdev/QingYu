@@ -15,8 +15,7 @@ import {openSearch} from "../search/spread";
 import {popSearch} from "../mobile/menu/search";
 /// #endif
 import {Constants} from "../constants";
-import {newFileInTree} from "../util/newFile";
-import {hasClosestByTag, hasTopClosestByTag} from "../protyle/util/hasClosest";
+import {hasClosestByTag} from "../protyle/util/hasClosest";
 import {deleteFiles} from "../editor/deleteFile";
 /// #if !MOBILE
 import {openFileById} from "../editor/util";
@@ -29,7 +28,6 @@ import {openEditorTab} from "./util";
 import {emitOpenMenu} from "../plugin/EventBus";
 import {saveExportFile, writeText} from "../protyle/util/compatibility";
 import {exportMarkdownZip} from "../protyle/export/exportMd";
-import {addFilesToDatabase} from "../protyle/render/av/addToDatabase";
 import {openEmojiPanel} from "../emoji";
 import {
     copyMarkdownContent,
@@ -54,7 +52,6 @@ const appendDocumentCreateMenuItems = (app: App, notebookId: string, parentPath:
         parentPath,
         newFileLabel: window.siyuan.languages.newFile,
         encrypted: isEncryptedBox(notebookId),
-        createNative: newFileInTree,
         createMarkdown: newMarkdownFile,
     }).forEach((item) => window.siyuan.menus.menu.append(new MenuItem(item).element));
 };
@@ -92,19 +89,7 @@ const initMultiMenu = (selectItemElements: NodeListOf<Element>, app: App) => {
             label: window.siyuan.languages.copy,
             type: "submenu",
             icon: "iconCopy",
-            submenu: copySubMenu(blockIDs).concat([{
-                id: "duplicate",
-                iconHTML: "",
-                label: window.siyuan.languages.duplicate,
-                accelerator: window.siyuan.config.keymap.editor.general.duplicate.custom,
-                click() {
-                    blockIDs.forEach((id) => {
-                        fetchPost("/api/filetree/duplicateDoc", {
-                            id
-                        });
-                    });
-                }
-            }])
+            submenu: copySubMenu(blockIDs)
         }).element);
     }
 
@@ -112,17 +97,6 @@ const initMultiMenu = (selectItemElements: NodeListOf<Element>, app: App) => {
         Array.from(selectItemElements)
     )));
 
-    if (blockIDs.length > 0) {
-        window.siyuan.menus.menu.append(new MenuItem({
-            id: "addToDatabase",
-            label: window.siyuan.languages.addToDatabase,
-            accelerator: window.siyuan.config.keymap.general.addToDatabase.custom,
-            icon: "iconDatabase",
-            click: () => {
-                addFilesToDatabase(Array.from(selectItemElements));
-            }
-        }).element);
-    }
     window.siyuan.menus.menu.append(new MenuItem({
         id: "delete",
         icon: "iconTrashcan",
@@ -578,73 +552,17 @@ export const initFileMenu = (app: App, notebookId: string, pathString: string, l
     /// #endif
     if (!window.siyuan.config.readonly) {
         appendDocumentCreateMenuItems(app, notebookId, pathString);
-        const topElement = hasTopClosestByTag(liElement, "UL");
-        if (window.siyuan.config.fileTree.sort === 6 || (topElement && topElement.dataset.sortmode === "6")) {
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "newDocAbove",
-                icon: "iconBefore",
-                label: window.siyuan.languages.newDocAbove,
-                click: () => {
-                    const paths: string[] = [];
-                    Array.from(liElement.parentElement.children).forEach((item) => {
-                        if (item.tagName === "LI") {
-                            if (item === liElement) {
-                                paths.push(undefined);
-                            }
-                            paths.push(item.getAttribute("data-path"));
-                        }
-                    });
-                    newFileInTree(app, notebookId, pathPosix().dirname(pathString), paths);
-                }
-            }).element);
-            window.siyuan.menus.menu.append(new MenuItem({
-                id: "newDocBelow",
-                icon: "iconAfter",
-                label: window.siyuan.languages.newDocBelow,
-                click: () => {
-                    const paths: string[] = [];
-                    Array.from(liElement.parentElement.children).forEach((item) => {
-                        if (item.tagName === "LI") {
-                            paths.push(item.getAttribute("data-path"));
-                            if (item === liElement) {
-                                paths.push(undefined);
-                            }
-                        }
-                    });
-                    newFileInTree(app, notebookId, pathPosix().dirname(pathString), paths);
-                }
-            }).element);
-            window.siyuan.menus.menu.append(new MenuItem({id: "separator_1", type: "separator"}).element);
-        }
         window.siyuan.menus.menu.append(new MenuItem({
             id: "copy",
             label: window.siyuan.languages.copy,
             type: "submenu",
             icon: "iconCopy",
-            submenu: (copySubMenu([id]) as IMenu[]).concat([{
-                id: "duplicate",
-                iconHTML: "",
-                label: window.siyuan.languages.duplicate,
-                accelerator: window.siyuan.config.keymap.editor.general.duplicate.custom,
-                click() {
-                    fetchPost("/api/filetree/duplicateDoc", {
-                        id
-                    });
-                }
-            }])
+            submenu: (copySubMenu([id]) as IMenu[])
         }).element);
         window.siyuan.menus.menu.append(movePathToMenu(getTopPaths(
             Array.from(fileElement.querySelectorAll(".b3-list-item--focus"))
         )));
-        window.siyuan.menus.menu.append(new MenuItem({
-            id: "addToDatabase",
-            label: window.siyuan.languages.addToDatabase,
-            accelerator: window.siyuan.config.keymap.general.addToDatabase.custom,
-            icon: "iconDatabase",
-            click: () => {
-                addFilesToDatabase([liElement]);
-            }
-        }).element);
+
         window.siyuan.menus.menu.append(new MenuItem({
             id: "delete",
             icon: "iconTrashcan",

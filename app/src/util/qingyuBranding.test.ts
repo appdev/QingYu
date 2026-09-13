@@ -51,7 +51,7 @@ test("QingYu startup surfaces do not fall back to SiYuan branding", async () => 
         ]).then((files) => files.map((file) => file.toString()));
 
     assert.match(mainSource, /app\.dock\.setIcon\(path\.join\(appDir, "stage", "icon-large\.png"\)\)/);
-    assert.match(bootSource, /\.\.\/\.\.\/stage\/icon-large\.png/);
+    assert.match(bootSource, /<image href="icon\.png"/);
     assert.doesNotMatch(bootSource, /#d23f31|#3b3e43/);
     assert.equal(stagedLoadingSource, loadingSource);
     assert.doesNotMatch(loadingSource, /#d23f31|#3b3e43/);

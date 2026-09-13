@@ -9,6 +9,7 @@ import {
 } from "./contracts";
 
 const REQUIRED_CONTRACTS = [
+    "annotations.sidebar",
     "shell.document",
     "shell.metadata",
     "shell.title",

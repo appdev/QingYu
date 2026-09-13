@@ -152,15 +152,16 @@ func removeMarkdownSortKey(boxID, p string) (*markdownSortSnapshot, error) {
 }
 
 type MarkdownTrashEntry struct {
-	ID           string `json:"id"`
-	Notebook     string `json:"notebook"`
-	OriginalPath string `json:"originalPath"`
-	HistoryPath  string `json:"historyPath"`
-	DeletedAt    int64  `json:"deletedAt"`
-	Size         int64  `json:"size"`
-	Revision     string `json:"revision"`
-	Mode         uint32 `json:"mode,omitempty"`
-	OperationID  string `json:"operationID,omitempty"`
+	Annotations  *MarkdownAnnotations `json:"annotations,omitempty"`
+	ID           string               `json:"id"`
+	Notebook     string               `json:"notebook"`
+	OriginalPath string               `json:"originalPath"`
+	HistoryPath  string               `json:"historyPath"`
+	DeletedAt    int64                `json:"deletedAt"`
+	Size         int64                `json:"size"`
+	Revision     string               `json:"revision"`
+	Mode         uint32               `json:"mode,omitempty"`
+	OperationID  string               `json:"operationID,omitempty"`
 }
 
 type markdownTrashRecord struct {
@@ -197,9 +198,19 @@ func RecycleMarkdown(ref MarkdownDocumentRef, revision string, operationIDs ...s
 	if err != nil {
 		return nil, err
 	}
+	annotations, err := readMarkdownAnnotations(absPath)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := beginMarkdownTransaction("recycle", ref.Notebook, absPath, "", "")
 	if err != nil {
 		return nil, err
+	}
+	if annotations != nil {
+		tx.Annotations = &markdownAnnotationChange{Source: absPath + markdownAnnotationsSuffix, Old: annotations.sourceIdentity}
+		if err = writeMarkdownTransaction(tx); err != nil {
+			return nil, err
+		}
 	}
 	if tx.SourceID.Revision != revision {
 		_ = finishMarkdownTransaction(tx)
@@ -292,6 +303,7 @@ func RecycleMarkdown(ref MarkdownDocumentRef, revision string, operationIDs ...s
 	}
 
 	entry := &MarkdownTrashEntry{
+		Annotations:  annotations,
 		ID:           batchName,
 		Notebook:     ref.Notebook,
 		OriginalPath: ref.Path,
@@ -340,6 +352,9 @@ func RecycleMarkdown(ref MarkdownDocumentRef, revision string, operationIDs ...s
 		return nil, err
 	}
 	// 回收站记录与元数据已提交；源文件清理失败由恢复门禁重试，不能删除唯一历史副本。
+	if err = commitMarkdownAnnotations(tx); err != nil {
+		return nil, err
+	}
 	_ = finalizeMarkdownMove(tx)
 	removeWorkspaceMarkdownTableAppearance(ref.Notebook, ref.Path)
 
@@ -440,6 +455,10 @@ func RestoreDeletedMarkdown(id, toNotebook, toParentPath, name string, operation
 	if err != nil {
 		return nil, err
 	}
+	if err = stageMarkdownAnnotations(tx, "", absPath+markdownAnnotationsSuffix, trashEntry.Annotations); err != nil {
+		_ = finishMarkdownTransaction(tx)
+		return nil, err
+	}
 	if err = recordMarkdownTransactionMetadata(tx, sortSnapshot, nil, nil); err != nil {
 		return nil, err
 	}
@@ -455,6 +474,9 @@ func RestoreDeletedMarkdown(id, toNotebook, toParentPath, name string, operation
 	}
 	if err = markMarkdownMetadataCommitted(tx); err != nil {
 		return nil, errors.Join(err, rollbackMarkdownInstall(tx), restoreMarkdownSort(sortSnapshot))
+	}
+	if err = commitMarkdownAnnotations(tx); err != nil {
+		return nil, err
 	}
 	_ = finalizeMarkdownInstall(tx)
 

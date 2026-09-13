@@ -17,6 +17,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -87,7 +88,20 @@ func saveMarkdown(c *gin.Context) {
 	if util.InvalidIDPattern(notebook, ret) {
 		return
 	}
-	document, err := model.SaveMarkdownWithOperationID(notebook, p, content, revision, operationID)
+	var annotations *model.MarkdownAnnotations
+	if value, exists := arg["annotations"]; exists {
+		data, err := json.Marshal(value)
+		if err != nil || string(data) == "null" {
+			ret.Code, ret.Msg = -1, "invalid Markdown annotations"
+			return
+		}
+		annotations = &model.MarkdownAnnotations{}
+		if err = json.Unmarshal(data, annotations); err != nil {
+			ret.Code, ret.Msg = -1, "invalid Markdown annotations"
+			return
+		}
+	}
+	document, err := model.SaveMarkdownWithAnnotations(notebook, p, content, revision, operationID, annotations)
 	ret.Data, _ = markdownResult(ret, document, err)
 }
 

@@ -225,12 +225,7 @@ const renderSlashMenu = (protyle: IProtyle, toolbarElement: Element) => {
     utilElement.innerHTML = `<div class="keyboard__slash-title"></div>
 <div class="keyboard__slash-block">
     ${getSlashItem(Constants.ZWSP, "iconMarkdown", window.siyuan.languages.template)}
-    ${getSlashItem(Constants.ZWSP + 1, "iconBoth", window.siyuan.languages.widget)}
     ${getSlashItem(Constants.ZWSP + 2, "iconImage", window.siyuan.languages.assets)}
-    ${getSlashItem("((", "iconRef", window.siyuan.languages.ref, "true")}
-    ${getSlashItem("{{", "iconSQL", window.siyuan.languages.blockEmbed, "true")}
-    ${getSlashItem('<div data-type="NodeAttributeView" data-av-type="table"></div>', "iconDatabase", window.siyuan.languages.database, "true")}
-    ${getSlashItem(Constants.ZWSP + 4, "iconFile", window.siyuan.languages.newSubDocRef)}
 </div>
 <div class="keyboard__slash-title"></div>
 <div class="keyboard__slash-block">

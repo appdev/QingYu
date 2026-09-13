@@ -2258,8 +2258,6 @@ func newRepository() (ret *dejavu.Repo, err error) {
 		webdavClient.SetTimeout(time.Duration(cloudConf.WebDAV.Timeout) * time.Second)
 		webdavClient.SetTransport(httpclient.NewTransport(cloudConf.WebDAV.SkipTlsVerify))
 		cloudRepo = cloud.NewWebDAV(&cloud.BaseCloud{Conf: cloudConf}, webdavClient)
-	case conf.ProviderLocal:
-		cloudRepo = cloud.NewLocal(&cloud.BaseCloud{Conf: cloudConf})
 	default:
 		err = fmt.Errorf("unknown cloud provider [%d]", Conf.Sync.Provider)
 		return
@@ -2531,12 +2529,6 @@ func buildCloudConf() (ret *cloud.Conf, err error) {
 			SkipTlsVerify:  Conf.Sync.WebDAV.SkipTlsVerify,
 			Timeout:        Conf.Sync.WebDAV.Timeout,
 			ConcurrentReqs: Conf.Sync.WebDAV.ConcurrentReqs,
-		}
-	case conf.ProviderLocal:
-		ret.Local = &cloud.ConfLocal{
-			Endpoint:       Conf.Sync.Local.Endpoint,
-			Timeout:        Conf.Sync.Local.Timeout,
-			ConcurrentReqs: Conf.Sync.Local.ConcurrentReqs,
 		}
 	default:
 		err = fmt.Errorf("invalid provider [%d]", Conf.Sync.Provider)

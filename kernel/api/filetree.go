@@ -722,7 +722,11 @@ func duplicateDoc(c *gin.Context) {
 	}
 
 	notebook := tree.Box
-	model.DuplicateDoc(tree)
+	if err := model.DuplicateDoc(tree); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 
 	ret.Data = map[string]any{
 		"id":       tree.Root.ID,

@@ -1311,7 +1311,7 @@ func FullTextSearchBlockInBox(query string, boxes, paths []string, types, subTyp
 			blocks, matchedBlockCount, matchedRootCount = fullTextSearchByFTSInBox(query, boxFilter, pathFilter, boxArgs, pathArgs, typeFilter, ignoreFilter, orderByClause, beforeLen, page, pageSize, boxID)
 		}
 	case 2: // SQL
-		blocks, matchedBlockCount, matchedRootCount = searchBySQLInBox(query, beforeLen, page, pageSize, boxID)
+		return []*Block{}, 0, 0, 0, false
 	case 3: // 正则表达式
 		typeFilter := buildTypeFilter(types, subTypes)
 		boxFilter, boxArgs := buildBoxesFilter(boxes)

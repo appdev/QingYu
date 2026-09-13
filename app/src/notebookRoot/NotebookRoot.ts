@@ -5,7 +5,7 @@ import {fetchPost} from "../util/fetch";
 import {escapeAttr, escapeHtml} from "../util/escape";
 import {unicode2Emoji} from "../emoji";
 import {openFileById, openMarkdownFile} from "../editor/util";
-import {openNewFileMenu} from "../markdown/fileActions";
+import {newMarkdownFile} from "../markdown/fileActions";
 import {replaceFileName, validateName} from "../editor/rename";
 import {notebookRootView, setNotebookRootView} from "./viewState";
 import {renderNotebookRootDocuments} from "./render";
@@ -15,7 +15,7 @@ import {NotebookRootDragController} from "./drag";
 import {updateNotebookRootTitleLayout} from "./titleLayout";
 import {sortMenu} from "../menus/navigation";
 import {Constants} from "../constants";
-import {setNotebookName} from "../util/pathName";
+import {isEncryptedBox, setNotebookName} from "../util/pathName";
 import {isMobile} from "../util/functions";
 import {notebookRootDocumentKey, notebookRootElementKey} from "./documentKey";
 import {openNotebookRootContextMenu} from "./contextMenu";
@@ -37,6 +37,8 @@ export class NotebookRoot extends Model {
     public listing: NotebookRootListing;
     private view: NotebookRootView;
     private destroyed = false;
+    private reloadSequence = 0;
+    private reloadPending = false;
     private previewController: DocumentCardPreviewController;
     private dragController: NotebookRootDragController;
     private masonryController?: NotebookRootMasonryController;
@@ -78,12 +80,17 @@ export class NotebookRoot extends Model {
     }
 
     public reload() {
+        const sequence = ++this.reloadSequence;
+        this.reloadPending = true;
         return new Promise<void>((resolve) => {
             fetchPost("/api/notebook/listRootDocuments", {notebook: this.notebookId}, (response) => {
-                if (!this.destroyed && response.code === 0) {
-                    this.listing = response.data as NotebookRootListing;
-                    this.renderShell();
-                    this.parent?.updateTitle(this.listing.name);
+                if (!this.destroyed && sequence === this.reloadSequence) {
+                    this.reloadPending = false;
+                    if (response.code === 0) {
+                        this.listing = response.data as NotebookRootListing;
+                        this.renderShell();
+                        this.parent?.updateTitle(this.listing.name);
+                    }
                 }
                 resolve();
             });
@@ -97,7 +104,23 @@ export class NotebookRoot extends Model {
     }
 
     public handleEvent(data: IWebSocketData) {
-        const eventData = data.data as {box?: string, oldBox?: string};
+        if (this.destroyed) return;
+        const eventData = data.data as {box?: string, oldBox?: string, ids?: string[], removeRootIDs?: string[]};
+        const removedIDs = data.cmd === "removeDoc" ? eventData?.ids :
+            data.cmd === "syncMergeResult" ? eventData?.removeRootIDs : undefined;
+        if (removedIDs?.length) {
+            const removed = new Set(removedIDs);
+            const documents = this.listing.documents.filter((document) =>
+                document.kind !== "sy" || !removed.has(document.documentID));
+            const changed = documents.length !== this.listing.documents.length;
+            if (changed) {
+                this.listing = {...this.listing, documents};
+                this.renderShell();
+            }
+            // 首次加载尚未返回时，也需要丢弃删除前发起的列表请求。
+            if (changed || this.reloadPending) void this.reload();
+            return;
+        }
         if (eventData?.box === this.notebookId || eventData?.oldBox === this.notebookId) {
             void this.reload();
         }
@@ -129,7 +152,7 @@ export class NotebookRoot extends Model {
         this.element.innerHTML = `<div class="notebook-root" data-notebook="${escapeAttr(this.notebookId)}" data-view="${this.view}">
     <header class="notebook-root__toolbar">
         <div class="notebook-root__toolbar-group notebook-root__toolbar-group--leading">
-            <button class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="new" data-menu="true" aria-label="${escapeAttr(window.siyuan.languages.newFile)}"${window.siyuan.config.readonly ? " disabled" : ""}><svg aria-hidden="true"><use xlink:href="#iconAdd"></use></svg></button>
+            <button class="notebook-root__action block__icon block__icon--show b3-tooltips__n" data-action="new" aria-label="${escapeAttr(window.siyuan.languages.newFile)}"${window.siyuan.config.readonly || isEncryptedBox(this.notebookId) ? " disabled" : ""}><svg aria-hidden="true"><use xlink:href="#iconAdd"></use></svg></button>
             <div class="notebook-root__title"><span>${icon}</span><span class="notebook-root__title-editable" data-action="rename" contenteditable="${window.siyuan.config.readonly ? "false" : "plaintext-only"}" role="textbox" aria-label="${escapeAttr(window.siyuan.languages.rename)}" spellcheck="false">${escapeHtml(this.listing.name)}</span></div>
         </div>
         <div class="fn__flex-1"></div>
@@ -232,9 +255,8 @@ export class NotebookRoot extends Model {
     }
 
     private bindShellEvents() {
-        this.element.querySelector<HTMLElement>("[data-action='new']")?.addEventListener("click", (event) => {
-            const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-            openNewFileMenu(this.app, {notebookId: this.notebookId, currentPath: "/", position: {x: rect.left, y: rect.bottom}});
+        this.element.querySelector<HTMLElement>("[data-action='new']")?.addEventListener("click", () => {
+            void newMarkdownFile(this.app, this.notebookId, "/");
         });
         const titleElement = this.element.querySelector<HTMLElement>("[data-action='rename']");
         let titleEditCancelled = false;

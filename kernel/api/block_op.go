@@ -114,7 +114,11 @@ func updateTaskListItemMarker(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -176,7 +180,11 @@ func batchUpdateTaskListItemMarker(c *gin.Context) {
 	tx := &model.Transaction{DoOperations: ops}
 	transactions := []*model.Transaction{tx}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -224,7 +232,11 @@ func moveOutlineHeading(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -285,7 +297,11 @@ func unfoldBlock(c *gin.Context) {
 		}
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	broadcastTransactions(transactions)
@@ -345,7 +361,11 @@ func foldBlock(c *gin.Context) {
 		}
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	broadcastTransactions(transactions)
@@ -433,7 +453,11 @@ func moveBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	model.ReloadProtyle(currentBt.RootID)
@@ -486,7 +510,11 @@ func appendBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -540,7 +568,11 @@ func batchAppendBlock(c *gin.Context) {
 		})
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -591,7 +623,11 @@ func prependBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -645,7 +681,11 @@ func batchPrependBlock(c *gin.Context) {
 		})
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -717,7 +757,11 @@ func insertBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -818,7 +862,11 @@ func updateBlock(c *gin.Context) {
 		}
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -893,7 +941,11 @@ func batchInsertBlock(c *gin.Context) {
 		})
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -1011,7 +1063,11 @@ func batchUpdateBlock(c *gin.Context) {
 	}
 
 	tx.DoOperations = ops
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 	model.FlushTxQueue()
 
 	ret.Data = transactions
@@ -1043,7 +1099,11 @@ func deleteBlock(c *gin.Context) {
 		},
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 
 	ret.Data = transactions
 	broadcastTransactions(transactions)

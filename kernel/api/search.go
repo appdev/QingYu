@@ -130,9 +130,9 @@ func fullTextSearchAssetContent(c *gin.Context) {
 	}
 
 	page, pageSize, query, types, method, orderBy := parseSearchAssetContentArgs(arg)
-	if method == 2 && !model.IsAdminRoleContext(c) {
+	if method == 2 {
 		ret.Code = -1
-		ret.Msg = "SQL search requires administrator privileges"
+		ret.Msg = "SQL search is no longer supported"
 		return
 	}
 
@@ -411,13 +411,13 @@ func searchEmbedBlock(c *gin.Context) {
 			ret.Msg = fmt.Sprintf(model.Conf.Language(15), embedBlockID)
 			return
 		}
-		var err error
-		stmt, boxID, err = model.GetQueryEmbedStatement(embedBlockID)
-		if nil != err {
-			ret.Code = -1
-			ret.Msg = err.Error()
-			return
-		}
+	}
+	var err error
+	stmt, boxID, err = model.GetQueryEmbedStatement(embedBlockID)
+	if err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
 	}
 
 	if err := sql.CheckSingleStatement(stmt); nil != err {
@@ -474,11 +474,10 @@ func searchRefBlock(c *gin.Context) {
 	beforeLen := int(arg["beforeLen"].(float64))
 	// 加密笔记本内的块引搜索走 InBox 版（只搜该 box 自己的加密 db，阻止跨加密边界引用）
 	var blocks []*model.Block
-	var newDoc bool
 	if notebook, ok := arg["notebook"].(string); ok && notebook != "" && model.IsEncryptedBox(notebook) {
-		blocks, newDoc = model.SearchRefBlockInBox(id, rootID, keyword, beforeLen, isSquareBrackets, isDatabase, notebook)
+		blocks, _ = model.SearchRefBlockInBox(id, rootID, keyword, beforeLen, isSquareBrackets, isDatabase, notebook)
 	} else {
-		blocks, newDoc = model.SearchRefBlock(id, rootID, keyword, beforeLen, isSquareBrackets, isDatabase)
+		blocks, _ = model.SearchRefBlock(id, rootID, keyword, beforeLen, isSquareBrackets, isDatabase)
 	}
 	if model.IsReadOnlyRoleContext(c) {
 		publishAccess := model.GetPublishAccess()
@@ -486,7 +485,7 @@ func searchRefBlock(c *gin.Context) {
 	}
 	ret.Data = map[string]any{
 		"blocks": blocks,
-		"newDoc": newDoc,
+		"newDoc": false,
 		"k":      util.EscapeHTML(keyword),
 		"reqId":  arg["reqId"],
 	}
@@ -503,10 +502,9 @@ func fullTextSearchBlock(c *gin.Context) {
 
 	page, pageSize, query, paths, boxes, types, subTypes, method, orderBy, groupBy := parseSearchBlockArgs(arg)
 
-	// SQL mode requires admin privileges, consistent with /api/query/sql
-	if method == 2 && !model.IsAdminRoleContext(c) {
+	if method == 2 {
 		ret.Code = -1
-		ret.Msg = "SQL search requires administrator privileges"
+		ret.Msg = "SQL search is no longer supported"
 		return
 	}
 

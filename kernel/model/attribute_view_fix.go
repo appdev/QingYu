@@ -35,22 +35,18 @@ func checkAttrView(attrView *av.AttributeView, view *av.View) {
 	for _, kv := range attrView.KeyValues {
 		validColumns[kv.Key.ID] = true
 	}
-	newFilters, filterChanged := av.PruneInvalidColumnFilters(view.Filters, validColumns)
+	newFilters, _ := av.PruneInvalidColumnFilters(view.Filters, validColumns)
 	if 0 == len(newFilters) {
 		// 保持 spec 5 根组不变量：根组被裁空后补一个空 AND 根组
 		newFilters = []*av.ViewFilter{{Combination: av.FilterCombinationAnd}}
 	}
 	view.Filters = newFilters
-	changed := filterChanged
 
 	tmpSorts := []*av.ViewSort{}
 	for _, s := range view.Sorts {
 		if k, _ := attrView.GetKey(s.Column); nil != k {
 			tmpSorts = append(tmpSorts, s)
 		}
-	}
-	if !changed {
-		changed = len(tmpSorts) != len(view.Sorts)
 	}
 	view.Sorts = tmpSorts
 
@@ -67,10 +63,8 @@ func checkAttrView(attrView *av.AttributeView, view *av.View) {
 			// 切换为卡片视图时可能没有初始化卡片实例 https://github.com/siyuan-note/siyuan/issues/15122
 			if nil != v.Table {
 				v.LayoutType = av.LayoutTypeTable
-				changed = true
 			} else {
 				attrView.Views = append(attrView.Views[:i], attrView.Views[i+1:]...)
-				changed = true
 			}
 		}
 	}
@@ -99,7 +93,6 @@ func checkAttrView(attrView *av.AttributeView, view *av.View) {
 					}
 					v.Block.Updated = v.Block.Created
 				}
-				changed = true
 			}
 		}
 	}
@@ -108,24 +101,15 @@ func checkAttrView(attrView *av.AttributeView, view *av.View) {
 	// 截断超长的数据库标题 Limit the database title to 512 characters https://github.com/siyuan-note/siyuan/issues/15459
 	if 512 < utf8.RuneCountInString(attrView.Name) {
 		attrView.Name = gulu.Str.SubStr(attrView.Name, 512)
-		changed = true
 	}
 
-	if changed {
-		av.SaveAttributeView(attrView)
-	}
 }
 
 func upgradeAttributeViewSpec(attrView *av.AttributeView) {
-	currentSpec := attrView.Spec
 
 	upgradeAttributeViewSpec1(attrView)
 	av.UpgradeSpec(attrView)
 
-	newSpec := attrView.Spec
-	if currentSpec != newSpec {
-		av.SaveAttributeView(attrView)
-	}
 }
 
 func upgradeAttributeViewSpec1(attrView *av.AttributeView) {

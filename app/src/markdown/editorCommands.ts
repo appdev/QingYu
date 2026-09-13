@@ -3,13 +3,14 @@ import {
     dispatchPlainTextPaste,
     markNextPlainTextPaste,
 } from "./markra-core/plain-text-paste";
+import {type EditorState} from "@codemirror/state";
 
 export type MarkdownEditorCommand = "search" | "replace" | "toggle-fullscreen" | "toggle-typewriter" |
     "toggle-rtl" | "toggle-justify" | "paste-plain-text" | "source-mode" | "visual-mode";
 
 export interface MarkdownCommandTarget {
     element: HTMLElement;
-    view: {contentDOM: HTMLElement};
+    view: {contentDOM: HTMLElement; state?: EditorState};
     isReadOnly(): boolean;
     openSearch(replace: boolean): void;
     refreshEditorConfig(): void;
@@ -71,9 +72,24 @@ export const requestMarkdownPlainTextPaste = (
         return false;
     }
     markNextPlainTextPaste(editor.view.contentDOM, "use-native-text");
+    const content = editor.view.contentDOM;
+    const state = editor.view.state;
+    const mode = content.closest(".cm-editor")?.getAttribute("data-markdown-mode");
+    const selection = content.ownerDocument.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
     try {
         void Promise.resolve(readText()).then((text) => {
-            if (!text || !editor.view.contentDOM.isConnected || editor.isReadOnly()) return;
+            if (!text || !content.isConnected || editor.view.contentDOM !== content || editor.isReadOnly()) return;
+            const current = editor.view.state;
+            const changed = state && current && (!state.doc.eq(current.doc) || !state.selection.eq(current.selection));
+            const currentRange = content.ownerDocument.getSelection();
+            const domChanged = range && currentRange?.rangeCount && (
+                currentRange.getRangeAt(0).startContainer !== range.startContainer || currentRange.getRangeAt(0).startOffset !== range.startOffset ||
+                currentRange.getRangeAt(0).endContainer !== range.endContainer || currentRange.getRangeAt(0).endOffset !== range.endOffset);
+            if (changed || domChanged || content.closest(".cm-editor")?.getAttribute("data-markdown-mode") !== mode) {
+                consumeNextPlainTextPaste(content);
+                return;
+            }
             if (!consumeNextPlainTextPaste(editor.view.contentDOM)) return;
             dispatchPlainTextPaste(target, text);
         }).catch(() => undefined);

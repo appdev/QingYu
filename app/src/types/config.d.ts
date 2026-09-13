@@ -774,9 +774,6 @@ declare namespace Config {
         moveToUp: IKey;
         netAssets2LocalAssets: IKey;
         netImg2LocalAsset: IKey;
-        newContentFile: IKey;
-        newNameFile: IKey;
-        newNameSettingFile: IKey;
         openBy: IKey;
         optimizeTypography: IKey;
         outline: IKey;
@@ -941,7 +938,6 @@ declare namespace Config {
         closeLeft: IKey;
         closeRight: IKey;
         tabToWindow: IKey;
-        addToDatabase: IKey;
         unsplit: IKey;
         unsplitAll: IKey;
     }
@@ -1322,9 +1318,8 @@ declare namespace Config {
          * Cloud storage service provider
          * - `0`: Object storage service compatible with S3 protocol
          * - `1`: Network storage service using WebDAV protocol
-         * - `2`: Local file system
          */
-        provider: 0 | 1 | 2;
+        provider: 0 | 1;
         s3: ISyncS3;
         /**
          * The prompt information of the last synchronization
@@ -1335,7 +1330,6 @@ declare namespace Config {
          */
         synced: number;
         webdav: ISyncWebDAV;
-        local: ISyncLocal;
     }
 
     /**
@@ -1408,28 +1402,6 @@ declare namespace Config {
          * Username
          */
         username: string;
-    }
-
-    /**
-     * Local file system related configuration
-     */
-    export interface ISyncLocal {
-        /**
-         * The full path of local directory
-         *
-         * Examples:
-         * - Windows: `"D:/path/to/repos/directory"`
-         * - Unix: `"/path/to/repos/directory"`
-         */
-        endpoint: string;
-        /**
-         * Timeout (unit: seconds)
-         */
-        timeout: number;
-        /**
-         * Concurrent requests.
-         */
-        concurrentReqs: number;
     }
 
     /**

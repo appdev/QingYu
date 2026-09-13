@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/88250/lute/ast"
 	"github.com/siyuan-note/filelock"
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/conf"
@@ -64,15 +63,13 @@ func reconcileOnboarding(onboarding *conf.Onboarding, boxes []*Box, documentExis
 		onboarding.DocumentID = ""
 		return true
 	}
-	if onboarding.State == conf.OnboardingCompleted && (!notebookExists || onboarding.DocumentID == "" || !documentExists) {
+	if onboarding.State == conf.OnboardingCompleted && (!notebookExists || (onboarding.DocumentID != "" && !documentExists)) {
 		if !notebookExists {
 			if len(boxes) == 0 {
 				return prepareOnboardingForEmptyWorkspace(onboarding, false, 0)
 			}
 			onboarding.NewUser = false
 			onboarding.NotebookID = ""
-		} else {
-			onboarding.State = conf.OnboardingNotebookCreated
 		}
 		onboarding.DocumentID = ""
 		return true
@@ -137,18 +134,7 @@ func EnsureOnboarding() (ret *conf.Onboarding, notebookCreated bool, err error) 
 	if _, mountErr := Mount(onboarding.NotebookID); mountErr != nil {
 		return cloneOnboarding(onboarding), notebookCreated, mountErr
 	}
-	if onboarding.DocumentID == "" {
-		onboarding.DocumentID = ast.NewNodeID()
-		Conf.Save()
-	}
-
-	docPath := "/" + onboarding.DocumentID + ".sy"
-	docAbsPath := filepath.Join(util.DataDir, onboarding.NotebookID, onboarding.DocumentID+".sy")
-	if !filelock.IsExist(docAbsPath) {
-		if _, err = CreateDocByMd(onboarding.NotebookID, docPath, Conf.Language(343), "", nil, nil); err != nil {
-			return cloneOnboarding(onboarding), notebookCreated, err
-		}
-	}
+	onboarding.DocumentID = ""
 	onboarding.State = conf.OnboardingCompleted
 	Conf.Save()
 	return cloneOnboarding(onboarding), notebookCreated, nil

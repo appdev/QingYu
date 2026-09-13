@@ -39,7 +39,7 @@ const setSyncModeRelatedConfigItemVisible = (root: Element) => {
 /** 同步提供商配置区检索关键词（供 syncTab 注册 slot） */
 export const getSyncProviderConfigKeywords = (): string[] => buildProviderConfigKeywords();
 
-type SyncProviderConfigKey = Extract<keyof Config.ISync, "s3" | "webdav" | "local">;
+type SyncProviderConfigKey = Extract<keyof Config.ISync, "s3" | "webdav">;
 
 type SyncProviderFieldDef =
     | {type: "input"; label: string; id: string; attrs?: string}
@@ -104,32 +104,13 @@ const SYNC_PROVIDER_DEFS: Record<Config.ISync["provider"], SyncProviderDef> = {
             {type: "input", label: "Concurrent Reqs", id: "concurrentReqs", attrs: 'type="number" min="1" max="16"'},
         ],
     },
-    2: {
-        configKey: "local",
-        api: "/api/sync/setSyncProviderLocal",
-        getConfig: () => window.siyuan.config.sync.local,
-        genIntro: () => `<div class="b3-label b3-label--inner">
-    <div class="ft__error">
-        ${window.siyuan.languages.mobileNotSupport}
-    </div>
-    <div class="fn__hr"></div>
-    ${window.siyuan.languages.syncThirdPartyProviderLocalIntro}
-</div>`,
-        fields: [
-            {type: "input", label: "Endpoint", id: "endpoint"},
-            {type: "input", label: "Timeout (s)", id: "timeout", attrs: 'type="number" min="7" max="300"'},
-            {type: "input", label: "Concurrent Reqs", id: "concurrentReqs", attrs: 'type="number" min="1" max="1024"'},
-        ],
-    },
 };
 
 const buildProviderConfigKeywords = (): string[] => {
     return [
-        window.siyuan.languages.mobileNotSupport,
-        // S3 / WebDAV / 本地第三方
+        // S3 / WebDAV
         window.siyuan.languages.syncThirdPartyProviderS3Intro,
         window.siyuan.languages.syncThirdPartyProviderWebDAVIntro,
-        window.siyuan.languages.syncThirdPartyProviderLocalIntro,
         // 操作按钮
         window.siyuan.languages.import,
         window.siyuan.languages.export,

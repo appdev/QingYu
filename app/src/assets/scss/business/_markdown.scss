@@ -1,4 +1,5 @@
 @use "../util/editor-appearance" as editorAppearance;
+@use "markdown-annotations";
 
 .markdown-editor {
   background-color: var(--b3-theme-background);
@@ -883,6 +884,15 @@
     cursor: text;
   }
 
+  button.markra-math-render-inline {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    padding: 0;
+  }
+
   .markra-math-render-display {
     background: transparent;
     border: 0;
@@ -1704,4 +1714,24 @@
   to {
     transform: rotate(360deg);
   }
+}
+.markdown-selection-toolbar {
+  position: fixed;
+  z-index: 210;
+  display: flex;
+  gap: 2px;
+  max-width: calc(100vw - 16px);
+  overflow-x: auto;
+  padding: 5px;
+  border: 1px solid var(--b3-border-color);
+  border-radius: var(--b3-border-radius);
+  background: var(--b3-theme-background);
+  box-shadow: var(--b3-point-shadow);
+
+  &[hidden] { display: none; }
+  button { flex-shrink: 0; width: 28px; height: 28px; }
+  button:disabled { opacity: .35; cursor: default; }
+  button[aria-pressed="true"] { background: var(--b3-theme-primary-light); color: var(--b3-theme-primary); }
+  button:focus-visible { outline: 2px solid var(--b3-theme-primary); }
+  button[data-action="bold"], button[data-action="math"], button[data-action="annotation"] { margin-inline-start: 6px; }
 }

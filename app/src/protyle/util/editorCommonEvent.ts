@@ -1698,6 +1698,13 @@ export const dropEvent = (protyle: IProtyle, editorElement: HTMLElement) => {
     let cachedTargetText = "";
     let cachedIsCol = false;
     editorElement.addEventListener("dragover", (event: DragEvent & { target: HTMLElement }) => {
+        if (hasClosestByClassName(event.target, "av")) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "none";
+            hideDragTip();
+            cleanupDragIndicators(editorElement);
+            return;
+        }
         if (protyle.disabled || event.dataTransfer.types.includes(Constants.SIYUAN_DROP_EDITOR)) {
             event.preventDefault();
             event.stopPropagation();

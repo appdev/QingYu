@@ -88,6 +88,7 @@ export const mountTestEditor = (mode: "source" | "visual") => {
 };
 
 const appearanceSourcePaths = [
+    "src/assets/scss/business/_markdown-annotations.scss",
     "src/assets/scss/business/_markdown.scss",
     "src/markdown/markra-core/codemirror/theme.ts",
     "src/markdown/markra-core/codemirror/block-drag.ts",

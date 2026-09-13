@@ -134,6 +134,8 @@ export class App {
                             reloadEmoji();
                             break;
                         case "syncMergeResult":
+                            getAllModels().markdown.forEach((editor) => { void editor.refreshAnnotations(); });
+                            getAllModels().notebookRoot.forEach((root) => root.handleEvent(data));
                             reloadSync(this, data.data);
                             break;
                         case "reloaddoc":
@@ -226,6 +228,9 @@ export class App {
                         case "removeMarkdown":
                         case "sortMarkdown":
                         case "purgeMarkdown": {
+                            if (data.cmd === "saveMarkdown") getAllModels().markdown.forEach((editor) => {
+                                if (editor.notebookId === data.data.box && editor.path === data.data.path) void editor.refreshAnnotations();
+                            });
                             markdownManagementEvents.handle(markdownManagementEventFromWebSocket(data));
                             getAllModels().notebookRoot.forEach((root) => root.handleEvent(data));
                             break;
@@ -245,6 +250,7 @@ export class App {
                             });
                             break;
                         case "removeDoc":
+                            getAllModels().notebookRoot.forEach((root) => root.handleEvent(data));
                             getAllTabs().forEach((tab) => {
                                 if (tab.headElement) {
                                     const initTab = tab.headElement.getAttribute("data-initdata");

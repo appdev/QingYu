@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const annotations = require("./markdownAnnotations");
 
 const REGISTRY_VERSION = 2;
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
@@ -128,17 +129,20 @@ class ExternalMarkdownService {
         return service;
     }
 
-    constructor({registryPath, randomUUID = crypto.randomUUID, pruneDelayMs = 5000, beforeReplace}) {
+    constructor({registryPath, randomUUID = crypto.randomUUID, pruneDelayMs = 5000, beforeReplace, afterAnnotatedBody}) {
         this.registryPath = registryPath;
         this.randomUUID = randomUUID;
         this.pruneDelayMs = pruneDelayMs;
         this.beforeReplace = beforeReplace;
+        this.afterAnnotatedBody = afterAnnotatedBody;
         this.capabilities = new Map();
         this.workspaceLayoutReferences = new Map();
         this.appearanceReferences = new Set();
         this.runtimeOwners = new Map();
         this.resourceTokens = new Map();
         this.pruneTimers = new Map();
+        this.documentOperations = new Map();
+        this.registryOperations = Promise.resolve();
     }
 
     async loadRegistry() {
@@ -292,6 +296,11 @@ class ExternalMarkdownService {
         if (this.pruneTimers.has(capabilityId)) return;
         const timer = setTimeout(() => {
             this.pruneTimers.delete(capabilityId);
+            const record = this.capabilities.get(capabilityId);
+            if (record?.annotationTransaction || record?.annotationRename || this.documentOperations.has(capabilityId)) {
+                this.schedulePrune(capabilityId);
+                return;
+            }
             if (this.runtimeOwners.has(capabilityId) || this.appearanceReferences.has(capabilityId) ||
                 [...this.workspaceLayoutReferences.values()].some((ids) => ids.has(capabilityId))) {
                 return;
@@ -303,9 +312,43 @@ class ExternalMarkdownService {
         this.pruneTimers.set(capabilityId, timer);
     }
 
-    async read(capabilityId) {
+    exclusive(capabilityId, operation) {
+        const previous = this.documentOperations.get(capabilityId) || Promise.resolve();
+        const next = previous.catch(() => undefined).then(operation);
+        this.documentOperations.set(capabilityId, next);
+        void next.finally(() => {
+            if (this.documentOperations.get(capabilityId) === next) this.documentOperations.delete(capabilityId);
+        }).catch(() => undefined);
+        return next;
+    }
+
+    read(capabilityId) { return this.exclusive(capabilityId, () => this.readDocument(capabilityId)); }
+    save(capabilityId, request) { return this.exclusive(capabilityId, () => this.saveDocument(capabilityId, request)); }
+    rename(capabilityId, request) { return this.exclusive(capabilityId, () => this.renameDocument(capabilityId, request)); }
+
+    async recoverAnnotations(record) {
+        await this.recoverAnnotationRename(record);
+        const tx = record.annotationTransaction;
+        if (!tx) return;
+        const stat = await fs.lstat(record.realPath);
+        if (stat.isSymbolicLink() || !stat.isFile()) throw createError("FILE_IDENTITY_CHANGED");
+        if (fileIdentity(stat) === tx.bodyIdentity) {
+            const digest = crypto.createHash("sha256").update(await fs.readFile(record.realPath)).digest("hex");
+            if (digest !== tx.bodyHash) throw createError("FILE_IDENTITY_CHANGED");
+            await annotations.commit(record.realPath, tx.sidecar);
+            record.identity = tx.bodyIdentity;
+        } else if (fileIdentity(stat) !== record.identity) {
+            throw createError("FILE_IDENTITY_CHANGED");
+        }
+        await annotations.cleanup(tx.sidecar);
+        delete record.annotationTransaction;
+        await this.persist();
+    }
+
+    async readDocument(capabilityId) {
         const record = this.capabilities.get(capabilityId);
         if (!record) throw createError("UNKNOWN_CAPABILITY");
+        await this.recoverAnnotations(record);
         const bytes = await fs.readFile(record.realPath);
         const stat = await fs.stat(record.realPath);
         assertFileIdentity(record, stat);
@@ -316,19 +359,22 @@ class ExternalMarkdownService {
             ...format,
             revision: await computeRevision(record.realPath, bytes),
             mtime: stat.mtimeMs,
+            annotations: (await annotations.read(record.realPath))?.data,
         };
     }
 
-    async save(capabilityId, {content, revision, overwriteRevision}) {
+    async saveDocument(capabilityId, {content, revision, overwriteRevision, annotations: annotationData}) {
         const record = this.capabilities.get(capabilityId);
         if (!record) return {status: "error", code: "UNKNOWN_CAPABILITY"};
         try {
+            await this.recoverAnnotations(record);
             const currentBytes = await fs.readFile(record.realPath);
             const stat = await fs.stat(record.realPath);
             assertFileIdentity(record, stat);
             const currentRevision = await computeRevision(record.realPath, currentBytes);
             const authorizedRevision = overwriteRevision || revision;
             if (currentRevision !== authorizedRevision) return {status: "conflict", revision: currentRevision};
+            await annotations.read(record.realPath);
             const format = record.format || detectMarkdownFormat(currentBytes);
             const bytes = encodeMarkdownContent(content, format);
             const temporaryPath = path.join(
@@ -351,7 +397,16 @@ class ExternalMarkdownService {
                     await fs.rm(temporaryPath, {force: true});
                     return {status: "conflict", revision: replacementRevision};
                 }
+                if (annotationData !== undefined) {
+                    const sidecar = await annotations.stage(record.realPath, annotationData, content);
+                    record.annotationTransaction = {bodyIdentity: fileIdentity(await fs.stat(temporaryPath)),
+                        bodyHash: crypto.createHash("sha256").update(bytes).digest("hex"), sidecar};
+                    await this.persist();
+                }
                 await fs.rename(temporaryPath, record.realPath);
+                await annotations.syncParent(record.realPath);
+                if (annotationData !== undefined) await this.afterAnnotatedBody?.();
+                await this.recoverAnnotations(record);
                 record.identity = fileIdentity(await fs.stat(record.realPath));
                 await this.persist();
             } catch (error) {
@@ -360,13 +415,17 @@ class ExternalMarkdownService {
             } finally {
                 await handle?.close().catch(() => undefined);
             }
-            return {status: "ok", document: await this.read(capabilityId)};
+            return {status: "ok", document: await this.readDocument(capabilityId)};
         } catch (error) {
+            if (error.code === "ANNOTATION_CONFLICT") {
+                const bytes = await fs.readFile(record.realPath).catch(() => null);
+                if (bytes) return {status: "conflict", revision: await computeRevision(record.realPath, bytes)};
+            }
             return {status: "error", code: error.code || "WRITE_FAILED"};
         }
     }
 
-    async rename(capabilityId, {name, revision}) {
+    async renameDocument(capabilityId, {name, revision}) {
         const record = this.capabilities.get(capabilityId);
         if (!record) return {status: "error", code: "UNKNOWN_CAPABILITY"};
         if (typeof name !== "string" || name !== path.basename(name) || !isMarkdownFilePath(name) ||
@@ -374,13 +433,30 @@ class ExternalMarkdownService {
             return {status: "error", code: "INVALID_NAME"};
         }
         try {
+            await this.recoverAnnotations(record);
             const currentBytes = await fs.readFile(record.realPath);
             assertFileIdentity(record, await fs.stat(record.realPath));
             const currentRevision = await computeRevision(record.realPath, currentBytes);
             if (currentRevision !== revision) return {status: "conflict", revision: currentRevision};
             const previousPath = record.realPath;
             const nextPath = path.join(path.dirname(previousPath), name);
-            if (pathKey(previousPath) === pathKey(nextPath)) return {status: "ok", document: await this.read(capabilityId)};
+            if (pathKey(previousPath) === pathKey(nextPath)) return {status: "ok", document: await this.readDocument(capabilityId)};
+            const sidecar = await annotations.read(previousPath);
+            if (!sidecar) {
+                try { await fs.lstat(nextPath + annotations.suffix); return {status: "error", code: "TARGET_EXISTS"}; }
+                catch (error) { if (error.code !== "ENOENT") throw error; }
+            }
+            if (sidecar) {
+                for (const target of [nextPath, nextPath + annotations.suffix]) {
+                    try { await fs.lstat(target); return {status: "error", code: "TARGET_EXISTS"}; }
+                    catch (error) { if (error.code !== "ENOENT") throw error; }
+                }
+                record.annotationRename = {previousPath, nextPath, bodyIdentity: record.identity,
+                    sideIdentity: sidecar.identity, sideDigest: sidecar.digest};
+                await this.persist();
+                await this.recoverAnnotationRename(record);
+                return {status: "ok", document: await this.readDocument(capabilityId)};
+            }
             try {
                 await fs.link(previousPath, nextPath);
             } catch (error) {
@@ -396,10 +472,46 @@ class ExternalMarkdownService {
                 record.realPath = previousPath;
                 throw error;
             }
-            return {status: "ok", document: await this.read(capabilityId)};
+            return {status: "ok", document: await this.readDocument(capabilityId)};
         } catch (error) {
             return {status: "error", code: error.code || "RENAME_FAILED"};
         }
+    }
+
+    async recoverAnnotationRename(record) {
+        const tx = record.annotationRename;
+        if (!tx) return;
+        if (![tx.previousPath, tx.nextPath].includes(record.realPath) ||
+            path.dirname(tx.previousPath) !== path.dirname(tx.nextPath) || !isMarkdownFilePath(tx.nextPath)) {
+            throw createError("INVALID_PATH");
+        }
+        for (const [source, target, expectedIdentity, expectedDigest] of [
+            [tx.previousPath, tx.nextPath, tx.bodyIdentity, undefined],
+            [tx.previousPath + annotations.suffix, tx.nextPath + annotations.suffix, tx.sideIdentity, tx.sideDigest],
+        ]) {
+            const check = async (file) => {
+                try {
+                    const stat = await fs.lstat(file);
+                    if (stat.isSymbolicLink() || !stat.isFile() || fileIdentity(stat) !== expectedIdentity) {
+                        throw createError("FILE_IDENTITY_CHANGED");
+                    }
+                    if (expectedDigest && (await annotations.readFile(file)).digest !== expectedDigest) {
+                        throw createError("ANNOTATION_CONFLICT");
+                    }
+                    return true;
+                } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+            };
+            if (!await check(target)) {
+                if (!await check(source)) throw createError("FILE_IDENTITY_CHANGED");
+                await fs.link(source, target);
+                await annotations.syncParent(target);
+            }
+            if (await check(source)) await fs.unlink(source);
+            await annotations.syncParent(source);
+        }
+        record.realPath = tx.nextPath;
+        delete record.annotationRename;
+        await this.persist();
     }
 
     async saveAssets(capabilityId, assets) {
@@ -455,7 +567,13 @@ class ExternalMarkdownService {
         return {path: realPath, mimeType};
     }
 
-    async persist() {
+    persist() {
+        const next = this.registryOperations.catch(() => undefined).then(() => this.persistSnapshot());
+        this.registryOperations = next;
+        return next;
+    }
+
+    async persistSnapshot() {
         await fs.mkdir(path.dirname(this.registryPath), {recursive: true});
         const registry = {
             version: REGISTRY_VERSION,
@@ -466,8 +584,10 @@ class ExternalMarkdownService {
             appearanceReferences: [...this.appearanceReferences],
         };
         const temporaryPath = `${this.registryPath}.${this.randomUUID()}.tmp`;
-        await fs.writeFile(temporaryPath, `${JSON.stringify(registry, null, 2)}\n`, {flag: "wx"});
+        const handle = await fs.open(temporaryPath, "wx", 0o600);
+        try { await handle.writeFile(`${JSON.stringify(registry, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
         await fs.rename(temporaryPath, this.registryPath);
+        await annotations.syncParent(this.registryPath);
     }
 }
 

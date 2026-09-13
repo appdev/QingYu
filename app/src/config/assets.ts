@@ -93,10 +93,6 @@ const assets = {
             <div class="fn__hr--b"></div>
             <div class="fn__flex">
                 <div class="fn__space"></div>
-                <button id="removeAVAll" class="b3-button b3-button--outline fn__flex-center fn__size200">
-                    <svg class="svg"><use xlink:href="#iconTrashcan"></use></svg>
-                    ${window.siyuan.languages.delete}
-                </button>
             </div>
             <div class="fn__hr"></div>
             <ul class="b3-list b3-list--background config-assets__list">
@@ -146,16 +142,6 @@ const assets = {
                             /// #endif
                             assetsListElement.innerHTML = `<li class="b3-list--empty">${window.siyuan.languages.emptyContent}</li>`;
                             assetsListElement.nextElementSibling.innerHTML = "";
-                        });
-                    }, undefined, true);
-                    event.preventDefault();
-                    event.stopPropagation();
-                    break;
-                } else if (target.id === "removeAVAll") {
-                    confirmDialog(window.siyuan.languages.deleteOpConfirm, `${window.siyuan.languages.clearAllAV}`, () => {
-                        fetchPost("/api/av/removeUnusedAttributeViews", {}, () => {
-                            avListElement.innerHTML = `<li class="b3-list--empty">${window.siyuan.languages.emptyContent}</li>`;
-                            avListElement.nextElementSibling.innerHTML = "";
                         });
                     }, undefined, true);
                     event.preventDefault();
@@ -227,11 +213,7 @@ const assets = {
                     event.stopPropagation();
                     break;
                 } else if (type === "copy") {
-                    if (target.parentElement.getAttribute("data-tab-type") === "unRefAV") {
-                        writeText(`<div class="av" data-node-id="${Lute.NewNodeID()}" data-av-id="${target.parentElement.dataset.item}" data-type="NodeAttributeView" data-av-type="table"></div>`);
-                    } else {
-                        writeText(target.parentElement.querySelector(".b3-list-item__text").textContent.trim());
-                    }
+                    writeText(target.parentElement.querySelector(".b3-list-item__text").textContent.trim());
                     showMessage(window.siyuan.languages.copied);
                     event.preventDefault();
                     event.stopPropagation();
@@ -250,33 +232,7 @@ const assets = {
                 } else if (type === "clear") {
                     const liElement = target.parentElement;
                     confirmDialog(window.siyuan.languages.deleteOpConfirm, `${window.siyuan.languages.delete} <b>${liElement.querySelector(".b3-list-item__text").textContent}</b>`, () => {
-                        if (liElement.getAttribute("data-tab-type") === "unRefAV") {
-                            const id = liElement.getAttribute("data-item");
-                            fetchPost("/api/av/removeUnusedAttributeView", {
-                                id,
-                            }, () => {
-                                if (liElement.parentElement.querySelectorAll("li").length === 1) {
-                                    liElement.parentElement.innerHTML = `<li class="b3-list--empty">${window.siyuan.languages.emptyContent}</li>`;
-                                } else {
-                                    liElement.remove();
-                                }
-                                if (editor.protyle.element.querySelector(`.av[data-av-id="${id}"]`)) {
-                                    onGet({
-                                        data: {
-                                            data: {
-                                                content: "",
-                                                id: Lute.NewNodeID(),
-                                                rootID: Lute.NewNodeID(),
-                                            },
-                                            msg: "",
-                                            code: 0
-                                        },
-                                        protyle: editor.protyle,
-                                        action: [Constants.CB_GET_HISTORY, Constants.CB_GET_HTML],
-                                    });
-                                }
-                            });
-                        } else {
+                        if (liElement.getAttribute("data-tab-type") !== "unRefAV") {
                             fetchPost("/api/asset/removeUnusedAsset", {
                                 path: liElement.getAttribute("data-item"),
                             }, response => {
@@ -329,7 +285,7 @@ const assets = {
 </span>`;
         }
         let boxClearHTML = "";
-        if (type !== "lostAssets") {
+        if (type === "unrefAssets") {
             boxClearHTML = `<span data-type="clear" class="ariaLabel b3-list-item__action" aria-label="${window.siyuan.languages.delete}">
     <svg><use xlink:href="#iconTrashcan"></use></svg>
 </span>`;
@@ -344,7 +300,7 @@ const assets = {
             html += `<li data-tab-type="${type}" data-item="${item.item}"  class="b3-list-item${mobile ? "" : " b3-list-item--hide-action"}">
     <span class="b3-list-item__text">${escapeHtml(item.name || item.item)}</span>
     ${blockPopoverHTML}
-    <span data-type="copy" class="ariaLabel b3-list-item__action" aria-label="${type === "unRefAV" ? window.siyuan.languages.copyMirror : window.siyuan.languages.copy}">
+    <span data-type="copy" class="ariaLabel b3-list-item__action" aria-label="${window.siyuan.languages.copy}">
         <svg><use xlink:href="#iconCopy"></use></svg>
     </span>
     ${boxOpenHTML}

@@ -6,6 +6,7 @@ package model
 import (
 	"archive/zip"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"html"
 	"io"
@@ -33,13 +34,14 @@ type MarkdownExportResource struct {
 }
 
 type MarkdownExportDocument struct {
-	Notebook  string
-	Path      string
-	Name      string
-	Extension string
-	Title     string
-	Content   []byte
-	Resources []MarkdownExportResource
+	Annotations *MarkdownAnnotations
+	Notebook    string
+	Path        string
+	Name        string
+	Extension   string
+	Title       string
+	Content     []byte
+	Resources   []MarkdownExportResource
 }
 
 type MarkdownExportArtifact struct {
@@ -66,6 +68,11 @@ var markdownPandocFormats = map[string]string{
 }
 
 func LoadMarkdownExportDocument(boxID, p string) (*MarkdownExportDocument, error) {
+	markdownFileOperationLock.Lock()
+	defer markdownFileOperationLock.Unlock()
+	if err := recoverMarkdownTransactionsLocked(); err != nil {
+		return nil, err
+	}
 	canonicalPath, absPath, err := markdownFilePath(boxID, p)
 	if err != nil {
 		return nil, err
@@ -92,6 +99,10 @@ func LoadMarkdownExportDocument(boxID, p string) (*MarkdownExportDocument, error
 		Content:   content,
 	}
 	doc.Resources, err = markdownExportResources(boxID, canonicalPath, content)
+	if err != nil {
+		return nil, err
+	}
+	doc.Annotations, err = readMarkdownAnnotations(absPath)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +308,17 @@ func ExportMarkdownDocumentZip(boxID, p string) (*MarkdownExportArtifact, error)
 		return nil, err
 	}
 	zipName := strings.TrimSuffix(doc.Name, doc.Extension) + ".zip"
+	if doc.Annotations != nil {
+		annotations := *doc.Annotations
+		annotations.ETag = ""
+		data, marshalErr := json.MarshalIndent(&annotations, "", "  ")
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if err = os.WriteFile(filepath.Join(stageDir, doc.Name+markdownAnnotationsSuffix), data, 0600); err != nil {
+			return nil, err
+		}
+	}
 	zipPath := filepath.Join(util.TempDir, "export", zipName)
 	zipPath = util.GetUniqueFilename(zipPath)
 	if err = zipDirectory(stageDir, zipPath); err != nil {

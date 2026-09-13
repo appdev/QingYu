@@ -17,6 +17,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -35,6 +36,14 @@ import (
 )
 
 func BatchSetBlockAttrs(blockAttrs []map[string]any) (err error) {
+	operations := make([]*Operation, 0, len(blockAttrs))
+	for _, item := range blockAttrs {
+		data, _ := json.Marshal(item["attrs"])
+		operations = append(operations, &Operation{ID: item["id"].(string), Action: "setAttrs", Data: string(data)})
+	}
+	if err = checkDatabaseOperations(operations); err != nil {
+		return
+	}
 	if util.ReadOnly {
 		return
 	}
@@ -102,6 +111,10 @@ func BatchSetBlockAttrs(blockAttrs []map[string]any) (err error) {
 }
 
 func SetBlockAttrs(id string, nameValues map[string]string) (err error) {
+	data, _ := json.Marshal(nameValues)
+	if err = checkDatabaseOperations([]*Operation{{ID: id, Action: "setAttrs", Data: string(data)}}); err != nil {
+		return
+	}
 	if util.ReadOnly {
 		return
 	}

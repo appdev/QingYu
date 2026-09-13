@@ -252,7 +252,9 @@ var documentDuplicateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		model.DuplicateDoc(tree)
+		if err := model.DuplicateDoc(tree); err != nil {
+			return err
+		}
 		model.AppendPushReloadFiletreeEntry()
 		fmt.Println(tree.ID)
 		return nil
@@ -363,12 +365,10 @@ func init() {
 
 	rootCmd.AddCommand(documentCmd)
 	documentCmd.AddCommand(documentListCmd)
-	documentCmd.AddCommand(documentCreateCmd)
 	documentCmd.AddCommand(documentGetCmd)
 	documentCmd.AddCommand(documentRemoveCmd)
 	documentCmd.AddCommand(documentRenameCmd)
 	documentCmd.AddCommand(documentMoveCmd)
-	documentCmd.AddCommand(documentDuplicateCmd)
 	documentCmd.AddCommand(documentInfoCmd)
 	documentCmd.AddCommand(documentSearchCmd)
 }

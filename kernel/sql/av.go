@@ -790,12 +790,10 @@ func getAttrViewName(attrView *av.AttributeView) string {
 func removeMissingField(attrView *av.AttributeView, view *av.View, missingKeyID string) {
 	logging.LogWarnf("key [%s] is missing", missingKeyID)
 
-	changed := false
 	if nil != view.Table {
 		for i, column := range view.Table.Columns {
 			if column.ID == missingKeyID {
 				view.Table.Columns = append(view.Table.Columns[:i], view.Table.Columns[i+1:]...)
-				changed = true
 				break
 			}
 		}
@@ -805,7 +803,6 @@ func removeMissingField(attrView *av.AttributeView, view *av.View, missingKeyID 
 		for i, cardField := range view.Gallery.CardFields {
 			if cardField.ID == missingKeyID {
 				view.Gallery.CardFields = append(view.Gallery.CardFields[:i], view.Gallery.CardFields[i+1:]...)
-				changed = true
 				break
 			}
 		}
@@ -815,15 +812,11 @@ func removeMissingField(attrView *av.AttributeView, view *av.View, missingKeyID 
 		for i, kanbanField := range view.Kanban.Fields {
 			if kanbanField.ID == missingKeyID {
 				view.Kanban.Fields = append(view.Kanban.Fields[:i], view.Kanban.Fields[i+1:]...)
-				changed = true
 				break
 			}
 		}
 	}
 
-	if changed {
-		av.SaveAttributeView(attrView)
-	}
 }
 
 // filterByQuery 根据搜索条件过滤

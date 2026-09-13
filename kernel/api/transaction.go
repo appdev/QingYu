@@ -76,7 +76,11 @@ func performTransactions(c *gin.Context) {
 		transaction.MarkFromAPI() // 标记来自 HTTP 入口，供全局撤销日志捕获判别
 	}
 
-	model.PerformTransactions(&transactions)
+	if err := model.PerformTransactions(&transactions); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+		return
+	}
 
 	ret.Data = transactions
 

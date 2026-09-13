@@ -295,9 +295,9 @@ test("view switching binds only the toolbar buttons", () => {
     assert.match(source, /querySelectorAll<HTMLElement>\("\.notebook-root__views \[data-view\]"\)/);
     assert.doesNotMatch(source, /querySelectorAll<HTMLElement>\("\[data-view\]"\)/);
     assert.ok(source.indexOf('viewButton("masonry", "iconLayout"') < source.indexOf('viewButton("large", "iconGallery"'));
-    ["new", "sort"].forEach((action) => {
-        assert.match(source, new RegExp(`data-action="${action}" data-menu="true"`));
-    });
+    assert.match(source, /data-action="sort" data-menu="true"/);
+    assert.doesNotMatch(source, /data-action="new" data-menu="true"/);
+    assert.match(source, /newMarkdownFile\(this\.app, this\.notebookId, "\/"\)/);
     assert.doesNotMatch(source, /data-action="more"/);
 });
 

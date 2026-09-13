@@ -71,7 +71,6 @@
     langSelect.value = currentLang
     let langData = applyLang(currentLang)
 
-    document.querySelector(".version").textContent = `v${getSearch("v")}`
     document.querySelector(".icon").src = decodeURIComponent(`${getSearch("icon")}`)
 
     langSelect.addEventListener("change", (event) => {

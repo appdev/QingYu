@@ -95,7 +95,7 @@ func TestReconcileOnboarding(t *testing.T) {
 			},
 		},
 		{
-			name: "missing onboarding document is recreated",
+			name: "missing onboarding document is not recreated",
 			onboarding: &conf.Onboarding{
 				State:      conf.OnboardingCompleted,
 				NewUser:    true,
@@ -105,7 +105,7 @@ func TestReconcileOnboarding(t *testing.T) {
 			boxes:      []*Box{{ID: "notebook"}},
 			wantChange: true,
 			want: &conf.Onboarding{
-				State:      conf.OnboardingNotebookCreated,
+				State:      conf.OnboardingCompleted,
 				NewUser:    true,
 				NotebookID: "notebook",
 			},

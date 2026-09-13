@@ -17,43 +17,26 @@
 package tools
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/88250/lute/ast"
 	"github.com/siyuan-note/siyuan/kernel/av"
 	"github.com/siyuan-note/siyuan/kernel/model"
 )
 
 var DatabaseTool = &Tool{
 	Name:        "database",
-	Description: "Attribute view (database) operations. Actions: search(keyword), get(id), render(id, viewID?, query?, page=1, pageSize=50), keys(id), key_add(id, name, type, icon?, prev?), key_remove(id, keyID, removeRelationDest?), item_add(id, blockID?, content?, viewID?, groupID?, previousID?, detached?, ignoreDefaultFill?), item_remove(id, itemIDs comma-separated), item_update(id, keyID, itemID, value as JSON string), unused(), clean(id?).",
+	Description: "Read existing databases. Actions: search, get, render, keys, unused.",
 	InputSchema: ToolSchema{
 		Type: "object",
 		Properties: map[string]Property{
-			"action":             {Type: "string", Description: "Operation", Enum: []string{"search", "get", "render", "keys", "key_add", "key_remove", "item_add", "item_remove", "item_update", "unused", "clean"}},
-			"keyword":            {Type: "string", Description: "Search keyword (for search)"},
-			"id":                 {Type: "string", Description: "Attribute view ID (for get, render, keys, key_add, key_remove, item_add, item_remove, item_update, clean)"},
-			"viewID":             {Type: "string", Description: "View ID (for render, item_add)"},
-			"query":              {Type: "string", Description: "Filter query (for render)"},
-			"page":               {Type: "number", Description: "Page number (default 1)"},
-			"pageSize":           {Type: "number", Description: "Results per page (default 50)"},
-			"name":               {Type: "string", Description: "Key name (for key_add)"},
-			"type":               {Type: "string", Description: "Key type: block/text/number/date/select/mSelect/url/email/phone/mAsset/template/created/updated/checkbox/relation/rollup/lineNumber (for key_add)"},
-			"icon":               {Type: "string", Description: "Key icon (for key_add, optional)"},
-			"prev":               {Type: "string", Description: "Previous key ID for ordering (for key_add, optional)"},
-			"keyID":              {Type: "string", Description: "Key ID (for key_remove, item_update)"},
-			"removeRelationDest": {Type: "boolean", Description: "Also remove related data in linked databases (for key_remove, optional)"},
-			"blockID":            {Type: "string", Description: "Block ID to bind (for item_add, optional)"},
-			"content":            {Type: "string", Description: "Block column text content (for item_add, optional)"},
-			"groupID":            {Type: "string", Description: "Group ID for positioning (for item_add, optional)"},
-			"previousID":         {Type: "string", Description: "Previous item ID for positioning (for item_add, optional)"},
-			"detached":           {Type: "boolean", Description: "Create detached row (for item_add, optional)"},
-			"ignoreDefaultFill":  {Type: "boolean", Description: "Skip filling default values (for item_add, optional)"},
-			"itemID":             {Type: "string", Description: "Item ID (for item_update)"},
-			"itemIDs":            {Type: "string", Description: "Comma-separated item IDs (for item_remove)"},
-			"value":              {Type: "string", Description: "JSON value for the cell (for item_update)"},
+			"action":   {Type: "string", Description: "Operation", Enum: []string{"search", "get", "render", "keys", "unused"}},
+			"keyword":  {Type: "string", Description: "Search keyword (for search)"},
+			"id":       {Type: "string", Description: "Attribute view ID (for get, render, keys)"},
+			"viewID":   {Type: "string", Description: "View ID (for render)"},
+			"query":    {Type: "string", Description: "Filter query (for render)"},
+			"page":     {Type: "number", Description: "Page number (default 1)"},
+			"pageSize": {Type: "number", Description: "Results per page (default 50)"},
 		},
 		Required: []string{"action"},
 	},
@@ -75,23 +58,11 @@ func databaseHandler(args map[string]any) (CallToolResult, error) {
 		return databaseRender(args)
 	case "keys":
 		return databaseKeys(args)
-	case "key_add":
-		return databaseKeyAdd(args)
-	case "key_remove":
-		return databaseKeyRemove(args)
-	case "item_add":
-		return databaseItemAdd(args)
-	case "item_remove":
-		return databaseItemRemove(args)
-	case "item_update":
-		return databaseItemUpdate(args)
 	case "unused":
 		return databaseUnused(args)
-	case "clean":
-		return databaseClean(args)
 	}
 	return CallToolResult{
-		Content: []ContentItem{{Type: "text", Text: "unknown action '" + action + "', expected one of: [search, get, render, keys, key_add, key_remove, item_add, item_remove, item_update, unused, clean]"}},
+		Content: []ContentItem{{Type: "text", Text: "unknown action '" + action + "', expected one of: [search, get, render, keys, unused]"}},
 		IsError: true,
 	}, nil
 }
@@ -194,112 +165,6 @@ func databaseKeys(args map[string]any) (CallToolResult, error) {
 	return CallToolResult{Content: []ContentItem{{Type: "text", Text: sb.String()}}}, nil
 }
 
-func databaseKeyAdd(args map[string]any) (CallToolResult, error) {
-	id, _ := args["id"].(string)
-	name, _ := args["name"].(string)
-	keyType, _ := args["type"].(string)
-	if id == "" || name == "" || keyType == "" {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "id, name and type are required"}}, IsError: true}, nil
-	}
-	icon, _ := args["icon"].(string)
-	prev, _ := args["prev"].(string)
-	keyID := ast.NewNodeID()
-	if err := model.AddAttributeViewKey(id, keyID, name, keyType, icon, prev); err != nil {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "add key failed: " + err.Error()}}, IsError: true}, nil
-	}
-	model.ReloadAttrView(id)
-	return CallToolResult{Content: []ContentItem{{Type: "text", Text: fmt.Sprintf("key added: %s (%s)", keyID, name)}}}, nil
-}
-
-func databaseKeyRemove(args map[string]any) (CallToolResult, error) {
-	id, _ := args["id"].(string)
-	keyID, _ := args["keyID"].(string)
-	if id == "" || keyID == "" {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "id and keyID are required"}}, IsError: true}, nil
-	}
-	removeRelation := false
-	if v, ok := args["removeRelationDest"].(bool); ok {
-		removeRelation = v
-	}
-	if err := model.RemoveAttributeViewKey(id, keyID, removeRelation); err != nil {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "remove key failed: " + err.Error()}}, IsError: true}, nil
-	}
-	model.ReloadAttrView(id)
-	return CallToolResult{Content: []ContentItem{{Type: "text", Text: "key removed: " + keyID}}}, nil
-}
-
-func databaseItemAdd(args map[string]any) (CallToolResult, error) {
-	id, _ := args["id"].(string)
-	if id == "" {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "id is required"}}, IsError: true}, nil
-	}
-	isDetached := false
-	if v, ok := args["detached"].(bool); ok {
-		isDetached = v
-	}
-	blockID, _ := args["blockID"].(string)
-	if !isDetached && blockID == "" {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "blockID is required for non-detached rows"}}, IsError: true}, nil
-	}
-	content, _ := args["content"].(string)
-	viewID, _ := args["viewID"].(string)
-	groupID, _ := args["groupID"].(string)
-	previousID, _ := args["previousID"].(string)
-	ignoreFill := false
-	if v, ok := args["ignoreDefaultFill"].(bool); ok {
-		ignoreFill = v
-	}
-	src := map[string]any{"isDetached": isDetached}
-	if blockID != "" {
-		src["id"] = blockID
-	}
-	if content != "" {
-		src["content"] = content
-	}
-	srcs := []map[string]any{src}
-	if err := model.AddAttributeViewBlock(nil, srcs, id, blockID, viewID, groupID, previousID, ignoreFill); err != nil {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "add item failed: " + err.Error()}}, IsError: true}, nil
-	}
-	model.ReloadAttrView(id)
-	return CallToolResult{Content: []ContentItem{{Type: "text", Text: "item added"}}}, nil
-}
-
-func databaseItemRemove(args map[string]any) (CallToolResult, error) {
-	id, _ := args["id"].(string)
-	itemIDsStr, _ := args["itemIDs"].(string)
-	if id == "" || itemIDsStr == "" {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "id and itemIDs are required"}}, IsError: true}, nil
-	}
-	itemIDs := strings.Split(itemIDsStr, ",")
-	for i := range itemIDs {
-		itemIDs[i] = strings.TrimSpace(itemIDs[i])
-	}
-	if err := model.RemoveAttributeViewBlock(itemIDs, id); err != nil {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "remove items failed: " + err.Error()}}, IsError: true}, nil
-	}
-	model.ReloadAttrView(id)
-	return CallToolResult{Content: []ContentItem{{Type: "text", Text: fmt.Sprintf("%d item(s) removed", len(itemIDs))}}}, nil
-}
-
-func databaseItemUpdate(args map[string]any) (CallToolResult, error) {
-	id, _ := args["id"].(string)
-	keyID, _ := args["keyID"].(string)
-	itemID, _ := args["itemID"].(string)
-	valueStr, _ := args["value"].(string)
-	if id == "" || keyID == "" || itemID == "" || valueStr == "" {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "id, keyID, itemID and value are required"}}, IsError: true}, nil
-	}
-	var valueData map[string]any
-	if err := json.Unmarshal([]byte(valueStr), &valueData); err != nil {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "invalid JSON value: " + err.Error()}}, IsError: true}, nil
-	}
-	if _, err := model.UpdateAttributeViewCell(nil, id, keyID, itemID, valueData); err != nil {
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "update cell failed: " + err.Error()}}, IsError: true}, nil
-	}
-	model.ReloadAttrView(id)
-	return CallToolResult{Content: []ContentItem{{Type: "text", Text: "cell updated"}}}, nil
-}
-
 func databaseUnused(args map[string]any) (CallToolResult, error) {
 	items := model.UnusedAttributeViews(true)
 	if len(items) == 0 {
@@ -311,14 +176,4 @@ func databaseUnused(args map[string]any) (CallToolResult, error) {
 		sb.WriteString(fmt.Sprintf("- %s (%s)\n", item.Item, item.Name))
 	}
 	return CallToolResult{Content: []ContentItem{{Type: "text", Text: sb.String()}}}, nil
-}
-
-func databaseClean(args map[string]any) (CallToolResult, error) {
-	id, _ := args["id"].(string)
-	if id != "" {
-		model.RemoveUnusedAttributeView(id)
-		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "unused database cleaned: " + id}}}, nil
-	}
-	removed := model.RemoveUnusedAttributeViews()
-	return CallToolResult{Content: []ContentItem{{Type: "text", Text: fmt.Sprintf("%d unused database(s) cleaned", len(removed))}}}, nil
 }

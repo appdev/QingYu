@@ -58,6 +58,34 @@ func TestRemoveMarkdownRequiresRevision(t *testing.T) {
 		`{"notebook":"20260811000000-abcdefg","path":"/a.md"}`)
 }
 
+func TestMarkdownAnnotationsHTTPRoundtripAndConflict(t *testing.T) {
+	boxID := setupFileTreeAPIBox(t)
+	doc, err := model.CreateMarkdown(boxID, "/", "annotations.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := map[string]any{"notebook": boxID, "path": doc.Path, "content": "甲乙丙", "revision": doc.Revision,
+		"operationID": "annotation-http", "annotations": map[string]any{"schemaVersion": 1, "documentId": "doc", "revision": 0,
+			"contentHash": "", "records": []map[string]any{{"id": "a", "from": 0, "to": 2, "quote": "甲乙", "prefix": "", "suffix": "丙",
+				"note": "批注", "status": "attached", "createdAt": 1, "updatedAt": 1}}}}
+	encoded, _ := json.Marshal(request)
+	response := postMarkdownHandler(t, saveMarkdown, string(encoded))
+	if response["code"] != float64(0) {
+		t.Fatal(response)
+	}
+	saved := response["data"].(map[string]any)
+	annotations := saved["annotations"].(map[string]any)
+	if annotations["revision"] != float64(1) || annotations["etag"] == "" {
+		t.Fatal(annotations)
+	}
+	request["revision"] = saved["revision"]
+	encoded, _ = json.Marshal(request)
+	conflict := postMarkdownHandler(t, saveMarkdown, string(encoded))
+	if conflict["code"] != float64(http.StatusConflict) {
+		t.Fatal(conflict)
+	}
+}
+
 func TestEnsureMarkdownDocumentIdentityRequiresArgumentsAndChecksRevision(t *testing.T) {
 	boxID := setupFileTreeAPIBox(t)
 	created, err := model.CreateMarkdown(boxID, "/", "identity.md")

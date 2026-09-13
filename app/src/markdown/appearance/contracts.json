@@ -1,9 +1,24 @@
 [
   {
+    "id": "annotations.sidebar",
+    "category": "markdown-exclusive",
+    "markdownSelector": ".markdown-annotations",
+    "ownedSelectors": [".markdown-editor--annotations", ".markdown-editor--annotations-narrow", ".markdown-annotations__header", ".markdown-annotations__hint", ".markdown-annotations__cards", ".markdown-annotations--list", ".markdown-annotation-card", ".markdown-annotation-card--active", ".markdown-annotation-card__quote", ".markdown-annotation-card__note", ".markdown-annotation-card__status", ".markdown-annotation-mark", ".markdown-annotation-toolbar", ".markdown-annotation-block"],
+    "reference": {"kind": "variable", "variable": "--b3-theme-background"},
+    "states": ["default", "selected", "editing", "readonly", "empty", "error"],
+    "modes": ["source", "visual"],
+    "platforms": ["desktop", "mobile"],
+    "styleProperties": ["backgroundColor", "color", "borderColor", "fontFamily"],
+    "geometry": [],
+    "fallbackVariables": ["--b3-theme-background", "--b3-theme-on-background", "--b3-border-color", "--b3-font-family"],
+    "probe": false,
+    "strategy": "markdown-owned"
+  },
+  {
     "id": "shell.document",
     "category": "editor-foundation",
     "markdownSelector": ".markdown-editor",
-    "ownedSelectors": [".markdown-editor__content", ".markdown-editor__body", ".markdown-editor__surface"],
+    "ownedSelectors": [".markdown-editor__content", ".markdown-editor__body", ".markdown-editor__surface", ".markdown-selection-toolbar"],
     "reference": {"kind": "native", "selector": ".protyle"},
     "states": ["default", "readonly"],
     "modes": ["source", "visual"],

@@ -28,17 +28,16 @@ import (
 
 var DocumentTool = &Tool{
 	Name:        "document",
-	Description: "Document operations. Actions: get(id), create(notebook, path=hPath, title, markdown?), list(notebook, path=hPath default /), delete(id), rename(id, title), move(id, notebook, path=target hPath), duplicate(id), search_docs(keyword), info(id).",
+	Description: "Document operations. Actions: get(id), list(notebook, path=hPath default /), delete(id), rename(id, title), move(id, notebook, path=target hPath), search_docs(keyword), info(id).",
 	InputSchema: ToolSchema{
 		Type: "object",
 		Properties: map[string]Property{
-			"action":   {Type: "string", Description: "Operation", Enum: []string{"get", "create", "list", "delete", "rename", "move", "duplicate", "search_docs", "info"}},
+			"action":   {Type: "string", Description: "Operation", Enum: []string{"get", "list", "delete", "rename", "move", "search_docs", "info"}},
 			"id":       {Type: "string", Description: "Document block ID"},
-			"title":    {Type: "string", Description: "Document title (for create, rename)"},
-			"path":     {Type: "string", Description: "Document hPath, the human-readable path shown in the document tree (e.g. /folder/doc). Used for create, list, move."},
-			"markdown": {Type: "string", Description: "Initial markdown content (for create)"},
+			"title":    {Type: "string", Description: "Document title (for rename)"},
+			"path":     {Type: "string", Description: "Document hPath, the human-readable path shown in the document tree (e.g. /folder/doc). Used for list, move."},
 			"keyword":  {Type: "string", Description: "Search keyword (for search_docs)"},
-			"notebook": {Type: "string", Description: "Notebook ID (required for create, list, move)"},
+			"notebook": {Type: "string", Description: "Notebook ID (required for list, move)"},
 		},
 		Required: []string{"action"},
 	},
@@ -54,8 +53,6 @@ func documentHandler(args map[string]any) (CallToolResult, error) {
 	switch action {
 	case "get":
 		return documentGet(args)
-	case "create":
-		return documentCreate(args)
 	case "list":
 		return documentList(args)
 	case "delete":
@@ -64,15 +61,13 @@ func documentHandler(args map[string]any) (CallToolResult, error) {
 		return documentRename(args)
 	case "move":
 		return documentMove(args)
-	case "duplicate":
-		return documentDuplicate(args)
 	case "search_docs":
 		return documentSearchDocs(args)
 	case "info":
 		return documentInfo(args)
 	}
 	return CallToolResult{
-		Content: []ContentItem{{Type: "text", Text: "unknown action '" + action + "', expected one of: [get, create, list, delete, rename, move, duplicate, search_docs, info]"}},
+		Content: []ContentItem{{Type: "text", Text: "unknown action '" + action + "', expected one of: [get, list, delete, rename, move, search_docs, info]"}},
 		IsError: true,
 	}, nil
 }
@@ -254,7 +249,9 @@ func documentDuplicate(args map[string]any) (CallToolResult, error) {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: fmt.Sprintf("load doc failed: %s", err)}}, IsError: true}, nil
 	}
 
-	model.DuplicateDoc(tree)
+	if err := model.DuplicateDoc(tree); err != nil {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
 	util.PushReloadFiletree()
 	return CallToolResult{Content: []ContentItem{{Type: "text", Text: "document duplicated: " + id}}}, nil
 }

@@ -93,24 +93,8 @@ func RenderAttributeViewWithTarget(blockID, avID, viewID, query string, page, pa
 		}
 	}
 	if !filelock.IsExist(existPath) {
-		if !createIfNotExist {
-			err = av.ErrAttributeViewNotFound
-			return
-		}
-
-		// 加密笔记本首次创建：仅设置 pending 用于 SaveAttributeView 路径路由，创建后立即清除
-		if avBoxID != "" {
-			av.SetAVBoxID(avID, avBoxID)
-			defer av.SetAVBoxID(avID, "") // 创建完成立即清除，避免污染后续路由
-		}
-		attrView = av.NewAttributeView(avID)
-		if err = av.SaveAttributeView(attrView); err != nil {
-			logging.LogErrorf("save attribute view [%s] failed: %s", avID, err)
-			return
-		}
-		if blockID != "" {
-			av.UpsertBlockRel(avID, blockID)
-		}
+		err = av.ErrAttributeViewNotFound
+		return
 	}
 
 	// 已知 box 时直接用 InBox 解析，不依赖全局 pending 状态
@@ -156,7 +140,7 @@ const (
 
 func renderAttributeView(attrView *av.AttributeView, nodeID, viewID, query string, page, pageSize int, groupPaging map[string]any, ignoreRows bool, target *AttributeViewRenderTarget, targetGroupID string) (viewable av.Viewable, err error) {
 	// 获取待渲染的视图
-	view, err := getRenderAttributeViewView(attrView, viewID, nodeID, nil == target)
+	view, err := getRenderAttributeViewView(attrView, viewID, nodeID, false)
 	if nil != err {
 		return
 	}
@@ -194,10 +178,6 @@ func renderAttributeViewGroups(viewable av.Viewable, attrView *av.AttributeView,
 			preferredGroupKey := getKanbanPreferredGroupKey(attrView)
 			group := &av.ViewGroup{Field: preferredGroupKey.ID}
 			setAttributeViewGroup(attrView, view, group)
-			if err = av.SaveAttributeView(attrView); err != nil {
-				logging.LogErrorf("save attribute view [%s] failed: %s", attrView.ID, err)
-				return
-			}
 			groupKey = view.GetGroupKey(attrView)
 			if nil == groupKey {
 				return
@@ -213,10 +193,6 @@ func renderAttributeViewGroups(viewable av.Viewable, attrView *av.AttributeView,
 		createdDate := time.UnixMilli(view.GroupCreated).Format("2006-01-02")
 		if time.Now().Format("2006-01-02") != createdDate {
 			genAttrViewGroups(view, attrView) // 仅重新生成一个视图的分组以提升性能
-			if err = av.SaveAttributeView(attrView); err != nil {
-				logging.LogErrorf("save attribute view [%s] failed: %s", attrView.ID, err)
-				return
-			}
 		}
 	}
 
@@ -224,10 +200,6 @@ func renderAttributeViewGroups(viewable av.Viewable, attrView *av.AttributeView,
 	// ignoreRows 时跳过重新生成（需要行数据），沿用已保存的分组。
 	if !ignoreRows && isGroupByTemplate(attrView, view) {
 		genAttrViewGroups(view, attrView) // 仅重新生成一个视图的分组以提升性能
-		if err = av.SaveAttributeView(attrView); err != nil {
-			logging.LogErrorf("save attribute view [%s] failed: %s", attrView.ID, err)
-			return
-		}
 	}
 
 	// 渲染分组视图。ignoreRows 时若已存在分组则渲染元数据供面板使用，若无分组则返回（生成需要行数据）
@@ -236,10 +208,6 @@ func renderAttributeViewGroups(viewable av.Viewable, attrView *av.AttributeView,
 			return
 		}
 		genAttrViewGroups(view, attrView)
-		if err = av.SaveAttributeView(attrView); err != nil {
-			logging.LogErrorf("save attribute view [%s] failed: %s", attrView.ID, err)
-			return
-		}
 	}
 
 	for _, groupView := range view.Groups {
@@ -642,10 +610,6 @@ func getRenderAttributeViewView(attrView *av.AttributeView, viewID, nodeID strin
 		view, _, _ := av.NewTableViewWithBlockKey(ast.NewNodeID())
 		attrView.Views = append(attrView.Views, view)
 		attrView.ViewID = view.ID
-		if err = av.SaveAttributeView(attrView); err != nil {
-			logging.LogErrorf("save attribute view [%s] failed: %s", attrView.ID, err)
-			return
-		}
 	}
 
 	if "" == viewID && "" != nodeID {
@@ -659,10 +623,6 @@ func getRenderAttributeViewView(attrView *av.AttributeView, viewID, nodeID strin
 		ret, _ = attrView.GetCurrentView(viewID)
 		if persistView && nil != ret && ret.ID != attrView.ViewID {
 			attrView.ViewID = ret.ID
-			if err = av.SaveAttributeView(attrView); err != nil {
-				logging.LogErrorf("save attribute view [%s] failed: %s", attrView.ID, err)
-				return
-			}
 		}
 	} else {
 		ret = attrView.GetView(attrView.ViewID)

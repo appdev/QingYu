@@ -37,40 +37,10 @@ export const hintSlash = (key: string, protyle: IProtyle) => {
         value: Constants.ZWSP,
         html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconMarkdown"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.template}</span></div>`,
     }, {
-        filter: [window.siyuan.languages.widget, "widget", "挂件", "guajian", "gj"],
-        id: "widget",
-        value: Constants.ZWSP + 1,
-        html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconBoth"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.widget}</span></div>`,
-    }, {
         filter: [window.siyuan.languages.assets, "assets", "资源", "ziyuan", "zy"],
         id: "assets",
         value: Constants.ZWSP + 2,
         html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconImage"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.assets}</span></div>`,
-    }, {
-        filter: [window.siyuan.languages.ref, "block reference", "块引用", "kuaiyinyong", "kyy"],
-        id: "ref",
-        value: "((",
-        html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconRef"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.ref}</span><span class="b3-list-item__meta">((</span></div>`,
-    }, {
-        filter: [window.siyuan.languages.blockEmbed, "embed block", "嵌入块", "qianrukuai", "qrk"],
-        id: "blockEmbed",
-        value: "{{",
-        html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconSQL"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.blockEmbed}</span><span class="b3-list-item__meta">{{</span></div>`,
-    }, {
-        filter: [window.siyuan.languages.database, "database", "db", "数据库", "shujuku", "sjk", "视图", "view"],
-        id: "database",
-        value: '<div data-type="NodeAttributeView" data-av-type="table"></div>',
-        html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconDatabase"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.database}</span></div>`,
-    }, {
-        filter: [window.siyuan.languages.newFileRef, "create new doc with reference", "新建文档并引用", "xinjianwendangbingyinyong", "xjwdbyy"],
-        id: "newFileRef",
-        value: Constants.ZWSP + 4,
-        html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconFile"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.newFileRef}</span></div>`,
-    }, {
-        filter: [window.siyuan.languages.newSubDocRef, "create sub doc with reference", "新建子文档并引用", "xinjianziwendangbingyinyong", "xjzwdbyy"],
-        id: "newSubDocRef",
-        value: Constants.ZWSP + 6,
-        html: `<div class="b3-list-item__first"><svg class="b3-list-item__graphic"><use xlink:href="#iconFile"></use></svg><span class="b3-list-item__text">${window.siyuan.languages.newSubDocRef}</span></div>`,
     }, {
         value: "",
         id: "separator_1",
