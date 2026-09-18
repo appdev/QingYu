@@ -1,3 +1,5 @@
+import {documentCardPreviewFontSignature} from "./previewFonts";
+
 const previewThemeProperties = [
     "--b3-theme-background",
     "--b3-theme-on-background",
@@ -5,6 +7,8 @@ const previewThemeProperties = [
     "--b3-theme-on-surface",
     "--b3-theme-primary",
     "--b3-font-family",
+    "--b3-font-family-code",
+    "--b3-font-family-emoji",
 ];
 
 export const documentCardPreviewThemeSignature = () => {
@@ -19,6 +23,8 @@ export const documentCardPreviewThemeSignature = () => {
         mode: appearance.mode,
         theme: appearance.mode === 1 ? appearance.themeDark : appearance.themeLight,
         themeVer: appearance.themeVer,
+        fonts: documentCardPreviewFontSignature(),
+        inlineStyles: Array.from(document.head.querySelectorAll("style"), (style) => style.textContent),
         themeStyle: document.getElementById("themeStyle")?.getAttribute("href") || "",
         defaultThemeStyle: document.getElementById("themeDefaultStyle")?.getAttribute("href") || "",
         attributes,

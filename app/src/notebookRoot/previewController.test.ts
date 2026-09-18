@@ -2,6 +2,7 @@ import assert = require("node:assert/strict");
 import test from "node:test";
 
 class FakeIntersectionObserver {
+    constructor(public callback: IntersectionObserverCallback) {}
     public observed: Element[] = [];
     public disconnectCount = 0;
 
@@ -39,6 +40,14 @@ const withDom = async (run: (dom: Awaited<ReturnType<typeof importDom>>) => Prom
     const previousDocument = globalThis.document;
     const previousWindow = globalThis.window;
     const previousObserver = globalThis.IntersectionObserver;
+    const previousFrame = globalThis.requestAnimationFrame;
+    Object.defineProperty(globalThis, "requestAnimationFrame", {
+        configurable: true, value: (callback: FrameRequestCallback) => globalThis.setTimeout(callback, 0),
+    });
+    Object.assign(dom.window, {
+        siyuan: {config: {appearance: {mode: 0}, readonly: false}},
+        requestIdleCallback: (callback: IdleRequestCallback) => globalThis.setTimeout(callback, 0),
+    });
     Object.defineProperty(globalThis, "document", {configurable: true, value: dom.window.document});
     Object.defineProperty(globalThis, "window", {configurable: true, value: dom.window});
     Object.defineProperty(globalThis, "IntersectionObserver", {
@@ -51,6 +60,7 @@ const withDom = async (run: (dom: Awaited<ReturnType<typeof importDom>>) => Prom
         Object.defineProperty(globalThis, "document", {configurable: true, value: previousDocument});
         Object.defineProperty(globalThis, "window", {configurable: true, value: previousWindow});
         Object.defineProperty(globalThis, "IntersectionObserver", {configurable: true, value: previousObserver});
+        Object.defineProperty(globalThis, "requestAnimationFrame", {configurable: true, value: previousFrame});
         dom.window.close();
     }
 };
@@ -274,3 +284,127 @@ test("preview controller retries one stale store with a fresh descriptor", async
         }
     });
 });
+
+const until = async (condition: () => boolean) => {
+    const deadline = Date.now() + 2000;
+    while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 2));
+    assert.ok(condition(), "condition should settle before deadline");
+};
+const response = (exists = false) => ({code: 0, msg: "", data: {
+    exists, cacheKey: "test", url: "/test.webp", theme: "light", size: "medium", appearanceKey: "test",
+}} as IWebSocketData);
+const intersect = (controller: any, card: HTMLElement, visible = true) => {
+    controller.observer.callback([{target: card, isIntersecting: visible}]);
+};
+const deferred = () => {
+    let release: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return {promise, release};
+};
+
+test("cached cards bypass an unfinished cold render", async () => withDom(async (dom) => {
+    const {DocumentCardPreviewController} = await import("./previewController");
+    const gate = deferred();
+    let started = false;
+    const controller = new DocumentCardPreviewController({
+        request: async (url, data) => response(url.includes("prepare") && data.reference.id === "cached-bypass"),
+        renderPreview: async () => { started = true; await gate.promise; return new Blob(["image"]); },
+    });
+    try {
+        const cold = createCard(dom.window.document, "cold-bypass");
+        const cached = createCard(dom.window.document, "cached-bypass");
+        controller.rebind([cold, cached]);
+        intersect(controller, cold);
+        await until(() => started);
+        intersect(controller, cached);
+        await until(() => cached.dataset.previewReady === "true");
+        assert.equal(cold.dataset.previewReady, undefined);
+    } finally {
+        controller.destroy();
+        gate.release();
+        await until(() => !(controller as any).activeJob);
+    }
+}));
+
+test("cache probes are bounded to four and scrolling postpones cold rendering", async () => withDom(async (dom) => {
+    const {DocumentCardPreviewController} = await import("./previewController");
+    const gate = deferred();
+    let concurrent = 0;
+    let maximum = 0;
+    let renders = 0;
+    const controller = new DocumentCardPreviewController({
+        request: async () => {
+            maximum = Math.max(maximum, ++concurrent);
+            await gate.promise;
+            concurrent--;
+            return response();
+        },
+        renderPreview: async () => { renders++; return new Blob(["image"]); },
+    });
+    try {
+        const cards = Array.from({length: 8}, (_, i) => createCard(dom.window.document, `bounded-${i}`));
+        controller.rebind(cards);
+        cards.forEach((card) => intersect(controller, card));
+        await until(() => concurrent === 4);
+        dom.window.document.body.dispatchEvent(new dom.window.Event("scroll"));
+        gate.release();
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        assert.equal(renders, 0);
+        await until(() => renders > 0);
+        assert.equal(maximum, 4);
+    } finally {
+        controller.destroy();
+        gate.release();
+        await until(() => !(controller as any).activeJob && (controller as any).probing.size === 0);
+    }
+}));
+
+test("leaving viewport cancels active work without storing", async () => withDom(async (dom) => {
+    const {DocumentCardPreviewController} = await import("./previewController");
+    const gate = deferred();
+    let started = false;
+    let stores = 0;
+    const controller = new DocumentCardPreviewController({
+        request: async (url) => { if (url.includes("store")) stores++; return response(); },
+        renderPreview: async ({shouldContinue}) => {
+            started = true;
+            await gate.promise;
+            assert.equal(shouldContinue(), false);
+            throw new DOMException("cancelled", "AbortError");
+        },
+    });
+    const card = createCard(dom.window.document, "leave-viewport");
+    controller.rebind([card]);
+    intersect(controller, card);
+    await until(() => started);
+    intersect(controller, card, false);
+    gate.release();
+    await until(() => !(controller as any).activeJob);
+    assert.equal(stores, 0);
+    assert.notEqual(card.dataset.previewState, "failed");
+    controller.destroy();
+}));
+
+test("theme changes restart the visible active job", async () => withDom(async (dom) => {
+    const {DocumentCardPreviewController} = await import("./previewController");
+    const gate = deferred();
+    let renders = 0;
+    const controller = new DocumentCardPreviewController({
+        request: async () => response(),
+        renderPreview: async () => {
+            if (++renders === 1) { await gate.promise; throw new DOMException("cancelled", "AbortError"); }
+            return new Blob(["image"]);
+        },
+    });
+    const card = createCard(dom.window.document, "theme-active");
+    controller.rebind([card]);
+    intersect(controller, card);
+    await until(() => renders === 1);
+    dom.window.document.documentElement.style.setProperty("--b3-theme-background", "#123456");
+    await controller.refreshAppearance();
+    intersect(controller, card);
+    gate.release();
+    await until(() => card.dataset.previewReady === "true");
+    assert.equal(renders, 2);
+    controller.destroy();
+}));

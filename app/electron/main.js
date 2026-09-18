@@ -43,6 +43,9 @@ const fs = require("fs");
 const gNet = require("net");
 const childProcess = require("child_process");
 const remote = require("@electron/remote/main");
+const {createPreviewFontSubsetService} = require("./previewFontSubsetService.cjs");
+const previewFontSubsets = createPreviewFontSubsetService();
+ipcMain.handle("siyuan-preview-font-subset", (event, data) => previewFontSubsets.request(event.sender, data));
 const {
     NATIVE_MENU_COMMANDS,
     createApplicationMenuTemplate,

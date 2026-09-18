@@ -66,12 +66,20 @@ export class NotebookRoot extends Model {
         this.listing = {notebook: this.notebookId, name: options.name, icon: "", sortMode: 0, documents: []};
         this.themeObserver = new MutationObserver((records) => {
             const standardThemeAttributes = ["data-theme-mode", "data-light-theme", "data-dark-theme"];
-            if (records.some((record) => record.attributeName === "class" ||
+            if (records.some((record) => record.attributeName === "class" || record.attributeName === "style" ||
+                (record.target instanceof Element && (record.target.matches("style, link") || record.target.closest("style"))) ||
+                Array.from(record.addedNodes).concat(Array.from(record.removedNodes))
+                    .some((node) => node instanceof Element && node.matches("style, link")) ||
+                record.target.parentElement?.tagName === "STYLE" ||
                 (record.attributeName?.includes("theme") && !standardThemeAttributes.includes(record.attributeName)))) {
                 this.scheduleThemeRefresh();
             }
         });
         this.themeObserver.observe(document.documentElement, {attributes: true});
+        this.themeObserver.observe(document.head, {childList: true, subtree: true, characterData: true,
+            attributes: true, attributeFilter: ["href", "media", "disabled"]});
+        document.fonts?.addEventListener("loadingdone", this.handleThemeApplied);
+        document.head.addEventListener("load", this.handleThemeApplied, true);
         this.titleLayoutObserver = new ResizeObserver(() => this.scheduleTitleLayout());
         this.titleLayoutObserver.observe(this.element);
         window.addEventListener("siyuan-theme-applied", this.handleThemeApplied);
@@ -129,6 +137,8 @@ export class NotebookRoot extends Model {
     public destroy() {
         this.destroyed = true;
         this.themeObserver.disconnect();
+        document.fonts?.removeEventListener("loadingdone", this.handleThemeApplied);
+        document.head.removeEventListener("load", this.handleThemeApplied, true);
         this.titleLayoutObserver.disconnect();
         window.removeEventListener("siyuan-theme-applied", this.handleThemeApplied);
         if (this.themeRefreshFrame) {

@@ -253,6 +253,12 @@ test("preview appearance keys include active theme assets, attributes, and seman
         dom.window.document.documentElement.setAttribute("data-custom-theme", "savor");
         dom.window.document.documentElement.style.setProperty("--b3-theme-background", "rgb(250, 248, 240)");
         assert.notEqual(await documentCardPreviewAppearanceKey(), initial);
+        const style = dom.window.document.createElement("style");
+        style.textContent = ".protyle-wysiwyg {color: red}";
+        dom.window.document.head.append(style);
+        const custom = await documentCardPreviewAppearanceKey();
+        style.textContent = ".protyle-wysiwyg {color: blue}";
+        assert.notEqual(await documentCardPreviewAppearanceKey(), custom);
     } finally {
         Object.defineProperty(globalThis, "document", {configurable: true, value: previousDocument});
         Object.defineProperty(globalThis, "window", {configurable: true, value: previousWindow});

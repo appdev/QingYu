@@ -140,7 +140,7 @@ for (const file of ["src/index.ts", "src/window/index.ts", "src/mobile/util/onMe
             assert.ok(branches.has(cmd));
             runInNewContext(compile(`switch (data.cmd) {case "${cmd}": ${branches.get(cmd)}}`), {
                 data, app: {}, window: {siyuan: {config: {}}},
-                getAllModels: () => ({notebookRoot: [root], markdown: []}), getAllTabs: (): unknown[] => [],
+                getAllModels: () => ({notebookRoot: [root], markdown: [] as unknown[]}), getAllTabs: (): unknown[] => [],
                 getMobileMarkdownEditor: () => root, reloadSync: (): void => undefined,
             });
             assert.deepEqual(received, [data]);

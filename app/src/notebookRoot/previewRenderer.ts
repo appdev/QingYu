@@ -10,10 +10,14 @@ import {
 } from "./rules";
 import {pruneDocumentCardPreviewContent} from "./previewPrune";
 import {normalizeDocumentCardPreviewAssets} from "./previewAssets";
+import {documentCardPreviewFontCSS} from "./previewFonts";
+import {documentCardPreviewThemeSignature} from "./theme";
+import {assertDocumentCardPreviewActive, queueDocumentCardPreviewRender} from "./previewRenderQueue";
 
 export interface PreviewRenderInput {
     reference: {kind: "sy" | "markdown", notebook: string, path: string, id: string};
     size: "medium";
+    shouldContinue?: () => boolean;
 }
 
 const settlePreviewAssets = async (element: HTMLElement) => {
@@ -33,7 +37,15 @@ const canvasWebP = (canvas: HTMLCanvasElement, quality = 0.82) => new Promise<Bl
     canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("empty card preview")), "image/webp", quality);
 });
 
-export const renderDocumentCardPreview = async (input: PreviewRenderInput): Promise<Blob> => {
+export const renderDocumentCardPreview = (input: PreviewRenderInput): Promise<Blob> =>
+    queueDocumentCardPreviewRender(input.shouldContinue, () => renderPreview(input));
+
+const renderPreview = async (input: PreviewRenderInput): Promise<Blob> => {
+    const appearance = documentCardPreviewThemeSignature();
+    const checkpoint = () => {
+        assertDocumentCardPreviewActive(input.shouldContinue);
+        assertDocumentCardPreviewActive(() => appearance === documentCardPreviewThemeSignature());
+    };
     const markdown = input.reference.kind === "markdown";
     const response = await fetchSyncPost(markdown ? "/api/export/exportMarkdownPreview" : "/api/export/exportPreviewHTML",
         markdown ? {
@@ -45,6 +57,7 @@ export const renderDocumentCardPreview = async (input: PreviewRenderInput): Prom
         } :
             {id: input.reference.id, image: true, keepFold: false});
     if (response.code !== 0) throw new Error(response.msg || "preview export failed");
+    checkpoint();
 
     const captureRoot = document.createElement("div");
     captureRoot.setAttribute("aria-hidden", "true");
@@ -52,10 +65,10 @@ export const renderDocumentCardPreview = async (input: PreviewRenderInput): Prom
     const host = document.createElement("div");
     host.className = "notebook-root__capture";
     host.dataset.themeMode = window.siyuan.config.appearance.mode === 1 ? "dark" : "light";
-    const appearance = getComputedStyle(document.documentElement);
-    const backgroundColor = appearance.getPropertyValue("--b3-theme-background").trim() ||
+    const styles = getComputedStyle(document.documentElement);
+    const backgroundColor = styles.getPropertyValue("--b3-theme-background").trim() ||
         (window.siyuan.config.appearance.mode === 1 ? "#1e1e1e" : "#ffffff");
-    const foregroundColor = appearance.getPropertyValue("--b3-theme-on-background").trim();
+    const foregroundColor = styles.getPropertyValue("--b3-theme-on-background").trim();
     host.style.cssText = notebookRootPreviewCaptureStyle(backgroundColor, foregroundColor);
     const content = document.createElement("div");
     content.className = "protyle-wysiwyg";
@@ -71,9 +84,14 @@ export const renderDocumentCardPreview = async (input: PreviewRenderInput): Prom
         processRender(content);
         highlightRender(content);
         await settlePreviewAssets(content);
+        checkpoint();
         pruneDocumentCardPreviewContent(content, host);
         await addScript(`${Constants.PROTYLE_CDN}/js/html-to-image.min.js?v=1.11.13`, "protyleHtml2image");
-        const medium = await window.htmlToImage.toCanvas(host, notebookRootPreviewCanvasOptions(backgroundColor));
+        checkpoint();
+        const fontEmbedCSS = await documentCardPreviewFontCSS(host, appearance);
+        checkpoint();
+        const medium = await window.htmlToImage.toCanvas(host, {...notebookRootPreviewCanvasOptions(backgroundColor), fontEmbedCSS});
+        checkpoint();
         return canvasWebP(medium);
     } finally {
         captureRoot.remove();

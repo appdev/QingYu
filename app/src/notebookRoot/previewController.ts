@@ -132,23 +132,40 @@ export class DocumentCardPreviewController {
     private readonly targets = new Map<string, HTMLElement>();
     private readonly jobs = new Map<string, PreviewJob>();
     private readonly queue: string[] = [];
+    private readonly visible = new Map<string, boolean>();
+    private readonly probeQueue: PreviewJob[] = [];
+    private readonly probing = new Set<PreviewJob>();
+    private readonly prepared = new Map<PreviewJob, {generation: number, descriptor: PreviewDescriptor}>();
+    private scrollUntil = 0;
+    private scrollTimer?: number;
     private activeJob?: PreviewJob;
     private destroyed = false;
     private generation = 0;
     private appearanceRefreshToken = 0;
     private appearanceKeyPromise?: Promise<string>;
 
+    private readonly onScroll = (event: Event) => {
+        const scroller = event.target as Element;
+        if (!scroller?.contains || !Array.from(this.targets.values()).some((target) => scroller.contains(target))) return;
+        this.scrollUntil = Date.now() + 200;
+        window.clearTimeout(this.scrollTimer);
+        this.scrollTimer = window.setTimeout((): void => {
+            this.scrollUntil = 0;
+            void this.drain();
+        }, 200);
+    };
+
     constructor(options: DocumentCardPreviewControllerOptions = {}) {
         this.options = options;
+        document.addEventListener("scroll", this.onScroll, {capture: true, passive: true});
         this.observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
             const element = entry.target as HTMLElement;
             const key = notebookRootElementKey(element);
             const job = this.jobs.get(key);
             if (this.targets.get(key) !== element || !job) return;
-            if (entry.isIntersecting && !element.dataset.previewReady &&
-                !this.queue.includes(key) && this.activeJob !== job) {
-                this.queue.push(key);
-                void this.drain();
+            this.visible.set(key, entry.isIntersecting);
+            if (entry.isIntersecting && !element.dataset.previewReady && this.activeJob !== job) {
+                this.enqueueProbe(job);
             } else if (!entry.isIntersecting && this.activeJob !== job) {
                 const index = this.queue.indexOf(key);
                 if (index > -1) this.queue.splice(index, 1);
@@ -159,16 +176,25 @@ export class DocumentCardPreviewController {
     public rebind(elements: Iterable<HTMLElement>) {
         this.observer.disconnect();
         this.targets.clear();
+        this.visible.clear();
         for (const element of elements) {
             const key = notebookRootElementKey(element);
             element.dataset.previewKey = key;
             this.targets.set(key, element);
-            if (!this.jobs.has(key)) {
+            const reference = previewReferenceFromElement(element);
+            if (!this.jobs.has(key) || JSON.stringify(this.jobs.get(key).reference) !== JSON.stringify(reference)) {
+                this.prepared.delete(this.jobs.get(key));
                 const placeholder = element.querySelector<HTMLElement>(".notebook-root__placeholder")?.cloneNode(true) as HTMLElement;
-                this.jobs.set(key, {key, reference: previewReferenceFromElement(element), placeholder});
+                this.jobs.set(key, {key, reference, placeholder});
             }
             this.observer.observe(element);
         }
+        this.jobs.forEach((job, key) => {
+            if (!this.targets.has(key)) {
+                this.jobs.delete(key);
+                this.prepared.delete(job);
+            }
+        });
     }
 
     public async refreshAppearance() {
@@ -181,6 +207,8 @@ export class DocumentCardPreviewController {
         this.appearanceKeyPromise = Promise.resolve(appearanceKey);
         this.generation++;
         this.queue.length = 0;
+        this.prepared.clear();
+        this.probeQueue.length = 0;
         this.targets.forEach((target, key) => {
             const preview = target.querySelector<HTMLElement>(".notebook-root__preview");
             const placeholder = this.jobs.get(key)?.placeholder;
@@ -196,10 +224,15 @@ export class DocumentCardPreviewController {
 
     public destroy() {
         this.destroyed = true;
+        document.removeEventListener("scroll", this.onScroll, true);
+        window.clearTimeout(this.scrollTimer);
         this.observer.disconnect();
         this.queue.length = 0;
         this.targets.clear();
         this.jobs.clear();
+        this.prepared.clear();
+        this.probeQueue.length = 0;
+        this.visible.clear();
     }
 
     private target(job: PreviewJob) {
@@ -213,7 +246,7 @@ export class DocumentCardPreviewController {
     }
 
     private async drain() {
-        if (this.destroyed || this.activeJob || this.queue.length === 0) return;
+        if (this.destroyed || this.activeJob || this.queue.length === 0 || Date.now() < this.scrollUntil) return;
         const key = this.queue.shift();
         const job = key ? this.jobs.get(key) : undefined;
         if (!job) {
@@ -221,10 +254,77 @@ export class DocumentCardPreviewController {
             return;
         }
         this.activeJob = job;
+        const generation = this.generation;
         void this.render(job).finally(() => {
             if (this.activeJob === job) this.activeJob = undefined;
+            if (generation !== this.generation && !this.isStale(job, this.generation) &&
+                !this.target(job)?.dataset.previewReady) this.enqueueProbe(job);
             void this.drain();
         });
+    }
+
+    private enqueue(job: PreviewJob) {
+        if (!this.queue.includes(job.key)) this.queue.push(job.key);
+        void this.drain();
+    }
+
+    private enqueueProbe(job: PreviewJob) {
+        if (!this.probing.has(job) && !this.probeQueue.includes(job) && !this.queue.includes(job.key)) {
+            this.probeQueue.push(job);
+        }
+        this.drainProbes();
+    }
+
+    private drainProbes() {
+        // 缓存查询不等待截图完成，但限制并发，避免同时读取大量文档。
+        while (!this.destroyed && this.probing.size < 4 && this.probeQueue.length) {
+            const job = this.probeQueue.shift();
+            const generation = this.generation;
+            if (this.isStale(job, generation)) continue;
+            this.probing.add(job);
+            void this.probe(job, generation).finally(() => {
+                this.probing.delete(job);
+                if (!this.destroyed && generation !== this.generation && !this.isStale(job, this.generation)) {
+                    this.enqueueProbe(job);
+                }
+                this.drainProbes();
+            });
+        }
+    }
+
+    private async probe(job: PreviewJob, generation: number) {
+        try {
+            await this.refreshAppearance();
+            if (this.isStale(job, generation)) return;
+            if (notebookRootNeedsMarkdownIdentity(job.reference.kind, job.reference.identityState,
+                Boolean(job.reference.identityConflict))) {
+                this.enqueue(job);
+                return;
+            }
+            const theme = window.siyuan.config.appearance.mode === 1 ? "dark" : "light";
+            const appearanceKey = await this.currentAppearanceKey();
+            const sessionKey = documentCardPreviewSessionKey(job.reference, theme, appearanceKey, "medium");
+            let descriptor = sessionPreviewDescriptors.get(sessionKey);
+            if (!descriptor) {
+                const request = this.options.request || (await import("../util/fetch")).fetchSyncPost;
+                if (this.isStale(job, generation)) return;
+                const response = await request("/api/notebook/prepareDocumentCardPreview", {
+                    reference: job.reference, theme, appearanceKey, size: "medium",
+                });
+                if (response.code !== 0) throw new Error(response.msg || "preview preparation failed");
+                descriptor = response.data as PreviewDescriptor;
+            }
+            if (this.isStale(job, generation)) return;
+            if (descriptor.exists) {
+                cacheSessionPreviewDescriptor(sessionKey, descriptor);
+                await this.installImage(job.key, descriptor.url, generation);
+            } else {
+                this.prepared.set(job, {generation, descriptor});
+                this.enqueue(job);
+            }
+        } catch {
+            if (!this.isStale(job, generation)) this.target(job).dataset.previewState = "failed";
+        }
     }
 
     private migrateJobIdentity(job: PreviewJob, identity: {documentID: string, revision: string}) {
@@ -239,6 +339,8 @@ export class DocumentCardPreviewController {
             this.jobs.delete(temporaryKey);
             this.jobs.set(formalKey, job);
             this.targets.delete(temporaryKey);
+            this.visible.set(formalKey, this.visible.get(temporaryKey));
+            this.visible.delete(temporaryKey);
             if (target) {
                 target.dataset.id = identity.documentID;
                 target.dataset.identityState = "valid";
@@ -266,6 +368,10 @@ export class DocumentCardPreviewController {
             await waitForPreviewPaint();
             await waitForPreviewIdle();
             if (this.isStale(job, generation)) return;
+            if (Date.now() < this.scrollUntil) {
+                this.enqueue(job);
+                return;
+            }
             const request = this.options.request || (await import("../util/fetch")).fetchSyncPost;
             if (this.isStale(job, generation)) return;
             if (notebookRootNeedsMarkdownIdentity(job.reference.kind, job.reference.identityState,
@@ -296,11 +402,11 @@ export class DocumentCardPreviewController {
             const appearanceKey = await this.currentAppearanceKey();
             if (this.isStale(job, generation)) return;
             const sessionKey = documentCardPreviewSessionKey(job.reference, theme, appearanceKey, size);
-            const renderPreview = this.options.renderPreview ||
-                (await import("./previewRenderer")).renderDocumentCardPreview;
             for (let attempt = 0; attempt < 2; attempt++) {
                 if (this.isStale(job, generation)) return;
                 let descriptor = attempt === 0 ? sessionPreviewDescriptors.get(sessionKey) : undefined;
+                const prepared = this.prepared.get(job);
+                if (!descriptor && attempt === 0 && prepared?.generation === generation) descriptor = prepared.descriptor;
                 if (!descriptor) {
                     const prepared = await request("/api/notebook/prepareDocumentCardPreview", {
                         reference: job.reference,
@@ -319,7 +425,14 @@ export class DocumentCardPreviewController {
                     await this.installImage(job.key, descriptor.url, generation);
                     return;
                 }
-                const blob = await renderPreview({reference: job.reference, size});
+                const renderPreview = this.options.renderPreview ||
+                    (await import("./previewRenderer")).renderDocumentCardPreview;
+                const shouldContinue = () => !this.isStale(job, generation) && Date.now() >= this.scrollUntil;
+                if (!shouldContinue()) {
+                    if (!this.isStale(job, generation)) this.enqueue(job);
+                    return;
+                }
+                const blob = await renderPreview({reference: job.reference, size, shouldContinue});
                 if (this.isStale(job, generation)) return;
                 const formData = new FormData();
                 formData.append("reference", JSON.stringify(job.reference));
@@ -333,20 +446,30 @@ export class DocumentCardPreviewController {
                 await this.installImage(job.key, descriptor.url, generation);
                 return;
             }
-        } catch {
+        } catch (error) {
+            if ((error as Error).name === "AbortError") {
+                await this.refreshAppearance();
+                if (!this.isStale(job, generation)) this.enqueue(job);
+                return;
+            }
             const target = this.isStale(job, generation) ? undefined : this.target(job);
             if (target) target.dataset.previewState = "failed";
+        } finally {
+            this.prepared.delete(job);
         }
     }
 
     private isStale(job: PreviewJob, generation: number) {
-        return this.destroyed || generation !== this.generation || !this.target(job);
+        return this.destroyed || generation !== this.generation || !this.target(job) ||
+            this.jobs.get(job.key) !== job || this.visible.get(job.key) === false;
     }
 
     private async installImage(key: string, url: string, generation = this.generation) {
+        const job = this.jobs.get(key);
         const image = await decodeDocumentCardPreviewImage(url);
         const target = this.targets.get(key);
-        if (this.destroyed || generation !== this.generation || !target?.isConnected) return;
+        if (this.destroyed || generation !== this.generation || !target?.isConnected ||
+            this.jobs.get(key) !== job || this.visible.get(key) === false) return;
         if (installDocumentCardPreviewImage(target, url, image)) {
             target.dataset.previewReady = "true";
             target.dataset.previewState = "ready";
