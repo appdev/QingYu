@@ -4,6 +4,7 @@ ARG NPM_REGISTRY=
 
 WORKDIR /app
 ADD app/package.json app/pnpm* app/.npmrc .
+COPY app/patches ./patches
 
 RUN <<EORUN
 #!/bin/bash -e
