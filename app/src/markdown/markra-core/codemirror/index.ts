@@ -144,6 +144,7 @@ export type {
 } from "./insertions";
 export { insertionsPlugin } from "./insertions";
 export { markdownEditingPlugin } from "./markdown-editing";
+export { blockSpacingExtension } from "./block-spacing";
 export type { MarkdownShortcutsPluginOptions } from "./markdown-shortcuts";
 export { markdownShortcutsPlugin } from "./markdown-shortcuts";
 export type {

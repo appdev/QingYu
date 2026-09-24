@@ -16,9 +16,12 @@ import {
 import { defineMarkraPlugin } from "./plugin";
 import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy";
 import { syntaxTreeChanged, updateChangesStayAfter } from "./changes";
+import { createHtmlTableWidget, type HtmlTableLabels } from "./html-table-widget";
+import { htmlSourceEditing, revealHtmlSource } from "./html-source";
 
 export interface RawHtmlPreviewPluginOptions {
   resolveImageSrc?: ResolveRawHtmlSrc;
+  tableLabels?: Partial<HtmlTableLabels>;
 }
 
 interface CodeMirrorHtmlRange {
@@ -255,7 +258,7 @@ class RawHtmlWidget extends WidgetType {
       if (preservesRawHtmlInteraction(root, event.target)) return;
       event.preventDefault();
       event.stopPropagation();
-      activateHtml(view, this.range);
+      revealHtmlSource(view, this.range);
     };
     root.addEventListener("mousedown", activate);
     root.addEventListener("keydown", (event) => {
@@ -300,9 +303,11 @@ function buildRawHtmlDecorations(
     (left, right) => left.from - right.from,
   );
 
+  const editing = view.state.field(htmlSourceEditing, false);
   for (const range of htmlRanges) {
+    if (editing && editing.from < range.to && editing.to > range.from) continue;
     if (cursorInsideRange(view, range.from, range.to)) continue;
-    const widget = new RawHtmlWidget(range, options);
+    const widget = createHtmlTableWidget(range, view, options) ?? new RawHtmlWidget(range, options);
     if (range.block && range.source.includes("\n")) {
       addBlockReplacement(view, ranges, range, widget);
     } else {
@@ -390,7 +395,8 @@ export function rawHtmlPreviewPlugin(
               selectionChangeAffectsReveal(update) ||
               update.focusChanged ||
               update.viewportChanged ||
-              syntaxTreeChanged(update.startState, update.state)
+              syntaxTreeChanged(update.startState, update.state) ||
+              update.startState.field(htmlSourceEditing, false) !== update.state.field(htmlSourceEditing, false)
             ) {
               const state = buildRawHtmlDecorations(update.view, options);
               this.decorations = state.decorations;
@@ -400,6 +406,7 @@ export function rawHtmlPreviewPlugin(
         },
         { decorations: (plugin) => plugin.decorations },
       ),
+      htmlSourceEditing,
       rawHtmlTheme,
     ],
   });

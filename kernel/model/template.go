@@ -32,6 +32,7 @@ import (
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/parse"
 	"github.com/88250/lute/render"
+	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/filelock"
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/av"
@@ -297,7 +298,7 @@ func DocSaveAsTemplate(id, name string, overwrite bool) (code int, err error) {
 	return
 }
 
-func RenderDynamicIconContentTemplate(content, id string) (ret string) {
+func RenderDynamicIconContentTemplate(c *gin.Context, content, id string) (ret string) {
 	tree, err := LoadTreeByBlockID(id)
 	if err != nil {
 		return
@@ -324,6 +325,10 @@ func RenderDynamicIconContentTemplate(content, id string) (ret string) {
 
 	goTpl := template.New("").Delims(".action{", "}")
 	tplFuncMap := filesys.BuiltInTemplateFuncs()
+	if IsReadOnlyRoleContext(c) {
+		delete(tplFuncMap, "getHPathByID")
+		delete(tplFuncMap, "statBlock")
+	}
 	goTpl = goTpl.Funcs(tplFuncMap)
 	tpl, err := goTpl.Funcs(tplFuncMap).Parse(content)
 	if err != nil {

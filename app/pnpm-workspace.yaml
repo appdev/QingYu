@@ -17,3 +17,5 @@ overrides:
   # undefined (reading 'ReadWrite')" 错误。
   '@electron/get': 4.0.3
   '@types/d3-dispatch': 3.0.6
+patchedDependencies:
+  '@codemirror/view@6.43.8': patches/@codemirror__view@6.43.8.patch

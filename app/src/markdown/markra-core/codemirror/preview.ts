@@ -35,6 +35,7 @@ import { readOptionalMarkdownHostAdapter } from "../adapter";
 import {blockquoteRailExtension} from "./blockquote-rail";
 import {setMarkdownTableWidthMode} from "./table-appearance";
 import {setActiveMarkdownTable, setHoveredMarkdownTable} from "./table-interaction";
+import {blockSpacingExtension} from "./block-spacing";
 
 const HEADING_CLASSES: Readonly<Record<string, string>> = {
   ATXHeading1: "cm-markra-h1 h1",
@@ -349,6 +350,7 @@ export interface LivePreviewConfig {
   reveal?: RevealPolicy;
   hideHeadingMarkersOnFocus?: boolean;
   taskCheckboxes?: boolean;
+  paragraphSpacing?: number;
 }
 
 function resolveLinkHref(
@@ -1130,6 +1132,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
 export function livePreview(config: LivePreviewConfig = {}): Extension {
   return [
     sourceDragSelectionExtension,
+    blockSpacingExtension(config.paragraphSpacing),
     previewPlugin(config),
     blockquoteRailExtension(),
     listMarkerSelectionPlugin,

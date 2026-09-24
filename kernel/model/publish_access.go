@@ -529,6 +529,8 @@ func FilterBlockInfoByPublishAccess(c *gin.Context, publishAccess PublishAccess,
 	}
 	ret.AttrViews = filteredAttrViews
 	ret.IAL[av.NodeAttrNameAvs] = strings.Join(avIDs, ",")
+	ret.RefIDs = FilterRefIDsByPublishAccess(c, publishAccess, ret.RefIDs)
+	ret.RefCount = len(ret.RefIDs)
 
 	bt := treenode.GetBlockTree(info.RootID)
 	if bt != nil {
@@ -542,6 +544,28 @@ func FilterBlockInfoByPublishAccess(c *gin.Context, publishAccess PublishAccess,
 			ret.RefCount = 0
 			ret.RefIDs = []string{}
 		}
+	}
+	return
+}
+
+// FilterRefIDsByPublishAccess 过滤读者无权访问的反链定义块，避免通过 ID 泄露受限文档。
+func FilterRefIDsByPublishAccess(c *gin.Context, publishAccess PublishAccess, refIDs []string) (ret []string) {
+	ret = make([]string, 0, len(refIDs))
+	publishIgnore := GetDisablePublishAccess(publishAccess)
+	bts := treenode.GetBlockTrees(refIDs)
+	for _, refID := range refIDs {
+		bt := bts[refID]
+		if bt == nil {
+			continue
+		}
+		passwordID, password := GetPathPasswordByPublishAccess(bt.BoxID, bt.Path, publishAccess)
+		if password != "" && !CheckPublishAuthCookie(c, passwordID, password) {
+			continue
+		}
+		if !CheckPathAccessableByPublishIgnore(bt.BoxID, bt.Path, publishIgnore) {
+			continue
+		}
+		ret = append(ret, refID)
 	}
 	return
 }

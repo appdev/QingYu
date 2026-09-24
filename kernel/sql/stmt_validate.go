@@ -172,6 +172,14 @@ func CheckAssetContentReadonlyStatement(stmt string) error {
 	return checkReadonlyStatement(stmt, assetContentDB)
 }
 
+// CheckReadonlyBlockQueryStatement 校验原始块查询为单条只读语句。
+func CheckReadonlyBlockQueryStatement(stmt, boxID string) error {
+	if err := CheckSingleStatement(stmt); err != nil {
+		return err
+	}
+	return CheckReadonlyStatementInBox(stmt, boxID)
+}
+
 // CheckReadonlyStatementInBox 在指定笔记本对应的数据库连接上检查 SQL 是否只读。
 func CheckReadonlyStatementInBox(stmt, boxID string) error {
 	targetDB := db

@@ -63,6 +63,7 @@ var (
 	RunInContainer             = false // 是否运行在容器中
 	QingYuAccessAuthCodeBypass = false // 是否跳过空锁屏密码检查
 	AttachUI                   = false // 是否绑定桌面 UI 进程生命周期（Electron 拉起时为 true，手动 serve 为 false）
+	EnablePprof                = false // 是否显式启用 pprof 调试端点
 )
 
 func initEnvVars() {
@@ -138,14 +139,16 @@ func Boot() {
 	lang := flag.String("lang", "", "ar/de/en/es/fr/he/hi/id/it/ja/ko/nl/pl/pt-BR/ru/sk/th/tr/uk/zh-CN/zh-TW")
 	mode := flag.String("mode", "prod", "dev/prod")
 	safeMode := flag.Bool("safe-mode", false, "boot in safe mode")
+	enablePprof := flag.Bool("enable-pprof", false, "enable authenticated /debug/pprof/ endpoints")
 	flag.Parse()
 
-	BootWithFlags(*workspacePath, *wdPath, *port, *readOnly, *accessAuthCode, *lang, *mode, *ssl, *attachUI, *safeMode)
+	BootWithFlags(*workspacePath, *wdPath, *port, *readOnly, *accessAuthCode, *lang, *mode, *ssl, *attachUI, *safeMode, *enablePprof)
 }
 
 // BootWithFlags 接收已解析好的启动参数，完成环境变量回退、全局变量赋值、工作空间初始化与加锁等启动收尾工作。Boot()（标准库 flag 解析）和 serve 子命令（cobra 解析）都走这个统一入口。
-func BootWithFlags(workspacePath, wdPath, port, readOnly, accessAuthCode, lang, mode string, ssl, attachUI, safeMode bool) {
+func BootWithFlags(workspacePath, wdPath, port, readOnly, accessAuthCode, lang, mode string, ssl, attachUI, safeMode, enablePprof bool) {
 	SafeMode = safeMode
+	EnablePprof = enablePprof
 	// Fallback to env vars if commandline args are not set
 	// valid only for CLI args that default to "", as the
 	// others have explicit (sane) defaults

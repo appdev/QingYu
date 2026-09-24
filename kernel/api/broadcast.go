@@ -413,6 +413,9 @@ func GetBroadcastChannel(channel string) *BroadcastChannel {
 // ConstructBroadcastChannel creates a broadcast channel
 func ConstructBroadcastChannel(channel string) *BroadcastChannel {
 	websocket := melody.New()
+	websocket.Upgrader.CheckOrigin = func(r *http.Request) bool {
+		return util.IsSessionOriginAllowedRequest(r)
+	}
 	websocket.Config.MaxMessageSize = 1024 * 1024 * 128 // 128 MiB
 
 	// broadcast string message to other session

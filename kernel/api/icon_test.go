@@ -21,7 +21,7 @@ import (
 
 func TestGenerateTypeEightSVGEscapesContent(t *testing.T) {
 	content := `</text><desc><style><script>alert(1)</script></style></desc><text>`
-	output := generateTypeEightSVG("red", content, "")
+	output := generateTypeEightSVG("red", content)
 	if strings.Contains(output, `<script>`) || strings.Contains(output, `</text><desc>`) {
 		t.Fatalf("dynamic icon contains injected SVG markup: %s", output)
 	}
@@ -31,7 +31,7 @@ func TestGenerateTypeEightSVGEscapesContent(t *testing.T) {
 }
 
 func TestGenerateTypeEightSVGCalculatesFontSizeBeforeEscaping(t *testing.T) {
-	output := generateTypeEightSVG("red", "<", "")
+	output := generateTypeEightSVG("red", "<")
 	if !strings.Contains(output, `font-size: 480.00px`) || !strings.Contains(output, `&lt;`) {
 		t.Fatalf("escaped content changed the dynamic icon font size: %s", output)
 	}

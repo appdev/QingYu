@@ -407,6 +407,23 @@ func forwardResponseHeaders(dst http.Header, src http.Header) {
 	}
 }
 
+func secureProxyResponseHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment")
+}
+
+func secureSSEProxyResponseHeaders(w http.ResponseWriter, contentType string) {
+	secureProxyResponseHeaders(w)
+	if contentType == "" {
+		contentType = "text/event-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Del("Content-Disposition")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+}
+
 // httpProxy proxies an HTTP request to a remote HTTP endpoint.
 //
 // Query params:
@@ -456,6 +473,7 @@ func httpProxy(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
+	secureProxyResponseHeaders(c.Writer)
 	forwardResponseHeaders(c.Writer.Header(), resp.Header)
 	c.Writer.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
@@ -499,7 +517,9 @@ func wsProxy(c *gin.Context) {
 		forwardResponseHeaders(upgradeHeaders, targetResp.Header)
 	}
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin: func(r *http.Request) bool {
+			return util.IsSessionOriginAllowedRequest(r)
+		},
 	}
 	clientConn, upgradeErr := upgrader.Upgrade(c.Writer, c.Request, upgradeHeaders)
 	if upgradeErr != nil {
@@ -601,6 +621,7 @@ func esProxy(c *gin.Context) {
 	}
 	defer resp.Body.Close()
 
+	secureSSEProxyResponseHeaders(c.Writer, resp.Header.Get("Content-Type"))
 	forwardResponseHeaders(c.Writer.Header(), resp.Header)
 	c.Writer.WriteHeader(resp.StatusCode)
 

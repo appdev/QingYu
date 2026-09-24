@@ -198,7 +198,7 @@ func SelectBlocksRawStmtInBox(stmt string, page, limit int, boxID string) (ret [
 	queryFn := func(stmt string, args ...any) (*sql.Rows, error) {
 		return queryForBox(boxID, stmt, args...)
 	}
-	return selectBlocksRawStmtWithQuery(stmt, page, limit, queryFn)
+	return selectBlocksRawStmtWithQuery(stmt, page, limit, boxID, queryFn)
 }
 
 // QueryRefCountInBox 按 defBlockIDs 在指定 box 的 db 里查引用计数。
@@ -239,6 +239,9 @@ func QueryNoLimitArgsInBox(stmt, boxID string, args ...any) (ret []map[string]an
 // SelectBlocksRawStmtArgsInBox 在指定 box 的 db 里执行参数化原始 SQL 查询 blocks。
 // 与 SelectBlocksRawStmtArgs 对应，绕开 sqlparser 对 "?" 占位的改写。
 func SelectBlocksRawStmtArgsInBox(stmt string, args []any, limit int, boxID string) (ret []*Block) {
+	if CheckReadonlyBlockQueryStatement(stmt, boxID) != nil {
+		return
+	}
 	rows, err := queryForBox(boxID, stmt, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "syntax error") {
@@ -503,6 +506,9 @@ func QueryRefIDsByDefIDInBox(defID string, containChildren bool, boxID string) (
 
 // SelectBlocksRawStmtNoParseInBox 与 SelectBlocksRawStmtNoParse 一致，但按 boxID 路由。
 func SelectBlocksRawStmtNoParseInBox(stmt string, limit int, boxID string) (ret []*Block) {
+	if CheckReadonlyBlockQueryStatement(stmt, boxID) != nil {
+		return
+	}
 	rows, err := queryForBox(boxID, stmt)
 	if err != nil {
 		if strings.Contains(err.Error(), "syntax error") {

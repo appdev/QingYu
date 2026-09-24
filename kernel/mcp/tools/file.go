@@ -88,24 +88,77 @@ func fileHandler(args map[string]any) (CallToolResult, error) {
 func resolvePath(rel string) (string, error) {
 	rel = filepath.Clean(strings.ReplaceAll(rel, "/", string(os.PathSeparator)))
 	abs := filepath.Join(util.WorkspaceDir, rel)
+	if err := authorizePath(abs, rel); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func authorizePath(abs, display string) error {
 	if !gulu.File.IsSubPath(util.WorkspaceDir, abs) {
-		return "", fmt.Errorf("path escapes workspace: %s", rel)
+		return fmt.Errorf("path escapes workspace: %s", display)
 	}
 	// 拒绝加密笔记本目录：MCP 文件工具不能读写加密 box 下的文件（防止密文泄漏或明文破坏加密格式）
 	if boxID, encrypted := rejectEncryptedPath(abs); encrypted {
-		return "", fmt.Errorf("path belongs to encrypted notebook [%s]: %s", boxID, rel)
+		return fmt.Errorf("path belongs to encrypted notebook [%s]: %s", boxID, display)
 	}
 	// 防止 symlink 逃逸工作区：解析符号链接后再次检查
 	if resolved := util.ResolveLongestExistingParent(abs); resolved != abs && !gulu.File.IsSubPath(util.WorkspaceDir, resolved) {
-		return "", fmt.Errorf("symlink escapes workspace: %s", rel)
+		return fmt.Errorf("symlink escapes workspace: %s", display)
 	}
 	// 禁止访问配置文件 conf/conf.json（含 accessAuthCode/api.token/cookieKey 等明文凭据），
 	// 对齐 HTTP 文件 API 的既定黑名单（见 kernel/api/file.go 的 refuseToAccess）。
 	confPath := filepath.Join(util.ConfDir, "conf.json")
 	if abs == confPath {
-		return "", fmt.Errorf("access to conf.json is forbidden")
+		return fmt.Errorf("access to conf.json is forbidden")
 	}
-	return abs, nil
+	return nil
+}
+
+func authorizeSubtree(abs string) error {
+	if err := authorizePath(abs, abs); err != nil {
+		return err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil || !info.IsDir() {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err = authorizeSubtree(filepath.Join(abs, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func authorizeCopyTree(src, dst string) error {
+	if err := authorizePath(src, src); err != nil {
+		return err
+	}
+	if err := authorizePath(dst, dst); err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil || !info.IsDir() {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err = authorizeCopyTree(filepath.Join(src, entry.Name()), filepath.Join(dst, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rejectEncryptedPath 检查路径是否属于加密笔记本（含 symlink 绕过），返回 boxID 和是否为加密 box。
@@ -127,6 +180,13 @@ func fileList(args map[string]any) (CallToolResult, error) {
 	if err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "read dir failed: " + err.Error()}}, IsError: true}, nil
 	}
+	visible := entries[:0]
+	for _, entry := range entries {
+		if authorizePath(filepath.Join(dir, entry.Name()), filepath.Join(p, entry.Name())) == nil {
+			visible = append(visible, entry)
+		}
+	}
+	entries = visible
 
 	max := resolveLimit(args, 200)
 	total := len(entries)
@@ -247,6 +307,9 @@ func fileDelete(args map[string]any) (CallToolResult, error) {
 	if err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "stat failed: " + err.Error()}}, IsError: true}, nil
 	}
+	if err = authorizeSubtree(abs); err != nil {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
 	if info.IsDir() {
 		err = os.RemoveAll(abs)
 	} else {
@@ -268,8 +331,14 @@ func fileRename(args map[string]any) (CallToolResult, error) {
 	if err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
 	}
+	if err = authorizeSubtree(oldAbs); err != nil {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
 	newAbs, err := resolvePath(newP)
 	if err != nil {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
+	if err = authorizeSubtree(newAbs); err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(newAbs), 0755); err != nil {
@@ -293,6 +362,9 @@ func fileCopy(args map[string]any) (CallToolResult, error) {
 	}
 	dstAbs, err := resolvePath(dst)
 	if err != nil {
+		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
+	}
+	if err = authorizeCopyTree(srcAbs, dstAbs); err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
 	}
 	if err := copyPath(srcAbs, dstAbs); err != nil {
@@ -377,6 +449,13 @@ func fileGrep(args map[string]any) (CallToolResult, error) {
 	if err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "grep failed: " + err.Error()}}, IsError: true}, nil
 	}
+	filteredResults := results[:0]
+	for _, result := range results {
+		if authorizePath(result.File, result.File) == nil {
+			filteredResults = append(filteredResults, result)
+		}
+	}
+	results = filteredResults
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Found %d lines:\n\n", len(results)))
@@ -423,6 +502,9 @@ func fileFind(args map[string]any) (CallToolResult, error) {
 			return nil
 		}
 		if !d.Type().IsRegular() {
+			return nil
+		}
+		if authorizePath(path, path) != nil {
 			return nil
 		}
 		if include != "" && !matchGlob(d.Name(), include) {

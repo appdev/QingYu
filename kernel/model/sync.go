@@ -218,7 +218,7 @@ func checkSync(boot, exit, byHand bool) bool {
 		return false
 	}
 
-	if !cloud.IsValidCloudDirName(Conf.Sync.CloudName) {
+	if conf.ProviderS3 != Conf.Sync.Provider && !cloud.IsValidCloudDirName(Conf.Sync.CloudName) {
 		if byHand {
 			util.PushMsg(Conf.Language(123), 5000)
 		}
@@ -333,18 +333,21 @@ func upsertIndexes(upsertFilePaths []string) (upsertRootIDs []string) {
 	return
 }
 
-func SetCloudSyncDir(name string) {
+func SetCloudSyncDir(name string) error {
+	if conf.ProviderS3 == Conf.Sync.Provider {
+		return errors.New(Conf.Language(131))
+	}
 	if !cloud.IsValidCloudDirName(name) {
-		util.PushErrMsg(Conf.Language(37), 5000)
-		return
+		return errors.New(Conf.Language(37))
 	}
 
 	if Conf.Sync.CloudName == name {
-		return
+		return nil
 	}
 
 	Conf.Sync.CloudName = name
 	Conf.Save()
+	return nil
 }
 
 func SetSyncGenerateConflictDoc(b bool) {
@@ -446,7 +449,7 @@ func ListCloudSyncDir() (syncDirs []*Sync, hSize string, err error) {
 		err = errors.New(formatRepoErrorMsg(err))
 		return
 	}
-	if 1 > len(dirs) {
+	if 1 > len(dirs) && conf.ProviderS3 != Conf.Sync.Provider {
 		dirs = append(dirs, &cloud.Repo{
 			Name:    "main",
 			Size:    0,
@@ -465,10 +468,6 @@ func ListCloudSyncDir() (syncDirs []*Sync, hSize string, err error) {
 		syncDirs = append(syncDirs, sync)
 	}
 	hSize = humanize.BytesCustomCeil(uint64(size), 2)
-	if conf.ProviderS3 == Conf.Sync.Provider {
-		Conf.Sync.CloudName = syncDirs[0].CloudName
-		Conf.Save()
-	}
 	return
 }
 

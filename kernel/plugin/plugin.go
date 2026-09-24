@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -942,7 +943,11 @@ func (p *KernelPlugin) handleHttpRequest(c *gin.Context, request *Request, scope
 func (p *KernelPlugin) handleWebSocketRequest(c *gin.Context, request *Request, scope AccessScope) (err error) {
 	done := make(chan error, 1)
 	h := &WsEventHandler{p: p}
-	upgrader := gws.NewUpgrader(h, &gws.ServerOption{})
+	upgrader := gws.NewUpgrader(h, &gws.ServerOption{
+		Authorize: func(r *http.Request, _ gws.SessionStorage) bool {
+			return util.IsSessionOriginAllowedRequest(r)
+		},
+	})
 
 	socket, upgradeErr := upgrader.Upgrade(c.Writer, c.Request)
 	if upgradeErr != nil {

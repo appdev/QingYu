@@ -17,7 +17,10 @@
 package util
 
 import (
+	"crypto/subtle"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/88250/gulu"
 	ginSessions "github.com/gin-contrib/sessions"
@@ -29,6 +32,82 @@ var WrongAuthCount int
 
 func NeedCaptcha() bool {
 	return 3 < WrongAuthCount
+}
+
+// AuthCodeEquals 使用恒定时间比较认证码，避免通过响应时间差异猜测秘密。
+func AuthCodeEquals(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+var (
+	authThrottleLock sync.Mutex
+	authThrottles    = map[string]*authThrottle{}
+)
+
+type authThrottle struct {
+	failCount int
+	lockUntil time.Time
+	lastFail  time.Time
+}
+
+const (
+	authThrottleMaxFail     = 5
+	authThrottleLockBaseSec = 30
+	authThrottleLockMaxSec  = 15 * 60
+	authThrottleWindow      = 15 * time.Minute
+	authThrottleMaxEntries  = 10000
+)
+
+// AuthThrottleCheck 返回 key 剩余锁定秒数，0 表示未锁定。
+func AuthThrottleCheck(key string) int {
+	authThrottleLock.Lock()
+	defer authThrottleLock.Unlock()
+	entry := authThrottles[key]
+	if entry == nil {
+		return 0
+	}
+	now := time.Now()
+	if now.Before(entry.lockUntil) {
+		return int(time.Until(entry.lockUntil)/time.Second) + 1
+	}
+	if !entry.lockUntil.IsZero() || now.Sub(entry.lastFail) >= authThrottleWindow {
+		delete(authThrottles, key)
+	}
+	return 0
+}
+
+// AuthThrottleFail 记录认证失败，并在连续失败达到阈值后暂时锁定。
+func AuthThrottleFail(key string) {
+	authThrottleLock.Lock()
+	defer authThrottleLock.Unlock()
+	now := time.Now()
+	entry := authThrottles[key]
+	if entry == nil {
+		if len(authThrottles) >= authThrottleMaxEntries {
+			return
+		}
+		entry = &authThrottle{}
+		authThrottles[key] = entry
+	} else if now.Sub(entry.lastFail) >= authThrottleWindow {
+		entry.failCount = 0
+	}
+	entry.lastFail = now
+	entry.failCount++
+	if entry.failCount <= authThrottleMaxFail {
+		return
+	}
+	lockSeconds := authThrottleLockBaseSec << (entry.failCount - authThrottleMaxFail)
+	if lockSeconds > authThrottleLockMaxSec {
+		lockSeconds = authThrottleLockMaxSec
+	}
+	entry.lockUntil = now.Add(time.Duration(lockSeconds) * time.Second)
+}
+
+// AuthThrottleReset 清除认证成功后的失败记录。
+func AuthThrottleReset(key string) {
+	authThrottleLock.Lock()
+	defer authThrottleLock.Unlock()
+	delete(authThrottles, key)
 }
 
 // SessionData represents the session.

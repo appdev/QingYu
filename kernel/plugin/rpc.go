@@ -352,7 +352,11 @@ func HandleRpcWebSocket(c *gin.Context) {
 		}
 	}
 
-	upgrader := gws.NewUpgrader(h, &gws.ServerOption{})
+	upgrader := gws.NewUpgrader(h, &gws.ServerOption{
+		Authorize: func(r *http.Request, _ gws.SessionStorage) bool {
+			return util.IsSessionOriginAllowedRequest(r)
+		},
+	})
 	socket, err := upgrader.Upgrade(c.Writer, c.Request)
 	if err != nil {
 		logging.LogErrorf("[plugin:%s] RPC WebSocket upgrade failed: %s", name, err)

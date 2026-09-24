@@ -736,7 +736,6 @@ export class WYSIWYG {
                         !selectElements[0].classList.contains("sb")) {
                         // 单个 p 不选中
                     } else {
-                        const ids: string[] = [];
                         if (!hasSelectClassElement && protyle.scroll && !protyle.scroll.element.classList.contains("fn__none") && !protyle.scroll.keepLazyLoad &&
                             (startElement.getBoundingClientRect().top < -protyle.contentElement.clientHeight * 2 || endElement.getBoundingClientRect().bottom > protyle.contentElement.clientHeight * 2)) {
                             showMessage(window.siyuan.languages.crossKeepLazyLoad);
@@ -744,14 +743,14 @@ export class WYSIWYG {
                         selectElements.forEach(item => {
                             if (!hasClosestByClassName(item, "protyle-wysiwyg--select")) {
                                 item.classList.add("protyle-wysiwyg--select");
-                                ids.push(item.getAttribute("data-node-id"));
                                 // 清除选中的子块 https://ld246.com/article/1667826582251
                                 item.querySelectorAll(".protyle-wysiwyg--select").forEach(subItem => {
                                     subItem.classList.remove("protyle-wysiwyg--select");
                                 });
                             }
                         });
-                        countBlockWord(ids);
+                        countBlockWord(Array.from(this.element.querySelectorAll(".protyle-wysiwyg--select"))
+                            .map(item => item.getAttribute("data-node-id")));
                         if (toDown) {
                             focusBlock(selectElements[selectElements.length - 1], protyle.wysiwyg.element, false);
                         } else {

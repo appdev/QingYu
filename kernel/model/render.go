@@ -70,7 +70,7 @@ func renderOutline(heading *ast.Node, luteEngine *lute.Lute) (ret string) {
 			// Show heading block appearance style in the Outline Panel https://github.com/siyuan-note/siyuan/issues/7872
 			if style := n.IALAttr("style"); "" != style {
 				buf.WriteString("<span style=\"")
-				buf.WriteString(style)
+				buf.WriteString(util.EscapeHTML(style))
 				buf.WriteString("\">")
 			}
 		case ast.NodeText, ast.NodeLinkText, ast.NodeCodeBlockCode, ast.NodeMathBlockContent:

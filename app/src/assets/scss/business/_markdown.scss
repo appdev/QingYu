@@ -287,8 +287,16 @@
     .cm-markra-list-item,
     .cm-markra-image-line
   ) {
-    border-bottom-width: var(--b3-editor-appearance-block-paragraph-margin-bottom, 2px);
-    border-top-width: var(--b3-editor-appearance-block-paragraph-margin-top, 2px);
+    border-bottom-width: 0;
+    border-top-width: 0;
+  }
+
+  .cm-markra-heading-spacer,
+  .cm-markra-paragraph-spacer,
+  .cm-markra-blockquote-spacer {
+    display: block;
+    pointer-events: none;
+    width: 100%;
   }
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h1 {
@@ -313,6 +321,16 @@
 
   .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h6 {
     @include editorAppearance.editor-heading(6, 1em, true);
+  }
+
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h1,
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h2,
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h3,
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h4,
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h5,
+  .cm-editor[data-markdown-mode="visual"] .cm-line.cm-markra-h6 {
+    border-block-width: 0;
+    margin-block: 0;
   }
 
   .markra-heading-level-control {
@@ -958,6 +976,7 @@
     border-radius: var(--b3-editor-appearance-block-raw-html-border-radius, 0);
     color: var(--b3-editor-appearance-block-raw-html-color, var(--b3-theme-on-background));
     display: block;
+    max-width: 100%;
     overflow: auto;
     min-height: 26px;
     padding: var(--b3-editor-appearance-block-raw-html-padding-top, 0)

@@ -123,6 +123,41 @@ func IsLocalOrigin(origin string) bool {
 	return false
 }
 
+// IsSessionOriginAllowed 校验会话 Cookie 认证请求的 Origin，防止跨站请求伪造。
+func IsSessionOriginAllowed(origin, host string) bool {
+	if origin == "" {
+		// 非浏览器客户端通常不携带 Origin，保持兼容性放行。
+		return true
+	}
+	if IsLocalOrigin(origin) {
+		return true
+	}
+	return originHostEquals(origin, host)
+}
+
+// IsCrossSiteFetchSite 判断浏览器标记的请求是否来自跨站点。
+func IsCrossSiteFetchSite(site string) bool {
+	return site != "" && site != "same-origin" && site != "none"
+}
+
+// IsSessionOriginAllowedRequest 同时校验 Sec-Fetch-Site 和 Origin。
+func IsSessionOriginAllowedRequest(r *http.Request) bool {
+	if IsCrossSiteFetchSite(r.Header.Get("Sec-Fetch-Site")) {
+		return false
+	}
+	return IsSessionOriginAllowed(r.Header.Get("Origin"), r.Host)
+}
+
+func originHostEquals(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	originHost := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(u.Host, ":80"), ":443"))
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(host), ":80"), ":443"))
+	return originHost != "" && originHost == host
+}
+
 // SSRFSafeDialer returns a net.Dialer whose Control hook blocks private, loopback, link-local and unspecified IPs.
 func SSRFSafeDialer(timeout time.Duration) *net.Dialer {
 	return &net.Dialer{
@@ -230,6 +265,15 @@ func GetRemoteAddr(req *http.Request) string {
 		return req.RemoteAddr
 	}
 	return strings.Split(ret, ",")[0]
+}
+
+// GetAuthThrottleKey 返回未经请求头覆盖的对端地址，用于认证失败限流。
+func GetAuthThrottleKey(req *http.Request) string {
+	remoteAddr := strings.TrimSpace(req.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 func JsonArg(c *gin.Context, result *gulu.Result) (arg map[string]any, ok bool) {

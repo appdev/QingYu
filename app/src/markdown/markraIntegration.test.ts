@@ -10,6 +10,8 @@ import {focusVisualTableCell} from "./markra-core/codemirror/table";
 import {handlePendingPlainTextPasteEvent, markNextPlainTextPaste} from "./markra-core/plain-text-paste";
 import {installMarkdownTestDom} from "./markraTestDom";
 import {renderMarkraMathToString} from "./markra-core/math-render";
+import {mergeHtmlCells, readHtmlTables, splitHtmlCell} from "./markra-core/html-table";
+import {transformHtmlTable} from "./markra-core/html-table-actions";
 
 const adapter: MarkdownHostAdapter = {
     createIcon(_name, className, ownerDocument) {
@@ -1109,4 +1111,50 @@ test("selects the current Markdown line before the complete document", () => {
     assert.equal(runScopeHandlers(editor, event(), "editor"), true);
     assert.equal(editor.state.selection.main.from, 0);
     assert.equal(editor.state.selection.main.to, editor.state.doc.length);
+});
+
+test("edits HTML table cells and preserves spanning structure", async () => {
+    Object.assign(globalThis, {HTMLTableCellElement: window.HTMLTableCellElement, InputEvent: window.InputEvent});
+    const source = "<table><thead><tr><th colspan=\"2\">Title</th></tr></thead><tbody><tr><td>A</td><td>B</td></tr></tbody></table>";
+    const editor = createView(source);
+    const table = editor.dom.querySelector<HTMLTableElement>(".cm-markra-html-table table");
+    assert.ok(table);
+    assert.equal(table.querySelector("th")?.colSpan, 2);
+
+    const cell = table.querySelector<HTMLTableCellElement>("tbody td");
+    assert.ok(cell);
+    cell.focus();
+    cell.textContent = "Edited";
+    cell.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText"}));
+    cell.dispatchEvent(new FocusEvent("focusout", {bubbles: true}));
+    await Promise.resolve();
+
+    assert.match(editor.state.doc.toString(), /<td>Edited<\/td>/u);
+    assert.match(editor.state.doc.toString(), /<th colspan="2">Title<\/th>/u);
+});
+
+test("transforms, merges, and splits HTML table structure without losing content", () => {
+    const source = "<table><tbody><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></tbody></table>";
+    const added = transformHtmlTable(source, document, 0, {type: "add-row"});
+    assert.ok(added);
+    assert.equal(readHtmlTables(added, document).tables[0]?.rows.length, 3);
+
+    const merged = mergeHtmlCells(added, document, 0, {row: 0, column: 0}, {row: 1, column: 1});
+    assert.ok(merged);
+    const mergedCell = readHtmlTables(merged, document).tables[0]?.grid[0]?.[0];
+    assert.equal(mergedCell?.rowSpan, 2);
+    assert.equal(mergedCell?.columnSpan, 2);
+    assert.equal(mergedCell?.element.textContent, "ABCD");
+
+    const split = splitHtmlCell(merged, document, 0, {row: 0, column: 0});
+    assert.ok(split);
+    assert.equal(readHtmlTables(split, document).tables[0]?.rows[0]?.cells.length, 2);
+});
+
+test("keeps multi-digit ordered markers intact and links port-bearing URLs", () => {
+    const editor = createView("123. Keep this marker\n\nhttp://127.0.0.1:8080/test");
+    const marker = editor.dom.querySelector<HTMLElement>(".cm-markra-list-marker");
+    assert.equal(marker?.textContent, "123.");
+    const link = editor.dom.querySelector<HTMLAnchorElement>("a.cm-markra-link");
+    assert.equal(link?.getAttribute("href"), "http://127.0.0.1:8080/test");
 });

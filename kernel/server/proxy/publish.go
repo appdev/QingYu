@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"time"
 
 	"github.com/siyuan-note/logging"
@@ -187,27 +188,22 @@ func (PublishServiceTransport) RoundTrip(request *http.Request) (response *http.
 
 		// Basic Auth
 		username, password, ok := request.BasicAuth()
-		account := model.GetBasicAuthAccount(username)
-		if !ok ||
-			account == nil ||
-			account.Username == "" || // 匿名用户
-			account.Password != password {
-
-			return &http.Response{
-				StatusCode: http.StatusUnauthorized,
-				Status:     http.StatusText(http.StatusUnauthorized),
-				Proto:      request.Proto,
-				ProtoMajor: request.ProtoMajor,
-				ProtoMinor: request.ProtoMinor,
-				Request:    request,
-				Header: http.Header{
-					model.BasicAuthHeaderKey: {model.BasicAuthHeaderValue},
-				},
-				Body:          http.NoBody,
-				Close:         false,
-				ContentLength: -1,
-			}, nil
+		if !ok || username == "" {
+			return publishAuthRejectResponse(request, http.StatusUnauthorized, 0), nil
 		}
+		ip := util.GetAuthThrottleKey(request)
+		if retryAfter := util.AuthThrottleCheck(ip); retryAfter > 0 {
+			util.AuthThrottleFail(ip)
+			return publishAuthRejectResponse(request, http.StatusTooManyRequests, retryAfter), nil
+		}
+		account := model.GetBasicAuthAccount(username)
+		if account == nil ||
+			account.Username == "" || // 匿名用户
+			!util.AuthCodeEquals(account.Password, password) {
+			util.AuthThrottleFail(ip)
+			return publishAuthRejectResponse(request, http.StatusUnauthorized, 0), nil
+		}
+		util.AuthThrottleReset(ip)
 
 		// set session cookie
 		sessionID := model.GetNewSessionID()
@@ -216,6 +212,8 @@ func (PublishServiceTransport) RoundTrip(request *http.Request) (response *http.
 			Value:    sessionID,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   request.TLS != nil,
+			SameSite: http.SameSiteLaxMode,
 		}
 		model.AddSession(sessionID, username)
 
@@ -229,4 +227,22 @@ func (PublishServiceTransport) RoundTrip(request *http.Request) (response *http.
 	request.Header.Set(model.XAuthTokenKey, model.GetBasicAuthAccount("").Token)
 	response, err = publishRoundTripper.RoundTrip(request)
 	return
+}
+
+func publishAuthRejectResponse(request *http.Request, statusCode, retryAfter int) *http.Response {
+	header := http.Header{model.BasicAuthHeaderKey: {model.BasicAuthHeaderValue}}
+	if retryAfter > 0 {
+		header.Set("Retry-After", strconv.Itoa(retryAfter))
+	}
+	return &http.Response{
+		StatusCode:    statusCode,
+		Status:        http.StatusText(statusCode),
+		Proto:         request.Proto,
+		ProtoMajor:    request.ProtoMajor,
+		ProtoMinor:    request.ProtoMinor,
+		Request:       request,
+		Header:        header,
+		Body:          http.NoBody,
+		ContentLength: -1,
+	}
 }

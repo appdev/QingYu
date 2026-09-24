@@ -160,7 +160,14 @@ func getDynamicIcon(c *gin.Context) {
 		// Type 8: 文字图标
 		content := c.Query("content")
 		id := c.Query("id")
-		svg = generateTypeEightSVG(color, content, id)
+		if strings.Contains(content, ".action{") {
+			if model.IsReadOnlyRoleContext(c) && !model.CheckBlockIdAccessableByPublishAccess(c, model.GetPublishAccess(), id) {
+				content = ""
+			} else {
+				content = model.RenderDynamicIconContentTemplate(c, content, id)
+			}
+		}
+		svg = generateTypeEightSVG(color, content)
 	default:
 		// 默认为Type 1
 		svg = generateTypeOneSVG(color, dateInfo)
@@ -178,6 +185,7 @@ func getDynamicIcon(c *gin.Context) {
 	c.Header("Content-Type", "image/svg+xml")
 	c.Header("Content-Security-Policy", "script-src 'none'; object-src 'none'; base-uri 'none'")
 	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Vary", "Cookie")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Pragma", "no-cache")
 	c.String(http.StatusOK, svg)
@@ -543,11 +551,7 @@ func generateTypeSevenSVG(color string, lang string, dateInfo map[string]any) st
 }
 
 // Type 8: 文字图标
-func generateTypeEightSVG(color, content, id string) string {
-	if strings.Contains(content, ".action{") {
-		content = model.RenderDynamicIconContentTemplate(content, id)
-	}
-
+func generateTypeEightSVG(color, content string) string {
 	colorScheme := getColorScheme(color)
 
 	// 动态变化字体大小

@@ -153,6 +153,7 @@ export const createSiyuanMarkraExtension = ({
     return [
         ...common,
         liveMarkdown({
+            paragraphSpacing: 4,
             plugins: [
                 blocksPlugin({
                     keybindings: false,

@@ -699,7 +699,13 @@ func exportBrowserHTML(c *gin.Context) {
 		return
 	}
 
-	tmpDir := filepath.Join(util.TempDir, "export", folder)
+	exportDir := filepath.Join(util.TempDir, "export")
+	tmpDir := filepath.Join(exportDir, folder)
+	if !gulu.File.IsSubPath(exportDir, tmpDir) {
+		ret.Code = -1
+		ret.Msg = "invalid export folder"
+		return
+	}
 
 	htmlPath := filepath.Join(tmpDir, "index.html")
 	if err := filelock.WriteFile(htmlPath, []byte(htmlContent)); err != nil {

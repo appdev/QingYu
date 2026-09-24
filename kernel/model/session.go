@@ -229,29 +229,17 @@ func CheckAuth(c *gin.Context) {
 		}
 
 		if "" != token {
-			if Conf.Api.Token == token {
-				c.Set(RoleContextKey, RoleAdministrator)
-				c.Next()
+			if checkAPIToken(c, "header: Authorization", token) {
 				return
 			}
-
-			c.JSON(http.StatusUnauthorized, map[string]any{"code": -1, "msg": "Auth failed [header: Authorization]"})
-			c.Abort()
-			return
 		}
 	}
 
 	// 通过 API token (query-params: token)
 	if token := c.Query("token"); "" != token {
-		if Conf.Api.Token == token {
-			c.Set(RoleContextKey, RoleAdministrator)
-			c.Next()
+		if checkAPIToken(c, "query: token", token) {
 			return
 		}
-
-		c.JSON(http.StatusUnauthorized, map[string]any{"code": -1, "msg": "Auth failed [query: token]"})
-		c.Abort()
-		return
 	}
 
 	//logging.LogInfof("check auth for [%s]", c.Request.RequestURI)
@@ -263,6 +251,11 @@ func CheckAuth(c *gin.Context) {
 		if util.QingYuAccessAuthCodeBypass {
 			c.Set(RoleContextKey, RoleAdministrator)
 			c.Next()
+			return
+		}
+		if util.IsCrossSiteFetchSite(c.GetHeader("Sec-Fetch-Site")) {
+			c.JSON(http.StatusUnauthorized, map[string]any{"code": -1, "msg": "Auth failed: cross-site requests are not allowed"})
+			c.Abort()
 			return
 		}
 
@@ -294,8 +287,16 @@ func CheckAuth(c *gin.Context) {
 		return
 	}
 
-	// 放过来自本机的某些请求
-	if localhost {
+	if localhost && util.IsCrossSiteFetchSite(c.GetHeader("Sec-Fetch-Site")) {
+		logging.LogWarnf("invalid local host pass-through request [ip=%s, origin=%s, host=%s, uri=%s]",
+			c.ClientIP(), c.GetHeader("Origin"), c.Request.Host, c.Request.RequestURI)
+		c.JSON(http.StatusUnauthorized, map[string]any{"code": -1, "msg": "Auth failed: invalid request origin"})
+		c.Abort()
+		return
+	}
+
+	// 放过来自可信本机来源的静态资源和少量系统请求
+	if localhost && isLocalHostRequestAllowed(c) {
 		if strings.HasPrefix(c.Request.RequestURI, "/assets/") || strings.HasPrefix(c.Request.RequestURI, "/export/") {
 			c.Set(RoleContextKey, RoleAdministrator)
 			c.Next()
@@ -324,6 +325,11 @@ func CheckAuth(c *gin.Context) {
 	session := util.GetSession(c)
 	workspaceSession := util.GetWorkspaceSession(session)
 	if workspaceSession.AccessAuthCode == Conf.AccessAuthCode {
+		if !util.IsSessionOriginAllowedRequest(c.Request) {
+			c.JSON(http.StatusUnauthorized, map[string]any{"code": -1, "msg": "Auth failed: invalid Origin"})
+			c.Abort()
+			return
+		}
 		c.Set(RoleContextKey, RoleAdministrator)
 		c.Next()
 		return
@@ -332,11 +338,20 @@ func CheckAuth(c *gin.Context) {
 	// 通过 BasicAuth (header: Authorization)
 	if username, password, ok := c.Request.BasicAuth(); ok {
 		// 使用锁屏密码作为密码
-		if util.WorkspaceName == username && Conf.AccessAuthCode == password {
+		ip := util.GetAuthThrottleKey(c.Request)
+		if retryAfter := util.AuthThrottleCheck(ip); retryAfter > 0 {
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			c.JSON(http.StatusTooManyRequests, map[string]any{"code": -1, "msg": "Too many authentication failures"})
+			c.Abort()
+			return
+		}
+		if util.WorkspaceName == username && util.AuthCodeEquals(Conf.AccessAuthCode, password) {
+			util.AuthThrottleReset(ip)
 			c.Set(RoleContextKey, RoleAdministrator)
 			c.Next()
 			return
 		}
+		util.AuthThrottleFail(ip)
 	}
 
 	// WebDAV BasicAuth Authenticate
@@ -380,6 +395,37 @@ func CheckAuth(c *gin.Context) {
 
 	c.Set(RoleContextKey, RoleAdministrator)
 	c.Next()
+}
+
+func isLocalHostRequestAllowed(c *gin.Context) bool {
+	clientIP := c.ClientIP()
+	host := c.Request.Host
+	origin := c.GetHeader("Origin")
+	forwardedHost := c.GetHeader("X-Forwarded-Host")
+	return (clientIP == "" || util.IsLocalHostname(clientIP)) &&
+		(host == "" || util.IsLocalHost(host)) &&
+		(origin == "" || util.IsLocalOrigin(origin)) &&
+		(forwardedHost == "" || util.IsLocalHost(forwardedHost))
+}
+
+func checkAPIToken(c *gin.Context, source, token string) bool {
+	ip := util.GetAuthThrottleKey(c.Request)
+	if retryAfter := util.AuthThrottleCheck(ip); retryAfter > 0 {
+		c.Header("Retry-After", strconv.Itoa(retryAfter))
+		c.JSON(http.StatusTooManyRequests, map[string]any{"code": -1, "msg": "Too many authentication failures"})
+		c.Abort()
+		return true
+	}
+	if util.AuthCodeEquals(Conf.Api.Token, token) {
+		util.AuthThrottleReset(ip)
+		c.Set(RoleContextKey, RoleAdministrator)
+		c.Next()
+		return true
+	}
+	util.AuthThrottleFail(ip)
+	c.JSON(http.StatusUnauthorized, map[string]any{"code": -1, "msg": "Auth failed [" + source + "]"})
+	c.Abort()
+	return true
 }
 
 func CheckAdminRole(c *gin.Context) {

@@ -74,6 +74,9 @@ func setNotebookIcon(c *gin.Context) {
 	) {
 		return
 	}
+	if util.InvalidIDPattern(boxID, ret) {
+		return
+	}
 	model.SetBoxIcon(boxID, icon)
 }
 

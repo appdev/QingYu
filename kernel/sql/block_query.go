@@ -569,12 +569,15 @@ func queryRawStmtArgs(stmt string, args []any, limit int) (ret []map[string]any,
 }
 
 func SelectBlocksRawStmtNoParse(stmt string, limit int) (ret []*Block) {
-	return selectBlocksRawStmt(stmt, limit)
+	return selectBlocksRawStmtNoParseWithQuery(stmt, limit, "", query)
 }
 
 // SelectBlocksRawStmtArgs 与 selectBlocksRawStmt 行为一致，但通过绑定参数执行，
 // 绕开 sqlparser 解析（vitess 会把 "?" 改写为 ":vN" 导致占位失效），用于含用户可控参数的搜索语句。
 func SelectBlocksRawStmtArgs(stmt string, args []any, limit int) (ret []*Block) {
+	if CheckReadonlyBlockQueryStatement(stmt, "") != nil {
+		return
+	}
 	rows, err := query(stmt, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "syntax error") {
@@ -606,13 +609,13 @@ func SelectBlocksRawStmtArgs(stmt string, args []any, limit int) (ret []*Block) 
 type queryRowsFunc func(string, ...any) (*sql.Rows, error)
 
 func SelectBlocksRawStmt(stmt string, page, limit int) (ret []*Block) {
-	return selectBlocksRawStmtWithQuery(stmt, page, limit, query)
+	return selectBlocksRawStmtWithQuery(stmt, page, limit, "", query)
 }
 
-func selectBlocksRawStmtWithQuery(stmt string, page, limit int, queryFn queryRowsFunc) (ret []*Block) {
+func selectBlocksRawStmtWithQuery(stmt string, page, limit int, boxID string, queryFn queryRowsFunc) (ret []*Block) {
 	parsedStmt, err := sqlparser.Parse(stmt)
 	if err != nil {
-		return selectBlocksRawStmtNoParseWithQuery(stmt, limit, queryFn)
+		return selectBlocksRawStmtNoParseWithQuery(stmt, limit, boxID, queryFn)
 	}
 
 	switch parsedStmt.(type) {
@@ -688,6 +691,9 @@ func selectBlocksRawStmtWithQuery(stmt string, page, limit int, queryFn queryRow
 	stmt = strings.ReplaceAll(stmt, "\\\"", "\"")
 	stmt = strings.ReplaceAll(stmt, "\\\\*", "\\*")
 	stmt = strings.ReplaceAll(stmt, "from dual", "")
+	if CheckReadonlyBlockQueryStatement(stmt, boxID) != nil {
+		return
+	}
 	rows, err := queryFn(stmt)
 	if err != nil {
 		if strings.Contains(err.Error(), "syntax error") {
@@ -810,10 +816,13 @@ func SelectBlocksRegexArgs(stmt string, exp *regexp.Regexp, name, alias, memo, i
 }
 
 func selectBlocksRawStmt(stmt string, limit int) (ret []*Block) {
-	return selectBlocksRawStmtNoParseWithQuery(stmt, limit, query)
+	return selectBlocksRawStmtNoParseWithQuery(stmt, limit, "", query)
 }
 
-func selectBlocksRawStmtNoParseWithQuery(stmt string, limit int, queryFn queryRowsFunc) (ret []*Block) {
+func selectBlocksRawStmtNoParseWithQuery(stmt string, limit int, boxID string, queryFn queryRowsFunc) (ret []*Block) {
+	if CheckReadonlyBlockQueryStatement(stmt, boxID) != nil {
+		return
+	}
 	rows, err := queryFn(stmt)
 	if err != nil {
 		if strings.Contains(err.Error(), "syntax error") {

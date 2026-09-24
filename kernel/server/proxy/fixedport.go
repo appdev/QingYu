@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/util"
@@ -37,10 +38,7 @@ func InitFixedPortService(host string, certPath, keyPath string) {
 		addr := host + ":" + util.FixedPort
 
 		// 启动固定端口的反向代理服务器，让浏览器扩展或外部程序无需配置动态端口即可调用内核接口。
-		proxy := httputil.NewSingleHostReverseProxy(util.ServerURL)
-		proxy.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
+		proxy := newFixedPortReverseProxy(util.ServerURL)
 
 		if "" != certPath {
 			logging.LogInfof("fixed port service [%s] is running (HTTP/HTTPS dual mode)", addr)
@@ -63,5 +61,18 @@ func InitFixedPortService(host string, certPath, keyPath string) {
 			}
 		}
 		logging.LogInfof("fixed port service [%s] is stopped", addr)
+	}
+}
+
+func newFixedPortReverseProxy(target *url.URL) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.SetURL(target)
+			request.Out.Host = request.In.Host
+			request.SetXForwarded()
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // 内核本地代理使用自签名证书
+		},
 	}
 }

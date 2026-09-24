@@ -168,18 +168,93 @@ func ValidateBoxRelativePath(boxID, p string) (string, error) {
 	return p, nil
 }
 
+// validateTreePath 限制文档读写只访问以块 ID 命名的 .sy 文档，避免订正逻辑覆盖内部配置文件。
+func validateTreePath(boxID, p string) error {
+	if !ast.IsNodeIDPattern(boxID) {
+		return fmt.Errorf("invalid notebook ID [%s]", boxID)
+	}
+	rel, err := ValidateBoxRelativePath(boxID, p)
+	if err != nil {
+		return err
+	}
+	if !strings.HasSuffix(rel, ".sy") {
+		return fmt.Errorf("invalid document path [%s]", p)
+	}
+	for _, id := range strings.Split(strings.TrimSuffix(rel, ".sy"), "/") {
+		if !ast.IsNodeIDPattern(id) {
+			return fmt.Errorf("invalid document path [%s]", p)
+		}
+	}
+	return nil
+}
+
+// validateTreeFilePath 校验文档路径上的每一级目录，拒绝符号链接导致的路径跳转。
+func validateTreeFilePath(boxID, p string, allowMissing bool) (string, error) {
+	if err := validateTreePath(boxID, p); err != nil {
+		return "", err
+	}
+	rel, err := ValidateBoxRelativePath(boxID, p)
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(util.DataDir, boxID)
+	filePath := filepath.Join(root, filepath.FromSlash(rel))
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		if allowMissing && errors.Is(err, os.ErrNotExist) {
+			return filePath, nil
+		}
+		return "", err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return "", fmt.Errorf("invalid notebook directory [%s]", root)
+	}
+
+	current := root
+	parts := strings.Split(rel, "/")
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			if allowMissing {
+				return filePath, nil
+			}
+			return "", statErr
+		}
+		if statErr != nil {
+			return "", statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("document path contains symlink [%s]", current)
+		}
+		if i < len(parts)-1 && !info.IsDir() {
+			return "", fmt.Errorf("document path contains non-directory [%s]", current)
+		}
+	}
+	return filePath, nil
+}
+
 func LoadTreeWithFix(boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, needFix bool, err error) {
-	if _, err = ValidateBoxRelativePath(boxID, p); err != nil {
+	var filePath string
+	filePath, err = validateTreeFilePath(boxID, p, true)
+	if err != nil {
 		logging.LogErrorf("invalid tree path [%s] for box [%s]: %s", p, boxID, err)
 		return
 	}
 	rootID := util.GetTreeID(p)
 	if raw, ok := cache.GetTreeDataInBox(rootID, boxID); ok {
+		if _, statErr := os.Lstat(filePath); statErr == nil {
+			if err = checkTreeFile(filePath); err != nil {
+				return
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			err = statErr
+			return
+		}
 		ret, err = LoadTreeByData(raw, boxID, p, luteEngine)
 		return
 	}
 
-	filePath := filepath.Join(util.DataDir, boxID, p)
 	data, err := filelock.ReadFile(filePath)
 	if nil != err {
 		logging.LogErrorf("load tree [%s] failed: %s", p, err)
@@ -210,6 +285,9 @@ func LoadTree(boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, err erro
 }
 
 func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *parse.Tree, err error) {
+	if err = validateTreePath(boxID, p); err != nil {
+		return
+	}
 	ret, err = parseJSON2Tree(boxID, p, data, luteEngine)
 	if nil != err {
 		logging.LogErrorf("parse tree [%s] failed: %s", p, err)
@@ -245,10 +323,21 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 		}
 		parentAbsPath += ".sy"
 		parentPath := parentAbsPath
-		parentAbsPath = filepath.Join(util.DataDir, boxID, parentAbsPath)
+		parentAbsPath, err = validateTreeFilePath(boxID, parentPath, true)
+		if err != nil {
+			return
+		}
 
 		parentDocIAL := DocIAL(parentAbsPath)
-		if 1 > len(parentDocIAL) {
+		parentInfo, parentStatErr := os.Stat(parentAbsPath)
+		if parentStatErr != nil && !errors.Is(parentStatErr, os.ErrNotExist) {
+			err = parentStatErr
+			return
+		}
+		if errors.Is(parentStatErr, os.ErrNotExist) {
+			if err = checkTreeFile(filepath.Join(util.DataDir, boxID, p)); err != nil {
+				return
+			}
 			// 子文档缺失父文档时自动补全 https://github.com/siyuan-note/siyuan/issues/7376
 			parentTree := treenode.NewTree(boxID, parentPath, hPathBuilder.String()+"Untitled", "Untitled")
 			if _, writeErr := WriteTree(parentTree); nil != writeErr {
@@ -259,6 +348,10 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 			}
 			hPathBuilder.WriteString("Untitled/")
 			continue
+		}
+		if !parentInfo.Mode().IsRegular() || 1 > len(parentDocIAL) {
+			err = fmt.Errorf("invalid parent document [%s]", parentAbsPath)
+			return
 		}
 
 		title := parentDocIAL["title"]
@@ -272,6 +365,17 @@ func LoadTreeByData(data []byte, boxID, p string, luteEngine *lute.Lute) (ret *p
 	ret.HPath = hPathBuilder.String()
 	ret.Hash = treenode.NodeHash(ret.Root, ret, luteEngine)
 	return
+}
+
+func checkTreeFile(absPath string) error {
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("invalid document file [%s]", absPath)
+	}
+	return nil
 }
 
 func DocIAL(absPath string) (ret map[string]string) {
@@ -400,6 +504,9 @@ func writeTreeByWriteFile(filePath string, data []byte) (err error) {
 }
 
 func prepareWriteTree(tree *parse.Tree) (data []byte, filePath string, err error) {
+	if filePath, err = validateTreeFilePath(tree.Box, tree.Path, true); err != nil {
+		return
+	}
 	luteEngine := util.NewLute() // 不关注用户的自定义解析渲染选项
 
 	if nil == tree.Root.FirstChild {
@@ -411,11 +518,6 @@ func prepareWriteTree(tree *parse.Tree) (data []byte, filePath string, err error
 
 	treenode.UpgradeSpec(tree)
 
-	if _, err = ValidateBoxRelativePath(tree.Box, tree.Path); err != nil {
-		return
-	}
-
-	filePath = filepath.Join(util.DataDir, tree.Box, tree.Path)
 	tree.Root.SetIALAttr("type", "doc")
 	renderer := render.NewJSONRenderer(tree, luteEngine.RenderOptions, luteEngine.ParseOptions)
 	data = renderer.Render()
@@ -492,6 +594,9 @@ func afterWriteTree(tree *parse.Tree) {
 
 // fixTreeJSONData 订正树 JSON 数据。
 func fixTreeJSONData(boxID, p string, jsonData []byte, luteEngine *lute.Lute) (data []byte, needFix bool, err error) {
+	if err = validateTreePath(boxID, p); err != nil {
+		return
+	}
 	jsonData, needFix = removeUnescapedUnicodeNull(jsonData)
 	ret, parseNeedFix, err := dataparser.ParseJSON(jsonData, luteEngine.ParseOptions)
 	if parseNeedFix {

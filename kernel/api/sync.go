@@ -704,5 +704,8 @@ func setCloudSyncDir(c *gin.Context) {
 	if !util.ParseJsonArgs(arg, ret, util.BindJsonArg("name", &name, true, true)) {
 		return
 	}
-	model.SetCloudSyncDir(name)
+	if err := model.SetCloudSyncDir(name); err != nil {
+		ret.Code = -1
+		ret.Msg = err.Error()
+	}
 }

@@ -976,26 +976,36 @@ func serveRepoDiff(ginServer *gin.Engine) {
 }
 
 func serveDebug(ginServer *gin.Engine) {
-	if "prod" == util.Mode {
-		// The production environment will no longer register `/debug/pprof/` https://github.com/siyuan-note/siyuan/issues/10152
+	if !util.EnablePprof {
 		return
 	}
 
-	ginServer.GET("/debug/pprof/", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/allocs", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/block", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/goroutine", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/heap", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/mutex", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/threadcreate", gin.WrapF(pprof.Index))
-	ginServer.GET("/debug/pprof/cmdline", gin.WrapF(pprof.Cmdline))
-	ginServer.GET("/debug/pprof/profile", gin.WrapF(pprof.Profile))
-	ginServer.GET("/debug/pprof/symbol", gin.WrapF(pprof.Symbol))
-	ginServer.GET("/debug/pprof/trace", gin.WrapF(pprof.Trace))
+	debugRoutes := []struct {
+		path    string
+		handler gin.HandlerFunc
+	}{
+		{"/debug/pprof/", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/allocs", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/block", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/goroutine", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/heap", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/mutex", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/threadcreate", gin.WrapF(pprof.Index)},
+		{"/debug/pprof/cmdline", gin.WrapF(pprof.Cmdline)},
+		{"/debug/pprof/profile", gin.WrapF(pprof.Profile)},
+		{"/debug/pprof/symbol", gin.WrapF(pprof.Symbol)},
+		{"/debug/pprof/trace", gin.WrapF(pprof.Trace)},
+	}
+	for _, route := range debugRoutes {
+		ginServer.GET(route.path, model.CheckAuth, model.CheckAdminRole, route.handler)
+	}
 }
 
 func serveWebSocket(ginServer *gin.Engine) {
 	util.WebSocketServer = melody.New()
+	util.WebSocketServer.Upgrader.CheckOrigin = func(r *http.Request) bool {
+		return util.IsSessionOriginAllowedRequest(r)
+	}
 	util.WebSocketServer.Config.MaxMessageSize = 1024 * 1024 * 8
 
 	ginServer.GET("/ws", func(c *gin.Context) {
@@ -1318,8 +1328,11 @@ func corsMiddleware() gin.HandlerFunc {
 	allowCardDavMethods := strings.Join(CardDavMethods, ", ")
 
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Credentials", "true")
+		if origin := c.GetHeader("Origin"); origin != "" && util.IsSessionOriginAllowedRequest(c.Request) {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Header("Vary", "Origin")
+		}
 		c.Header("Access-Control-Allow-Headers", "origin, Content-Length, Content-Type, Authorization")
 		c.Header("Access-Control-Allow-Private-Network", "false")
 
