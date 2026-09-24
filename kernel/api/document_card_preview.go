@@ -6,6 +6,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/88250/gulu"
@@ -36,12 +37,13 @@ func prepareDocumentCardPreview(c *gin.Context) {
 		return
 	}
 	var refArg map[string]any
-	var theme, appearanceKey, size string
+	var theme, appearanceKey, size, format string
 	if !util.ParseJsonArgs(arg, ret,
 		util.BindJsonArg("reference", &refArg, true, true),
 		util.BindJsonArg("theme", &theme, true, true),
 		util.BindJsonArg("appearanceKey", &appearanceKey, true, true),
 		util.BindJsonArg("size", &size, true, true),
+		util.BindJsonArg("format", &format, false, false),
 	) {
 		return
 	}
@@ -59,7 +61,7 @@ func prepareDocumentCardPreview(c *gin.Context) {
 		ret.Msg = err.Error()
 		return
 	}
-	descriptor, err := model.PrepareDocumentCardPreview(ref, theme, appearanceKey, size)
+	descriptor, err := model.PrepareDocumentCardPreview(ref, theme, appearanceKey, size, format)
 	if err != nil {
 		logDocumentCardPreviewError("prepare", ref, err)
 		ret.Code = -1
@@ -109,8 +111,13 @@ func storeDocumentCardPreview(c *gin.Context) {
 
 func getDocumentCardPreview(c *gin.Context) {
 	cacheKey := c.Param("cacheKey")
-	cacheKey = strings.TrimSuffix(cacheKey, ".webp")
-	filePath, err := model.DocumentCardPreviewFile(c.Param("notebook"), cacheKey)
+	extension := filepath.Ext(cacheKey)
+	format := strings.TrimPrefix(extension, ".")
+	if format == "" {
+		format = "webp"
+	}
+	cacheKey = strings.TrimSuffix(cacheKey, extension)
+	filePath, err := model.DocumentCardPreviewFile(c.Param("notebook"), cacheKey, format)
 	if err != nil {
 		logging.LogErrorf("document card preview read failed [notebook=%q, cacheKey=%q]: %s",
 			c.Param("notebook"), cacheKey, err)

@@ -528,7 +528,7 @@ test("replaces an empty heading marker when pasting structured Markdown", () => 
 
     editor.contentDOM.dispatchEvent(event);
 
-    assert.equal(editor.state.doc.toString(), "## 目标\n\n-   身高：175 cm");
+    assert.equal(editor.state.doc.toString(), "## 目标\n\n- 身高：175 cm");
 });
 
 test("replaces an empty heading marker when pasting plain Markdown", () => {

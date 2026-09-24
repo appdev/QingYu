@@ -13,6 +13,7 @@ import {normalizeDocumentCardPreviewAssets} from "./previewAssets";
 import {documentCardPreviewFontCSS} from "./previewFonts";
 import {documentCardPreviewThemeSignature} from "./theme";
 import {assertDocumentCardPreviewActive, queueDocumentCardPreviewRender} from "./previewRenderQueue";
+import {captureDocumentCardPreview, documentCardPreviewFormat} from "./previewCapture";
 
 export interface PreviewRenderInput {
     reference: {kind: "sy" | "markdown", notebook: string, path: string, id: string};
@@ -33,8 +34,9 @@ const settlePreviewAssets = async (element: HTMLElement) => {
     ]);
 };
 
-const canvasWebP = (canvas: HTMLCanvasElement, quality = 0.82) => new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("empty card preview")), "image/webp", quality);
+const canvasImage = (canvas: HTMLCanvasElement, quality = 0.82) => new Promise<Blob>((resolve, reject) => {
+    const type = documentCardPreviewFormat() === "png" ? "image/png" : "image/webp";
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("empty card preview")), type, quality);
 });
 
 export const renderDocumentCardPreview = (input: PreviewRenderInput): Promise<Blob> =>
@@ -86,13 +88,25 @@ const renderPreview = async (input: PreviewRenderInput): Promise<Blob> => {
         await settlePreviewAssets(content);
         checkpoint();
         pruneDocumentCardPreviewContent(content, host);
+        // 嵌入页面等内容依赖原文档环境，继续使用原有转换流程，避免静默遗漏。
+        const needsDocumentContext = content.querySelector("iframe, object, embed, video, style") ||
+            Array.from(content.querySelectorAll("use")).some(use => {
+                const href = use.getAttribute("href") || use.getAttribute("xlink:href");
+                return !href?.startsWith("#") || !document.getElementById(href.slice(1));
+            }) ||
+            Array.from(content.querySelectorAll("*")).some(element => element.shadowRoot);
+        if (documentCardPreviewFormat() === "png" && !needsDocumentContext) {
+            const image = await captureDocumentCardPreview(host);
+            checkpoint();
+            return image;
+        }
         await addScript(`${Constants.PROTYLE_CDN}/js/html-to-image.min.js?v=1.11.13`, "protyleHtml2image");
         checkpoint();
         const fontEmbedCSS = await documentCardPreviewFontCSS(host, appearance);
         checkpoint();
         const medium = await window.htmlToImage.toCanvas(host, {...notebookRootPreviewCanvasOptions(backgroundColor), fontEmbedCSS});
         checkpoint();
-        return canvasWebP(medium);
+        return canvasImage(medium);
     } finally {
         captureRoot.remove();
     }

@@ -1,6 +1,7 @@
 import {notebookRootDocumentKey, notebookRootElementKey} from "./documentKey";
 import {notebookRootNeedsMarkdownIdentity} from "./rules";
 import {documentCardPreviewAppearanceKey} from "./theme";
+import {documentCardPreviewFormat} from "./previewCapture";
 
 interface PreviewDescriptor {
     cacheKey: string;
@@ -9,6 +10,7 @@ interface PreviewDescriptor {
     theme: "light" | "dark";
     appearanceKey: string;
     size: "medium" | "small";
+    format?: "png" | "webp";
 }
 
 export interface PreviewReference {
@@ -58,6 +60,7 @@ export const documentCardPreviewSessionKey = (
     theme,
     appearanceKey,
     size,
+    documentCardPreviewFormat(),
 ].join("\u001f");
 
 const cacheSessionPreviewDescriptor = (key: string, descriptor: PreviewDescriptor) => {
@@ -309,7 +312,7 @@ export class DocumentCardPreviewController {
                 const request = this.options.request || (await import("../util/fetch")).fetchSyncPost;
                 if (this.isStale(job, generation)) return;
                 const response = await request("/api/notebook/prepareDocumentCardPreview", {
-                    reference: job.reference, theme, appearanceKey, size: "medium",
+                    reference: job.reference, theme, appearanceKey, size: "medium", format: documentCardPreviewFormat(),
                 });
                 if (response.code !== 0) throw new Error(response.msg || "preview preparation failed");
                 descriptor = response.data as PreviewDescriptor;
@@ -413,6 +416,7 @@ export class DocumentCardPreviewController {
                         theme,
                         appearanceKey,
                         size,
+                        format: documentCardPreviewFormat(),
                     });
                     if (prepared.code !== 0) throw new Error(prepared.msg || "preview preparation failed");
                     if (this.isStale(job, generation)) return;
@@ -437,7 +441,7 @@ export class DocumentCardPreviewController {
                 const formData = new FormData();
                 formData.append("reference", JSON.stringify(job.reference));
                 formData.append("descriptor", JSON.stringify(descriptor));
-                formData.append("file", blob, `${descriptor.cacheKey}.webp`);
+                formData.append("file", blob, `${descriptor.cacheKey}.${descriptor.format || "webp"}`);
                 const stored = await request("/api/notebook/storeDocumentCardPreview", formData);
                 if (stored.code === 409 && attempt === 0) continue;
                 if (stored.code !== 0) throw new Error(stored.msg || "preview store failed");

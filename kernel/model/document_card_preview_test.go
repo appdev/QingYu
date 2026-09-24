@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"image"
 	"image/jpeg"
+	"image/png"
+	"os"
 	"strings"
 	"testing"
 
@@ -37,29 +39,29 @@ func TestMarkdownDocumentCardPreviewCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if descriptor.Exists || len(descriptor.CacheKey) != 64 || descriptor.DocumentID != document.DocumentID {
 		t.Fatalf("unexpected descriptor: %#v", descriptor)
 	}
-	if descriptor.RendererVersion != 6 || !strings.HasSuffix(descriptor.URL, ".webp") {
+	if descriptor.RendererVersion != 7 || !strings.HasSuffix(descriptor.URL, ".webp") {
 		t.Fatalf("preview does not use WebP: %#v", descriptor)
 	}
 	encoded := bytes.NewReader(documentCardPreviewWebP(t, mediumDocumentCardPreviewWebP))
 	if err = StoreDocumentCardPreview(ref, *descriptor, encoded); err != nil {
 		t.Fatal(err)
 	}
-	preparedAgain, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
+	preparedAgain, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "")
 	if err != nil || !preparedAgain.Exists || preparedAgain.CacheKey != descriptor.CacheKey {
 		t.Fatalf("stored preview was not reused: %#v, %v", preparedAgain, err)
 	}
-	dark, err := PrepareDocumentCardPreview(ref, "dark", testDocumentCardPreviewAppearanceKey, "medium")
+	dark, err := PrepareDocumentCardPreview(ref, "dark", testDocumentCardPreviewAppearanceKey, "medium", "")
 	if err != nil || dark.CacheKey == descriptor.CacheKey || dark.Exists {
 		t.Fatalf("theme variant was not isolated: %#v, %v", dark, err)
 	}
-	otherAppearance, err := PrepareDocumentCardPreview(ref, "light", strings.Repeat("a", 64), "medium")
+	otherAppearance, err := PrepareDocumentCardPreview(ref, "light", strings.Repeat("a", 64), "medium", "")
 	if err != nil || otherAppearance.CacheKey == descriptor.CacheKey || otherAppearance.Exists {
 		t.Fatalf("appearance variant was not isolated: %#v, %v", otherAppearance, err)
 	}
@@ -72,10 +74,10 @@ func TestDocumentCardPreviewRejectsInvalidAppearanceKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	if _, err = PrepareDocumentCardPreview(ref, "light", "Savor", "medium"); err == nil {
+	if _, err = PrepareDocumentCardPreview(ref, "light", "Savor", "medium", ""); err == nil {
 		t.Fatal("invalid appearance key was accepted")
 	}
-	if _, err = PrepareDocumentCardPreview(ref, "light", strings.Repeat("A", 64), "medium"); err == nil {
+	if _, err = PrepareDocumentCardPreview(ref, "light", strings.Repeat("A", 64), "medium", ""); err == nil {
 		t.Fatal("uppercase appearance key was accepted")
 	}
 }
@@ -90,7 +92,7 @@ func TestDocumentCardPreviewRejectsWrongDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +112,7 @@ func TestDocumentCardPreviewRejectsJPEG(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
-	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium")
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,5 +122,62 @@ func TestDocumentCardPreviewRejectsJPEG(t *testing.T) {
 	}
 	if err = StoreDocumentCardPreview(ref, *descriptor, &encoded); err == nil {
 		t.Fatal("JPEG preview was accepted")
+	}
+}
+
+func TestDocumentCardPreviewPNGIsolation(t *testing.T) {
+	box := setupMarkdownTest(t)
+	originalTempDir := util.TempDir
+	util.TempDir = t.TempDir()
+	t.Cleanup(func() { util.TempDir = originalTempDir })
+	document, err := CreateMarkdown(box.ID, "/", "png-preview.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := DocumentCardReference{Kind: "markdown", Notebook: box.ID, Path: document.Path}
+	descriptor, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	webp, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "webp")
+	if err != nil || descriptor.CacheKey == webp.CacheKey || !strings.HasSuffix(descriptor.URL, ".png") {
+		t.Fatalf("formats not isolated: %#v, %v", descriptor, err)
+	}
+	var encoded bytes.Buffer
+	if err = png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 640, 960))); err != nil {
+		t.Fatal(err)
+	}
+	data := encoded.Bytes()
+	if err = StoreDocumentCardPreview(ref, *webp, bytes.NewReader(data)); err == nil {
+		t.Fatal("PNG accepted for WebP descriptor")
+	}
+	if err = StoreDocumentCardPreview(ref, *descriptor, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	again, err := PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "png")
+	if err != nil || !again.Exists {
+		t.Fatalf("PNG cache not reused: %#v, %v", again, err)
+	}
+	file, err := DocumentCardPreviewFile(box.ID, descriptor.CacheKey, "png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(file)
+	if err != nil || !bytes.Equal(stored, data) {
+		t.Fatal("PNG cache changed bytes", err)
+	}
+	if _, err = PrepareDocumentCardPreview(ref, "light", testDocumentCardPreviewAppearanceKey, "medium", "jpeg"); err == nil {
+		t.Fatal("unsupported format accepted")
+	}
+	if _, err = DocumentCardPreviewFile(box.ID, descriptor.CacheKey, "../png"); err == nil {
+		t.Fatal("invalid extension accepted")
+	}
+	encoded.Reset()
+	_ = png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 1, 1)))
+	if err = StoreDocumentCardPreview(ref, *descriptor, &encoded); err == nil {
+		t.Fatal("wrong PNG dimensions accepted")
+	}
+	if err = StoreDocumentCardPreview(ref, *descriptor, bytes.NewReader(make([]byte, 3*1024*1024+1))); err == nil {
+		t.Fatal("oversized PNG accepted")
 	}
 }

@@ -266,13 +266,14 @@ test("preview appearance keys include active theme assets, attributes, and seman
     }
 });
 
-test("document card previews are generated and uploaded as WebP", () => {
+test("document card previews retain browser WebP and upload the descriptor format", () => {
     const renderer = readFileSync(resolve(process.cwd(), "src/notebookRoot/previewRenderer.ts"), "utf8");
     const controller = readFileSync(resolve(process.cwd(), "src/notebookRoot/previewController.ts"), "utf8");
     assert.match(renderer, /"image\/webp"/);
     assert.doesNotMatch(renderer, /"image\/jpeg"/);
     assert.match(renderer, /cardPreview: true/);
-    assert.match(controller, /`\$\{descriptor\.cacheKey\}\.webp`/);
+    assert.match(controller, /descriptor\.format \|\| "webp"/);
+    assert.match(renderer, /captureDocumentCardPreview\(host\)/);
     assert.match(controller, /installImage\(job\.key, descriptor\.url, generation\)/);
     assert.doesNotMatch(controller, /URL\.createObjectURL|revokeObjectURL/);
 });

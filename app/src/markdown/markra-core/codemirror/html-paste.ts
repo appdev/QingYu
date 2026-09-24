@@ -1,5 +1,7 @@
 import TurndownService = require("turndown");
 import type { RemoteClipboardImage } from "../clipboard-asset-types";
+import { looksLikeMarkdownSource } from "../markdown-source-detection";
+import { unescapeMarkdown } from "./syntax";
 
 export interface CodeMirrorHtmlPaste {
   readonly markdown: string;
@@ -213,6 +215,9 @@ export function convertCodeMirrorClipboardHtml(
   const convertedPlainText = plainText || document.body.textContent || "";
   const markdown = normalizeMarkdown(convertedByHost || convertedByTurndown || convertedPlainText);
   if (!markdown) return null;
+  // HTML 仅改变转义和空白时保留源文，避免代码标记被转义、表格行被拆成段落。
+  const comparable = (text: string) => unescapeMarkdown(text).replace(/\s+/gu, "");
+  const preserveSource = looksLikeMarkdownSource(plainText) && comparable(markdown) === comparable(plainText);
   const source = convertedByHost
     ? "host"
     : convertedByTurndown
@@ -222,12 +227,12 @@ export function convertCodeMirrorClipboardHtml(
       : "plain-text";
 
   return {
-    markdown,
+    markdown: preserveSource ? plainText.replace(/\r\n?/gu, "\n") : markdown,
     remoteImages: Array.from(document.querySelectorAll("img")).flatMap((image) => {
       const remote = remoteImage(image);
       return remote ? [remote] : [];
     }),
-    source,
+    source: preserveSource ? "plain-text" : source,
     structured,
   };
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	_ "image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-const documentCardPreviewRendererVersion = 6
+const documentCardPreviewRendererVersion = 7
 
 type DocumentCardReference struct {
 	Kind     string `json:"kind"`
@@ -38,13 +39,20 @@ type DocumentCardPreviewDescriptor struct {
 	Theme            string `json:"theme"`
 	AppearanceKey    string `json:"appearanceKey"`
 	Size             string `json:"size"`
+	Format           string `json:"format"`
 	RendererVersion  int    `json:"rendererVersion"`
 	CacheKey         string `json:"cacheKey"`
 	URL              string `json:"url"`
 	Exists           bool   `json:"exists"`
 }
 
-func PrepareDocumentCardPreview(ref DocumentCardReference, theme, appearanceKey, size string) (*DocumentCardPreviewDescriptor, error) {
+func PrepareDocumentCardPreview(ref DocumentCardReference, theme, appearanceKey, size, format string) (*DocumentCardPreviewDescriptor, error) {
+	if format == "" {
+		format = "webp"
+	}
+	if format != "webp" && format != "png" {
+		return nil, errors.New("invalid document card preview format")
+	}
 	if theme != "light" && theme != "dark" {
 		return nil, errors.New("invalid document card preview theme")
 	}
@@ -61,7 +69,7 @@ func PrepareDocumentCardPreview(ref DocumentCardReference, theme, appearanceKey,
 		return nil, errors.New("invalid document card reference")
 	}
 	descriptor := &DocumentCardPreviewDescriptor{
-		Theme: theme, AppearanceKey: appearanceKey, Size: size, RendererVersion: documentCardPreviewRendererVersion,
+		Theme: theme, AppearanceKey: appearanceKey, Size: size, Format: format, RendererVersion: documentCardPreviewRendererVersion,
 	}
 	if ref.Kind == "markdown" {
 		document, err := LoadMarkdownExportDocument(ref.Notebook, ref.Path)
@@ -96,38 +104,41 @@ func PrepareDocumentCardPreview(ref DocumentCardReference, theme, appearanceKey,
 		Theme            string
 		AppearanceKey    string
 		Size             string
+		Format           string
 		RendererVersion  int
 	}{descriptor.DocumentID, descriptor.ContentRevision, descriptor.ResourceRevision, descriptor.Theme,
-		descriptor.AppearanceKey, descriptor.Size, descriptor.RendererVersion})
+		descriptor.AppearanceKey, descriptor.Size, descriptor.Format, descriptor.RendererVersion})
 	sum := sha256.Sum256(canonical)
 	descriptor.CacheKey = hex.EncodeToString(sum[:])
-	descriptor.URL = "/card-preview/" + ref.Notebook + "/" + descriptor.CacheKey + ".webp"
-	_, err := os.Stat(documentCardPreviewPath(ref.Notebook, descriptor.CacheKey))
+	descriptor.URL = "/card-preview/" + ref.Notebook + "/" + descriptor.CacheKey + "." + format
+	_, err := os.Stat(documentCardPreviewPath(ref.Notebook, descriptor.CacheKey, format))
 	descriptor.Exists = err == nil
 	return descriptor, nil
 }
 
 func StoreDocumentCardPreview(ref DocumentCardReference, descriptor DocumentCardPreviewDescriptor, reader io.Reader) error {
-	current, err := PrepareDocumentCardPreview(ref, descriptor.Theme, descriptor.AppearanceKey, descriptor.Size)
+	current, err := PrepareDocumentCardPreview(ref, descriptor.Theme, descriptor.AppearanceKey, descriptor.Size, descriptor.Format)
 	if err != nil {
 		return err
 	}
 	if current.CacheKey != descriptor.CacheKey {
 		return ErrMarkdownConflict
 	}
-	data, err := io.ReadAll(io.LimitReader(reader, 2*1024*1024+1))
+	limit := int64(2 * 1024 * 1024)
+	if current.Format == "png" {
+		// 无损 PNG 的上限覆盖 640×960 的四通道像素及编码开销。
+		limit = 3 * 1024 * 1024
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > 2*1024*1024 {
+	if int64(len(data)) > limit {
 		return errors.New("document card preview is too large")
 	}
 	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return errors.New("document card preview must be WebP")
-	}
-	if format != "webp" {
-		return errors.New("document card preview must be WebP")
+	if err != nil || format != current.Format {
+		return errors.New("document card preview format mismatch")
 	}
 	expectedWidth, expectedHeight := 640, 960
 	if descriptor.Size == "small" {
@@ -136,7 +147,7 @@ func StoreDocumentCardPreview(ref DocumentCardReference, descriptor DocumentCard
 	if config.Width != expectedWidth || config.Height != expectedHeight {
 		return fmt.Errorf("invalid document card preview dimensions [%dx%d]", config.Width, config.Height)
 	}
-	target := documentCardPreviewPath(ref.Notebook, descriptor.CacheKey)
+	target := documentCardPreviewPath(ref.Notebook, descriptor.CacheKey, current.Format)
 	if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return err
 	}
@@ -176,14 +187,14 @@ func RemoveDocumentCardPreviews(notebook string) {
 	_ = os.RemoveAll(filepath.Join(util.TempDir, "thumbnails", "document-cards", notebook))
 }
 
-func DocumentCardPreviewFile(notebook, cacheKey string) (string, error) {
-	if !validDocumentCardCacheKey(cacheKey) || Conf.Box(notebook) == nil {
+func DocumentCardPreviewFile(notebook, cacheKey, format string) (string, error) {
+	if !validDocumentCardCacheKey(cacheKey) || Conf.Box(notebook) == nil || (format != "webp" && format != "png") {
 		return "", errors.New("invalid document card preview path")
 	}
 	if IsEncryptedBox(notebook) && !IsBoxUnlocked(notebook) {
 		return "", errors.New("encrypted notebook is locked")
 	}
-	return documentCardPreviewPath(notebook, cacheKey), nil
+	return documentCardPreviewPath(notebook, cacheKey, format), nil
 }
 
 func markdownCardResourceRevision(resources []MarkdownExportResource) string {
@@ -223,8 +234,8 @@ func validDocumentCardCacheKey(key string) bool {
 	return err == nil
 }
 
-func documentCardPreviewPath(notebook, cacheKey string) string {
-	return filepath.Join(util.TempDir, "thumbnails", "document-cards", notebook, cacheKey+".webp")
+func documentCardPreviewPath(notebook, cacheKey, format string) string {
+	return filepath.Join(util.TempDir, "thumbnails", "document-cards", notebook, cacheKey+"."+format)
 }
 
 func cleanupDocumentCardPreviews() {
@@ -239,7 +250,7 @@ func cleanupDocumentCardPreviews() {
 	var total int64
 	_ = filepath.WalkDir(root, func(current string, entry os.DirEntry, err error) error {
 		extension := filepath.Ext(current)
-		if err != nil || entry.IsDir() || (extension != ".webp" && extension != ".jpg") {
+		if err != nil || entry.IsDir() || (extension != ".webp" && extension != ".png" && extension != ".jpg") {
 			return nil
 		}
 		info, infoErr := entry.Info()

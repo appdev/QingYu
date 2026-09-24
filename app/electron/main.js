@@ -46,6 +46,9 @@ const remote = require("@electron/remote/main");
 const {createPreviewFontSubsetService} = require("./previewFontSubsetService.cjs");
 const previewFontSubsets = createPreviewFontSubsetService();
 ipcMain.handle("siyuan-preview-font-subset", (event, data) => previewFontSubsets.request(event.sender, data));
+const {createPreviewCaptureService} = require("./previewCaptureService.cjs");
+const previewCaptures = createPreviewCaptureService();
+ipcMain.handle("siyuan-preview-capture", (event, data) => previewCaptures.request(event, data));
 const {
     NATIVE_MENU_COMMANDS,
     createApplicationMenuTemplate,
