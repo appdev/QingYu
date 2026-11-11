@@ -1,0 +1,127 @@
+/**
+ * Dark Theme Variables
+ */
+
+.darkmode {
+  /* Base Colors */
+  --bg-color: #1E1D1B;
+  --text-color: #D6D1C6;
+  --text-secondary: #B5B1A7;
+  --link-color: #54C59F;
+  --border-color: #3A3936;
+  --quote-bar: #4A4843;
+  --code-bg: #282724;
+  --diagram-bg: #282724;
+  --media-pulse: #34332F;
+
+  /* Mermaid Diagram */
+  --mermaid-node-bg: #2F2E2B;
+  --mermaid-text-color: #E7E9EA;
+  --mermaid-border-color: #45433F;
+  --mermaid-line-color: #54C59F;
+  --mermaid-edge-label-bg: transparent;
+
+  /* Syntax Highlight - Dark */
+  --hljs-base: #ABB2BF;
+  --hljs-comment: #ABB2BF;
+  --hljs-keyword: #9B79F7;
+  --hljs-string: #8FFCCD;
+  --hljs-number: #F7CC8F;
+  --hljs-attribute: #F7CC8F;
+  --hljs-title: #99E0FC;
+}
+
+/* Dark Mode Base Styles */
+.darkmode html,
+.darkmode body {
+  color: var(--text-color);
+  background: var(--bg-color);
+}
+
+.darkmode * {
+  color: var(--text-color);
+}
+
+.darkmode a {
+  color: var(--link-color);
+}
+
+.darkmode .heti p > code,
+.darkmode .heti li > code,
+.darkmode code,
+.darkmode .heti table,
+.darkmode .heti th,
+.darkmode .heti td {
+  background-color: var(--code-bg);
+  border-color: var(--border-color);
+}
+
+.darkmode .heti .markdown-alert-note {
+  --alert-color: #4493f8;
+  --alert-bg: rgba(68, 147, 248, 0.1);
+}
+
+.darkmode .heti .markdown-alert-tip {
+  --alert-color: #3fb950;
+  --alert-bg: rgba(63, 185, 80, 0.1);
+}
+
+.darkmode .heti .markdown-alert-important {
+  --alert-color: #ab7df8;
+  --alert-bg: rgba(171, 125, 248, 0.1);
+}
+
+.darkmode .heti .markdown-alert-warning {
+  --alert-color: #d29922;
+  --alert-bg: rgba(210, 153, 34, 0.1);
+}
+
+.darkmode .heti .markdown-alert-caution {
+  --alert-color: #f85149;
+  --alert-bg: rgba(248, 81, 73, 0.1);
+}
+
+.darkmode .heti blockquote,
+.darkmode .heti blockquote * {
+  color: var(--text-secondary);
+}
+
+/* .darkmode * forces --text-color on every element; restate the title color */
+.darkmode .heti .markdown-alert .markdown-alert-title {
+  color: var(--alert-color);
+}
+
+.darkmode .heti hr {
+  background-color: var(--border-color);
+}
+
+.darkmode input[type='checkbox'] {
+  border: 1px solid white;
+}
+
+.darkmode img[loading="lazy"] {
+  background-color: var(--code-bg);
+  outline-color: var(--code-bg);
+}
+
+.darkmode .heti mark {
+  background-color: rgba(77, 74, 0, 0.88);
+}
+
+.darkmode .heti sup:target,
+.darkmode .heti sup a:target,
+.darkmode .heti .heti-fn li:target {
+  background-color: #3a6188;
+}
+
+.darkmode .heti u[title] {
+  border-block-end-color: rgba(255, 255, 255, 0.54);
+}
+
+.darkmode .heti .heti-fn {
+  border-block-start-color: var(--border-color);
+}
+
+.darkmode .lightense-backdrop {
+  background-color: rgba(30, 29, 27, .95) !important;
+}

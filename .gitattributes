@@ -1,0 +1,2 @@
+# Preserve the original third-party bundles byte for byte.
+public/miaoyan/** -whitespace

@@ -1,0 +1,8 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
+body { background: var(--paper); }
+#rich-editor[data-read-only='true'] .vditor-reset { opacity: 1; cursor: auto; }
+#rich-editor[data-read-only='true'] .vditor-panel,
+#rich-editor[data-read-only='true'] .vditor-wysiwyg__mobile-toolbar,
+#rich-editor[data-read-only='true'] .vditor-wysiwyg__pre { display: none !important; }
+#rich-editor[data-read-only='true'] .vditor-wysiwyg__preview { cursor: auto; }

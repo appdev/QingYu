@@ -1,0 +1,305 @@
+use reqwest::{redirect::Policy, Client, Method, Url};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
+
+const MAX_BYTES: usize = 68 * 1024 * 1024;
+
+#[derive(Clone)]
+struct Target {
+    bucket: Url,
+    prefix: String,
+}
+
+impl Target {
+    fn new(endpoint: &str, bucket: &str, prefix: &str) -> Result<Self, String> {
+        let mut url = Url::parse(endpoint).map_err(|_| "S3 地址格式无效")?;
+        let local = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+        if !(url.scheme() == "https" || url.scheme() == "http" && local)
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("S3 地址需要使用 HTTPS，且不能包含用户信息或查询参数".into());
+        }
+        if bucket.len() < 3
+            || bucket.len() > 63
+            || !bucket
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.')
+            || prefix.is_empty()
+            || prefix.split('/').any(|p| {
+                p.is_empty()
+                    || p == "."
+                    || p == ".."
+                    || !p
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+            })
+        {
+            return Err("Bucket 或同步前缀无效".into());
+        }
+        url.path_segments_mut()
+            .map_err(|_| "S3 地址格式无效")?
+            .pop_if_empty()
+            .push(bucket);
+        Ok(Self {
+            bucket: url,
+            prefix: format!("{prefix}/"),
+        })
+    }
+
+    fn allows(&self, url: &Url, method: &Method) -> bool {
+        if url.origin() != self.bucket.origin()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return false;
+        }
+        if url.path() == self.bucket.path() {
+            let prefixes: Vec<_> = url
+                .query_pairs()
+                .filter(|(name, _)| name == "prefix")
+                .collect();
+            return *method == Method::GET
+                && prefixes.len() == 1
+                && prefixes[0].1.starts_with(&self.prefix);
+        }
+        !url.path().contains('%')
+            && url
+                .path()
+                .starts_with(&format!("{}/{}", self.bucket.path(), self.prefix))
+    }
+}
+
+#[derive(Default)]
+pub struct SyncHttp {
+    target: Mutex<Option<Target>>,
+    client: OnceLock<Result<Client, reqwest::Error>>,
+}
+
+#[tauri::command]
+pub fn sync_set_target(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, SyncHttp>,
+    endpoint: String,
+    bucket: String,
+    prefix: String,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("不允许的同步窗口".into());
+    }
+    let target = Target::new(&endpoint, &bucket, &prefix)?;
+    *state.target.lock().map_err(|_| "同步网络状态不可用")? = Some(target);
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct Request {
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    body: Option<Vec<u8>>,
+}
+
+#[derive(Serialize)]
+pub struct Response {
+    status: u16,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[tauri::command]
+pub async fn sync_request(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, SyncHttp>,
+    request: Request,
+) -> Result<Response, String> {
+    if window.label() != "main" {
+        return Err("不允许的同步窗口".into());
+    }
+    let target = state
+        .target
+        .lock()
+        .map_err(|_| "同步网络状态不可用")?
+        .clone()
+        .ok_or("请先配置同步目标")?;
+    let client = state
+        .client
+        .get_or_init(|| {
+            Client::builder()
+                .redirect(Policy::none())
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(45))
+                .build()
+        })
+        .as_ref()
+        .map_err(|_| "无法初始化同步网络")?;
+    perform(&target, client, request).await
+}
+
+async fn perform(target: &Target, client: &Client, request: Request) -> Result<Response, String> {
+    let url = Url::parse(&request.url).map_err(|_| "S3 请求地址无效")?;
+    let method = Method::from_bytes(request.method.as_bytes()).map_err(|_| "S3 请求方法无效")?;
+    if ![Method::GET, Method::HEAD, Method::PUT, Method::DELETE].contains(&method)
+        || !target.allows(&url, &method)
+    {
+        return Err("S3 请求超出当前 Bucket 和同步前缀".into());
+    }
+    if request
+        .body
+        .as_ref()
+        .is_some_and(|body| body.len() > MAX_BYTES)
+    {
+        return Err("S3 请求内容过大".into());
+    }
+    let mut outgoing = client.request(method, url);
+    for (name, value) in request.headers {
+        if ![
+            "authorization",
+            "content-type",
+            "x-amz-content-sha256",
+            "x-amz-date",
+            "if-match",
+            "if-none-match",
+            "cache-control",
+        ]
+        .contains(&name.to_ascii_lowercase().as_str())
+        {
+            return Err("S3 请求头无效".into());
+        }
+        outgoing = outgoing.header(name, value);
+    }
+    if let Some(body) = request.body {
+        outgoing = outgoing.body(body);
+    }
+    let mut response = outgoing
+        .send()
+        .await
+        .map_err(|_| "S3 网络请求失败，请检查网络与地址")?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_BYTES as u64)
+    {
+        return Err("S3 响应内容过大".into());
+    }
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect();
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "S3 响应读取失败")? {
+        if body.len() + chunk.len() > MAX_BYTES {
+            return Err("S3 响应内容过大".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn limits_requests_to_the_configured_namespace() {
+        let target = Target::new("https://s3.example.test", "test", "miaoyan/v1").unwrap();
+        let allowed = |url, method| target.allows(&Url::parse(url).unwrap(), &method);
+        assert!(allowed(
+            "https://s3.example.test/test/miaoyan/v1/objects/abc",
+            Method::PUT
+        ));
+        assert!(allowed(
+            "https://s3.example.test/test?list-type=2&prefix=miaoyan%2Fv1%2F",
+            Method::GET
+        ));
+        assert!(!allowed(
+            "https://other.example.test/test/miaoyan/v1/a",
+            Method::GET
+        ));
+        assert!(!allowed(
+            "https://s3.example.test/test/miaoyan/v10/a",
+            Method::DELETE
+        ));
+        assert!(!allowed(
+            "https://s3.example.test/test/other/a",
+            Method::DELETE
+        ));
+        assert!(!allowed(
+            "https://s3.example.test/test?prefix=other",
+            Method::GET
+        ));
+        assert!(!allowed(
+            "https://s3.example.test/test?prefix=miaoyan%2Fv1%2F&prefix=other",
+            Method::GET
+        ));
+        assert!(!allowed("https://s3.example.test/test", Method::DELETE));
+        assert!(!allowed(
+            "https://s3.example.test/test/miaoyan/v1/%2e%2e/outside",
+            Method::GET
+        ));
+        assert!(!allowed(
+            "https://s3.example.test/test/miaoyan/v1/objects/%2e%2e%2f%2e%2e%2foutside",
+            Method::GET
+        ));
+    }
+    #[test]
+    fn rejects_unscoped_or_insecure_targets() {
+        assert!(Target::new("http://s3.example.test", "test", "miaoyan/v1").is_err());
+        assert!(Target::new("https://user:pass@s3.example.test", "test", "miaoyan/v1").is_err());
+        assert!(Target::new("https://s3.example.test", "test", "").is_err());
+        assert!(Target::new("https://s3.example.test", "test", "../outside").is_err());
+        assert!(Target::new("http://127.0.0.1:9000", "test", "test-prefix").is_ok());
+    }
+    #[test]
+    fn live_s3_native_transport_when_configured() {
+        let Ok(path) = std::env::var("MIAOYAN_S3_PROBE") else {
+            return;
+        };
+        #[derive(Deserialize)]
+        struct Probe {
+            endpoint: String,
+            bucket: String,
+            prefix: String,
+            cases: Vec<Case>,
+        }
+        #[derive(Deserialize)]
+        struct Case {
+            request: Request,
+            expected: u16,
+        }
+        let probe: Probe = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let target = Target::new(&probe.endpoint, &probe.bucket, &probe.prefix).unwrap();
+        let client = Client::builder()
+            .redirect(Policy::none())
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
+        tauri::async_runtime::block_on(async {
+            for case in probe.cases {
+                let response = perform(&target, &client, case.request)
+                    .await
+                    .expect("Native S3 transport failed");
+                assert_eq!(
+                    response.status, case.expected,
+                    "Unexpected native S3 response status"
+                );
+            }
+        });
+    }
+}

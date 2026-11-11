@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#FDFCF9" />
+    <title>妙言编辑器</title>
+  </head>
+  <body>
+    <div id="app-shell" data-sidebar="all">
+      <aside id="library-sidebar" aria-label="笔记库">
+        <div class="sidebar-panes">
+        <section id="folder-pane" aria-label="文件夹">
+          <div class="folder-toolbar" data-tauri-drag-region>
+            <button id="new-folder-button" class="icon-button" title="新建文件夹（⌘⇧N）" aria-label="新建文件夹"></button>
+          </div>
+          <div class="sidebar-brand"><span id="sidebar-brand-icon" class="sidebar-icon" aria-hidden="true"></span><span>妙言</span></div>
+          <nav id="folder-list" aria-label="笔记文件夹"></nav>
+        </section>
+        <section id="notes-pane" aria-label="笔记列表">
+          <div class="notes-toolbar" data-tauri-drag-region>
+            <div class="notes-navigation">
+              <span class="notes-navigation-title">笔记</span>
+              <button id="new-note-button" class="icon-button" title="新建笔记（⌘N）" aria-label="新建笔记"></button>
+            </div>
+            <input id="note-search" type="search" placeholder="搜索" aria-label="搜索笔记" autocomplete="off" />
+          </div>
+          <div class="notes-summary"><h2 id="notes-heading">全部</h2><span id="notes-count"></span></div>
+          <div id="notes-list" role="listbox" aria-label="笔记"></div>
+        </section>
+        </div>
+        <div class="sidebar-footer">
+          <button id="workspace-back" class="icon-button" hidden title="返回笔记库（⌘⇧W）" aria-label="返回笔记库"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 5-7 7 7 7"/></svg></button>
+          <button id="settings-button" class="icon-button" title="设置" aria-label="设置" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 2 3 3-1 2 3h3l1-3 3-1 2-3-2-2 1-3-2-3-3 1-2-3Z"/><circle cx="11.5" cy="11.5" r="3"/></svg></button>
+          <button id="sync-button" class="icon-button" data-state="idle" title="S3 同步：尚未同步" aria-label="S3 同步：尚未同步" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10a8 8 0 0 0-14-4L3 9m0-5v5h5M4 14a8 8 0 0 0 14 4l3-3m0 5v-5h-5"/></svg></button>
+        </div>
+      </aside>
+      <button id="sidebar-backdrop" aria-label="关闭笔记库" tabindex="-1"></button>
+      <div id="document-column">
+    <header class="titlebar" data-tauri-drag-region>
+      <h1 id="note-title" data-tauri-drag-region>未命名</h1>
+      <nav class="actions" aria-label="编辑器工具栏">
+        <button id="sidebar-button" class="icon-button" title="切换笔记列表" aria-label="列表" aria-controls="library-sidebar" aria-expanded="true" aria-pressed="false"></button>
+        <button id="format-button" class="icon-button" title="格式" aria-label="格式" aria-expanded="false" aria-controls="format-menu"></button>
+        <button id="edit-button" class="icon-button" title="编辑" aria-label="编辑" aria-pressed="true"></button>
+        <button id="rich-button" class="icon-button" title="所见即所得" aria-label="所见即所得" aria-pressed="false"><span aria-hidden="true">Aa</span></button>
+        <button id="split-button" class="icon-button" title="分屏预览（⌘\\）" aria-label="分屏预览" aria-pressed="false"></button>
+        <button id="preview-button" class="icon-button" title="预览（⌘3）" aria-label="预览" aria-pressed="false"></button>
+      </nav>
+    </header>
+    <main id="workspace" data-mode="edit">
+      <section id="editor-pane" aria-label="Markdown 编辑区"><div id="editor"></div></section>
+      <section id="rich-pane" aria-label="所见即所得编辑区"><div id="rich-editor">正在加载所见即所得编辑器…</div></section>
+      <div id="splitter" role="separator" aria-label="调整编辑与预览宽度" aria-orientation="vertical" tabindex="0" aria-valuenow="50"></div>
+      <section id="preview-pane" aria-label="Markdown 预览区"><iframe id="preview" src="/preview.html" title="Markdown 预览" sandbox="allow-scripts allow-same-origin"></iframe></section>
+    </main>
+    <section id="empty-note" hidden><p>此文件夹还没有笔记</p><button id="new-empty-note" class="primary-button">新建笔记</button></section>
+      </div>
+    </div>
+    <footer class="statusbar"><span id="save-status" role="status" aria-live="polite">草稿已保留</span><span id="word-count"></span></footer>
+    <div id="format-menu" class="format-menu" role="menu" aria-label="Markdown 格式" hidden></div>
+    <div id="mobile-tools" class="mobile-tools" aria-label="快捷格式工具栏" hidden></div>
+    <dialog id="folder-dialog" aria-labelledby="folder-dialog-title">
+      <form id="folder-form">
+        <h2 id="folder-dialog-title">新建文件夹</h2>
+        <label for="folder-name">名称</label><input id="folder-name" required maxlength="80" autocomplete="off" />
+        <p id="folder-error" role="alert"></p>
+        <div class="dialog-actions"><button id="cancel-folder" type="button">取消</button><button class="primary-button" type="submit">创建</button></div>
+      </form>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

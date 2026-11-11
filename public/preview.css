@@ -1,0 +1,7 @@
+/* MiaoYan's default previewStyle(): 16px, system font, max-width 1000px. */
+:root { --text-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'PingFangSC-Regular', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; --code-text-font: var(--text-font); }
+html { font-size: var(--preview-size, 16px); }
+#write { max-width: var(--preview-width, 1000px); margin: 0; }
+.math-source { overflow-wrap: anywhere; }
+/* MiaoYan's document resolves monospace to Courier; keep the same face in our zh-CN surfaces. */
+#write kbd { font-family: Courier, monospace; }

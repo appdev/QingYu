@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Editor window and titlebar dragging only",
+  "windows": ["main", "settings"],
+  "permissions": ["core:default"]
+}

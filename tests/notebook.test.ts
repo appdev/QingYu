@@ -1,0 +1,149 @@
+import { describe, expect, it, vi } from 'vitest';
+import { Notebook, groupNotes, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
+import { noteText } from '../src/document-text';
+
+function storage(initial: Record<string, string> = {}) {
+  const values = new Map(Object.entries(initial));
+  return { values, getItem: (key: string) => values.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { values.set(key, value); }) };
+}
+
+describe('local notebook and legacy migration', () => {
+  it('migrates the exact legacy source once and preserves the old key as a backup', async () => {
+    const source = '---\r\ntitle: 原样\r\n---\r\n# 中文 🌸\r\n\r\n| a | b |\r\n';
+    const store = storage({ [legacyDraftKey]: source });
+    const book = new Notebook(store, 'starter');
+    expect(book.current.source).toBe(source);
+    await book.save(source);
+    expect(store.values.get(legacyDraftKey)).toBe(source);
+    const loaded = new Notebook(store, 'starter');
+    expect(loaded.current.source).toBe(source);
+    await loaded.save(source);
+    expect(store.setItem).toHaveBeenCalledTimes(1);
+  });
+  it('preserves an intentionally empty legacy draft', async () => {
+    const book = new Notebook(storage({ [legacyDraftKey]: '' }), '# starter');
+    expect(book.current.source).toBe('');
+  });
+  it('persists separate documents, folders and selection without overwriting the first note', async () => {
+    const store = storage();
+    const book = new Notebook(store, '# 第一篇\n\n正文');
+    const first = book.current.id;
+    await book.save(book.current.source);
+    const folder = await book.createFolder('旅行攻略');
+    await book.createNote(folder);
+    const second = book.current.id;
+    await book.save('# 第二篇\n\n旅途 🌱');
+    await book.select(first);
+    expect(book.current.source).toBe('# 第一篇\n\n正文');
+    const reloaded = new Notebook(store, 'starter');
+    expect(reloaded.current.id).toBe(first);
+    await reloaded.select(second);
+    expect(reloaded.current.source).toBe('# 第二篇\n\n旅途 🌱');
+    expect(reloaded.current.folderId).toBe(folder);
+    expect(reloaded.data.folders.map(f => f.name)).toEqual(['备忘录', '旅行攻略']);
+  });
+  it('keeps state and persisted content unchanged when saving, selecting or creating exceeds quota', async () => {
+    const store = storage();
+    const book = new Notebook(store, '# 已保存');
+    await book.createNote('default');
+    await book.save('# 第二篇');
+    const before = JSON.stringify(book.data), disk = store.values.get(libraryKey);
+    store.setItem.mockImplementation(() => { throw new DOMException('full', 'QuotaExceededError'); });
+    for (const mutation of [() => book.save('# 尚未保存'), () => book.select(book.data.notes[1].id), () => book.createNote('default'), () => book.createFolder('工作')]) {
+      await expect(mutation()).rejects.toThrow();
+      expect(JSON.stringify(book.data)).toBe(before);
+      expect(store.values.get(libraryKey)).toBe(disk);
+    }
+  });
+  it('does not overwrite malformed or unsupported persisted libraries', async () => {
+    for (const raw of ['{broken', '{"version":99}', '{"version":1,"folders":[],"notes":[],"activeId":"x"}']) {
+      const store = storage({ [libraryKey]: raw });
+      const book = new Notebook(store, '# fallback');
+      expect(book.loadError).toBe(true);
+      await expect(book.save('# edit')).rejects.toThrow('未覆盖');
+      expect(store.setItem).not.toHaveBeenCalled();
+      expect(store.values.get(libraryKey)).toBe(raw);
+    }
+  });
+  it('rejects invalid references and duplicate ids instead of silently losing notes', async () => {
+    const store = storage();
+    const seed = new Notebook(store, '# first');
+    await seed.save(seed.current.source);
+    for (const change of [(x: Library) => { x.activeId = 'missing'; }, (x: Library) => { x.notes[0].folderId = 'missing'; }, (x: Library) => { x.notes.push(x.notes[0]); }, (x: Library) => { x.notes[0].updatedAt = 1e25; }]) {
+      const data: Library = JSON.parse(store.values.get(libraryKey)!); change(data);
+      expect(new Notebook(storage({ [libraryKey]: JSON.stringify(data) }), '').loadError).toBe(true);
+    }
+  });
+  it('rejects blank or duplicate folders and unknown selection targets', async () => {
+    const book = new Notebook(storage(), '');
+    await expect(book.createFolder('   ')).rejects.toThrow('名称');
+    await expect(book.createFolder('  备忘录  ')).rejects.toThrow('同名');
+    await expect(book.select('missing')).rejects.toThrow('不存在');
+    await expect(book.createNote('missing')).rejects.toThrow('不存在');
+  });
+});
+
+describe('note context operations', () => {
+  it('renames independently of Markdown, finds the name and duplicates the exact latest source', async () => {
+    const store = storage(), book = new Notebook(store, '# 原标题\r\n\r\n未修改正文\r\n');
+    const id = book.current.id, source = book.current.source, modified = book.current.updatedAt;
+    await book.renameNote(id, '独立名称');
+    expect(book.current.source).toBe(source); expect(book.current.updatedAt).toBe(modified);
+    expect(visibleNotes(book.data, null, '独立名称').map(note => note.id)).toEqual([id]);
+    await book.save(source + '最新内容'); await book.duplicateNote(id);
+    expect(book.current.id).not.toBe(id); expect(noteTitle(book.current)).toBe('独立名称 Copy');
+    expect(book.current.source).toBe(source + '最新内容');
+    await book.duplicateNote(id); expect(noteTitle(book.current)).toBe('独立名称 Copy 2');
+    expect(new Notebook(store, '').data).toEqual(book.data);
+  });
+  it('pins ahead of years and moves/trashes/restores without removing the last note or its bytes', async () => {
+    const store = storage(), book = new Notebook(store, '# 唯一笔记\r\n');
+    const id = book.current.id, source = book.current.source, folder = await book.createFolder('旅行');
+    await book.togglePin(id); expect(groupNotes(visibleNotes(book.data, null, ''))[0].year).toBe(0);
+    await book.moveNote(id, folder); await book.trashNote(id);
+    expect(visibleNotes(book.data, null, '')).toEqual([]);
+    expect(groupNotes(visibleNotes(book.data, null, '', true))[0].year).not.toBe(0);
+    expect(book.current.source).toBe(source); expect(book.current.folderId).toBe(folder);
+    expect(new Notebook(store, '').loadError).toBe(false);
+    await book.trashNote(id, false); expect(visibleNotes(book.data, folder, '')[0].id).toBe(id);
+    await book.togglePin(id); expect(book.current.pinned).toBe(false);
+    await book.trashNote(id); await book.moveNote(id, 'default'); expect(book.current.trashed).toBe(false);
+  });
+  it('rejects invalid targets, names and metadata, and preserves all state on storage failure', async () => {
+    const store = storage(), book = new Notebook(store, '# 内容'); await book.save(book.current.source);
+    await expect(book.renameNote(book.current.id, '  ')).rejects.toThrow();
+    await expect(book.renameNote(book.current.id, 'a\nb')).rejects.toThrow();
+    await expect(book.moveNote(book.current.id, 'missing')).rejects.toThrow();
+    await expect(book.duplicateNote('missing')).rejects.toThrow();
+    for (const patch of [{ title: '' }, { pinned: 'yes' }, { trashed: 1 }]) {
+      const invalid = structuredClone(book.data); Object.assign(invalid.notes[0], patch);
+      expect(new Notebook(storage({ [libraryKey]: JSON.stringify(invalid) }), '').loadError).toBe(true);
+    }
+    const before = JSON.stringify(book.data);
+    store.setItem.mockImplementation(() => { throw new Error('disk full'); });
+    for (const run of [() => book.renameNote(book.current.id, '新名称'), () => book.togglePin(book.current.id), () => book.moveNote(book.current.id, 'default'), () => book.trashNote(book.current.id), () => book.duplicateNote(book.current.id)]) {
+      await expect(run()).rejects.toThrow(); expect(JSON.stringify(book.data)).toBe(before); expect(store.values.get(libraryKey)).toBe(before);
+    }
+  });
+});
+
+describe('sidebar document information', () => {
+  it('uses the shared frontmatter rules for titles and extracts a plain summary', async () => {
+    expect(noteText('---\ntitle: hidden\n---\n# **中文标题**\n\n正文 [链接](https://example.com) 与 `code`')).toEqual({ title: '中文标题', summary: '正文 链接 与 code' });
+    expect(noteText('')).toEqual({ title: '未命名', summary: '无更多文本' });
+    expect(noteText('# 只有标题')).toEqual({ title: '只有标题', summary: '无更多文本' });
+  });
+  it('filters title/body case-insensitively within a folder and groups by modification year', async () => {
+    const book = new Notebook(storage(), '# 2021');
+    const first = book.current;
+    const library: Library = { ...book.data, folders: [...book.data.folders, { id: 'travel', name: '旅行攻略' }], notes: [
+      { ...first, id: 'a', source: '# CodeMirror\n\n检索正文', updatedAt: new Date(2021, 3, 29).getTime() },
+      { ...first, id: 'b', folderId: 'travel', source: '# 旅行\n\nCODEMIRROR', updatedAt: new Date(2020, 11, 6).getTime() },
+      { ...first, id: 'c', source: '# 旧笔记', updatedAt: new Date(2019, 7, 30).getTime() },
+    ] };
+    expect(visibleNotes(library, null, ' codemirror ').map(n => n.id)).toEqual(['a', 'b']);
+    expect(visibleNotes(library, 'default', '检索正文').map(n => n.id)).toEqual(['a']);
+    expect(groupNotes(library.notes).map(g => [g.year, g.notes.map(n => n.id)])).toEqual([[2021, ['a']], [2020, ['b']], [2019, ['c']]]);
+    expect(groupNotes([])).toEqual([]);
+  });
+});

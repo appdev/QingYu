@@ -1,0 +1,74 @@
+[
+  {
+    "file": "A-B:C.md",
+    "input": "  A:B/C  "
+  },
+  {
+    "file": "同名.md",
+    "input": "同名"
+  },
+  {
+    "file": "同名 1.md",
+    "input": "同名"
+  },
+  {
+    "file": "同名 2.md",
+    "input": "同名 1"
+  },
+  {
+    "file": "同名 9.md",
+    "input": "同名 9"
+  },
+  {
+    "file": "同名 3.md",
+    "input": "同名 9"
+  },
+  {
+    "file": "a:b.md",
+    "input": "a/b"
+  },
+  {
+    "file": "a-b 1.md",
+    "input": "a/b"
+  },
+  {
+    "file": "a-b 2.md",
+    "input": "a/b"
+  },
+  {
+    "file": "🎉 笔记 1.md",
+    "input": "🎉 笔记 1"
+  },
+  {
+    "file": "🎉 笔记 1 1.md",
+    "input": "🎉 笔记 1"
+  },
+  {
+    "file": "🎉 笔记 2.md",
+    "input": "🎉 笔记 1"
+  },
+  {
+    "file": "👨‍👩‍👧‍👦 1.md",
+    "input": "👨‍👩‍👧‍👦 1"
+  },
+  {
+    "file": "👨‍👩‍👧‍👦 1 1.md",
+    "input": "👨‍👩‍👧‍👦 1"
+  },
+  {
+    "file": "é 1.md",
+    "input": "é 1"
+  },
+  {
+    "file": "é 1 1.md",
+    "input": "é 1"
+  },
+  {
+    "file": "ASCII 12 tail.md",
+    "input": "ASCII 12 tail"
+  },
+  {
+    "file": "ASCII 1.md",
+    "input": "ASCII 12 tail"
+  }
+]
