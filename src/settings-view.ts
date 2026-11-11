@@ -7,11 +7,12 @@ import { mobile, native, preferences, sizes, type Preferences } from './preferen
 import type { SyncClient } from './sync-session';
 import type { S3Settings } from './sync-store';
 import './settings.css';
+import { isServerLibrary } from './server-library';
 
 export type SettingsSection = 'general' | 'editor' | 'typography' | 'sync';
 const sections: [SettingsSection, string][] = [['general', '通用'], ['editor', '编辑器'], ['typography', '字体'], ['sync', '同步']];
 export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => void) {
-  const visibleSections = sections.filter(([key]) => !mobile || key !== 'typography');
+  const visibleSections = sections.filter(([key]) => (!mobile || key !== 'typography') && (!isServerLibrary() || key !== 'sync'));
   root.classList.add('settings');
   root.classList.toggle('settings-mobile', mobile);
   root.innerHTML = `<header class="settings-header" data-tauri-drag-region>
@@ -78,6 +79,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   }
   let recorder: ReturnType<typeof createShortcutRecorder> | undefined;
   let locationListener: (() => void) | undefined;
+  if (isServerLibrary()) row('general', '笔记位置', '服务器挂载的笔记目录；当前浏览器只保留界面设置和未提交草稿', document.createElement('span'));
   if (native && !mobile) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'settings-control'; button.textContent = '更改'; button.setAttribute('aria-label', '更改笔记位置'); button.disabled = true;
     const element = row('general', '笔记位置', '正在读取…', button);
@@ -143,57 +145,62 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     }
     updateControls();
   }
-  const form = document.createElement('form'); form.className = 'settings-sync-form'; form.noValidate = true; form.setAttribute('aria-label', 'S3 同步'); pages.get('sync')!.append(form);
-  for (const [key, title, detail] of [
-    ['endpoint', '服务地址', '支持 S3 协议的 HTTPS 地址'], ['bucket', 'Bucket', '存储桶名称'], ['region', '区域', '默认 us-east-1'],
-    ['prefix', '同步前缀', '不同笔记库请使用不同前缀'], ['accessKeyId', 'Access Key ID', 'S3 访问标识'], ['secretAccessKey', 'Secret Access Key', 'S3 访问密钥'],
-  ]) {
-    const input = document.createElement('input'); input.name = key; input.className = 'settings-control'; input.required = true; input.maxLength = 4096; input.autocomplete = 'off'; input.spellcheck = false;
-    input.type = key.includes('Key') ? 'password' : key === 'endpoint' ? 'url' : 'text';
-    const element = row('sync', title, detail, input); form.append(element);
-  }
-  const hint = document.createElement('p'); hint.className = 'settings-hint'; hint.textContent = '配置自动保存。打开应用、每 3 分钟及退出前同步笔记库，包含目录内的图片和附件；冲突无法合并时保留双方副本。移动端进入后台时尝试同步。'; form.append(hint);
-  const status = document.createElement('p'); status.className = 'settings-sync-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-  const actions = document.createElement('div'); actions.className = 'settings-sync-actions'; actions.innerHTML = '<button type="submit" class="primary-button">立即同步</button>'; form.append(actions, status);
-  function values() { return Object.fromEntries(new FormData(form)) as S3Settings; }
-  let saving = Promise.resolve(), revision = 0, disposed = false, profileLoaded = false, syncing = false, submitting = false;
-  function syncError(error: unknown) {
-    let text = error instanceof Error ? error.message : typeof error === 'string' ? error : '同步失败，请重试';
-    for (const secret of [values().accessKeyId, values().secretAccessKey]) if (secret) text = text.replaceAll(secret, '[已隐藏]');
-    status.textContent = text; status.dataset.error = 'true'; status.scrollIntoView?.({ block: 'nearest' });
-  }
-  form.addEventListener('input', () => {
-    const current = ++revision, next = values();
-    status.textContent = '正在保存…'; status.dataset.error = 'false';
-    saving = sync.save(next);
-    void saving.then(() => { if (!disposed && revision === current) status.textContent = ''; }).catch(error => { if (!disposed && revision === current) syncError(error); });
-  });
-  async function run() {
-    if (submitting || syncing) return;
-    submitting = true; actions.querySelector('button')!.disabled = true;
-    try {
-      await saving;
-      const settings = values();
-      const missing = [...form.querySelectorAll<HTMLInputElement>('input')].find(input => !input.value.trim());
-      if (missing) { missing.focus(); throw new Error(`请填写${missing.labels?.[0]?.querySelector('span')?.textContent ?? '完整连接配置'}`); }
-      if (!form.checkValidity()) throw new Error('服务地址格式无效，请输入完整的 HTTPS 地址');
-      await sync.run(settings);
+  let disposed = false;
+  let unsubscribeSync = () => {};
+  let loaded = Promise.resolve();
+  if (!isServerLibrary()) {
+    const form = document.createElement('form'); form.className = 'settings-sync-form'; form.noValidate = true; form.setAttribute('aria-label', 'S3 同步'); pages.get('sync')!.append(form);
+    for (const [key, title, detail] of [
+      ['endpoint', '服务地址', '支持 S3 协议的 HTTPS 地址'], ['bucket', 'Bucket', '存储桶名称'], ['region', '区域', '默认 us-east-1'],
+      ['prefix', '同步前缀', '不同笔记库请使用不同前缀'], ['accessKeyId', 'Access Key ID', 'S3 访问标识'], ['secretAccessKey', 'Secret Access Key', 'S3 访问密钥'],
+    ]) {
+      const input = document.createElement('input'); input.name = key; input.className = 'settings-control'; input.required = true; input.maxLength = 4096; input.autocomplete = 'off'; input.spellcheck = false;
+      input.type = key.includes('Key') ? 'password' : key === 'endpoint' ? 'url' : 'text';
+      const element = row('sync', title, detail, input); form.append(element);
     }
-    catch (e) { syncError(e); }
-    finally { submitting = false; actions.querySelector('button')!.disabled = !profileLoaded || syncing; }
+    const hint = document.createElement('p'); hint.className = 'settings-hint'; hint.textContent = '配置自动保存。打开应用、每 3 分钟及退出前同步笔记库，包含目录内的图片和附件；冲突无法合并时保留双方副本。移动端进入后台时尝试同步。'; form.append(hint);
+    const status = document.createElement('p'); status.className = 'settings-sync-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    const actions = document.createElement('div'); actions.className = 'settings-sync-actions'; actions.innerHTML = '<button type="submit" class="primary-button">立即同步</button>'; form.append(actions, status);
+    function values() { return Object.fromEntries(new FormData(form)) as S3Settings; }
+    let saving = Promise.resolve(), revision = 0, profileLoaded = false, syncing = false, submitting = false;
+    function syncError(error: unknown) {
+      let text = error instanceof Error ? error.message : typeof error === 'string' ? error : '同步失败，请重试';
+      for (const secret of [values().accessKeyId, values().secretAccessKey]) if (secret) text = text.replaceAll(secret, '[已隐藏]');
+      status.textContent = text; status.dataset.error = 'true'; status.scrollIntoView?.({ block: 'nearest' });
+    }
+    form.addEventListener('input', () => {
+      const current = ++revision, next = values();
+      status.textContent = '正在保存…'; status.dataset.error = 'false';
+      saving = sync.save(next);
+      void saving.then(() => { if (!disposed && revision === current) status.textContent = ''; }).catch(error => { if (!disposed && revision === current) syncError(error); });
+    });
+    async function run() {
+      if (submitting || syncing) return;
+      submitting = true; actions.querySelector('button')!.disabled = true;
+      try {
+        await saving;
+        const settings = values();
+        const missing = [...form.querySelectorAll<HTMLInputElement>('input')].find(input => !input.value.trim());
+        if (missing) { missing.focus(); throw new Error(`请填写${missing.labels?.[0]?.querySelector('span')?.textContent ?? '完整连接配置'}`); }
+        if (!form.checkValidity()) throw new Error('服务地址格式无效，请输入完整的 HTTPS 地址');
+        await sync.run(settings);
+      }
+      catch (e) { syncError(e); }
+      finally { submitting = false; actions.querySelector('button')!.disabled = !profileLoaded || syncing; }
+    }
+    form.onsubmit = event => { event.preventDefault(); void run(); };
+    for (const control of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = true;
+    unsubscribeSync = sync.subscribe(value => {
+      syncing = value.busy;
+      status.textContent = value.message; status.dataset.error = String(value.error); if (value.busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
+      for (const control of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = !profileLoaded || value.busy;
+    });
+    loaded = sync.load().then(config => {
+      profileLoaded = true;
+      for (const [key, value] of Object.entries(config)) { const input = form.elements.namedItem(key); if (input instanceof HTMLInputElement) input.value = value; }
+      for (const control of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = syncing;
+    }).catch(syncError);
   }
-  form.onsubmit = event => { event.preventDefault(); void run(); };
-  for (const control of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = true;
-  const unsubscribeSync = sync.subscribe(value => {
-    syncing = value.busy;
-    status.textContent = value.message; status.dataset.error = String(value.error); if (value.busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
-    for (const control of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = !profileLoaded || value.busy;
-  });
-  const loaded = sync.load().then(config => {
-    profileLoaded = true;
-    for (const [key, value] of Object.entries(config)) { const input = form.elements.namedItem(key); if (input instanceof HTMLInputElement) input.value = value; }
-    for (const control of form.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button')) control.disabled = syncing;
-  }).catch(syncError);
   root.querySelector<HTMLButtonElement>('.settings-reset')!.onclick = async () => {
     try {
       preferences.update({}, true);

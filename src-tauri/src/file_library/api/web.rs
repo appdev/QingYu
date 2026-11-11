@@ -268,7 +268,7 @@ pub(super) async fn gate(
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     headers.insert(header::X_FRAME_OPTIONS, "SAMEORIGIN".parse().unwrap());
     headers.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
-    headers.insert(
+    headers.append(
         header::CONTENT_SECURITY_POLICY,
         "frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
             .parse()

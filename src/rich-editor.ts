@@ -8,6 +8,7 @@ import { emphasisLanguage } from './emphasis';
 import { createRichCodeRenderer } from './rich-code';
 import { markdownBody } from './document-text';
 import { decorateCallouts, installRichMarkdown, referenceHref } from './rich-markdown';
+import { originalAssetPaths, projectServerAssets } from './server-assets';
 
 function loadScript(path: string, id: string) {
   if (document.getElementById(id)) return Promise.resolve();
@@ -50,6 +51,8 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
   let lastDocumentId: string | undefined;
   let renderedSource = '';
   let frontmatter = '';
+  let assetNoteId: string | undefined;
+  const markdownValue = () => originalAssetPaths(editor.vditor.wysiwyg!.element, () => editor.getValue());
   let lastFootnoteReference: HTMLElement | undefined;
   function openLink(href: string) {
     if (href.startsWith('#')) window.MiaoYanHeadingLinks.follow(editor.vditor.wysiwyg!.element, href);
@@ -88,7 +91,7 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
   }
   function flush(value?: string) {
     if (options.readOnly || !active || editor.vditor.wysiwyg!.composingLock) return;
-    const next = value ?? editor.getValue();
+    const next = assetNoteId ? markdownValue() : value ?? editor.getValue();
     if (next === renderedSource) return;
     const source = frontmatter + (frontmatter && !frontmatter.endsWith('\n') ? '\n' : '') + next;
     lastSource = source;
@@ -171,6 +174,7 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
     instance.disabled();
   }
   const { element, popover } = instance.vditor.wysiwyg!;
+  new MutationObserver(() => projectServerAssets(element, assetNoteId)).observe(element, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'href'] });
   if (options.readOnly) {
     element.tabIndex = 0;
     parent.addEventListener('pointerdown', () => element.focus({ preventScroll: true }), true);
@@ -230,7 +234,8 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
     element,
     lute: instance.vditor.lute,
     get composing() { return instance.vditor.wysiwyg!.composingLock; },
-    activate(source: string, documentId: string) {
+    activate(source: string, documentId: string, attachmentNoteId?: string) {
+      assetNoteId = attachmentNoteId;
       // Identical text can belong to different notes with different undo histories.
       if (source !== lastSource || documentId !== lastDocumentId) {
         lastFootnoteReference = undefined;
@@ -256,9 +261,10 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
         lastSource = source;
         lastDocumentId = documentId;
         // Opening a document must not save Vditor's normalized Markdown until the user edits.
-        renderedSource = options.readOnly ? '' : instance.getValue();
+        renderedSource = options.readOnly ? '' : markdownValue();
       }
       alignEmphasis();
+      projectServerAssets(element, assetNoteId);
       renderCode();
       active = true;
     },

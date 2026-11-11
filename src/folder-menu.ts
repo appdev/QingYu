@@ -54,13 +54,21 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     input.onblur = () => { void finish(); };
   }
   const open = async (id: string | null, type: FolderType, clicked: boolean, x: number, y: number) => {
-    const items = folderMenuItems(type, clicked);
+    const items = folderMenuItems(type, clicked).filter(item => !getBook().server || !['在 Finder 中显示', '在终端中打开', '移到废纸篓'].includes(item.text));
     const run = (action: 'move' | 'trash' | 'reveal' | 'terminal') => actions.change(() => getBook().folderAction(action, type === 'trash' ? 'trash' : id));
-    for (const item of items) item.run = ({
+    for (const item of items) {
+      if (item.text === '移动到…' && getBook().server) {
+        const folder = getBook().data.folders.find(folder => folder.id === id);
+        item.items = getBook().data.folders.filter(other => other.id !== id && !other.path?.startsWith(folder?.path + '/'))
+          .map(other => ({ text: other.path || other.name, run: () => actions.change(() => getBook().folderAction('move', id, other.id)) }));
+        continue;
+      }
+      item.run = ({
       '新建文件夹': () => actions.create(), '新建子文件夹': () => actions.create(id ?? undefined),
       '重命名文件夹': () => { if (id) rename(id); }, '移动到…': () => run('move'),
       '在 Finder 中显示': () => run('reveal'), '在终端中打开': () => run('terminal'), '移到废纸篓': () => run('trash'),
     } as Record<string, () => void | Promise<void>>)[item.text];
+    }
     await popupMenu(items, x, y, actions.error, () => document.querySelector<HTMLElement>('.folder-row[aria-pressed=true]')?.focus());
   };
   return { open, rename, finishRename: () => finishEdit?.() ?? Promise.resolve(true) };

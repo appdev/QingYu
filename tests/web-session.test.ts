@@ -28,10 +28,10 @@ it('defers logout and expired-session navigation while a draft cannot be saved',
   enable(); const save = vi.fn(async () => false), error = vi.fn();
   watchWebSession(save, error);
   document.querySelector<HTMLButtonElement>('button')!.click();
-  await Promise.resolve(); expect(save).toHaveBeenCalledOnce(); expect(fetchMock).not.toHaveBeenCalled();
+  await Promise.resolve(); expect(save).toHaveBeenCalledWith(false); expect(fetchMock).not.toHaveBeenCalled();
   fetchMock.mockResolvedValue({ status: 401 });
   await vi.advanceTimersByTimeAsync(60_000);
-  expect(save).toHaveBeenCalledTimes(2); expect(fetchMock).toHaveBeenCalledTimes(1); expect(error).not.toHaveBeenCalled();
+  expect(save).toHaveBeenCalledTimes(2); expect(save).toHaveBeenLastCalledWith(true); expect(fetchMock).toHaveBeenCalledTimes(1); expect(error).not.toHaveBeenCalled();
 });
 
 it('saves before logout and keeps the page when revocation fails', async () => {

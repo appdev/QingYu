@@ -174,7 +174,7 @@ impl DiskLibrary {
         Ok(folder)
     }
 
-    fn folder_change(
+    pub(super) fn folder_change(
         &mut self,
         action: &str,
         folder_id: &str,

@@ -28,6 +28,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { setupCalendar } from './calendar';
 import { requireWebSession, watchWebSession } from './web-session';
+import { isServerLibrary, offerServerDrafts } from './server-library';
 
 await requireWebSession();
 
@@ -41,13 +42,19 @@ function setStatus(message: string, error = false) {
 }
 const windowLabel = native ? getCurrentWindow().label : 'main';
 const documentWindow = !mobile && windowLabel.startsWith('document-');
-const notebook = new Notebook({ getItem: key => documentWindow ? null : localStorage.getItem(key), setItem: (key, value) => {
-  if (documentWindow) throw new Error('外部文件不能写入笔记库草稿');
+const serverLibrary = isServerLibrary();
+const notebook = new Notebook({ getItem: key => documentWindow || serverLibrary ? null : localStorage.getItem(key), setItem: (key, value) => {
+  if (documentWindow || serverLibrary) throw new Error('当前笔记不能转存到浏览器笔记库');
   localStorage.setItem(key, value);
-} }, documentWindow ? '' : starter);
+} }, documentWindow || serverLibrary ? '' : starter);
 if ('__TAURI_INTERNALS__' in window) {
   setStatus(documentWindow ? '正在打开文档…' : '正在打开本地笔记文件夹…');
   try { if (documentWindow) await notebook.attachExternal(); else await notebook.openFiles(); }
+  catch (error) { notebook.loadError = true; setStatus(error instanceof Error ? error.message : String(error), true); }
+}
+else if (serverLibrary) {
+  setStatus('正在打开服务器笔记库…');
+  try { await notebook.openServer(); }
   catch (error) { notebook.loadError = true; setStatus(error instanceof Error ? error.message : String(error), true); }
 }
 const initial = notebook.current?.source ?? '';
@@ -66,7 +73,7 @@ const syncSession = createSyncSession(notebook, () => {
   return saveDraft(true);
 });
 let syncBusy = false;
-$('#sync-button').hidden = documentWindow;
+$('#sync-button').hidden = documentWindow || serverLibrary;
 syncSession.subscribe(status => {
   syncBusy = status.busy;
   const button = $('#sync-button');
@@ -108,7 +115,7 @@ let renderTimer: ReturnType<typeof setTimeout>;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let scrollTimer: ReturnType<typeof setTimeout>;
 let ignoreScrollUntil = 0;
-let pendingRender: { id: number; source: string } | null = null;
+let pendingRender: { id: number; source: string; noteId?: string } | null = null;
 
 const highlight = HighlightStyle.define([
   { tag: [tags.heading1, tags.heading2, tags.heading3, tags.heading4, tags.heading5, tags.heading6], class: 'md-title' }, { tag: tags.emphasis, class: 'md-emphasis' },
@@ -174,6 +181,8 @@ function createNoteState(source: string) {
         if (!update.docChanged) return;
         version++;
         refreshTitle();
+        try { notebook.stageDraft(update.state.doc.toString()); }
+        catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
         if (document.body.dataset.statusError !== 'true') setStatus('正在保留草稿…');
         clearTimeout(saveTimer);
         saveTimer = setTimeout(() => { void saveDraft(); }, 500);
@@ -224,7 +233,7 @@ async function saveDraft(includeTitle = false) {
       sidebar?.refresh();
     }
     if (note.id === notebook.data.activeId && view.state.doc.toString() !== text) return saveDraft(includeTitle);
-    if (note.id === notebook.data.activeId && view.state.doc.toString() === text) setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
+    if (note.id === notebook.data.activeId && view.state.doc.toString() === text) setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.server ? '笔记已保存到服务器' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
     if (changed) sidebar?.refresh();
     return true;
   } catch (error) {
@@ -250,7 +259,7 @@ function showCurrentNote(selected: boolean) {
     sourceOffset = 0;
     scheduleRender(0);
     if (mode === 'rich' && notebook.current.readOnly) { mode = 'edit'; workspace.dataset.mode = mode; }
-    if (mode === 'rich') richEditor?.activate(notebook.current.source, notebook.current.id);
+    if (mode === 'rich') richEditor?.activate(notebook.current.source, notebook.current.id, notebook.server ? notebook.current.id : undefined);
     view.requestMeasure();
   }
   refreshTitle();
@@ -284,7 +293,7 @@ function scheduleRender(delay = 150) {
     if (view.compositionStarted) return;
     const source = view.state.doc.toString();
     sourceOffset = markdownBody(source).offset;
-    pendingRender = { id: version, source };
+    pendingRender = { id: version, source, noteId: notebook.server ? notebook.current?.id : undefined };
     if (mode === 'preview' || mode === 'split') sendRender();
   }, delay);
 }
@@ -315,7 +324,7 @@ async function setMode(next: typeof mode) {
         if (transaction) view.dispatch(transaction);
       }));
       richEditor = await richLoading;
-      if (mode === 'rich') { richEditor.activate(view.state.doc.toString(), notebook.current.id); richEditor.focus(); }
+      if (mode === 'rich') { richEditor.activate(view.state.doc.toString(), notebook.current.id, notebook.server ? notebook.current.id : undefined); richEditor.focus(); }
     } catch (error) {
       console.error(error);
       richLoading = undefined;
@@ -380,8 +389,14 @@ document.addEventListener('keydown', event => {
   if (event.key === '\\') { event.preventDefault(); setMode(mode === 'split' ? 'edit' : 'split'); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); clearTimeout(saveTimer); void saveDraft(true); }
 });
-window.addEventListener('pagehide', () => { void saveDraft(true); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) void saveDraft(true); });
+function preserveOnLeave() {
+  if (!notebook.server) { void saveDraft(true); return true; }
+  // Navigation can abort HTTP saves; the per-note draft is recovered after reopening.
+  try { richEditor?.flush(); notebook.stageDraft(view.state.doc.toString()); return true; }
+  catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); return false; }
+}
+window.addEventListener('pagehide', preserveOnLeave);
+document.addEventListener('visibilitychange', () => { if (document.hidden) preserveOnLeave(); });
 
 function syncPreview() {
   if (mode !== 'split' || performance.now() < ignoreScrollUntil) return;
@@ -439,10 +454,43 @@ if (!notebook.loadError) void saveDraft();
 refreshTitle();
 scheduleRender(0);
 updateViewport();
-watchWebSession(async () => {
+watchWebSession(async expired => {
+  if (expired && notebook.server) {
+    if (view.compositionStarted || richEditor?.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true') return false;
+    return preserveOnLeave();
+  }
   if (syncBusy || document.body.dataset.libraryBusy === 'true') { setStatus('正在保存或同步，请稍后退出', true); return false; }
   return saveDraft(true);
 }, message => setStatus(message, true));
+if (serverLibrary && !notebook.loadError) {
+  offerServerDrafts(notebook.data);
+  const refresh = async () => {
+    const current = notebook.current, id = notebook.data.activeId, text = view.state.doc.toString();
+    const ready = () => {
+      richEditor?.flush();
+      return !document.body.inert && document.body.dataset.libraryBusy !== 'true'
+      && !document.querySelector('#rename-note,.rename-folder,dialog[open],.note-context-menu')
+      && !notebook.loadError && !saveTimer && !view.compositionStarted && !richEditor?.composing
+      && id === notebook.data.activeId && text === view.state.doc.toString()
+      && (!notebook.current || text.replace(/\r\n?/g, '\n') === notebook.current.source.replace(/\r\n?/g, '\n'));
+    };
+    try {
+      if (await notebook.refreshServer(ready)) {
+        const next = notebook.current;
+        if (showingNote && (current?.id !== next?.id || current?.source !== next?.source || current?.readOnly !== next?.readOnly)) showCurrentNote(Boolean(next));
+        else refreshTitle();
+        sidebar?.refresh();
+      }
+    }
+    catch (error) { setStatus(error instanceof Error ? error.message : '无法刷新服务器笔记', true); }
+  };
+  window.addEventListener('focus', refresh);
+  setInterval(() => { if (!document.hidden) void refresh(); }, 15_000);
+  window.addEventListener('beforeunload', event => {
+    richEditor?.flush();
+    if (notebook.current && (view.compositionStarted || richEditor?.composing || saveTimer || view.state.doc.toString() !== notebook.current.source)) { event.preventDefault(); event.returnValue = ''; }
+  });
+}
 if ('__TAURI_INTERNALS__' in window) {
   let autoSync: ReturnType<typeof startAutoSync> | undefined;
   if (!documentWindow) {

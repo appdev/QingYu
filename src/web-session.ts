@@ -20,7 +20,7 @@ export async function requireWebSession() {
   }
 }
 
-export function watchWebSession(beforeLeave: () => Promise<boolean>, error: (message: string) => void) {
+export function watchWebSession(beforeLeave: (expired: boolean) => Promise<boolean>, error: (message: string) => void) {
   if (!enabled()) return;
   const logout = document.querySelector<HTMLButtonElement>('#logout-button')!;
   logout.hidden = false;
@@ -29,7 +29,7 @@ export function watchWebSession(beforeLeave: () => Promise<boolean>, error: (mes
     if (leaving) return;
     leaving = true;
     try {
-      if (!await beforeLeave()) return;
+      if (!await beforeLeave(expired)) return;
       if (!expired) {
         const response = await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
         if (response.status !== 204) throw new Error('退出登录失败，请稍后重试');

@@ -17,6 +17,7 @@ use subtle::ConstantTimeEq;
 
 const MAX_BODY: usize = 4 * 1024 * 1024;
 mod web;
+mod browser_library;
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
 struct ApiError(StatusCode, &'static str, &'static str);
@@ -163,7 +164,7 @@ fn router(state: Arc<Service>) -> Router {
         .route("/v1/notes/{id}", get(read).put(update))
         .fallback(|| async { ApiError::not_found() })
         .layer(DefaultBodyLimit::max(MAX_BODY));
-    let api = Router::new().nest("/api", api);
+    let api = Router::new().nest("/api", api.merge(browser_library::router(state.clone())));
     let auth = middleware::from_fn_with_state(state.clone(), authorize);
     if state.web.is_some() {
         web::router(&state)

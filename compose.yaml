@@ -1,0 +1,18 @@
+services:
+  qingyu:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      QINGYU_LIBRARY_DIR: /data
+      QINGYU_WEB_PASSWORD: ${QINGYU_WEB_PASSWORD:?Set a Web password of at least 12 characters}
+      QINGYU_WEB_SECURE_COOKIE: ${QINGYU_WEB_SECURE_COOKIE:-true}
+    volumes:
+      - type: bind
+        source: ${QINGYU_DATA_DIR:?Set the absolute path to the server notes directory}
+        target: /data
+        bind:
+          create_host_path: false

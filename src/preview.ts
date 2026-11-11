@@ -9,7 +9,7 @@ const parentElement = document.querySelector<HTMLElement>('#rich-editor')!;
 const send = (type: string, extra = {}) => parent.postMessage({ type, ...extra }, location.origin);
 let scrollingUntil = 0;
 let editor: Awaited<ReturnType<typeof createRichEditor>>;
-let pending: { id: number; source: string } | undefined;
+let pending: { id: number; source: string; noteId?: string } | undefined;
 let received = -1;
 let anchors: { line: number; top: number }[] = [];
 
@@ -36,11 +36,11 @@ function scrollToLine(line: number) {
 }
 function render() {
   if (!editor || !pending) return;
-  const { id, source } = pending;
+  const { id, source, noteId } = pending;
   pending = undefined;
   try {
     const top = editor.element.scrollTop;
-    editor.activate(source, String(id));
+    editor.activate(source, String(id), noteId);
     previewPositions(editor.element, markdownBody(source).body, editor.lute);
     editor.element.scrollTop = top;
     rebuild();
@@ -51,7 +51,7 @@ function render() {
 window.addEventListener('message', ({ source, origin, data }) => {
   if (source !== parent || origin !== location.origin || !data) return;
   if (data.type === 'render' && typeof data.source === 'string' && Number.isInteger(data.id) && data.id >= received) {
-    received = data.id; pending = { id: data.id, source: data.source }; render();
+    received = data.id; pending = { id: data.id, source: data.source, noteId: typeof data.noteId === 'string' ? data.noteId : undefined }; render();
   } else if (data.type === 'scroll' && Number.isFinite(data.line)) scrollToLine(data.line);
   else if (data.type === 'preferences') {
     if (typeof data.dark !== 'boolean' || typeof data.font !== 'string' || typeof data.codeFont !== 'string' || !sizes.includes(data.size) || ![0,600,800,1000,1200,1400].includes(data.width)) return;

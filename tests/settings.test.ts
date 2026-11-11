@@ -6,7 +6,18 @@ import { openSettings } from '../src/open-settings';
 import type { SyncClient, SyncStatus } from '../src/sync-session';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
-beforeEach(() => { localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
+beforeEach(() => { document.querySelector('meta[name="qingyu-web-auth"]')?.remove(); localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
+it('server settings describe the mounted library and never load browser S3 credentials', async () => {
+  const marker = document.createElement('meta'); marker.name = 'qingyu-web-auth'; marker.content = 'enabled'; document.head.append(marker);
+  const root = document.createElement('div'); document.body.append(root);
+  const client: SyncClient = { load: vi.fn(), save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: vi.fn() };
+  const view = mountSettings(root, client, vi.fn()); await view.loaded;
+  expect(root.textContent).toContain('服务器挂载的笔记目录');
+  expect(root.querySelector('[data-section="sync"]')).toBeNull(); expect(root.querySelector('.settings-sync-form')).toBeNull();
+  expect(client.load).not.toHaveBeenCalled(); expect(client.subscribe).not.toHaveBeenCalled();
+  view.select('sync'); expect(root.querySelector('#settings-panel-general')?.hasAttribute('hidden')).toBe(false);
+  view.destroy(); marker.remove();
+});
 describe('preferences persistence', () => {
   it('keeps old defaults, validates stored values and discards unknown fields', () => {
     expect(parsePreferences({ version: 1 })).toEqual(defaults);

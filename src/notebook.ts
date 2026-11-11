@@ -2,6 +2,7 @@ import { noteText } from './document-text';
 import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
 import type { Asset, AssetSync } from './sync-files';
+import { ServerLibrary, type ServerSnapshot } from './server-library';
 
 export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
@@ -53,6 +54,8 @@ export class Notebook {
   private disk?: { root: string; revision: number };
   private externalRevision = 0;
   external = false;
+  private remote?: ServerLibrary;
+  get server() { return Boolean(this.remote); }
   constructor(private storage: Storage, starter: string) {
     this.data = initialLibrary(starter);
     this.loadError = false;
@@ -68,6 +71,22 @@ export class Notebook {
   }
   get current() { return this.data.notes.find(note => note.id === this.data.activeId)!; }
   get root() { return this.disk?.root; }
+  async openServer() { this.remote = new ServerLibrary(); this.adoptServer(await this.remote.load()); }
+  private adoptServer(snapshot: ServerSnapshot, activeId = this.data.activeId) {
+    const notes = snapshot.notes;
+    const library: Library = { version: 1, folders: snapshot.folders, notes,
+      activeId: notes.some(note => note.id === activeId) ? activeId : (notes.find(note => !note.trashed) ?? notes[0])?.id ?? '' };
+    if (!validLibrary(library)) throw new Error('服务器笔记库格式无效');
+    this.data = library; this.remote!.accept(snapshot); this.persisted = true; this.loadError = false;
+  }
+  stageDraft(source: string) { if (this.current) this.remote?.stageDraft(this.current.id, source, this.current.source); }
+  refreshServer(ready: () => boolean) { return this.run(async () => {
+    if (!this.remote || !ready()) return false;
+    const snapshot = await this.remote.load();
+    if (!ready()) return false;
+    const previous = JSON.stringify(this.data); this.adoptServer(snapshot);
+    return previous !== JSON.stringify(this.data);
+  }); }
   async attachExternal() {
     this.adopt(await invoke('workspace_snapshot')); this.external = true;
   }
@@ -89,7 +108,11 @@ export class Notebook {
   }
   private async commit(next: Library, intent = 'edit', assets?: AssetSync) {
     if (this.loadError) throw new Error('笔记库读取失败，未覆盖原有数据');
-    if (this.disk) this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }));
+    if (this.remote) {
+      const snapshot = await this.remote.commit(this.data, next, intent);
+      if (snapshot) this.adoptServer(snapshot, next.activeId); else this.data = next;
+    }
+    else if (this.disk) this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }));
     else { this.storage.setItem(libraryKey, JSON.stringify(next)); this.data = next; this.persisted = true; }
   }
   save(source: string, id = this.data.activeId) { const externalRevision = this.externalRevision; return this.run(async () => {
@@ -122,6 +145,11 @@ export class Notebook {
     if (!name || name.startsWith('.') || /[\\/:\x00-\x1f]/.test(name)) throw new Error('请输入有效的文件夹名称');
     const parent = this.data.folders.find(folder => folder.id === parentId);
     if (!parent) throw new Error('父文件夹不存在');
+    if (this.remote) {
+      const before = new Set(this.data.folders.map(folder => folder.id));
+      this.adoptServer(await this.remote.createFolder(parentId, name));
+      return this.data.folders.find(folder => !before.has(folder.id))!.id;
+    }
     if (this.disk) {
       const before = new Set(this.data.folders.map(folder => folder.id));
       this.adopt(await invoke('library_folder_action', { action: 'create', folderId: parentId, value: name, revision: this.disk.revision }));
@@ -134,6 +162,10 @@ export class Notebook {
     return folder.id;
   }); }
   folderAction(action: 'rename' | 'move' | 'trash' | 'reveal' | 'terminal', folderId: string | null, value?: string) { return this.run(async () => {
+    if (this.remote) {
+      if (!folderId || !value || !['rename', 'move'].includes(action)) throw new Error('请在服务器配置笔记目录；此操作不适用于 Web');
+      this.adoptServer(await this.remote.folder(action as 'rename' | 'move', folderId, value)); return;
+    }
     if (this.external) throw new Error('临时文件模式不管理文件夹，请返回笔记库操作');
     if (this.disk) {
       this.adopt(await invoke('library_folder_action', { action, folderId, value, revision: this.disk.revision })); return;
@@ -176,15 +208,17 @@ export class Notebook {
     let title = `${base} Copy`, number = 2;
     while (this.data.notes.some(other => other.folderId === note.folderId && noteTitle(other) === title)) title = `${base} Copy ${number++}`;
     const now = Date.now(), copy: Note = { id: crypto.randomUUID(), folderId: note.folderId, title, source: note.source, createdAt: now, updatedAt: now };
-    await this.commit({ ...this.data, notes: [copy, ...this.data.notes], activeId: copy.id }, this.disk ? `duplicate:${id}` : 'duplicate');
+    await this.commit({ ...this.data, notes: [copy, ...this.data.notes], activeId: copy.id }, this.disk || this.remote ? `duplicate:${id}` : 'duplicate');
   }); }
   async readSyncAssets(): Promise<Asset[]> {
     if (this.external) throw new Error('外部文件不在 S3 同步范围内');
+    if (this.remote) throw new Error('Web 使用服务器笔记库，S3 同步请在桌面端操作');
     if (!this.disk) return [];
     return invoke('library_sync_assets', { root: this.disk.root, revision: this.disk.revision });
   }
   commitSync(library: Library, checkpoint: Checkpoint, expected: string, assets?: AssetSync) { return this.run(async () => {
     if (this.external) throw new Error('外部文件不在 S3 同步范围内');
+    if (this.remote) throw new Error('Web 使用服务器笔记库，S3 同步请在桌面端操作');
     if (JSON.stringify(this.data) !== expected) throw new Error('同步期间本机笔记发生变化，已保留新内容，请再次同步');
     const next = { ...library, sync: checkpoint };
     if (!validLibrary(next)) throw new Error('同步结果格式无效，未覆盖本机笔记');
@@ -193,6 +227,7 @@ export class Notebook {
   importFiles(directory = false) { return this.run(async () => { this.adopt(await invoke('library_import', { directory })); }); }
   chooseRoot() { return this.run(async () => { this.adopt(await invoke('library_choose')); }); }
   reload() {
+    if (this.remote) return this.run(async () => { this.adoptServer(await this.remote!.load()); });
     if (this.external && this.disk) return this.reconcile(this.disk.root).then(() => {});
     return this.run(async () => { if (this.disk) this.adopt(await invoke('library_reload')); });
   }
