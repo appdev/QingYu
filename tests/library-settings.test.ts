@@ -9,6 +9,25 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, fn) => { ha
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 beforeEach(() => { handlers.clear(); vi.clearAllMocks(); document.body.innerHTML = '<div id="app-shell"></div>'; delete document.body.dataset.syncBusy; delete document.body.dataset.libraryBusy; });
 
+it('collects document-window saves before syncing and exiting, and cancels quit if any document refuses', async () => {
+  const order: string[] = [];
+  const actions = { save: vi.fn(async () => { order.push('local'); return true; }), prepareExit: vi.fn(async () => { order.push('documents'); }), cancelExit: vi.fn(async () => {}), sync: vi.fn(async () => { order.push('sync'); }), refresh: vi.fn(), error: vi.fn() };
+  await setupFileLibrary({ loadError: false } as Notebook, actions);
+  await handlers.get('library-before-exit')!({ payload: null });
+  expect(order).toEqual(['local', 'documents', 'sync']); expect(invoke).toHaveBeenCalledWith('library_finish_exit');
+  vi.mocked(invoke).mockClear(); actions.prepareExit.mockRejectedValueOnce(new Error('document save failed'));
+  await handlers.get('library-before-exit')!({ payload: null });
+  expect(actions.cancelExit).toHaveBeenCalledOnce(); expect(invoke).not.toHaveBeenCalled(); expect(actions.sync).toHaveBeenCalledOnce();
+  expect(actions.error).toHaveBeenCalledWith('document save failed'); expect(document.body.inert).toBe(false);
+});
+
+it('saves and hides the library window without quitting while document windows remain open', async () => {
+  const actions = { save: vi.fn(async () => true), sync: vi.fn(), refresh: vi.fn(), error: vi.fn() };
+  await setupFileLibrary({ loadError: false } as Notebook, actions);
+  await handlers.get('library-close-main')!({ payload: null });
+  expect(actions.save).toHaveBeenCalledOnce(); expect(invoke).toHaveBeenCalledExactlyOnceWith('library_hide_main'); expect(actions.sync).not.toHaveBeenCalled();
+});
+
 it('saves locally then exits immediately when sync fails, without a confirmation dialog', async () => {
   const actions = { save: vi.fn(async () => true), sync: vi.fn(async () => { throw new Error('offline'); }), refresh: vi.fn(), error: vi.fn() };
   await setupFileLibrary({ loadError: false } as Notebook, actions);

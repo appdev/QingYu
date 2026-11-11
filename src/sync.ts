@@ -105,7 +105,7 @@ export async function syncNotebook(book: Notebook, settings: S3Settings, progres
   if (library.notes.some(note => note.readOnly)) throw new Error('笔记库含不可读或损坏的文件，已停止同步，避免上传不完整正文');
   const config = normalizeSettings(settings), storage = createStore(config), target = storage.identity();
   const saved = library.sync?.target === target ? library.sync.state : null;
-  let state: core.State = saved ? { ...structuredClone(saved), hashCache: {} } : { deviceId: crypto.randomUUID(), deviceName: '妙言编辑器', vaultId: null, baseline: null, hashCache: {} };
+  let state: core.State = saved ? { ...structuredClone(saved), hashCache: {} } : { deviceId: crypto.randomUUID(), deviceName: '轻羽 QingYu', vaultId: null, baseline: null, hashCache: {} };
   const assets = await book.readSyncAssets();
   const files = new SyncFiles(library, assets);
   progress('正在连接 S3…');

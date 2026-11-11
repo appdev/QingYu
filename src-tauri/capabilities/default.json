@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
   "description": "Editor window and titlebar dragging only",
-  "windows": ["main", "settings"],
-  "permissions": ["core:default"]
+  "windows": ["main", "settings", "document-*"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

@@ -368,7 +368,7 @@ impl DiskLibrary {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "app", target_os = "macos"))]
 fn system_trash(root: &Path) -> Result<PathBuf> {
     use objc2_foundation::{
         NSFileManager, NSSearchPathDirectory, NSSearchPathDomainMask, NSString, NSURL,
@@ -387,11 +387,12 @@ fn system_trash(root: &Path) -> Result<PathBuf> {
     directory_identity(&path)?;
     Ok(path)
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(feature = "app", target_os = "macos")))]
 fn system_trash(_root: &Path) -> Result<PathBuf> {
     Err("当前平台尚未接入系统废纸篓，未删除文件".into())
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_folder_action(
     window: tauri::WebviewWindow,
@@ -540,7 +541,7 @@ pub async fn library_folder_action(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "app", target_os = "macos"))]
 fn open_folder(path: &Path, terminal: bool) -> Result<()> {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::NSString;
@@ -572,7 +573,7 @@ fn open_folder(path: &Path, terminal: bool) -> Result<()> {
         Err("系统未能打开文件夹".into())
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(feature = "app", not(target_os = "macos")))]
 fn open_folder(_path: &Path, _terminal: bool) -> Result<()> {
     Err("当前平台尚未接入文件管理器和终端".into())
 }

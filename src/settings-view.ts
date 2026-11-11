@@ -108,11 +108,11 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   }
   setting('general', 'appearance', '外观', '选择浅色、深色或跟随系统', [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']], true);
   setting('general', 'buttonDisplay', '按钮显示', '控制编辑区顶部工具按钮的显示方式', [['always', '始终显示'], ['hover', '悬停时显示']]);
-  if (!mobile && native) setting('general', 'alwaysOnTop', '窗口置顶', '让妙言窗口保持在其他窗口上方', undefined, true);
+  if (!mobile && native) setting('general', 'alwaysOnTop', '窗口置顶', '让轻羽窗口保持在其他窗口上方', undefined, true);
   if (native && !mobile) {
     const note = document.createElement('p'); note.className = 'settings-shortcut-status'; note.dataset.error = 'true'; note.setAttribute('role', 'alert');
     recorder = createShortcutRecorder(text => { note.textContent = text; });
-    row('general', '唤起快捷键', '在任何应用里呼出妙言', recorder.control);
+    row('general', '唤起快捷键', '在任何应用里呼出轻羽', recorder.control);
     pages.get('general')!.append(note);
   }
   setting('editor', 'defaultMode', '默认模式', '下次打开应用时使用的编辑模式', [['edit', '编辑'], ['split', '分屏预览'], ['preview', '预览'], ['rich', '所见即所得']]);

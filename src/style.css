@@ -14,7 +14,6 @@ h1#note-title { font-family: system-ui, sans-serif; font-size: 20px; font-weight
 .icon-button::before { content: ''; position: absolute; inset: -4px; }
 .icon-button svg { width: 20px; height: 20px; display: block; }
 #rich-button { font-size: 17px; letter-spacing: -.08em; }
-.icon-button:hover { background: var(--sand); }
 .icon-button[aria-pressed='true'], .icon-button[aria-expanded='true'] { color: var(--brand); }
 #workspace { display: flex; min-height: 0; flex: 1; --split: 50%; }
 #editor-pane, #preview-pane { height: 100%; min-width: 0; position: relative; }
@@ -28,9 +27,11 @@ h1#note-title { font-family: system-ui, sans-serif; font-size: 20px; font-weight
 #workspace[data-mode='preview'] #editor-pane { display: none; }
 #workspace[data-mode='preview'] #preview-pane, #workspace[data-mode='split'] #preview-pane { display: block; }
 #workspace[data-mode='split'] #editor-pane { width: var(--split); }
-#splitter { width: 1px; display: none; flex-shrink: 0; background: var(--line); cursor: col-resize; position: relative; }
+#splitter { width: 1px; display: none; flex-shrink: 0; background: var(--line); cursor: col-resize; position: relative; z-index: 2; touch-action: none; }
 #splitter::after { content: ''; position: absolute; inset: 0 -5px; }
 #workspace[data-mode='split'] #splitter { display: block; }
+body[data-content-resizing], body[data-content-resizing] * { cursor: col-resize !important; user-select: none !important; }
+body[data-content-resizing] iframe { pointer-events: none; }
 .statusbar { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 body[data-status-error='true'] .statusbar { position: fixed; z-index: 20; bottom: calc(12px + env(safe-area-inset-bottom)); left: 24px; width: auto; height: auto; margin: 0; padding: 8px 12px; clip-path: none; white-space: normal; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
 body[data-sync-busy='true'] .statusbar { position: fixed; z-index: 110; bottom: calc(12px + env(safe-area-inset-bottom)); left: 24px; width: auto; height: auto; margin: 0; padding: 8px 12px; clip-path: none; white-space: normal; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }

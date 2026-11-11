@@ -1,20 +1,43 @@
 [package]
-name = "miaoyan-editor"
+name = "qingyu"
 version = "0.1.0"
-description = "A focused Markdown editor inspired by MiaoYan"
+description = "QingYu (轻羽), a focused Markdown editor"
 edition = "2021"
+default-run = "qingyu"
 
 [lib]
+# Keep the native library name used by the existing Android JNI bridge.
 name = "miaoyan_editor_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "qingyu"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "qingyu-api"
+path = "src/bin/api.rs"
+required-features = ["server"]
+
+[features]
+default = ["app"]
+app = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-calendar", "dep:reqwest", "dep:fontdb", "dep:tauri-plugin-global-shortcut", "dep:notify", "dep:tauri-plugin-single-instance", "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-quartz-core"]
+server = ["dep:axum", "dep:tokio", "dep:sha2", "dep:subtle", "dep:tower-http"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
-reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-calendar = { path = "plugins/calendar", optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"], optional = true }
+sha2 = { version = "0.10", optional = true }
+subtle = { version = "2", optional = true }
+tower-http = { version = "0.6", features = ["fs"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -24,20 +47,23 @@ encoding_rs = "0.8"
 chardetng = "0.1"
 unicode-segmentation = "1"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-fontdb = "0.24"
-tauri-plugin-global-shortcut = "2"
-notify = "8.2.2"
-tauri-plugin-single-instance = "2"
+fontdb = { version = "0.24", optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+notify = { version = "8.2.2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-block2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSNotification", "NSOperation", "NSString", "NSGeometry", "NSProcessInfo", "NSFileManager", "NSPathUtilities", "NSURL"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSMenu", "NSMenuItem", "NSImage", "NSPopover", "NSViewController", "NSView", "NSControl", "NSTextField", "NSFont", "NSFontDescriptor", "NSColor", "NSWindow", "NSResponder", "NSScrollView", "NSTextView", "NSText", "NSWorkspace", "objc2-quartz-core", "objc2-core-graphics"] }
-objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
+objc2 = { version = "0.6", optional = true }
+block2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSNotification", "NSOperation", "NSString", "NSGeometry", "NSProcessInfo", "NSFileManager", "NSPathUtilities", "NSURL"] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSMenu", "NSMenuItem", "NSImage", "NSPopover", "NSViewController", "NSView", "NSControl", "NSTextField", "NSFont", "NSFontDescriptor", "NSColor", "NSWindow", "NSResponder", "NSScrollView", "NSTextView", "NSText", "NSWorkspace", "objc2-quartz-core", "objc2-core-graphics"] }
+objc2-quartz-core = { version = "0.3", optional = true, default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

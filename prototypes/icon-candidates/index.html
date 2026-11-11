@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>羽毛笔图标候选</title>
+  <style>
+    :root { color-scheme: dark; --paper: #1e1d1b; --ink: #f2f0ea; --muted: #aaa79e; --rule: #3a3936; --brand: #54c59f; --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 48px; background: var(--paper); color: var(--ink); font: 16px/1.6 var(--font); }
+    main { max-width: 1120px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 24px; font-weight: 500; }
+    p { margin: 0; color: var(--muted); }
+    .candidates { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 32px; margin-top: 40px; }
+    figure { margin: 0; min-width: 0; }
+    .large { display: block; width: 160px; height: 160px; margin: 0 auto 32px; }
+    figcaption { padding-top: 16px; border-top: 1px solid var(--rule); }
+    h2 { margin: 0 0 4px; font-size: 18px; font-weight: 500; }
+    figcaption p { font-size: 14px; }
+    .sizes { display: flex; gap: 16px; align-items: center; margin: 24px 0; min-height: 32px; }
+    .sizes img { display: block; }
+    .sample { display: flex; align-items: center; gap: 8px; color: var(--brand); font-size: 18px; }
+    .sample img { width: 24px; height: 24px; }
+    footer { border-top: 1px solid var(--rule); margin-top: 40px; padding-top: 20px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 800px) { body { padding: 24px; } .candidates { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 440px) { .large { width: 112px; height: 112px; } .candidates { gap: 24px; } .sizes { gap: 12px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>羽毛笔图标候选</h1>
+  <p>保留应用 icon 的羽毛与笔尖，转换为单色线稿。</p>
+  <div class="candidates">
+    <figure><img class="large" src="./a-faithful.webp" alt="A，忠于原始羽毛轮廓"><figcaption><h2>A 原型线稿</h2><p>保留较多羽毛分叉</p><div class="sizes"><img src="./a-faithful.webp" width="20" height="20" alt="20 像素"><img src="./a-faithful.webp" width="24" height="24" alt="24 像素"><img src="./a-faithful.webp" width="32" height="32" alt="32 像素"></div><div class="sample"><img src="./a-faithful.webp" alt="">轻羽</div></figcaption></figure>
+    <figure><img class="large" src="./b-minimal.webp" alt="B，更简练的羽毛轮廓"><figcaption><h2>B 简练线稿</h2><p>减少分叉，轮廓更干净</p><div class="sizes"><img src="./b-minimal.webp" width="20" height="20" alt="20 像素"><img src="./b-minimal.webp" width="24" height="24" alt="24 像素"><img src="./b-minimal.webp" width="32" height="32" alt="32 像素"></div><div class="sample"><img src="./b-minimal.webp" alt="">轻羽</div></figcaption></figure>
+    <figure><img class="large" src="./c-soft.webp" alt="C，柔和圆润的羽毛轮廓"><figcaption><h2>C 圆润线稿</h2><p>弧线更柔和，保留羽毛层次</p><div class="sizes"><img src="./c-soft.webp" width="20" height="20" alt="20 像素"><img src="./c-soft.webp" width="24" height="24" alt="24 像素"><img src="./c-soft.webp" width="32" height="32" alt="32 像素"></div><div class="sample"><img src="./c-soft.webp" alt="">轻羽</div></figcaption></figure>
+    <figure><img class="large" src="./d-compact.webp" alt="D，偏几何的羽毛轮廓"><figcaption><h2>D 几何线稿</h2><p>单侧分叉，造型更利落</p><div class="sizes"><img src="./d-compact.webp" width="20" height="20" alt="20 像素"><img src="./d-compact.webp" width="24" height="24" alt="24 像素"><img src="./d-compact.webp" width="32" height="32" alt="32 像素"></div><div class="sample"><img src="./d-compact.webp" alt="">轻羽</div></figcaption></figure>
+  </div>
+  <footer>小图依次为 20、24、32 px。当前用于选择轮廓，选定后再制作 SVG 并校准小尺寸线宽。</footer>
+</main>
+</body>
+</html>

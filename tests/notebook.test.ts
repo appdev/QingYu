@@ -128,6 +128,29 @@ describe('note context operations', () => {
 });
 
 describe('sidebar document information', () => {
+  it('groups this year by month and other years by year, keeping pinned notes together', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 10, 11));
+      const first = new Notebook(storage(), '# 笔记').current;
+      const notes = [
+        { ...first, id: 'april', updatedAt: new Date(2026, 3, 2).getTime() },
+        { ...first, id: 'february-a', updatedAt: new Date(2026, 1, 27).getTime() },
+        { ...first, id: 'february-b', updatedAt: new Date(2026, 1, 8).getTime() },
+        { ...first, id: 'last-november', updatedAt: new Date(2025, 10, 26).getTime() },
+        { ...first, id: 'last-october', updatedAt: new Date(2025, 9, 3).getTime() },
+        { ...first, id: 'pinned-old', pinned: true, updatedAt: new Date(2025, 1, 1).getTime() },
+        { ...first, id: 'pinned-new', pinned: true, updatedAt: new Date(2026, 10, 11).getTime() },
+        { ...first, id: 'future', updatedAt: new Date(2027, 0, 1).getTime() },
+      ];
+      expect(groupNotes(notes).map(g => [g.label, g.notes.map(n => n.id)])).toEqual([
+        ['置顶', ['pinned-new', 'pinned-old']], ['2027年', ['future']], ['四月', ['april']],
+        ['二月', ['february-a', 'february-b']], ['2025年', ['last-november', 'last-october']],
+      ]);
+      vi.setSystemTime(new Date(2027, 0, 1));
+      expect(groupNotes(notes).map(g => g.label)).toEqual(['置顶', '一月', '2026年', '2025年']);
+    } finally { vi.useRealTimers(); }
+  });
   it('uses the shared frontmatter rules for titles and extracts a plain summary', async () => {
     expect(noteText('---\ntitle: hidden\n---\n# **中文标题**\n\n正文 [链接](https://example.com) 与 `code`')).toEqual({ title: '中文标题', summary: '正文 链接 与 code' });
     expect(noteText('')).toEqual({ title: '未命名', summary: '无更多文本' });

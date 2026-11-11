@@ -19,3 +19,9 @@
   -webkit-font-smoothing: subpixel-antialiased;
 }
 :root[data-theme='dark'] { --paper: #1e1d1b; --ink: #f2f0ea; --muted: #8e8b83; --editor-ink: #d5d4d6; --title: #8e6ad9; --gold: #daae76; --link: #58d8ad; --line: #3a3936; --sand: #ffffff14; --brand: #54c59f; --code: #282724; }
+
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 45%, transparent) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { border: 1px solid transparent; border-radius: 8px; background: color-mix(in srgb, var(--ink) 45%, transparent); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink) 65%, transparent); }

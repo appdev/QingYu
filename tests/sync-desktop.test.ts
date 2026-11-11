@@ -25,7 +25,7 @@ it.skipIf(!process.env.MIAOYAN_S3_CONFIG || !process.env.MIAOYAN_S3_DESKTOP)('re
   let value = JSON.stringify(initial);
   const book = new Notebook({ getItem: () => value, setItem: (_key, next) => { value = next; } }, '');
   await syncNotebook(book, config);
-  const guide = book.data.notes.find(note => note.id !== 'desktop-witness' && note.source.startsWith('# 妙言 Markdown 语法指南'));
+  const guide = book.data.notes.find(note => note.id !== 'desktop-witness' && (note.source.startsWith('# 轻羽 Markdown 语法指南') || note.source.startsWith('# 妙言 Markdown 语法指南')));
   expect(guide).toBeDefined(); expect(book.data.notes).toHaveLength(2);
   book.select(guide!.id);
   if (!book.current.source.includes('来自第二客户端的同步验证')) book.save(book.current.source + '\n\n来自第二客户端的同步验证。\n');

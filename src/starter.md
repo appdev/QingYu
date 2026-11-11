@@ -1,4 +1,4 @@
-# 妙言 Markdown 语法指南
+# 轻羽 Markdown 语法指南
 
 *以《聊斋志异·婴宁》之美，展现 Markdown 之妙*
 
@@ -29,7 +29,7 @@
 ## 代码
 
 ```swift
-let greeting = "你好，妙言"
+let greeting = "你好，轻羽"
 print(greeting)
 ```
 

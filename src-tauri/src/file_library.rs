@@ -7,6 +7,7 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(feature = "app")]
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -17,7 +18,10 @@ const JOURNAL: &str = ".miaoyan/transaction.json";
 pub(crate) mod folders;
 pub(crate) mod external;
 pub(crate) mod assets;
+#[cfg(feature = "app")]
 pub(crate) mod workspace;
+#[cfg(feature = "server")]
+pub mod api;
 
 fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
     #[cfg(target_os = "android")]
@@ -127,6 +131,7 @@ pub struct DiskLibrary {
     bytes: HashMap<String, Vec<u8>>,
     folder_identities: HashMap<String, [u64; 2]>,
 }
+#[cfg(feature = "app")]
 #[derive(Default)]
 pub struct FileLibrary(pub Mutex<Option<DiskLibrary>>, #[cfg(desktop)] Mutex<Option<external::Watch>>);
 struct Imported {
@@ -1506,6 +1511,14 @@ pub fn collect_imports(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+#[cfg(any(desktop, test))]
+fn default_library_directory(documents: PathBuf) -> PathBuf {
+    let current = documents.join("QingYu");
+    let legacy = documents.join("MiaoYan Editor");
+    if !current.exists() && legacy.is_dir() { legacy } else { current }
+}
+
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_open(
     app: tauri::AppHandle,
@@ -1522,10 +1535,7 @@ pub async fn library_open(
     } else {
         #[cfg(desktop)]
         {
-            app.path()
-                .document_dir()
-                .map_err(error)?
-                .join("MiaoYan Editor")
+            default_library_directory(app.path().document_dir().map_err(error)?)
         }
         #[cfg(mobile)]
         {
@@ -1536,6 +1546,7 @@ pub async fn library_open(
     *lock = Some(DiskLibrary::open(root, seed)?);
     Ok(lock.as_ref().unwrap().snapshot())
 }
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_commit(
     state: State<'_, FileLibrary>,
@@ -1553,6 +1564,7 @@ pub async fn library_commit(
     Ok(store.snapshot())
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_import(
     window: tauri::WebviewWindow,
@@ -1597,6 +1609,7 @@ pub async fn library_import(
     }
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_choose(
     window: tauri::WebviewWindow,
@@ -1640,6 +1653,7 @@ pub async fn library_choose(
     }
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_reload(state: State<'_, FileLibrary>) -> Result<Snapshot> {
     let mut lock = state.0.lock().map_err(error)?;
@@ -1650,7 +1664,7 @@ pub async fn library_reload(state: State<'_, FileLibrary>) -> Result<Snapshot> {
     Ok(snapshot)
 }
 
-#[cfg(desktop)]
+#[cfg(all(feature = "app", desktop))]
 pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{MenuItem, PredefinedMenuItem, Submenu},
@@ -1689,7 +1703,10 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id().as_ref().starts_with("library-") || event.id().as_ref().starts_with("workspace-") {
-            let _ = app.emit_to("main", "library-command", event.id().as_ref());
+            let target = if event.id().as_ref().starts_with("workspace-") {
+                app.webview_windows().into_values().find(|window| window.is_focused().unwrap_or(false) && workspace::is_document(app, window.label())).map(|window| window.label().to_string()).unwrap_or_else(|| "main".into())
+            } else { "main".into() };
+            let _ = app.emit_to(&target, "library-command", event.id().as_ref());
         }
     });
     Ok(())

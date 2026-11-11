@@ -1,6 +1,20 @@
 use super::*;
 
 #[test]
+fn renamed_default_library_reuses_existing_notes_without_moving_them() {
+    let documents = tempfile::tempdir().unwrap();
+    let current = documents.path().join("QingYu");
+    let legacy = documents.path().join("MiaoYan Editor");
+    assert_eq!(default_library_directory(documents.path().into()), current);
+    fs::create_dir(&legacy).unwrap();
+    fs::write(legacy.join("existing.md"), "keep my notes").unwrap();
+    assert_eq!(default_library_directory(documents.path().into()), legacy);
+    fs::create_dir(&current).unwrap();
+    assert_eq!(default_library_directory(documents.path().into()), current);
+    assert_eq!(fs::read_to_string(legacy.join("existing.md")).unwrap(), "keep my notes");
+}
+
+#[test]
 fn write_lock_excludes_other_handles_and_releases_on_close() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("write.lock");

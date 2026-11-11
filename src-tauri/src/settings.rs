@@ -79,13 +79,11 @@ pub fn apply_preferences(
         _ => return Err("外观设置无效".into()),
     };
     #[cfg(desktop)]
-    for name in ["main", "settings"] {
-        if let Some(window) = app.get_webview_window(name) {
-            window.set_theme(theme).map_err(|e| e.to_string())?;
-            window
-                .set_always_on_top(always_on_top)
-                .map_err(|e| e.to_string())?;
-        }
+    for window in app.webview_windows().into_values() {
+        window.set_theme(theme).map_err(|e| e.to_string())?;
+        window
+            .set_always_on_top(always_on_top)
+            .map_err(|e| e.to_string())?;
     }
     #[cfg(mobile)]
     {

@@ -27,7 +27,7 @@ pub(super) fn same_text(a: &str, b: &str) -> bool {
 }
 
 impl DiskLibrary {
-    fn reconcile(&mut self, buffer: Option<EditorBuffer>) -> Result<Reconciled> {
+    pub(super) fn reconcile(&mut self, buffer: Option<EditorBuffer>) -> Result<Reconciled> {
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -110,6 +110,7 @@ impl DiskLibrary {
     }
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_reconcile(
     state: State<'_, FileLibrary>,
@@ -199,6 +200,7 @@ fn relevant(root: &Path, path: &Path) -> bool {
     })
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_watch(app: tauri::AppHandle, state: State<'_, FileLibrary>) -> Result<()> {
     #[cfg(desktop)]

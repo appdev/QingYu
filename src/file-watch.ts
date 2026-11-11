@@ -8,7 +8,7 @@ export async function setupFileWatch(book: Notebook, actions: {
   refresh(previous?: Note): void;
   backedUp(paths: string[]): void;
   error(message: string): void;
-}) {
+}, windowLabel = 'main') {
   let timer: ReturnType<typeof setTimeout> | undefined, pendingRoot: string | undefined, running = false, stopped = false;
   function schedule(root: string, delay = 150) {
     pendingRoot = root;
@@ -40,8 +40,8 @@ export async function setupFileWatch(book: Notebook, actions: {
     }
   }
   const prefix = book.external ? 'workspace' : 'library';
-  const unlisten = await listen<string>(`${prefix}-files-changed`, ({ payload }) => { if (typeof payload === 'string' && payload === book.root) schedule(payload); });
-  const unlistenError = await listen<{ root: string; error: string }>(`${prefix}-watch-error`, ({ payload }) => { if (payload.root === book.root) actions.error(payload.error); });
+  const unlisten = await listen<string>(`${prefix}-files-changed`, ({ payload }) => { if (typeof payload === 'string' && payload === book.root) schedule(payload); }, { target: windowLabel });
+  const unlistenError = await listen<{ root: string; error: string }>(`${prefix}-watch-error`, ({ payload }) => { if (payload.root === book.root) actions.error(payload.error); }, { target: windowLabel });
   try { if (book.root && !book.external) await invoke('library_watch'); }
   catch (reason) { actions.error(`文件监听未启动：${reason instanceof Error ? reason.message : String(reason)}`); }
   if (book.root && book.external) schedule(book.root);

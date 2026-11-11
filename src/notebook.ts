@@ -68,11 +68,14 @@ export class Notebook {
   }
   get current() { return this.data.notes.find(note => note.id === this.data.activeId)!; }
   get root() { return this.disk?.root; }
-  async openExternal(path?: string) {
-    const snapshot = await invoke<{ library: Library; root: string; revision: number } | null>('workspace_open', { path });
-    if (!snapshot) return false;
-    this.adopt(snapshot); this.external = true; return true;
+  async attachExternal() {
+    this.adopt(await invoke('workspace_snapshot')); this.external = true;
   }
+  activateExternal(path: string) { return this.run(async () => {
+    if (!this.external || !this.disk) throw new Error('尚未打开外部文件目录');
+    this.adopt(await invoke('workspace_activate_path', { path, revision: this.disk.revision }));
+    this.externalRevision++;
+  }); }
   async openFiles() {
     const seed = this.loadError ? null : { ...this.data, notes: this.data.notes.map(note => ({ ...note, title: note.title ?? (note.source.trim() ? noteText(note.source).title : undefined) })) };
     this.adopt(await invoke('library_open', { seed })); this.loadError = false;
@@ -100,7 +103,13 @@ export class Notebook {
   }); }
   select(id: string) { return this.run(async () => {
     if (!this.data.notes.some(note => note.id === id)) throw new Error('笔记不存在');
+    if (this.external && this.disk) {
+      const snapshot = await invoke<{ library: Library; root: string; revision: number } | null>('workspace_select', { noteId: id, revision: this.disk.revision });
+      if (!snapshot) return false;
+      this.adopt(snapshot); return true;
+    }
     await this.commit({ ...this.data, activeId: id });
+    return true;
   }); }
   createNote(folderId: string, title = '') { return this.run(async () => {
     if (!this.data.folders.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
@@ -205,12 +214,14 @@ export function visibleNotes(library: Library, folderId: string | null, query: s
 }
 
 export function groupNotes(notes: Note[]) {
-  const groups: { year: number; notes: Note[] }[] = [];
+  const currentYear = new Date().getFullYear();
+  const groups: { year: number; month: number; label: string; notes: Note[] }[] = [];
   for (const note of [...notes].sort((a, b) => Number(Boolean(b.pinned && !b.trashed)) - Number(Boolean(a.pinned && !a.trashed)) || b.updatedAt - a.updatedAt)) {
-    const year = note.pinned && !note.trashed ? 0 : new Date(note.updatedAt).getFullYear();
+    const date = new Date(note.updatedAt), year = note.pinned && !note.trashed ? 0 : date.getFullYear();
+    const month = year === currentYear ? date.getMonth() + 1 : 0;
     const last = groups.at(-1);
-    if (last?.year === year) last.notes.push(note);
-    else groups.push({ year, notes: [note] });
+    if (last?.year === year && last.month === month) last.notes.push(note);
+    else groups.push({ year, month, label: !year ? '置顶' : month ? ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'][month - 1] : `${year}年`, notes: [note] });
   }
   return groups;
 }

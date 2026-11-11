@@ -1,5 +1,6 @@
 import './style.css';
 import starter from './starter.md?raw';
+import { setupContentSplit } from './content-split';
 import formatIcon from '../public/miaoyan/icons/icon_format.svg?raw';
 import previewIcon from '../public/miaoyan/icons/icon_preview.svg?raw';
 import splitIcon from '../public/miaoyan/icons/icon_editor_split.svg?raw';
@@ -23,6 +24,12 @@ import { createSyncSession } from './sync-session';
 import { openSettings } from './open-settings';
 import { startAutoSync } from './auto-sync';
 import { revealCaret } from './editor-viewport';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { setupCalendar } from './calendar';
+import { requireWebSession, watchWebSession } from './web-session';
+
+await requireWebSession();
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const workspace = $('#workspace');
@@ -32,28 +39,34 @@ function setStatus(message: string, error = false) {
   saveStatus.textContent = message;
   document.body.dataset.statusError = String(error);
 }
-const libraryNotebook = new Notebook({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) }, starter);
-let notebook = libraryNotebook;
+const windowLabel = native ? getCurrentWindow().label : 'main';
+const documentWindow = !mobile && windowLabel.startsWith('document-');
+const notebook = new Notebook({ getItem: key => documentWindow ? null : localStorage.getItem(key), setItem: (key, value) => {
+  if (documentWindow) throw new Error('外部文件不能写入笔记库草稿');
+  localStorage.setItem(key, value);
+} }, documentWindow ? '' : starter);
 if ('__TAURI_INTERNALS__' in window) {
-  setStatus('正在打开本地笔记文件夹…');
-  try { await notebook.openFiles(); }
+  setStatus(documentWindow ? '正在打开文档…' : '正在打开本地笔记文件夹…');
+  try { if (documentWindow) await notebook.attachExternal(); else await notebook.openFiles(); }
   catch (error) { notebook.loadError = true; setStatus(error instanceof Error ? error.message : String(error), true); }
 }
 const initial = notebook.current?.source ?? '';
+setupCalendar(() => notebook.current ? noteTitle(notebook.current) : '');
 let sidebar: ReturnType<typeof createSidebar> | undefined;
 let showingNote = Boolean(notebook.current);
 $('#sync-button').onclick = async () => {
   try { await openSettings(syncSession, 'sync'); }
   catch { setStatus('无法打开同步设置，本机笔记仍保留', true); }
 };
-const syncSession = createSyncSession(libraryNotebook, () => {
-  if (notebook === libraryNotebook) { showCurrentNote(Boolean(notebook.current)); sidebar?.refresh(); }
+const syncSession = createSyncSession(notebook, () => {
+  showCurrentNote(Boolean(notebook.current)); sidebar?.refresh();
   setStatus('笔记库同步完成');
 }, () => {
   if (document.body.dataset.libraryBusy === 'true') throw new Error('笔记位置正在更改，请稍后同步');
-  return notebook === libraryNotebook ? saveDraft(true) : Promise.resolve(true);
+  return saveDraft(true);
 });
 let syncBusy = false;
+$('#sync-button').hidden = documentWindow;
 syncSession.subscribe(status => {
   syncBusy = status.busy;
   const button = $('#sync-button');
@@ -184,6 +197,7 @@ function refreshTitle(force = false) {
   $('#word-count').textContent = showingNote ? `${view.state.doc.length.toLocaleString('zh-CN')} 字符` : '';
 }
 async function saveDraft(includeTitle = false) {
+  if (documentWindow && notebook.loadError) return true;
   if (!showingNote) return true;
   if (!includeTitle && document.body.dataset.libraryBusy === 'true') {
     clearTimeout(saveTimer); saveTimer = setTimeout(() => { void saveDraft(); }, 500); return false;
@@ -210,7 +224,7 @@ async function saveDraft(includeTitle = false) {
       sidebar?.refresh();
     }
     if (note.id === notebook.data.activeId && view.state.doc.toString() !== text) return saveDraft(includeTitle);
-    if (note.id === notebook.data.activeId && view.state.doc.toString() === text) setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.root ? '笔记已保存到本地文件' : '网页开发环境：已保留草稿');
+    if (note.id === notebook.data.activeId && view.state.doc.toString() === text) setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
     if (changed) sidebar?.refresh();
     return true;
   } catch (error) {
@@ -246,7 +260,7 @@ async function selectNote(id: string | null) {
   if (!await saveDraft(true)) return false;
   if (id === notebook.data.activeId && showingNote) return true;
   try {
-    if (id) await notebook.select(id);
+    if (id && !await notebook.select(id)) return false;
     showCurrentNote(id !== null);
     return true;
   } catch { setStatus('无法切换笔记，当前内容仍保留在编辑区', true); return false; }
@@ -290,6 +304,7 @@ async function setMode(next: typeof mode) {
   if (next === 'split' && matchMedia('(max-width: 640px)').matches) next = 'preview';
   mode = next;
   workspace.dataset.mode = mode;
+  contentSplit.modeChanged();
   for (const kind of ['edit', 'split', 'preview', 'rich']) $(`#${kind}-button`).setAttribute('aria-pressed', String(kind === mode));
   if (next === 'rich') {
     closeMenu();
@@ -399,25 +414,7 @@ window.addEventListener('message', ({ source, origin, data }) => {
 frame.addEventListener('load', previewReady);
 if (frame.contentDocument?.readyState === 'complete') previewReady();
 
-const splitter = $('#splitter');
-function resizeSplit(percent: number) {
-  const value = Math.max(25, Math.min(75, percent));
-  workspace.style.setProperty('--split', `${value}%`);
-  splitter.setAttribute('aria-valuenow', String(Math.round(value)));
-  view.requestMeasure();
-}
-splitter.onpointerdown = event => {
-  splitter.setPointerCapture(event.pointerId);
-  frame.style.pointerEvents = 'none';
-  splitter.onpointermove = move => resizeSplit((move.clientX - workspace.getBoundingClientRect().left) / workspace.clientWidth * 100);
-  splitter.onpointerup = splitter.onpointercancel = () => { splitter.onpointermove = null; frame.style.pointerEvents = ''; };
-};
-splitter.onkeydown = event => {
-  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-    event.preventDefault(); resizeSplit(Number(splitter.getAttribute('aria-valuenow')) + (event.key === 'ArrowLeft' ? -2 : 2));
-  }
-};
-splitter.ondblclick = () => resizeSplit(50);
+const contentSplit = setupContentSplit(workspace, () => view.requestMeasure(), message => setStatus(message, true));
 
 let nativeKeyboard = false;
 function updateViewport() {
@@ -442,17 +439,27 @@ if (!notebook.loadError) void saveDraft();
 refreshTitle();
 scheduleRender(0);
 updateViewport();
+watchWebSession(async () => {
+  if (syncBusy || document.body.dataset.libraryBusy === 'true') { setStatus('正在保存或同步，请稍后退出', true); return false; }
+  return saveDraft(true);
+}, message => setStatus(message, true));
 if ('__TAURI_INTERNALS__' in window) {
   let autoSync: ReturnType<typeof startAutoSync> | undefined;
-  let workspace: Awaited<ReturnType<typeof import('./workspace').setupWorkspace>> | undefined;
-  const { setupFileLibrary } = await import('./file-library-ui');
-  await setupFileLibrary(libraryNotebook, { save: () => saveDraft(true), sync: async () => { await autoSync?.sync(); }, async refresh() { await workspace?.restore(); showCurrentNote(Boolean(notebook.current)); sidebar?.revealCurrent(); }, error: message => setStatus(message, true) });
+  if (!documentWindow) {
+    const { setupFileLibrary } = await import('./file-library-ui');
+    await setupFileLibrary(notebook, {
+      save: () => saveDraft(true),
+      prepareExit: mobile ? undefined : () => invoke('workspace_prepare_exit'),
+      cancelExit: mobile ? undefined : () => invoke('workspace_cancel_exit'),
+      sync: async () => { await autoSync?.sync(); },
+      refresh() { showCurrentNote(Boolean(notebook.current)); sidebar?.revealCurrent(); }, error: message => setStatus(message, true),
+    });
+  }
   const { setupFileWatch } = await import('./file-watch');
-  const watch = (book: Notebook) => setupFileWatch(book, {
-    pending: () => notebook === book && Boolean(saveTimer || view.compositionStarted || richEditor?.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true'),
-    buffer() { if (notebook !== book) return undefined; richEditor?.flush(); return showingNote && notebook.current ? { noteId: notebook.current.id, source: view.state.doc.toString() } : undefined; },
+  await setupFileWatch(notebook, {
+    pending: () => Boolean(saveTimer || view.compositionStarted || richEditor?.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true'),
+    buffer() { richEditor?.flush(); return showingNote && notebook.current ? { noteId: notebook.current.id, source: view.state.doc.toString() } : undefined; },
     refresh(previous) {
-      if (notebook !== book) return;
       const current = notebook.current;
       if (previous?.id !== current?.id || previous?.source !== current?.source || previous?.readOnly !== current?.readOnly) {
         const selection = view.state.selection.main, top = view.scrollDOM.scrollTop;
@@ -471,26 +478,24 @@ if ('__TAURI_INTERNALS__' in window) {
       sidebar?.refresh();
       setStatus('已载入外部文件变化');
     },
-    backedUp(paths) { setStatus(book.external ? `文件已在外部变化，你的版本已备份到：${paths.join('、')}` : '文件已在外部变化，你的版本已备份到笔记目录的 .miaoyan-conflicts', true); },
+    backedUp(paths) { setStatus(notebook.external ? `文件已在外部变化，你的版本已备份到：${paths.join('、')}` : '文件已在外部变化，你的版本已备份到笔记目录的 .miaoyan-conflicts', true); },
     error: message => setStatus(message, true),
-  });
-  await watch(libraryNotebook);
+  }, windowLabel);
   if (!mobile) {
-    let stopExternalWatch: (() => void) | undefined;
     const { setupWorkspace } = await import('./workspace');
-    workspace = await setupWorkspace(libraryNotebook, {
-      current: () => notebook, save: () => saveDraft(true),
-      async activate(book) {
-        stopExternalWatch?.(); stopExternalWatch = undefined;
-        notebook = book;
-        showCurrentNote(Boolean(book.current)); sidebar?.revealCurrent();
-        if (book.external) stopExternalWatch = await watch(book);
-        setStatus(book.external ? `临时文件：${book.root}（保存回原目录，不参与 S3 同步）` : '已返回笔记库');
+    await setupWorkspace(windowLabel, {
+      save: () => saveDraft(true),
+      async select(path) {
+        const previous = notebook.current;
+        await notebook.activateExternal(path);
+        const current = notebook.current;
+        if (previous?.id !== current?.id || previous?.source !== current?.source || previous?.readOnly !== current?.readOnly) showCurrentNote(Boolean(current));
+        sidebar?.revealCurrent();
       },
       error: message => setStatus(message, true),
     });
   }
-  autoSync = startAutoSync(syncSession, () => document.body.inert || libraryNotebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile);
+  if (!documentWindow) autoSync = startAutoSync(syncSession, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile);
 }
 window.addEventListener('preferences-applied', () => {
   view.dispatch({ effects: wrapping.reconfigure(preferences.value.lineWrap ? EditorView.lineWrapping : []) });
@@ -499,5 +504,5 @@ window.addEventListener('preferences-applied', () => {
 });
 window.addEventListener('settings-error', event => setStatus((event as CustomEvent<string>).detail, true));
 void connectPreferences().catch(() => setStatus('无法应用系统窗口设置', true));
-void hostSync(syncSession).catch(() => setStatus('无法连接同步设置', true));
+if (!documentWindow) void hostSync(syncSession).catch(() => setStatus('无法连接同步设置', true));
 void setMode(preferences.value.defaultMode);

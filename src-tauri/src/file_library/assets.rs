@@ -194,6 +194,7 @@ pub(super) fn operations(root: &Path, sync: &AssetSync) -> Result<Vec<Operation>
     Ok(result)
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_sync_assets(
     window: tauri::WebviewWindow,

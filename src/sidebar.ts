@@ -1,5 +1,5 @@
 import './sidebar.css';
-import homeIcon from '../public/miaoyan/icons/home.svg?raw';
+import brandIcon from '../public/brand/qingyu-mark.svg?raw';
 import allIcon from '../public/miaoyan/icons/allNotes.svg?raw';
 import folderIcon from '../public/miaoyan/icons/folder.svg?raw';
 import addFolderIcon from '../public/miaoyan/icons/newFolder.svg?raw';
@@ -11,6 +11,7 @@ import { nextSidebarLayout, type SidebarCommand, type SidebarLayout } from './si
 import { createNoteMenu } from './note-menu';
 import { createFolderMenu } from './folder-menu';
 import { folderRows } from './folder-tree';
+import { setupSidebarResize } from './sidebar-resize';
 
 export function createSidebar(getBook: () => Notebook, actions: {
   select(id: string | null): Promise<boolean>;
@@ -36,7 +37,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   let expanded = readExpansion();
   function saveExpansion() { try { localStorage.setItem(expansionKey(), JSON.stringify([...expanded])); } catch { actions.error('文件夹展开状态未能保存'); } }
   let layout: SidebarLayout = { columns: innerWidth > 900 ? 'all' : 'note', unfolding: false };
-  $('#sidebar-brand-icon').innerHTML = homeIcon;
+  $('#sidebar-brand-icon').innerHTML = brandIcon;
   $('#new-folder-button').innerHTML = addFolderIcon;
   $('#new-note-button').innerHTML = newNoteIcon;
   const toggle = $('#sidebar-button');
@@ -77,6 +78,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const hiddenFocus = next.columns === 'note' ? $('#library-sidebar').contains(active) : next.columns === 'list' && $('#folder-pane').contains(active);
     layout = next;
     shell.dataset.sidebar = layout.columns;
+    resizing.update();
     const parent = innerWidth <= 900
       ? layout.columns === 'note' ? $('.titlebar') : $('.notes-navigation')
       : $('.actions');
@@ -101,6 +103,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (hiddenFocus || active === toggle) toggle.focus({ preventScroll: true });
   }
   const changeLayout = (command: SidebarCommand) => applyLayout(nextSidebarLayout(layout, command));
+  const resizing = setupSidebarResize(shell, () => layout, applyLayout, actions.error, getBook().external);
+  if (innerWidth > 900) layout = { ...layout, columns: resizing.columns };
   async function selectFolder(id: string | null, isTrash = false) {
     if (!await folderMenu.finishRename()) return false;
     const notes = visibleNotes(getBook().data, id, '', isTrash);
@@ -172,9 +176,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
     $('#notes-heading').textContent = name;
     $('#notes-count').textContent = `${notes.length} 篇笔记${search.value.trim() ? ' · 搜索结果' : ''}`;
     list.replaceChildren();
-    for (const { year, notes: grouped } of groupNotes(notes)) {
-      const group = document.createElement('section'); group.role = 'group'; group.setAttribute('aria-label', year ? `${year}年` : '置顶');
-      const heading = document.createElement('h3'); heading.className = 'notes-year'; heading.textContent = year ? `${year}年` : '置顶';
+    for (const { label, notes: grouped } of groupNotes(notes)) {
+      const group = document.createElement('section'); group.role = 'group'; group.setAttribute('aria-label', label);
+      const heading = document.createElement('h3'); heading.className = 'notes-year'; heading.textContent = label;
       group.append(heading);
       for (const note of grouped) {
         const text = noteText(note.source), row = document.createElement('button');

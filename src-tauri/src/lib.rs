@@ -1,6 +1,7 @@
+#[cfg(feature = "app")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    use tauri::Emitter;
+    use tauri::{Emitter, Manager};
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
@@ -8,6 +9,7 @@ pub fn run() {
     }));
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_calendar::init())
         .manage(sync_http::SyncHttp::default())
         .manage(file_library::FileLibrary::default())
         .manage(file_library::workspace::Workspace::default())
@@ -35,15 +37,26 @@ pub fn run() {
             sync_profile::sync_load_profile,
             sync_profile::sync_save_profile,
             export_markdown,
+            create_calendar_event,
             note_ui::show_note_info,
             note_ui::close_note_info,
             note_ui::prompt_folder_name,
             file_library::library_open,
             file_library::workspace::workspace_requests,
             file_library::workspace::workspace_open,
+            file_library::workspace::workspace_snapshot,
+            file_library::workspace::workspace_paths,
+            file_library::workspace::workspace_activate_path,
+            file_library::workspace::workspace_select,
             file_library::workspace::workspace_commit,
             file_library::workspace::workspace_reconcile,
-            file_library::workspace::workspace_close,
+            file_library::workspace::workspace_finish_close,
+            file_library::workspace::workspace_show_library,
+            file_library::workspace::workspace_ready,
+            file_library::workspace::workspace_prepare_exit,
+            file_library::workspace::workspace_exit_reply,
+            file_library::workspace::workspace_cancel_exit,
+            file_library::workspace::library_hide_main,
             file_library::library_commit,
             file_library::assets::library_sync_assets,
             file_library::library_import,
@@ -63,7 +76,14 @@ pub fn run() {
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let _ = window.emit("library-before-exit", ());
+                    let event = if file_library::workspace::has_documents(window.app_handle()) { "library-close-main" } else { "library-before-exit" };
+                    let _ = window.emit_to(window.label(), event, ());
+                }
+            } else if file_library::workspace::is_document(window.app_handle(), window.label()) {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close(); let _ = window.emit_to(window.label(), "workspace-before-close", ());
+                } else if matches!(event, tauri::WindowEvent::Destroyed) {
+                    file_library::workspace::destroyed(window.app_handle(), window.label());
                 }
             }
         })
@@ -73,6 +93,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { ref urls } = event {
                 file_library::workspace::request(app, urls.iter().filter_map(|url| url.to_file_path().ok()));
+            }
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                let _ = file_library::workspace::show_library(app);
             }
             #[cfg(desktop)]
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
@@ -89,13 +113,29 @@ pub fn run() {
         });
 }
 mod file_library;
+#[cfg(feature = "server")]
+pub use file_library::api;
+#[cfg(feature = "app")]
 mod note_ui;
+#[cfg(feature = "app")]
 mod settings;
+#[cfg(feature = "app")]
 mod sync_http;
+#[cfg(feature = "app")]
 mod sync_profile;
-#[cfg(desktop)]
+
+#[cfg(feature = "app")]
+#[tauri::command]
+async fn create_calendar_event(app: tauri::AppHandle, window: tauri::WebviewWindow, event: tauri_plugin_calendar::CalendarEvent) -> Result<String, String> {
+    if window.label() != "main" && !file_library::workspace::is_document(&app, window.label()) {
+        return Err("请在编辑器中创建日程".into());
+    }
+    tauri_plugin_calendar::create(app, event).await
+}
+#[cfg(all(feature = "app", desktop))]
 mod activation_shortcut;
 
+#[cfg(feature = "app")]
 #[tauri::command]
 async fn activation_shortcut_command(app: tauri::AppHandle, window: tauri::WebviewWindow, action: String, shortcut: Option<String>) -> Result<serde_json::Value, String> {
     if !["main", "settings"].contains(&window.label()) { return Err("无法在此窗口设置唤起快捷键".into()); }
@@ -105,13 +145,18 @@ async fn activation_shortcut_command(app: tauri::AppHandle, window: tauri::Webvi
     { let _ = (app, action, shortcut); Err("移动端不支持系统全局快捷键".into()) }
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
-fn library_finish_exit(app: tauri::AppHandle, permit: tauri::State<'_, ExitPermit>) {
+fn library_finish_exit(app: tauri::AppHandle, window: tauri::WebviewWindow, permit: tauri::State<'_, ExitPermit>) -> Result<(), String> {
+    if window.label() != "main" || !file_library::workspace::exit_allowed(&app) { return Err("请先保存所有文档窗口再退出".into()); }
     permit.0.store(true, std::sync::atomic::Ordering::Release);
     app.exit(0);
+    Ok(())
 }
+#[cfg(feature = "app")]
 struct ExitPermit(std::sync::atomic::AtomicBool);
 
+#[cfg(feature = "app")]
 #[tauri::command]
 async fn export_markdown(
     window: tauri::WebviewWindow,

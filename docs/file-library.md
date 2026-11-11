@@ -16,7 +16,7 @@
 
 新增稳定事实集中在 Rust 文件存储层：笔记路径、名称分配、导入扫描、事务日志与磁盘提交。TypeScript Notebook 负责内存快照及串行提交，界面不自行拼接路径。正文以真实 Markdown 文件为准；隐藏元数据只保存 ID、路径、置顶、时间、选择及同步状态，不保存正文。旧 localStorage 仅作为首次迁移输入和保留备份。
 
-默认笔记目录为 `文稿/MiaoYan Editor`，与原版妙言隔离；可通过选择目录打开已有笔记库。首次迁移在隐藏暂存目录完整写入并核对后再发布元数据；已有目录中的文件不覆盖。未完成事务在下次打开时恢复，恢复失败则阻止写入并保留日志。
+新安装默认笔记目录为 `文稿/QingYu`，已有 `文稿/MiaoYan Editor` 时继续沿用旧目录，与原版妙言隔离；可通过选择目录打开已有笔记库。首次迁移在隐藏暂存目录完整写入并核对后再发布元数据；已有目录中的文件不覆盖。未完成事务在下次打开时恢复，恢复失败则阻止写入并保留日志。
 
 对照证据：`NameHelper-reference.swift` 直接拼入原版 `NameHelper.swift`，18 组中文、数字尾缀、斜杠、组合字符和 Emoji 的运行结果固定在 `src-tauri/src/file_library/namehelper-reference.json`；Rust 按该结果测试。macOS 保存和导入沿用 `COPYFILE_METADATA`，并用 Rust `FileTimesExt::set_created` 还原创建时间，覆盖权限及创建时间测试。
 

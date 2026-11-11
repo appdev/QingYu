@@ -1,0 +1,26 @@
+[
+ {
+  "date": "2026-11-11",
+  "scope": "app",
+  "shape": "app screen",
+  "theme": "Specimen (project palette and font)",
+  "axes": "light/system-sans/cool",
+  "nav": "existing MiaoYan wordmark",
+  "footer": "design-state switcher",
+  "imagery": "none",
+  "entry": "password-only form",
+  "fingerprint": "typographic spread / open form / one field / paper / restrained green / state switcher",
+  "sections": [
+   "brand",
+   "introduction",
+   "password form",
+   "preview controls"
+  ],
+  "signature": "quiet typographic spread with a single deployment-configured password",
+  "waived": [],
+  "prompt": "MiaoYan web access password configured in Docker; no username; design first",
+  "sweep": "0 FAIL, 0 REFLEX, 0 WARN; 8 widths",
+  "finishReview": "subagent: ship; no blocking findings",
+  "mode": "build"
+ }
+]

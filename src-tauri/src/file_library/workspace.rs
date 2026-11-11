@@ -1,26 +1,159 @@
 //! Temporary, metadata-free sibling view. Never replaces the configured library.
 use super::*;
 use tauri::Emitter;
+use std::sync::{atomic::{AtomicBool, Ordering}, mpsc};
+
+struct Document {
+    store: DiskLibrary,
+    pending: Vec<PathBuf>,
+    #[cfg(desktop)]
+    _watch: external::Watch,
+}
+
+struct ExitRound {
+    id: String,
+    pending: HashSet<String>,
+    result: Option<mpsc::Sender<Result<()>>>,
+}
+
+impl ExitRound {
+    fn reply(&mut self, id: &str, label: &str, saved: bool) {
+        if self.id != id || !self.pending.contains(label) { return; }
+        if !saved {
+            if let Some(send) = self.result.take() { let _ = send.send(Err("有文档尚未保存，请完成输入或处理保存错误后再退出".into())); }
+        } else {
+            self.pending.remove(label);
+            if self.pending.is_empty() {
+                if let Some(send) = self.result.take() { let _ = send.send(Ok(())); }
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Workspace {
-    store: Mutex<Option<DiskLibrary>>,
+    documents: Mutex<HashMap<String, Document>>,
     requests: Mutex<Vec<PathBuf>>,
-    #[cfg(desktop)]
-    watch: Mutex<Option<external::Watch>>,
+    opening: Mutex<()>,
+    quitting: AtomicBool,
+    exit: Mutex<Option<ExitRound>>,
 }
 
 #[cfg(desktop)]
 pub fn request(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
+    let paths: Vec<_> = paths.into_iter().filter(|path| allowed(path)).collect();
+    if paths.is_empty() { let _ = show_library(app); return; }
     if let Ok(mut pending) = app.state::<Workspace>().requests.lock() {
-        pending.extend(paths.into_iter().filter(|path| allowed(path)));
+        pending.extend(paths);
     }
     let _ = app.emit_to("main", "workspace-request", ());
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+}
+
+pub fn show_library(app: &tauri::AppHandle) -> Result<()> {
+    let window = app.get_webview_window("main").ok_or("笔记库窗口不存在")?;
+    #[cfg(desktop)]
+    window.unminimize().map_err(error)?;
+    window.show().map_err(error)?; window.set_focus().map_err(error)
+}
+
+pub fn has_documents(app: &tauri::AppHandle) -> bool {
+    app.state::<Workspace>().documents.lock().is_ok_and(|docs| !docs.is_empty())
+}
+
+pub fn is_document(app: &tauri::AppHandle, label: &str) -> bool {
+    app.state::<Workspace>().documents.lock().is_ok_and(|docs| docs.contains_key(label))
+}
+
+pub fn destroyed(app: &tauri::AppHandle, label: &str) {
+    let state = app.state::<Workspace>();
+    if let Ok(mut docs) = state.documents.lock() { docs.remove(label); }
+    if let Ok(mut round) = state.exit.lock() {
+        if let Some(round) = round.as_mut() { let id = round.id.clone(); round.reply(&id, label, false); }
+    };
+}
+
+fn authorize_editor(window: &tauri::WebviewWindow) -> Result<()> {
+    if window.label() == "main" || is_document(window.app_handle(), window.label()) { Ok(()) }
+    else { Err("只能在编辑器中操作文档窗口".into()) }
+}
+
+#[tauri::command]
+pub fn workspace_snapshot(state: State<'_, Workspace>, window: tauri::WebviewWindow) -> Result<Snapshot> {
+    Ok(state.documents.lock().map_err(error)?.get(window.label()).ok_or("文档窗口不存在")?.store.snapshot())
+}
+
+#[tauri::command]
+pub fn workspace_paths(state: State<'_, Workspace>, window: tauri::WebviewWindow) -> Result<Vec<String>> {
+    Ok(state.documents.lock().map_err(error)?.get_mut(window.label()).ok_or("目录窗口不存在")?.pending.drain(..).map(|path| path.to_string_lossy().into()).collect())
+}
+
+#[tauri::command]
+pub fn workspace_show_library(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<()> {
+    authorize_editor(&window)?; show_library(&app)
+}
+
+#[tauri::command]
+pub fn workspace_finish_close(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<()> {
+    if !is_document(&app, window.label()) { return Err("文档窗口不存在".into()); }
+    if app.state::<Workspace>().quitting.load(Ordering::Acquire) { return Err("应用正在退出，请稍候".into()); }
+    window.destroy().map_err(error)
+}
+
+#[tauri::command]
+pub fn library_hide_main(window: tauri::WebviewWindow) -> Result<()> {
+    main_window(&window)?; window.hide().map_err(error)
+}
+
+fn cancel_exit(app: &tauri::AppHandle) {
+    let state = app.state::<Workspace>();
+    if let Ok(mut round) = state.exit.lock() { *round = None; }
+    state.quitting.store(false, Ordering::Release);
+    if let Ok(docs) = state.documents.lock() {
+        for label in docs.keys() { let _ = app.emit_to(label, "workspace-exit-cancelled", ()); }
+    };
+}
+
+#[tauri::command]
+pub fn workspace_cancel_exit(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<()> {
+    main_window(&window)?; cancel_exit(&app); Ok(())
+}
+
+#[tauri::command]
+pub fn workspace_exit_reply(state: State<'_, Workspace>, window: tauri::WebviewWindow, id: String, saved: bool) -> Result<()> {
+    if let Some(round) = state.exit.lock().map_err(error)?.as_mut() { round.reply(&id, window.label(), saved); }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn workspace_ready(state: State<'_, Workspace>, window: tauri::WebviewWindow) -> Result<Option<String>> {
+    if !state.documents.lock().map_err(error)?.contains_key(window.label()) { return Err("文档窗口不存在".into()); }
+    Ok(state.exit.lock().map_err(error)?.as_ref().filter(|round| round.pending.contains(window.label())).map(|round| round.id.clone()))
+}
+
+#[tauri::command]
+pub async fn workspace_prepare_exit(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<()> {
+    main_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Workspace>();
+        let (receive, labels, request) = {
+            let _creation = state.opening.lock().map_err(error)?;
+            if state.quitting.swap(true, Ordering::AcqRel) { return Err("应用已经在退出".into()); }
+            let labels: HashSet<String> = state.documents.lock().map_err(error)?.keys().cloned().collect();
+            if labels.is_empty() { return Ok(()); }
+            let (send, receive) = mpsc::channel(); let request = id();
+            *state.exit.lock().map_err(error)? = Some(ExitRound { id: request.clone(), pending: labels.clone(), result: Some(send) });
+            (receive, labels, request)
+        };
+        for label in labels { let _ = app.emit_to(&label, "workspace-before-exit", &request); }
+        let result = receive.recv_timeout(std::time::Duration::from_secs(15)).unwrap_or_else(|_| Err("文档窗口尚未响应，已取消退出以保留编辑内容".into()));
+        if result.is_err() { cancel_exit(&app); }
+        result
+    }).await.map_err(error)?
+}
+
+pub fn exit_allowed(app: &tauri::AppHandle) -> bool {
+    let state = app.state::<Workspace>();
+    !has_documents(app) || state.quitting.load(Ordering::Acquire) && state.exit.lock().is_ok_and(|round| round.as_ref().is_some_and(|round| round.pending.is_empty()))
 }
 
 #[tauri::command]
@@ -76,9 +209,27 @@ fn rescan(store: &mut DiskLibrary) -> Result<()> {
     Ok(())
 }
 
+fn selected_path(store: &DiskLibrary) -> Option<PathBuf> {
+    store.data.notes.iter().find(|note| note.id == store.data.active_id).map(|note| store.root.join(&note.path))
+}
+
+fn document_owner(documents: &HashMap<String, Document>, path: &Path, except: &str) -> Option<String> {
+    documents.iter().find(|(label, doc)| label.as_str() != except && selected_path(&doc.store).as_deref() == Some(path)).map(|(label, _)| label.clone())
+}
+
+fn directory_owner(documents: &HashMap<String, Document>, path: &Path) -> Option<String> {
+    documents.iter().find(|(_, doc)| Some(doc.store.root.as_path()) == path.parent()).map(|(label, _)| label.clone())
+}
+
+#[cfg(desktop)]
+fn focus(app: &tauri::AppHandle, label: &str) -> Result<()> {
+    let window = app.get_webview_window(label).ok_or("文档窗口不存在")?;
+    window.unminimize().map_err(error)?; window.show().map_err(error)?; window.set_focus().map_err(error)
+}
+
 #[tauri::command]
-pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Option<String>) -> Result<Option<Snapshot>> {
-    main_window(&window)?;
+pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Option<String>) -> Result<Option<String>> {
+    authorize_editor(&window)?;
     #[cfg(mobile)]
     { let _ = (app, path); Err("目前仅桌面端支持外部文件工作区".into()) }
     #[cfg(desktop)]
@@ -90,18 +241,49 @@ pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow,
                 Some(path) => path.into_path().map_err(|_| "请选择本地文件")?, None => return Ok(None),
             },
         };
-        let store = open_file(&path)?;
-        let snapshot = store.snapshot();
-        let root = store.root.clone();
-        let events = app.clone();
-        let watch = external::Watch::start(root.clone(), false, move |result| {
-            if let Err(error) = result { let _ = events.emit_to("main", "workspace-watch-error", serde_json::json!({"root": root, "error": error})); }
-            else { let _ = events.emit_to("main", "workspace-files-changed", root.to_string_lossy()); }
-        })?;
+        let path = path.canonicalize().map_err(error)?;
+        if !path.is_file() || !allowed(&path) { return Err("请选择 Markdown 或文本文件".into()); }
         let state = app.state::<Workspace>();
-        *state.watch.lock().map_err(error)? = Some(watch);
-        *state.store.lock().map_err(error)? = Some(store);
-        Ok(Some(snapshot))
+        let _creation = state.opening.lock().map_err(error)?;
+        if state.quitting.load(Ordering::Acquire) { return Err("应用正在退出，暂不能打开文件".into()); }
+        let owner = {
+            let docs = state.documents.lock().map_err(error)?;
+            document_owner(&docs, &path, "").or_else(|| directory_owner(&docs, &path))
+        };
+        let owner = owner.or_else(|| app.state::<FileLibrary>().0.lock().ok().and_then(|library| library.as_ref().and_then(selected_path)).filter(|current| current == &path).map(|_| "main".to_string()));
+        if let Some(label) = owner {
+            let select = {
+                let mut docs = state.documents.lock().map_err(error)?;
+                if let Some(doc) = docs.get_mut(&label) {
+                    doc.pending.push(path); true
+                } else { false }
+            };
+            focus(&app, &label)?;
+            if select { app.emit_to(&label, "workspace-select-request", ()).map_err(error)?; }
+            return Ok(Some(label));
+        }
+        let store = open_file(&path)?;
+        let title = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let label = format!("document-{}", id());
+        let root = store.root.clone();
+        let events = app.clone(); let target = label.clone();
+        let watch = external::Watch::start(root.clone(), false, move |result| {
+            if let Err(error) = result { let _ = events.emit_to(&target, "workspace-watch-error", serde_json::json!({"root": root, "error": error})); }
+            else { let _ = events.emit_to(&target, "workspace-files-changed", root.to_string_lossy()); }
+        })?;
+        state.documents.lock().map_err(error)?.insert(label.clone(), Document { store, pending: vec![], _watch: watch });
+        let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html?document=1".into()))
+            .title(title).inner_size(1120., 780.).min_inner_size(360., 420.);
+        if let Some(main) = app.config().app.windows.first() {
+            if let (Some(width), Some(height)) = (main.min_width, main.min_height) {
+                builder = builder.min_inner_size(width, height);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true).traffic_light_position(tauri::LogicalPosition::new(16., 20.));
+        if let Err(reason) = builder.build() { state.documents.lock().map_err(error)?.remove(&label); return Err(error(reason)); }
+        focus(&app, &label)?;
+        Ok(Some(label))
     }).await.map_err(error)?
 }
 
@@ -150,18 +332,59 @@ fn commit(store: &mut DiskLibrary, next: Library, revision: u64) -> Result<Snaps
     Ok(store.snapshot())
 }
 
+fn activate_path(store: &mut DiskLibrary, path: &Path, revision: u64) -> Result<Snapshot> {
+    if store.revision != revision { return Err("目录内容已更新，请稍后重试".into()); }
+    let path = path.canonicalize().map_err(error)?;
+    if path.parent() != Some(store.root.as_path()) || !allowed(&path) { return Err("只能切换到当前目录中的笔记".into()); }
+    let mut next = store.clone();
+    rescan(&mut next)?;
+    next.data.active_id = next.data.notes.iter().find(|note| next.root.join(&note.path) == path).ok_or("无法读取新打开的文件")?.id.clone();
+    next.revision += 1;
+    let snapshot = next.snapshot(); *store = next;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn workspace_activate_path(state: State<'_, Workspace>, window: tauri::WebviewWindow, path: String, revision: u64) -> Result<Snapshot> {
+    let snapshot = activate_path(&mut state.documents.lock().map_err(error)?.get_mut(window.label()).ok_or("目录窗口不存在")?.store, Path::new(&path), revision)?;
+    if let Some(note) = snapshot.library.notes.iter().find(|note| note.id == snapshot.library.active_id) { let _ = window.set_title(note.filename.as_deref().unwrap_or("Markdown")); }
+    Ok(snapshot)
+}
+
 #[tauri::command]
 pub fn workspace_commit(state: State<'_, Workspace>, window: tauri::WebviewWindow, next: Library, revision: u64) -> Result<Snapshot> {
-    main_window(&window)?;
-    commit(state.store.lock().map_err(error)?.as_mut().ok_or("尚未打开外部文件")?, next, revision)
+    let snapshot = commit(&mut state.documents.lock().map_err(error)?.get_mut(window.label()).ok_or("文档窗口不存在")?.store, next, revision)?;
+    if let Some(note) = snapshot.library.notes.iter().find(|note| note.id == snapshot.library.active_id) { let _ = window.set_title(note.filename.as_deref().unwrap_or("Markdown")); }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn workspace_select(app: tauri::AppHandle, state: State<'_, Workspace>, window: tauri::WebviewWindow, note_id: String, revision: u64) -> Result<Option<Snapshot>> {
+    let mut documents = state.documents.lock().map_err(error)?;
+    let store = &documents.get(window.label()).ok_or("文档窗口不存在")?.store;
+    let note = store.data.notes.iter().find(|note| note.id == note_id).ok_or("笔记不存在")?;
+    let owner = document_owner(&documents, &store.root.join(&note.path), window.label());
+    if let Some(label) = owner {
+        drop(documents);
+        #[cfg(desktop)]
+        focus(&app, &label)?;
+        #[cfg(mobile)]
+        let _ = (app, label);
+        return Ok(None);
+    }
+    let store = &mut documents.get_mut(window.label()).unwrap().store;
+    let mut next = store.data.clone(); next.active_id = note_id;
+    let snapshot = commit(store, next, revision)?;
+    drop(documents);
+    if let Some(note) = snapshot.library.notes.iter().find(|note| note.id == snapshot.library.active_id) { let _ = window.set_title(note.filename.as_deref().unwrap_or("Markdown")); }
+    Ok(Some(snapshot))
 }
 
 #[tauri::command]
 pub fn workspace_reconcile(app: tauri::AppHandle, window: tauri::WebviewWindow, root: String, revision: u64, buffer: Option<external::EditorBuffer>) -> Result<external::Reconciled> {
-    main_window(&window)?;
     let state = app.state::<Workspace>();
-    let mut lock = state.store.lock().map_err(error)?;
-    let store = lock.as_mut().ok_or("尚未打开外部文件")?;
+    let mut documents = state.documents.lock().map_err(error)?;
+    let store = &mut documents.get_mut(window.label()).ok_or("文档窗口不存在")?.store;
     if store.root != Path::new(&root) || store.revision != revision { return Err("外部工作区已切换".into()); }
     let mut next = store.clone(); rescan(&mut next)?;
     let mut backups = vec![];
@@ -182,18 +405,74 @@ pub fn workspace_reconcile(app: tauri::AppHandle, window: tauri::WebviewWindow, 
     Ok(external::Reconciled { snapshot: Some(snapshot), backups })
 }
 
-#[tauri::command]
-pub fn workspace_close(state: State<'_, Workspace>, window: tauri::WebviewWindow) -> Result<()> {
-    main_window(&window)?;
-    #[cfg(desktop)]
-    { *state.watch.lock().map_err(error)? = None; }
-    *state.store.lock().map_err(error)? = None;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(desktop)]
+    #[test]
+    fn directory_owner_reuses_siblings_but_not_other_directories() {
+        let first = tempfile::tempdir().unwrap(); let second = tempfile::tempdir().unwrap();
+        fs::write(first.path().join("a.md"), "A").unwrap(); fs::write(first.path().join("b.md"), "B").unwrap();
+        fs::write(second.path().join("c.md"), "C").unwrap();
+        let make = |root: &Path, filename: &str| Document { store: open_file(&root.join(filename)).unwrap(), pending: vec![], _watch: external::Watch::start(root.to_path_buf(), false, |_| {}).unwrap() };
+        let mut docs = HashMap::from([("first".into(), make(first.path(), "a.md"))]);
+        assert_eq!(directory_owner(&docs, &first.path().join("b.md").canonicalize().unwrap()), Some("first".into()));
+        assert_eq!(directory_owner(&docs, &second.path().join("c.md").canonicalize().unwrap()), None);
+        docs.insert("second".into(), make(second.path(), "c.md"));
+        assert_eq!(directory_owner(&docs, &second.path().join("c.md").canonicalize().unwrap()), Some("second".into()));
+        assert_eq!(docs.len(), 2);
+    }
+
+    #[test]
+    fn directory_switch_reads_new_files_without_writing_or_losing_the_old_selection_on_failure() {
+        let dir = tempfile::tempdir().unwrap(); let root = dir.path();
+        let a = root.join("a.md"); fs::write(&a, "saved A").unwrap();
+        let mut store = open_file(&a).unwrap();
+        let b = root.join("b.md"); fs::write(&b, "new B").unwrap();
+        let snapshot = activate_path(&mut store, &b, 0).unwrap();
+        assert_eq!(snapshot.library.notes.iter().find(|n| n.id == snapshot.library.active_id).unwrap().source, "new B");
+        assert_eq!(fs::read_to_string(&a).unwrap(), "saved A"); assert!(!root.join(META).exists());
+        let before = store.data.clone(); let other = tempfile::tempdir().unwrap(); fs::write(other.path().join("c.md"), "C").unwrap();
+        assert!(activate_path(&mut store, &other.path().join("c.md"), 1).is_err()); assert_eq!(store.data, before);
+        fs::remove_file(&b).unwrap(); assert!(activate_path(&mut store, &b, 1).is_err()); assert_eq!(store.data, before);
+        assert!(activate_path(&mut store, &a, 0).is_err()); assert_eq!(store.data, before);
+    }
+    #[test]
+    fn quit_requires_matching_acknowledgements_from_every_window() {
+        let (send, receive) = mpsc::channel();
+        let mut round = ExitRound { id: "quit-1".into(), pending: HashSet::from(["document-a".into(), "document-b".into()]), result: Some(send) };
+        round.reply("stale", "document-a", true); round.reply("quit-1", "settings", true);
+        assert_eq!(round.pending.len(), 2); assert!(receive.try_recv().is_err());
+        round.reply("quit-1", "document-a", true); round.reply("quit-1", "document-a", true);
+        assert_eq!(round.pending.len(), 1); assert!(receive.try_recv().is_err());
+        round.reply("quit-1", "document-b", true); assert_eq!(receive.recv().unwrap(), Ok(()));
+        let (send, receive) = mpsc::channel();
+        let mut round = ExitRound { id: "quit-2".into(), pending: HashSet::from(["document-a".into()]), result: Some(send) };
+        round.reply("quit-2", "document-a", false); assert!(receive.recv().unwrap().is_err());
+        assert!(round.pending.contains("document-a"));
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn windows_have_independent_stores_and_repeated_open_finds_the_current_owner() {
+        let dir = tempfile::tempdir().unwrap(); let root = dir.path();
+        fs::write(root.join("a.md"), "A").unwrap(); fs::write(root.join("b.md"), "B").unwrap();
+        let make = |filename: &str| Document { store: open_file(&root.join(filename)).unwrap(), pending: vec![], _watch: external::Watch::start(root.to_path_buf(), false, |_| {}).unwrap() };
+        let mut docs = HashMap::from([("document-a".into(), make("a.md")), ("document-b".into(), make("b.md"))]);
+        let path = root.join("a.md").canonicalize().unwrap();
+        assert_eq!(document_owner(&docs, &path, ""), Some("document-a".into()));
+        assert_eq!(document_owner(&docs, &path, "document-a"), None);
+        let first = &mut docs.get_mut("document-a").unwrap().store;
+        let mut next = first.data.clone(); next.notes.iter_mut().find(|n| n.id == next.active_id).unwrap().source = "A edited".into();
+        commit(first, next, 0).unwrap();
+        let second = &mut docs.get_mut("document-b").unwrap().store;
+        assert_eq!(second.revision, 0); assert_eq!(selected_path(second), Some(root.canonicalize().unwrap().join("b.md")));
+        let mut stale = second.data.clone(); stale.notes.iter_mut().find(|n| n.filename.as_deref() == Some("a.md")).unwrap().source = "stale A edit".into();
+        assert!(commit(second, stale, 0).is_err()); assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "A edited");
+        let mut next = second.data.clone(); next.notes.iter_mut().find(|n| n.id == next.active_id).unwrap().source = "B edited".into();
+        commit(second, next, 0).unwrap();
+        assert_eq!(fs::read_to_string(root.join("b.md")).unwrap(), "B edited"); assert!(!root.join(META).exists());
+    }
     #[test]
     fn siblings_save_original_without_index_or_subdirectories() {
         let dir = tempfile::tempdir().unwrap(); let root = dir.path();
