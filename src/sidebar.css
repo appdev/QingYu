@@ -19,7 +19,7 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .folder-toolbar { justify-content: flex-end; }
 .folder-toolbar .icon-button, .notes-toolbar .icon-button { width: 20px; height: 20px; }
 .sidebar-brand { display: flex; align-items: center; gap: 6px; height: 44px; margin: 0 22px 4px; color: var(--brand); font-family: 'Songti SC', STSong, 'Noto Serif CJK SC', serif; font-size: 16px; font-weight: 400; line-height: 1; letter-spacing: .02em; user-select: none; }
-.sidebar-brand .sidebar-icon, .sidebar-brand svg { width: 22px; height: 22px; }
+.sidebar-brand .sidebar-icon, .sidebar-brand svg { width: 20px; height: 20px; }
 .sidebar-icon { display: inline-flex; width: 20px; height: 20px; flex-shrink: 0; }
 .sidebar-icon svg { width: 100%; height: 100%; display: block; }
 #folder-list { overflow: auto; padding: 0 0 72px; }
