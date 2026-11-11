@@ -27,6 +27,12 @@ npm run tauri -- android build --debug --target aarch64 --apk
 无需重新执行 `android init`。构建需要 Android SDK、NDK、JDK，以及 Rust 的 `aarch64-linux-android` target；项目固定 Rust 1.96.0。
 iOS 尚未生成工程或验证；后续在具备模拟器运行时或真机签名环境后使用 `npm run tauri -- ios init`。
 
+## 版本发布
+
+[GitHub Releases](https://github.com/appdev/QingYu/releases) 提供 macOS Apple Silicon/Intel DMG、Windows x64 安装程序和 Linux x64 DEB/AppImage。首版为 `v0.1.0`；安装及签名边界见[发布说明](docs/releases/v0.1.0.md)。
+
+发布前保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 的版本一致，并添加 `docs/releases/v<版本>.md`。提交后推送对应的 `v<版本>` 标签即可触发 `.github/workflows/release.yml`；也可在 Actions 中选择已有版本标签手动运行。流程先测试并创建草稿，全部桌面安装包构建、上传成功后才公开发布。失败时保留草稿，可修复构建环境后重跑；源码修复使用新版本标签，避免移动已发布标签。
+
 ## 第一版边界
 
 独立部署的笔记 API 服务支持目录、文档列表、搜索、读取、新建和带版本检查的更新，采用 Bearer Token 鉴权。可脱离桌面运行时运行，启动、Docker 和接口说明见 [API 服务](docs/api-service.md)。
