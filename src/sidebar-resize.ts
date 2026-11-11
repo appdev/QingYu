@@ -11,7 +11,7 @@ export function setupSidebarResize(shell: HTMLElement, getLayout: () => SidebarL
   // Window scaling changes the displayed width, not the remembered drag width.
   let folderReferenceWidth = innerWidth;
   const handles = { folders: shell.querySelector<HTMLElement>('#folder-resizer')!, notes: shell.querySelector<HTMLElement>('#notes-resizer')! };
-  let drag: { id: number; kind: keyof SidebarSizes; x: number; width: number; sizes: SidebarSizes; layout: SidebarLayout; referenceWidth: number } | undefined;
+  let drag: { id: number; kind: keyof SidebarSizes; x: number; width: number; sizes: SidebarSizes; layout: SidebarLayout; referenceWidth: number; collapsed: boolean } | undefined;
 
   function update() {
     if (innerWidth <= 900) { if (drag) finish(true); return; }
@@ -43,7 +43,7 @@ export function setupSidebarResize(shell: HTMLElement, getLayout: () => SidebarL
   function move(kind: keyof SidebarSizes, width: number, origin: SidebarLayout) {
     const collapse = kind === 'folders' ? width <= sidebarLimits.folderSnap : width < sidebarLimits.noteSnap;
     if (collapse) {
-      if (drag) sizes[kind] = drag.sizes[kind];
+      if (drag) { sizes[kind] = drag.sizes[kind]; drag.collapsed = true; }
       applyLayout({ columns: kind === 'folders' ? 'list' : 'note', unfolding: false });
     } else {
       if (kind === 'folders') folderReferenceWidth = innerWidth;
@@ -72,7 +72,7 @@ export function setupSidebarResize(shell: HTMLElement, getLayout: () => SidebarL
     handle.onpointerdown = event => {
       if (event.button !== 0 || innerWidth <= 900 || drag) return;
       event.preventDefault();
-      drag = { id: event.pointerId, kind, x: event.clientX, width: handle.parentElement!.getBoundingClientRect().width, sizes: { ...sizes }, layout: { ...getLayout() }, referenceWidth: folderReferenceWidth };
+      drag = { id: event.pointerId, kind, x: event.clientX, width: handle.parentElement!.getBoundingClientRect().width, sizes: { ...sizes }, layout: { ...getLayout() }, referenceWidth: folderReferenceWidth, collapsed: false };
       document.body.dataset.libraryResizing = kind;
       // Capture on the shell: the dragged column and its handle may collapse.
       shell.setPointerCapture(event.pointerId);
@@ -85,7 +85,8 @@ export function setupSidebarResize(shell: HTMLElement, getLayout: () => SidebarL
     };
   }
   shell.addEventListener('pointermove', event => {
-    if (drag && event.pointerId === drag.id) move(drag.kind, drag.width + event.clientX - drag.x, drag.layout);
+    // A hidden divider stays collapsed for this gesture; panel actions restore it.
+    if (drag && !drag.collapsed && event.pointerId === drag.id) move(drag.kind, drag.width + event.clientX - drag.x, drag.layout);
   });
   shell.addEventListener('pointerup', event => { if (drag?.id === event.pointerId) finish(); });
   shell.addEventListener('pointercancel', event => { if (drag?.id === event.pointerId) finish(true); });

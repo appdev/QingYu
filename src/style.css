@@ -28,7 +28,7 @@ h1#note-title { font-family: system-ui, sans-serif; font-size: 20px; font-weight
 #workspace[data-mode='preview'] #preview-pane, #workspace[data-mode='split'] #preview-pane { display: block; }
 #workspace[data-mode='split'] #editor-pane { width: var(--split); }
 #splitter { width: 1px; display: none; flex-shrink: 0; background: var(--line); cursor: col-resize; position: relative; z-index: 2; touch-action: none; }
-#splitter::after { content: ''; position: absolute; inset: 0 -5px; }
+#splitter::after { content: ''; position: absolute; inset: 0 -8px 0 0; }
 #workspace[data-mode='split'] #splitter { display: block; }
 body[data-content-resizing], body[data-content-resizing] * { cursor: col-resize !important; user-select: none !important; }
 body[data-content-resizing] iframe { pointer-events: none; }
