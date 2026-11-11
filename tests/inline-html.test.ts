@@ -63,7 +63,7 @@ describe('inline HTML production display/dehydrate integration', () => {
   });
 
   it('keeps Markdown stable after the first SDK normalization of the same 37-format comparison document', () => {
-    const source = readFileSync('artifacts/format-comparison/全格式对照.md', 'utf8');
+    const source = readFileSync('tests/fixtures/format-comparison.md', 'utf8');
     const lute = engine();
     // SVG data images have an existing sanitizer/title normalization limit; this does not assert full-source fidelity.
     let dom = lute.SpinVditorDOM(lute.Md2VditorDOM(source));
