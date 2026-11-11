@@ -2,12 +2,17 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，例如 0.1.1 或 v0.1.1'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 defaults:
@@ -21,44 +26,66 @@ jobs:
       contents: write
     outputs:
       release-id: ${{ steps.release.outputs.id }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
-      - name: Validate release version
+      - run: node --test .github/scripts/release-version.check.mjs
+      - name: Prepare release version
+        id: version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const json = path => JSON.parse(readFileSync(path, 'utf8'));
-          const version = json('package.json').version;
-          assert.equal(process.env.REF_TYPE, 'tag', 'Run this workflow on a version tag');
-          assert.match(version, /^\d+\.\d+\.\d+$/, 'Use a stable release version');
-          assert.equal(process.env.RELEASE_TAG, `v${version}`, 'Tag must match package.json');
-          assert.equal(json('src-tauri/tauri.conf.json').version, version);
-          assert.equal(readFileSync('src-tauri/Cargo.toml', 'utf8').match(/^version = "([^"]+)"/m)?.[1], version);
-          readFileSync(`docs/releases/v${version}.md`, 'utf8');
-          NODE
+          tag=$(node .github/scripts/release-version.mjs)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: npm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features server --lib
+      - name: Create or verify release tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            if [ "$(git rev-parse "$RELEASE_TAG^{tree}")" != "$(git write-tree)" ]; then
+              echo '::error::The existing tag points to different source; choose a new version'
+              exit 1
+            fi
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            if ! git diff --cached --quiet; then
+              git commit -m "mod: release $RELEASE_TAG"
+            fi
+            git tag -a "$RELEASE_TAG" -m "QingYu $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+          echo "commit=$(git rev-parse "$RELEASE_TAG^{commit}")" >> "$GITHUB_OUTPUT"
       - name: Create or resume draft release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
             test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           else
+            if [ -f "docs/releases/$RELEASE_TAG.md" ]; then
+              notes=(--notes-file "docs/releases/$RELEASE_TAG.md")
+            else
+              notes=(--generate-notes)
+            fi
             gh release create "$RELEASE_TAG" --verify-tag --draft \
-              --title "轻羽 QingYu $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+              --title "轻羽 QingYu $RELEASE_TAG" "${notes[@]}"
           fi
           echo "id=$(gh release view "$RELEASE_TAG" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
 
@@ -86,6 +113,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -120,5 +149,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: gh release edit "$RELEASE_TAG" --draft=false --latest

@@ -31,7 +31,7 @@ iOS 尚未生成工程或验证；后续在具备模拟器运行时或真机签�
 
 [GitHub Releases](https://github.com/appdev/QingYu/releases) 提供 macOS Apple Silicon/Intel DMG、Windows x64 安装程序和 Linux x64 DEB/AppImage。首版为 `v0.1.0`；安装及签名边界见[发布说明](docs/releases/v0.1.0.md)。
 
-发布前保持 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 的版本一致，并添加 `docs/releases/v<版本>.md`。提交并推送对应的 `v<版本>` 标签后，在 GitHub Actions 的 Release 工作流中选择该标签，点击 Run workflow 手动发布；推送代码或标签不会自动触发。流程先测试并创建草稿，全部桌面安装包构建、上传成功后才公开发布。失败时保留草稿，可修复构建环境后重跑；源码修复使用新版本标签，避免移动已发布标签。
+在 GitHub Actions 的 Release 工作流中点击 Run workflow，选择要发布的分支并输入版本号（如 `0.1.1` 或 `v0.1.1`），无需提前打标签。流程会同步 npm、Cargo、Tauri 及锁文件中的应用版本，测试通过后生成发布提交并自动推送 `v<版本>` 标签；所选分支不会被修改。随后创建草稿，全部桌面安装包构建、上传成功后才公开发布。存在 `docs/releases/v<版本>.md` 时使用该发布说明，否则自动生成说明。推送代码或标签不会自动触发。失败时可重跑失败作业；重新手动运行仅允许复用源码完全一致的标签和未公开的草稿，已发布版本及不同源码的同名标签不会被覆盖。
 
 ## 第一版边界
 
