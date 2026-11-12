@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn blocked_directory_access_times_out_without_writing_files() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("keep.md"), "original").unwrap();
+    let (release, wait) = std::sync::mpsc::channel();
+    let (finished, done) = std::sync::mpsc::channel();
+    let result = check_directory_access(root.path().into(), std::time::Duration::from_millis(20), move |_| {
+        wait.recv().unwrap();
+        finished.send(()).unwrap();
+        Ok(())
+    });
+    assert!(result.unwrap_err().contains("读取笔记目录超时"));
+    assert!(!root.path().join(META).exists());
+    release.send(()).unwrap();
+    done.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+    assert_eq!(fs::read_to_string(root.path().join("keep.md")).unwrap(), "original");
+    assert!(!root.path().join(META).exists());
+}
+
+#[test]
+fn directory_access_checks_parents_without_creating_a_missing_library() {
+    let root = tempfile::tempdir().unwrap();
+    let missing = root.path().join("new/notes");
+    check_directory_access(missing.clone(), std::time::Duration::from_secs(1), read_library_directory).unwrap();
+    assert!(!missing.exists());
+    let file = root.path().join("note.md");
+    fs::write(&file, "keep").unwrap();
+    assert!(check_directory_access(file, std::time::Duration::from_secs(1), read_library_directory).unwrap_err().contains("无法读取笔记目录"));
+}
+
+#[test]
 fn renamed_default_library_reuses_existing_notes_without_moving_them() {
     let documents = tempfile::tempdir().unwrap();
     let current = documents.path().join("QingYu");

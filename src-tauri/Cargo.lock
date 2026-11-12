@@ -3139,6 +3139,7 @@ dependencies = [
  "subtle",
  "tauri",
  "tauri-build",
+ "tauri-plugin-attachments",
  "tauri-plugin-calendar",
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
@@ -4343,6 +4344,15 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-attachments"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

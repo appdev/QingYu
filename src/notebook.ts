@@ -71,6 +71,14 @@ export class Notebook {
   }
   get current() { return this.data.notes.find(note => note.id === this.data.activeId)!; }
   get root() { return this.disk?.root; }
+  get assetRevision() { return this.disk?.revision ?? 0; }
+  importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> { return this.run(async () => {
+    const note = this.data.notes.find(note => note.id === id);
+    if (!note || note.readOnly || note.trashed) throw new Error('此笔记不可添加附件');
+    if (this.remote) return this.remote.importAttachment(id, upload);
+    if (!this.disk) throw new Error('请先打开本地笔记库');
+    return invoke('attachment_import', { id, upload });
+  }); }
   async openServer() { this.remote = new ServerLibrary(); this.adoptServer(await this.remote.load()); }
   private adoptServer(snapshot: ServerSnapshot, activeId = this.data.activeId) {
     const notes = snapshot.notes;
@@ -97,7 +105,8 @@ export class Notebook {
   }); }
   async openFiles() {
     const seed = this.loadError ? null : { ...this.data, notes: this.data.notes.map(note => ({ ...note, title: note.title ?? (note.source.trim() ? noteText(note.source).title : undefined) })) };
-    this.adopt(await invoke('library_open', { seed })); this.loadError = false;
+    try { this.adopt(await invoke('library_open', { seed })); }
+    catch (error) { this.loadError = true; throw error; }
   }
   private adopt(snapshot: { library: Library; root: string; revision: number }) {
     if (!validLibrary(snapshot.library)) throw new Error('本地文件笔记库格式无效');
@@ -229,7 +238,7 @@ export class Notebook {
   reload() {
     if (this.remote) return this.run(async () => { this.adoptServer(await this.remote!.load()); });
     if (this.external && this.disk) return this.reconcile(this.disk.root).then(() => {});
-    return this.run(async () => { if (this.disk) this.adopt(await invoke('library_reload')); });
+    return this.run(async () => { if (this.disk) this.adopt(await invoke('library_reload')); else await this.openFiles(); });
   }
   reconcile(root: string, buffer?: EditorBuffer) { return this.run(async () => {
     if (!this.disk || this.disk.root !== root) return { changed: false, backups: [] as string[] };

@@ -4,18 +4,54 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const html = readFileSync('login.html', 'utf8');
 const fetchMock = vi.fn();
+const media = { matches: false, addEventListener: vi.fn() };
 const password = () => document.querySelector<HTMLInputElement>('#password')!;
 const button = () => document.querySelector<HTMLButtonElement>('#login-button')!;
 const message = () => document.querySelector('#form-message')!.textContent;
 const submit = () => document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 beforeEach(async () => {
   vi.resetModules(); fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock);
+  media.matches = false; media.addEventListener.mockClear(); vi.stubGlobal('matchMedia', () => media);
+  document.documentElement.removeAttribute('data-theme'); document.documentElement.style.colorScheme = '';
   const page = new DOMParser().parseFromString(html, 'text/html');
   document.head.innerHTML = page.head.innerHTML; document.body.innerHTML = page.body.innerHTML;
   history.replaceState(null, '', '/login.html?expired=1'); localStorage.clear();
   await import('../src/login');
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it('opens with the saved appearance and follows appearance changes from another window', async () => {
+  localStorage.setItem('miaoyan-editor.preferences.v1', JSON.stringify({ version: 1, appearance: 'dark' }));
+  vi.resetModules(); await import('../src/login');
+  expect(document.documentElement.dataset.theme).toBe('dark');
+  expect(document.documentElement.style.colorScheme).toBe('dark');
+  window.dispatchEvent(new StorageEvent('storage', {
+    key: 'miaoyan-editor.preferences.v1', newValue: JSON.stringify({ version: 1, appearance: 'light' }),
+  }));
+  expect(document.documentElement.dataset.theme).toBe('light');
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it('follows system appearance without writing preferences or changing the password', () => {
+  password().value = 'synthetic-unsent-password';
+  expect(document.documentElement.dataset.theme).toBe('light');
+  media.matches = true;
+  const change = media.addEventListener.mock.calls.filter(([name]) => name === 'change').at(-1)?.[1];
+  expect(change).toBeTypeOf('function'); change();
+  expect(document.documentElement.dataset.theme).toBe('dark');
+  media.matches = false; change();
+  expect(document.documentElement.dataset.theme).toBe('light');
+  expect(password().value).toBe('synthetic-unsent-password');
+  expect(localStorage.length).toBe(0); expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it('keeps an explicit light appearance when the system is dark', async () => {
+  media.matches = true;
+  localStorage.setItem('miaoyan-editor.preferences.v1', JSON.stringify({ version: 1, appearance: 'light' }));
+  vi.resetModules(); await import('../src/login');
+  expect(document.documentElement.dataset.theme).toBe('light');
+  expect(document.documentElement.style.colorScheme).toBe('light');
+});
 
 it('only asks for a password, shows expiry and prevents empty submission', () => {
   expect(document.querySelectorAll('input')).toHaveLength(1);

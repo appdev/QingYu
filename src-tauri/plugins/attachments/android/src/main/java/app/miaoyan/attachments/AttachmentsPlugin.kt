@@ -1,0 +1,32 @@
+package app.miaoyan.attachments
+
+import android.app.Activity
+import android.content.ClipData
+import android.content.Intent
+import androidx.core.content.FileProvider
+import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Invoke
+import app.tauri.plugin.Plugin
+import java.io.File
+
+@InvokeArg
+class OpenArgs { lateinit var path: String; lateinit var mime: String }
+
+@TauriPlugin
+class AttachmentsPlugin(private val activity: Activity) : Plugin(activity) {
+    @Command
+    fun openFile(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(OpenArgs::class.java)
+            val file = File(args.path).canonicalFile
+            require(file.toPath().startsWith(File(activity.cacheDir, "attachments").canonicalFile.toPath()) && file.isFile && file.length() <= 64L * 1024 * 1024) { "附件路径无效" }
+            val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", file)
+            val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, args.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            intent.clipData = ClipData.newRawUri(file.name, uri)
+            activity.startActivity(Intent.createChooser(intent, file.name))
+            invoke.resolve()
+        } catch (error: Exception) { invoke.reject("无法打开附件，请安装支持此文件类型的应用") }
+    }
+}

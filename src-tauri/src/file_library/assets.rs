@@ -1,6 +1,6 @@
 use super::*;
 
-const MAX_FILE: usize = 64 * 1024 * 1024;
+pub(super) const MAX_FILE: usize = 64 * 1024 * 1024;
 const MAX_TOTAL: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ pub(super) fn valid_path(path: &str) -> bool {
             .rsplit('/')
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case("s3-connection.json"))
-        && !allowed(Path::new(path))
+        && (!allowed(Path::new(path)) || path.split('/').any(|part| part == ".attachments"))
         && !path.contains(['\\', ':'])
         && !path.chars().any(char::is_control)
         && path.split('/').all(|part| {
@@ -39,7 +39,7 @@ pub(super) fn trash_path(path: &str) -> bool {
         .is_some_and(|(token, rest)| Uuid::parse_str(token).is_ok() && valid_path(rest))
 }
 
-fn scan_assets(root: &Path) -> Result<Vec<Asset>> {
+pub(super) fn scan_assets(root: &Path) -> Result<Vec<Asset>> {
     fn visit(
         root: &Path,
         directory: &Path,
@@ -68,7 +68,7 @@ fn scan_assets(root: &Path) -> Result<Vec<Asset>> {
             }
             if kind.is_dir() {
                 visit(root, &entry.path(), output, total)?;
-            } else if kind.is_file() && !allowed(&entry.path()) {
+            } else if kind.is_file() && (!allowed(&entry.path()) || entry.path().strip_prefix(root).is_ok_and(|path| path.components().any(|part| part.as_os_str() == ".attachments"))) {
                 let path = entry
                     .path()
                     .strip_prefix(root)

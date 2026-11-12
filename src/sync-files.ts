@@ -16,7 +16,7 @@ export function assetRelative(path: string) {
   const match = /^assets\/([A-Za-z0-9_-]+)\.bin$/.exec(path);
   if (!match) throw new Error('附件同步路径无效');
   const value = decoder.decode(Uint8Array.from(atob(match[1]!.replaceAll('-', '+').replaceAll('_', '/')), char => char.charCodeAt(0)));
-  if (assetPath(value) !== path || value.split('/').at(-1)?.toLowerCase() === 's3-connection.json' || value.includes('\\') || value.includes(':') || /[\x00-\x1f\x7f]/.test(value) || /\.(md|markdown|txt)$/i.test(value) ||
+  if (assetPath(value) !== path || value.split('/').at(-1)?.toLowerCase() === 's3-connection.json' || value.includes('\\') || value.includes(':') || /[\x00-\x1f\x7f]/.test(value) || (/\.(md|markdown|txt)$/i.test(value) && !value.split('/').includes('.attachments')) ||
       value.split('/').some(part => !part || part === '.' || part === '..' || ['.miaoyan', '.miaoyan-conflicts', '.git'].includes(part.toLowerCase()))) throw new Error('附件路径超出笔记库范围或属于内部文件');
   return value;
 }

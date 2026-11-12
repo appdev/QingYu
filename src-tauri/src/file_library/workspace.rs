@@ -39,6 +39,12 @@ pub struct Workspace {
     exit: Mutex<Option<ExitRound>>,
 }
 
+pub(super) fn with_document<T>(app: &tauri::AppHandle, label: &str, run: impl FnOnce(&DiskLibrary) -> Result<T>) -> Result<T> {
+    let state = app.state::<Workspace>();
+    let documents = state.documents.lock().map_err(error)?;
+    run(&documents.get(label).ok_or("文档窗口不存在")?.store)
+}
+
 #[cfg(desktop)]
 pub fn request(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
     let paths: Vec<_> = paths.into_iter().filter(|path| allowed(path)).collect();

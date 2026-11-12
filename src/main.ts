@@ -27,6 +27,8 @@ import { revealCaret } from './editor-viewport';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { setupCalendar } from './calendar';
+import { assetBase, attachmentMarkdown, openAttachment } from './attachments';
+import { MAX_ASSET_BYTES, MAX_ASSETS_TOTAL } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
 
@@ -69,6 +71,7 @@ const syncSession = createSyncSession(notebook, () => {
   showCurrentNote(Boolean(notebook.current)); sidebar?.refresh();
   setStatus('笔记库同步完成');
 }, () => {
+  if (notebook.loadError) throw new Error('笔记目录尚未读取成功，请先恢复目录访问或更改笔记位置');
   if (document.body.dataset.libraryBusy === 'true') throw new Error('笔记位置正在更改，请稍后同步');
   return saveDraft(true);
 });
@@ -115,7 +118,7 @@ let renderTimer: ReturnType<typeof setTimeout>;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let scrollTimer: ReturnType<typeof setTimeout>;
 let ignoreScrollUntil = 0;
-let pendingRender: { id: number; source: string; noteId?: string } | null = null;
+let pendingRender: { id: number; source: string; noteId?: string; assetBase?: string } | null = null;
 
 const highlight = HighlightStyle.define([
   { tag: [tags.heading1, tags.heading2, tags.heading3, tags.heading4, tags.heading5, tags.heading6], class: 'md-title' }, { tag: tags.emphasis, class: 'md-emphasis' },
@@ -124,6 +127,7 @@ const highlight = HighlightStyle.define([
   { tag: tags.quote, class: 'md-quote' }, { tag: tags.monospace, class: 'md-code' },
   { tag: tags.keyword, class: 'md-keyword' }, { tag: tags.string, class: 'md-string' },
   { tag: tags.number, class: 'md-number' }, { tag: tags.comment, class: 'md-comment' },
+  { tag: [tags.tagName, tags.angleBracket, tags.attributeName], class: 'md-html' },
 ]);
 
 function decorations(view: EditorView): DecorationSet {
@@ -131,7 +135,9 @@ function decorations(view: EditorView): DecorationSet {
   const tree = syntaxTree(view.state);
   for (const { from, to } of view.visibleRanges) {
     tree.iterate({ from, to, enter(node) {
-      if (node.name === 'TaskMarker') {
+      if (node.name === 'InlineCode') {
+        ranges.push(Decoration.mark({ class: 'md-inline-code' }).range(node.from, node.to));
+      } else if (node.name === 'TaskMarker') {
         ranges.push(Decoration.mark({ class: 'md-task' }).range(node.from, node.to));
       } else if (/^(HeaderMark|EmphasisMark|QuoteMark|ListMark|CodeMark|LinkMark|StrikethroughMark)$/.test(node.name) && !(node.name === 'CodeMark' && node.node.parent?.name === 'FencedCode')) {
         ranges.push(Decoration.mark({ class: node.name === 'ListMark' ? 'md-list-mark md-mark' : 'md-mark' }).range(node.from, node.to));
@@ -259,7 +265,7 @@ function showCurrentNote(selected: boolean) {
     sourceOffset = 0;
     scheduleRender(0);
     if (mode === 'rich' && notebook.current.readOnly) { mode = 'edit'; workspace.dataset.mode = mode; }
-    if (mode === 'rich') richEditor?.activate(notebook.current.source, notebook.current.id, notebook.server ? notebook.current.id : undefined);
+    if (mode === 'rich') richEditor?.activate(notebook.current.source, notebook.current.id, notebook.server || native ? notebook.current.id : undefined, assetBase(notebook));
     view.requestMeasure();
   }
   refreshTitle();
@@ -293,7 +299,7 @@ function scheduleRender(delay = 150) {
     if (view.compositionStarted) return;
     const source = view.state.doc.toString();
     sourceOffset = markdownBody(source).offset;
-    pendingRender = { id: version, source, noteId: notebook.server ? notebook.current?.id : undefined };
+    pendingRender = { id: version, source, noteId: notebook.server || native ? notebook.current?.id : undefined, assetBase: assetBase(notebook) };
     if (mode === 'preview' || mode === 'split') sendRender();
   }, delay);
 }
@@ -307,7 +313,7 @@ function previewReady() {
 }
 async function setMode(next: typeof mode) {
   if (!showingNote) return;
-  if (notebook.current?.readOnly && next === 'rich') return;
+  if ((notebook.loadError || notebook.current?.readOnly) && next === 'rich') return;
   if (view.compositionStarted || richEditor?.composing) return;
   richEditor?.deactivate();
   if (next === 'split' && matchMedia('(max-width: 640px)').matches) next = 'preview';
@@ -322,9 +328,9 @@ async function setMode(next: typeof mode) {
       richLoading ??= import('./rich-editor').then(({ createRichEditor }) => createRichEditor($('#rich-editor'), source => {
         const transaction = replaceSource(view.state, source);
         if (transaction) view.dispatch(transaction);
-      }));
+      }, { openAsset(id, path) { void openAttachment(notebook, id, path).catch(error => setStatus(String(error), true)); } }));
       richEditor = await richLoading;
-      if (mode === 'rich') { richEditor.activate(view.state.doc.toString(), notebook.current.id, notebook.server ? notebook.current.id : undefined); richEditor.focus(); }
+      if (mode === 'rich') { richEditor.activate(view.state.doc.toString(), notebook.current.id, notebook.server || native ? notebook.current.id : undefined, assetBase(notebook)); richEditor.focus(); }
     } catch (error) {
       console.error(error);
       richLoading = undefined;
@@ -369,6 +375,48 @@ for (const [action, label, shortcut, symbol] of formatItems) {
     mobileTools.appendChild(quick);
   }
 }
+const attachmentInput = document.createElement('input');
+attachmentInput.type = 'file'; attachmentInput.multiple = true; attachmentInput.hidden = true;
+document.body.append(attachmentInput);
+const attachmentButton = document.createElement('button');
+attachmentButton.role = 'menuitem'; attachmentButton.textContent = '插入图片或附件…';
+attachmentButton.hidden = !(native || notebook.server);
+menu.append(attachmentButton);
+attachmentButton.onclick = () => { richEditor?.captureSelection(); closeMenu(); attachmentInput.click(); };
+async function insertAttachments(files: File[]) {
+  if (!files.length || !notebook.current || notebook.current.readOnly || view.compositionStarted || richEditor?.composing) return;
+  if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') { setStatus('正在处理其他操作，请稍后添加附件', true); return; }
+  const id = notebook.current.id;
+  if (mode === 'rich') richEditor?.captureSelection();
+  const range = view.state.selection.main;
+  try {
+    if (files.some(file => file.size > MAX_ASSET_BYTES) || files.reduce((size, file) => size + file.size, 0) > MAX_ASSETS_TOTAL) throw new Error('单附件不能超过 64 MiB，每次最多 256 MiB');
+    if (!await saveDraft(true)) return;
+    document.body.dataset.libraryBusy = 'true';
+    $('#app-shell').inert = true;
+    for (const file of files) {
+      const attachment = await notebook.importAttachment(id, { name: file.name, bytes: Array.from(new Uint8Array(await file.arrayBuffer())) });
+      if (notebook.current?.id !== id) throw new Error('当前笔记已切换，附件文件已保留，请重新插入');
+      const markdown = attachmentMarkdown(attachment) + '\n\n';
+      if (mode === 'rich') {
+        $('#app-shell').inert = false;
+        richEditor?.insert(markdown);
+        $('#app-shell').inert = true;
+      }
+      else {
+        const selection = files.indexOf(file) === 0 ? range : view.state.selection.main;
+        view.dispatch({ changes: { from: selection.from, to: selection.to, insert: markdown }, selection: { anchor: selection.from + markdown.length }, scrollIntoView: true });
+      }
+      if (!await saveDraft(true)) throw new Error('附件已保留，但笔记尚未保存，请保持当前窗口打开后重试');
+    }
+    scheduleRender(0); setStatus('图片与附件已保存');
+  } catch (error) { setStatus(error instanceof Error ? error.message : String(error), true); }
+  finally { document.body.dataset.libraryBusy = 'false'; $('#app-shell').inert = document.body.dataset.syncBusy === 'true'; }
+}
+attachmentInput.onchange = () => { const files = Array.from(attachmentInput.files ?? []); attachmentInput.value = ''; void insertAttachments(files); };
+workspace.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
+workspace.addEventListener('drop', event => { if (!event.dataTransfer?.files.length) return; event.preventDefault(); event.stopImmediatePropagation(); void insertAttachments(Array.from(event.dataTransfer.files)); }, true);
+workspace.addEventListener('paste', event => { if (!event.clipboardData?.files.length) return; event.preventDefault(); event.stopImmediatePropagation(); void insertAttachments(Array.from(event.clipboardData.files)); }, true);
 // Toolbar presses must not dismiss the keyboard or move the editor selection.
 for (const bar of [$('.actions'), menu, mobileTools]) bar.addEventListener('pointerdown', event => {
   if ((event.target as HTMLElement).closest('button')) event.preventDefault();
@@ -412,6 +460,7 @@ window.addEventListener('message', ({ source, origin, data }) => {
   if (data.type === 'preview-ready') previewReady();
   if (data.type === 'preview-rendered') { renderedVersion = data.id; syncPreview(); }
   if (data.type === 'preview-error') setStatus('部分预览未完成，原文已保留', true);
+  if (data.type === 'open-asset' && data.noteId === notebook.current?.id && typeof data.path === 'string') void openAttachment(notebook, data.noteId, data.path).catch(error => setStatus(String(error), true));
   if (data.type === 'task') {
     if (notebook.loadError || notebook.current?.readOnly) return;
     if (view.compositionStarted || renderedVersion !== version || !Number.isInteger(data.line)) return;
@@ -500,7 +549,7 @@ if ('__TAURI_INTERNALS__' in window) {
       prepareExit: mobile ? undefined : () => invoke('workspace_prepare_exit'),
       cancelExit: mobile ? undefined : () => invoke('workspace_cancel_exit'),
       sync: async () => { await autoSync?.sync(); },
-      refresh() { showCurrentNote(Boolean(notebook.current)); sidebar?.revealCurrent(); }, error: message => setStatus(message, true),
+      refresh() { showCurrentNote(Boolean(notebook.current)); sidebar?.revealCurrent(); setStatus('已读取本地笔记文件夹'); }, error: message => setStatus(message, true),
     });
   }
   const { setupFileWatch } = await import('./file-watch');

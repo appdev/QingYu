@@ -1,5 +1,6 @@
 import Vditor from 'vditor';
 import DOMPurify from 'dompurify';
+import palette from './palette.json';
 import { isDark } from './preferences';
 import 'vditor/dist/index.css';
 import './rich-editor.css';
@@ -8,7 +9,30 @@ import { emphasisLanguage } from './emphasis';
 import { createRichCodeRenderer } from './rich-code';
 import { markdownBody } from './document-text';
 import { decorateCallouts, installRichMarkdown, referenceHref } from './rich-markdown';
-import { originalAssetPaths, projectServerAssets } from './server-assets';
+import { originalAssetPath, originalAssetPaths, projectServerAssets, isLocalAsset } from './server-assets';
+
+export function installImagePreviewActions(doc: Document) {
+  const close = (preview: Element) => {
+    preview.remove();
+    if (!doc.querySelector('.vditor-img')) doc.body.style.overflow = '';
+  };
+  // SDK close/backdrop handlers are inline and blocked by the app's CSP.
+  doc.addEventListener('click', event => {
+    if (!(event.target instanceof Element)) return;
+    const preview = event.target.closest('.vditor-img');
+    if (!preview) return;
+    const button = event.target.closest('.vditor-img__btn');
+    if (event.target.closest('.vditor-img__img') || button && !button.hasAttribute('data-deg')) {
+      event.preventDefault(); event.stopImmediatePropagation(); close(preview);
+    }
+  }, true);
+  doc.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const preview = doc.querySelector('.vditor-img');
+    if (preview) { event.preventDefault(); event.stopImmediatePropagation(); close(preview); }
+  }, true);
+}
+installImagePreviewActions(document);
 
 function loadScript(path: string, id: string) {
   if (document.getElementById(id)) return Promise.resolve();
@@ -22,7 +46,8 @@ function loadScript(path: string, id: string) {
   });
 }
 
-export async function createRichEditor(parent: HTMLElement, onChange: (source: string) => void, options: { readOnly?: boolean; onTask?: (input: HTMLInputElement) => void } = {}) {
+export async function createRichEditor(parent: HTMLElement, onChange: (source: string) => void, options: { readOnly?: boolean; onTask?: (input: HTMLInputElement) => void; openAsset?: (noteId: string, path: string) => void } = {}) {
+  Object.assign(window, { QingYuPalette: palette });
   parent.dataset.readOnly = String(Boolean(options.readOnly));
   await loadScript('/miaoyan/js/frame-fallback.js', 'miaoyanFrameFallbackScript');
   // Preload icons as an external script: Vditor's fallback injects inline JS, blocked by our CSP.
@@ -52,11 +77,15 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
   let renderedSource = '';
   let frontmatter = '';
   let assetNoteId: string | undefined;
+  let assetBase: string | undefined;
+  let insertionRange: Range | undefined;
   const markdownValue = () => originalAssetPaths(editor.vditor.wysiwyg!.element, () => editor.getValue());
   let lastFootnoteReference: HTMLElement | undefined;
   function openLink(href: string) {
+    const original = originalAssetPath(editor.vditor.wysiwyg!.element, href);
+    if (assetNoteId && isLocalAsset(original) && options.openAsset) { options.openAsset(assetNoteId, original); return; }
     if (href.startsWith('#')) window.MiaoYanHeadingLinks.follow(editor.vditor.wysiwyg!.element, href);
-    else window.open(href, '_blank', 'noopener,noreferrer');
+    else if (/^(https?:|mailto:)/i.test(href) || href.startsWith('/api/web/assets/')) window.open(href, '_blank', 'noopener,noreferrer');
   }
   function navigationButton(toolbar: HTMLElement, label: string, action: () => void) {
     const button = document.createElement('button');
@@ -174,7 +203,7 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
     instance.disabled();
   }
   const { element, popover } = instance.vditor.wysiwyg!;
-  new MutationObserver(() => projectServerAssets(element, assetNoteId)).observe(element, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'href'] });
+  new MutationObserver(() => projectServerAssets(element, assetNoteId, assetBase)).observe(element, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'href'] });
   if (options.readOnly) {
     element.tabIndex = 0;
     parent.addEventListener('pointerdown', () => element.focus({ preventScroll: true }), true);
@@ -202,6 +231,9 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
     }
   }
   element.addEventListener('click', event => {
+    const anchor = event.target instanceof Element ? event.target.closest('a') : null;
+    const anchorHref = anchor?.getAttribute('href');
+    if (anchorHref && assetNoteId && options.openAsset && isLocalAsset(originalAssetPath(element, anchorHref))) { event.preventDefault(); event.stopImmediatePropagation(); openLink(anchorHref); return; }
     const footnote = event.target instanceof Element ? event.target.closest<HTMLElement>('sup[data-type="footnotes-ref"]') : null;
     if (footnote && !footnote.contains(getSelection()?.anchorNode ?? null)) selectNode(element, footnote);
     if (!event.metaKey && !event.ctrlKey) return;
@@ -234,10 +266,12 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
     element,
     lute: instance.vditor.lute,
     get composing() { return instance.vditor.wysiwyg!.composingLock; },
-    activate(source: string, documentId: string, attachmentNoteId?: string) {
+    activate(source: string, documentId: string, attachmentNoteId?: string, attachmentBase?: string) {
       assetNoteId = attachmentNoteId;
+      assetBase = attachmentBase;
       // Identical text can belong to different notes with different undo histories.
       if (source !== lastSource || documentId !== lastDocumentId) {
+        insertionRange = undefined;
         lastFootnoteReference = undefined;
         delete element.dataset.showReferenceDefinitions;
         const { body } = markdownBody(source);
@@ -264,13 +298,25 @@ export async function createRichEditor(parent: HTMLElement, onChange: (source: s
         renderedSource = options.readOnly ? '' : markdownValue();
       }
       alignEmphasis();
-      projectServerAssets(element, assetNoteId);
+      projectServerAssets(element, assetNoteId, assetBase);
       renderCode();
       active = true;
     },
     deactivate() { flush(); active = false; },
     flush,
     focus() { instance.focus(); },
+    captureSelection() {
+      const selection = getSelection();
+      if (selection?.rangeCount && element.contains(selection.getRangeAt(0).commonAncestorContainer)) insertionRange = selection.getRangeAt(0).cloneRange();
+    },
+    insert(markdown: string) {
+      instance.focus();
+      if (insertionRange && element.contains(insertionRange.commonAncestorContainer)) { const selection = getSelection(); selection?.removeAllRanges(); selection?.addRange(insertionRange); }
+      instance.insertValue(markdown);
+      const selection = getSelection();
+      insertionRange = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : undefined;
+      flush();
+    },
     format(action: Format) {
       const command = { heading: 'headings', task: 'check', code: 'inline-code' }[action as 'heading' | 'task' | 'code'] ?? action;
       const item = instance.vditor.toolbar!.elements![command];

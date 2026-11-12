@@ -8,8 +8,10 @@ pub fn run() {
         file_library::workspace::request(app, args.into_iter().skip(1).filter(|arg| !arg.starts_with('-')).map(|arg| std::path::Path::new(&cwd).join(arg)));
     }));
     let builder = builder
+        .register_uri_scheme_protocol("qingyu-asset", |context, request| file_library::attachments::response(context.app_handle(), context.webview_label(), request))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_calendar::init())
+        .plugin(tauri_plugin_attachments::init())
         .manage(sync_http::SyncHttp::default())
         .manage(file_library::FileLibrary::default())
         .manage(file_library::workspace::Workspace::default())
@@ -59,6 +61,8 @@ pub fn run() {
             file_library::workspace::library_hide_main,
             file_library::library_commit,
             file_library::assets::library_sync_assets,
+            file_library::attachments::attachment_import,
+            file_library::attachments::attachment_open,
             file_library::library_import,
             file_library::library_choose,
             file_library::library_reload,

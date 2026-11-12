@@ -1,0 +1,10 @@
+[package]
+name = "tauri-plugin-attachments"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-attachments"
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+[dependencies]
+tauri = { version = "2" }
+serde_json = "1"

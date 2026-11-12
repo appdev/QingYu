@@ -27,6 +27,12 @@ npm run tauri -- android build --debug --target aarch64 --apk
 无需重新执行 `android init`。构建需要 Android SDK、NDK、JDK，以及 Rust 的 `aarch64-linux-android` target；项目固定 Rust 1.96.0。
 iOS 尚未生成工程或验证；后续在具备模拟器运行时或真机签名环境后使用 `npm run tauri -- ios init`。
 
+## 颜色配置
+
+运行时配色统一维护在 [`src/palette.json`](src/palette.json)，浅深色使用相同的语义项，以妙言 4.8.0 和参考源码 `9ce84b01` 为基准。界面文字、源码标记、正文渲染、语法高亮、图表、提示块和设置控件按用途分开；调整颜色时修改对应语义项。正式登录页复用应用的外观偏好，支持保存的浅色／深色、跟随系统和跨窗口更新；深色的高亮兜底、错误文字和按钮交互色也在同一色表中维护。
+
+Vite 的 PostCSS 插件将色表编译进 `theme.css`，主窗口、预览、设置和正式 Web 登录页共用；图表脚本通过 `rich-editor.ts` 获取同一份 JSON，macOS 简介弹层通过 Rust `include_str!` 读取它。修改后分别重建前端和原生程序即可生效，不维护生成的 CSS 色表。`public/miaoyan/css/theme-*.css` 和登录页 tokens 只保留名称映射；系统选区颜色、第三方 SDK 内部样式及平台启动背景由各自平台负责。
+
 ## 版本发布
 
 [GitHub Releases](https://github.com/appdev/QingYu/releases) 提供 macOS Apple Silicon/Intel DMG、Windows x64 安装程序和 Linux x64 DEB/AppImage。首版为 `v0.1.0`；安装及签名边界见[发布说明](docs/releases/v0.1.0.md)。

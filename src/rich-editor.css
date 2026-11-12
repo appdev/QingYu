@@ -1,7 +1,7 @@
-#rich-editor { height: 100%; border: 0; border-radius: 0; background: var(--paper); --panel-background-color: var(--paper); --textarea-background-color: var(--paper); --textarea-text-color: var(--ink); --border-color: var(--line); --second-color: var(--muted); --toolbar-icon-color: var(--muted); --toolbar-icon-hover-color: var(--brand); --quote-text: #6b6a64; --quote-bar: #ddd9cd; --render-code: #262626; }
+#rich-editor { height: 100%; border: 0; border-radius: 0; background: var(--paper); --panel-background-color: var(--paper); --toolbar-background-color: var(--control-fill); --textarea-background-color: var(--paper); --textarea-text-color: var(--ink); --border-color: var(--border); --second-color: var(--muted); --toolbar-icon-color: var(--muted); --toolbar-icon-hover-color: var(--brand); }
 #rich-editor .vditor-toolbar { display: none; }
 #rich-editor .vditor-wysiwyg { background: var(--paper); }
-#rich-editor .vditor-reset { max-width: none; margin: 0; padding: 0 max(28px, calc(100% - var(--preview-width, 1000px) + 28px)) 80px 28px !important; color: #262626; font: var(--preview-size, 16px)/1.64 var(--preview-font, system-ui); letter-spacing: .02em; text-autospace: normal; hyphens: auto; word-break: normal; caret-color: var(--editor-ink); }
+#rich-editor .vditor-reset { max-width: none; margin: 0; padding: 0 max(28px, calc(100% - var(--preview-width, 1000px) + 28px)) 80px 28px !important; color: var(--render-text); font: var(--preview-size, 16px)/1.64 var(--preview-font, system-ui); letter-spacing: .02em; text-autospace: normal; hyphens: auto; word-break: normal; caret-color: var(--editor-ink); }
 /* Keep first-child margins inside the editable surface, as in the preview. */
 #rich-editor .vditor-reset:not(:empty)::before { content: ''; display: table; }
 #rich-editor .vditor-reset :is(h1,h2,h3,h4,h5,h6) { border: 0; padding: 0; font-weight: bold; line-height: 1.4; -webkit-font-smoothing: antialiased; }
@@ -16,7 +16,7 @@
 #rich-editor .vditor-reset > :is(ul,ol):first-child { margin-top: 5px !important; }
 #rich-editor .vditor-reset > :last-child { margin-bottom: 0 !important; }
 #rich-editor .vditor-reset p { margin: 1.15em 0; text-align: left; }
-#rich-editor .vditor-reset hr { display: block; width: 100%; height: 1px; padding: 0; margin: 2em auto; border: 0; background: var(--line); color: inherit; }
+#rich-editor .vditor-reset hr { display: block; width: 100%; height: 1px; padding: 0; margin: 2em auto; border: 0; background: var(--border); color: inherit; }
 #rich-editor .vditor-reset :is(ul,ol) { padding-left: 1.75em; margin: 1.15em 0; }
 #rich-editor .vditor-reset ul { padding-left: 1.5em; }
 #rich-editor .vditor-reset :is(ul,ol) ul { list-style-type: circle; }
@@ -29,19 +29,19 @@
 #rich-editor .vditor-reset blockquote p { margin: .4em 0; padding: 0; border-radius: 0; line-height: 1.64; }
 #rich-editor .vditor-reset blockquote :is(ul,ol,li) { line-height: 1.64; }
 #rich-editor .vditor-reset blockquote :is(ul,ol) { margin-bottom: .4em; }
-#rich-editor .vditor-reset blockquote.callout { width: auto; padding: .3em 15px; border-radius: 6px; color: #262626; background: rgba(var(--alert-rgb), .06); }
+#rich-editor .vditor-reset blockquote.callout { width: auto; padding: .3em 15px; border-radius: 6px; color: var(--render-text); background: rgba(var(--alert-rgb), var(--alert-opacity)); }
 #rich-editor .vditor-reset blockquote.callout::before { display: none; }
 #rich-editor .vditor-reset .callout .callout-info { display: flex; align-items: center; min-height: 0; font-size: 1em; font-weight: 600; opacity: 1; color: rgb(var(--alert-rgb)); }
 #rich-editor .vditor-reset .callout .callout-info[data-rich-title] { font-size: 0; line-height: calc(var(--preview-size, 16px) * 1.64); margin: 6.4px 0; }
 #rich-editor .vditor-reset .callout-info[data-rich-title]::before { content: ''; width: 16px; height: 16px; margin-right: 8px; flex-shrink: 0; background: currentColor; mask: var(--callout-icon) center / contain no-repeat; }
 #rich-editor .vditor-reset .callout-info[data-rich-title]::after { content: attr(data-rich-title); font-size: var(--preview-size, 16px); line-height: 1.64; }
-#rich-editor .vditor-reset .callout[data-subtype='NOTE'] { --alert-rgb: 9,105,218; }
-#rich-editor .vditor-reset .callout[data-subtype='TIP'] { --alert-rgb: 26,127,55; }
-#rich-editor .vditor-reset .callout[data-subtype='IMPORTANT'] { --alert-rgb: 130,80,223; }
-#rich-editor .vditor-reset .callout[data-subtype='WARNING'] { --alert-rgb: 154,103,0; }
-#rich-editor .vditor-reset .callout[data-subtype='CAUTION'] { --alert-rgb: 207,34,46; }
-#rich-editor .vditor-reset table { display: table; width: 100% !important; margin: 1.15em 0; border: 1px solid var(--line); border-collapse: collapse; font-size: .92em; word-break: normal; }
-#rich-editor .vditor-reset :is(th,td) { border-color: var(--line); padding: 8px 12px; white-space: normal; overflow-wrap: break-word; }
+#rich-editor .vditor-reset .callout[data-subtype='NOTE'] { --alert-rgb: var(--alert-note-rgb); }
+#rich-editor .vditor-reset .callout[data-subtype='TIP'] { --alert-rgb: var(--alert-tip-rgb); }
+#rich-editor .vditor-reset .callout[data-subtype='IMPORTANT'] { --alert-rgb: var(--alert-important-rgb); }
+#rich-editor .vditor-reset .callout[data-subtype='WARNING'] { --alert-rgb: var(--alert-warning-rgb); }
+#rich-editor .vditor-reset .callout[data-subtype='CAUTION'] { --alert-rgb: var(--alert-caution-rgb); }
+#rich-editor .vditor-reset table { display: table; width: 100% !important; margin: 1.15em 0; border: 1px solid var(--border); border-collapse: collapse; font-size: .92em; word-break: normal; }
+#rich-editor .vditor-reset :is(th,td) { border-color: var(--border); padding: 8px 12px; white-space: normal; overflow-wrap: break-word; }
 #rich-editor .vditor-reset th { font-weight: bold; }
 #rich-editor .vditor-reset :is(th,td):first-child::after { content: none; }
 #rich-editor .vditor-reset tr { background: transparent; border: 0; }
@@ -90,7 +90,7 @@ body > .markmap-container, body > .markmap-container * { font-family: var(--rich
 #rich-editor .vditor-reset :is(sub,sup) { position: relative; margin-inline: .25em; font-size: .75em; font-style: normal; line-height: 1; vertical-align: baseline; }
 #rich-editor .vditor-reset sub { bottom: -.25em; }
 #rich-editor .vditor-reset sup { top: -.5em; }
-#rich-editor .vditor-reset mark { padding: 2px 1px; margin-inline: 1px; background: rgba(255,247,0,.88); color: inherit; }
+#rich-editor .vditor-reset mark { padding: 2px 1px; margin-inline: 1px; background: var(--mark-background); color: inherit; }
 #rich-editor .vditor-reset u { padding-bottom: 1px; border-bottom: 1px solid; text-decoration: none; margin-inline: 1px; }
 #rich-editor .vditor-reset kbd { display: inline; padding: 0; margin: 0; font: inherit; font-family: Courier, monospace; color: inherit; vertical-align: baseline; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
 #rich-editor .vditor-reset sup[data-type='footnotes-ref'] { color: var(--brand); }
@@ -98,22 +98,13 @@ body > .markmap-container, body > .markmap-container * { font-family: var(--rich
 #rich-editor .vditor-panel[data-block-type]:empty { display: none !important; }
 #rich-editor .vditor-panel .rich-navigation { width: auto; padding: 4px 8px; font-size: 13px; white-space: nowrap; }
 #rich-editor .vditor-panel:is([data-block-type='link-ref'],[data-block-type='footnotes-ref'],[data-block-type='footnotes-block']) { transform: translateY(calc(21px - 100% - 6px)); }
-#rich-editor .vditor-panel[data-block-type="table"] { padding: 4px; border: 1px solid var(--line); border-radius: 8px; opacity: 1; transform: translateY(calc(21px - 100% - 6px)); }
+#rich-editor .vditor-panel[data-block-type="table"] { padding: 4px; border: 1px solid var(--border); border-radius: 8px; opacity: 1; transform: translateY(calc(21px - 100% - 6px)); }
 #rich-editor .vditor-panel[data-block-type="table"] button { width: 28px; height: 28px; padding: 6px; }
 #rich-editor .vditor-panel[data-block-type="table"] button[data-type="insertRow"], #rich-editor .vditor-panel[data-block-type="table"] button[data-type="deleteRow"] { margin-left: 6px; }
-:root[data-theme='dark'] #rich-editor { --quote-text: #b5b1a7; --quote-bar: #4a4843; --render-code: #abb2bf; }
-:root[data-theme='dark'] #rich-editor .vditor-reset { color: #d6d1c6; }
-:root[data-theme='dark'] #rich-editor .vditor-reset mark { background: rgba(77,74,0,.88); }
 :root[data-theme='dark'] #rich-editor .vditor-reset blockquote:not(.callout) :not(.vditor-wysiwyg__preview *) { color: var(--quote-text); }
-:root[data-theme='dark'] #rich-editor .vditor-reset blockquote.callout { color: #d6d1c6; background: rgba(var(--alert-rgb), .1); }
-:root[data-theme='dark'] #rich-editor .vditor-reset .callout[data-subtype='NOTE'] { --alert-rgb: 68,147,248; }
-:root[data-theme='dark'] #rich-editor .vditor-reset .callout[data-subtype='TIP'] { --alert-rgb: 63,185,80; }
-:root[data-theme='dark'] #rich-editor .vditor-reset .callout[data-subtype='IMPORTANT'] { --alert-rgb: 171,125,248; }
-:root[data-theme='dark'] #rich-editor .vditor-reset .callout[data-subtype='WARNING'] { --alert-rgb: 210,153,34; }
-:root[data-theme='dark'] #rich-editor .vditor-reset .callout[data-subtype='CAUTION'] { --alert-rgb: 248,81,73; }
-:root[data-theme='dark'] #rich-editor .vditor-reset .callout-info[data-rich-title]::before { background: #d6d1c6; }
+:root[data-theme='dark'] #rich-editor .vditor-reset .callout-info[data-rich-title]::before { background: var(--render-text); }
 :root[data-theme='dark'] #rich-editor .vditor-reset :is(table,th,td) { background-color: var(--code); }
-:root[data-theme='dark'] #rich-editor .vditor-reset code[data-marker='`'] { border-color: var(--line); }
+:root[data-theme='dark'] #rich-editor .vditor-reset code[data-marker='`'] { border-color: var(--border); }
 :root[data-theme='dark'] #rich-editor .vditor-reset pre code { background-color: var(--code); }
-:root[data-theme='dark'] #rich-editor .vditor-reset .vditor-task input { color: #d6d1c6; }
+:root[data-theme='dark'] #rich-editor .vditor-reset .vditor-task input { color: var(--render-text); }
 #rich-editor [data-type='code-block'] { --text-font: var(--preview-font); --code-text-font: var(--code-font); }

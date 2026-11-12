@@ -29,6 +29,11 @@ export class ServerLibrary {
   private versions: Record<string, string> = {};
   private version = '';
   load() { return request('/library'); }
+  async importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> {
+    const response = await fetch(`${endpoint}/assets/${encodeURIComponent(id)}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: this.versions[id], upload }) });
+    if (!response.ok) throw new Error(response.status === 412 ? '笔记已发生变化，请重新打开后再添加附件' : '附件上传失败，原文件仍保留');
+    return response.json();
+  }
   accept(snapshot: ServerSnapshot) { this.versions = snapshot.versions; this.version = snapshot.version; }
   async commit(before: Library, next: Library, intent: string) {
     const added = next.notes.filter(note => !before.notes.some(old => old.id === note.id));

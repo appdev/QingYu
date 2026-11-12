@@ -1,76 +1,27 @@
-/**
- * Theme Configuration - Single Source of Truth
- *
- * All color definitions for light and dark themes.
- */
-
-// The warm paper palette the preview uses (theme-light.css and
-// theme-dark.css): paper behind the page, --diagram-bg behind a diagram,
-// sand for groups, warm hairlines, MiaoYan green for lines. Diagram text in
-// dark stays #E7E9EA (maintainer 2026-11-05).
-const THEME_COLORS = {
-  light: {
-    // Base Colors
-    background: '#FDFCF9',
-    textColor: '#262626',
-    textSecondary: '#6B6A64',
-    linkColor: '#1C5D33',
-    borderColor: '#E8E6DC',
-
-    // Code & Diagrams
-    codeBg: '#F5F4ED',
-    diagramBg: '#F5F4ED',
-    blockquoteBorderColor: '#DDD9CD',
-
-    // Mermaid Specific
-    primaryColor: '#FDFCF9',
-    primaryBorderColor: '#E8E6DC',
-    primaryTextColor: '#262626',
-    secondaryColor: '#EFEDE4',
-    tertiaryColor: '#FDFCF9',
-    lineColor: '#1C5D33',
-
-    // Diagram Elements
-    mainBkg: '#FDFCF9',
-    secondBkg: '#EFEDE4',
-    tertiaryTextColor: '#262626',
-    nodeBorder: '#E8E6DC',
-    clusterBkg: '#EFEDE4',
-    clusterBorder: '#E8E6DC',
-    edgeLabelBackground: '#F5F4ED'
-  },
-
-  dark: {
-    // Base Colors
-    background: '#1E1D1B',
-    textColor: '#E7E9EA',
-    textSecondary: '#B5B1A7',
-    linkColor: '#54C59F',
-    borderColor: '#3A3936',
-
-    // Code & Diagrams
-    codeBg: '#282724',
-    diagramBg: '#282724',
-    blockquoteBorderColor: '#4A4843',
-
-    // Mermaid Specific
-    primaryColor: '#2F2E2B',
-    primaryBorderColor: '#45433F',
-    primaryTextColor: '#E7E9EA',
-    secondaryColor: '#252421',
-    tertiaryColor: '#2F2E2B',
-    lineColor: '#54C59F',
-
-    // Diagram Elements
-    mainBkg: '#2F2E2B',
-    secondBkg: '#252421',
-    tertiaryTextColor: '#E7E9EA',
-    nodeBorder: '#45433F',
-    clusterBkg: '#252421',
-    clusterBorder: '#45433F',
-    edgeLabelBackground: '#2F2E2B'
-  }
-};
+// Palette values are shared with CSS and native UI through src/palette.json.
+const THEME_COLORS = Object.fromEntries(Object.entries(window.QingYuPalette).map(([mode, colors]) => [mode, {
+  background: colors.paper,
+  textColor: colors['diagram-text'],
+  textSecondary: colors['quote-text'],
+  linkColor: colors.brand,
+  borderColor: colors.border,
+  codeBg: colors.code,
+  diagramBg: colors.code,
+  blockquoteBorderColor: colors['quote-bar'],
+  primaryColor: colors['diagram-node'],
+  primaryBorderColor: colors['diagram-border'],
+  primaryTextColor: colors['diagram-text'],
+  secondaryColor: colors['diagram-group'],
+  tertiaryColor: colors['diagram-node'],
+  lineColor: colors.brand,
+  mainBkg: colors['diagram-node'],
+  secondBkg: colors['diagram-group'],
+  tertiaryTextColor: colors['diagram-text'],
+  nodeBorder: colors['diagram-border'],
+  clusterBkg: colors['diagram-group'],
+  clusterBorder: colors['diagram-border'],
+  edgeLabelBackground: mode === 'dark' ? colors['diagram-node'] : colors.code
+}]));
 
 /**
  * Get theme colors based on dark mode flag
@@ -78,16 +29,7 @@ const THEME_COLORS = {
  * @returns {object} Color palette for the theme
  */
 function getThemeColors(isDark = false) {
-  const base = isDark ? THEME_COLORS.dark : THEME_COLORS.light;
-  const palette = { ...base };
-
-  // Ensure fallbacks
-  palette.diagramBg = palette.diagramBg || palette.background;
-  palette.codeBg = palette.codeBg || palette.diagramBg;
-  palette.lineColor = palette.lineColor || (isDark ? '#54C59F' : '#1C5D33');
-  palette.blockquoteBorderColor = palette.blockquoteBorderColor || (isDark ? '#4A4843' : '#DDD9CD');
-
-  return palette;
+  return { ...THEME_COLORS[isDark ? 'dark' : 'light'] };
 }
 
 /**
@@ -101,7 +43,7 @@ function getMermaidConfig(isDark = false) {
   const diagramBg = themeColors.diagramBg;
   const nodeBackground = themeColors.primaryColor;
   const clusterBackground = themeColors.secondaryColor;
-  const borderColor = isDark ? '#E7E9EA' : '#262626';
+  const borderColor = themeColors.textColor;
   const textColor = themeColors.textColor;
   const lineColor = themeColors.lineColor;
   const accentColor = lineColor;
@@ -245,10 +187,8 @@ skinparam component {
  * @returns {string[]} Colours, index = node depth modulo length
  */
 function getMarkmapColors(isDark = false) {
-  const palette = getThemeColors(isDark);
-  return isDark
-    ? [palette.lineColor, '#8E6AD9', '#58D8AD', '#DAAE76', '#8E8B83']
-    : [palette.lineColor, '#5E3DB3', '#24837B', '#9A7400', '#7A7872'];
+  const colors = window.QingYuPalette[isDark ? 'dark' : 'light'];
+  return [colors.brand, colors.title, colors.link, colors.gold, colors.markup];
 }
 
 // Export for use in other modules

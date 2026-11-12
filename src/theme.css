@@ -1,16 +1,7 @@
+@qingyu-palette;
+
 :root {
   color-scheme: light dark;
-  --paper: #fdfcf9;
-  --ink: #363433;
-  --muted: #7a7872;
-  --editor-ink: #403e3c;
-  --title: #5e3db3;
-  --gold: #9a7400;
-  --link: #24837b;
-  --line: #e8e6dc;
-  --sand: #e8e6dc;
-  --brand: #1c5d33;
-  --code: #f5f4ed;
   --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   font-family: var(--font);
   font-size: 16px;
@@ -18,7 +9,6 @@
   color: var(--ink);
   -webkit-font-smoothing: subpixel-antialiased;
 }
-:root[data-theme='dark'] { --paper: #1e1d1b; --ink: #f2f0ea; --muted: #8e8b83; --editor-ink: #d5d4d6; --title: #8e6ad9; --gold: #daae76; --link: #58d8ad; --line: #3a3936; --sand: #ffffff14; --brand: #54c59f; --code: #282724; }
 
 * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 45%, transparent) transparent; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }

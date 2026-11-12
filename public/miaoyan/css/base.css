@@ -359,11 +359,11 @@ pre table.hljs-ln,
 .darkmode .hljs-built_in,
 .darkmode .hljs-class .hljs-title,
 .darkmode .hljs-title.class_ {
-  color: #ED716C;
+  color: var(--highlight-variable);
 }
 
 .darkmode .hljs-literal {
-  color: #56b6c2;
+  color: var(--highlight-builtin);
 }
 
 .darkmode .hljs-addition,

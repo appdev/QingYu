@@ -22,7 +22,7 @@ required-features = ["server"]
 
 [features]
 default = ["app"]
-app = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-calendar", "dep:reqwest", "dep:fontdb", "dep:tauri-plugin-global-shortcut", "dep:notify", "dep:tauri-plugin-single-instance", "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-quartz-core"]
+app = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-dialog", "dep:tauri-plugin-calendar", "dep:tauri-plugin-attachments", "dep:reqwest", "dep:fontdb", "dep:tauri-plugin-global-shortcut", "dep:notify", "dep:tauri-plugin-single-instance", "dep:objc2", "dep:block2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-quartz-core"]
 server = ["dep:axum", "dep:tokio", "dep:sha2", "dep:subtle", "dep:tower-http"]
 
 [build-dependencies]
@@ -31,6 +31,7 @@ tauri-build = { version = "2", features = [], optional = true }
 [dependencies]
 tauri = { version = "2", features = [], optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-attachments = { path = "plugins/attachments", optional = true }
 tauri-plugin-calendar = { path = "plugins/calendar", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"], optional = true }

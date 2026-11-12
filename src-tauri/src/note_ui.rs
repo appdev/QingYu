@@ -1,5 +1,47 @@
 use serde::Deserialize;
 
+#[cfg(any(target_os = "macos", test))]
+fn palette_color(dark: bool, role: &str) -> Result<[f64; 4], String> {
+    let palette: serde_json::Value =
+        serde_json::from_str(include_str!("../../src/palette.json")).map_err(|_| "颜色配置无效")?;
+    let hex = palette[if dark { "dark" } else { "light" }][role]
+        .as_str()
+        .and_then(|value| value.strip_prefix('#'))
+        .filter(|value| matches!(value.len(), 6 | 8))
+        .ok_or_else(|| format!("颜色配置无效：{role}"))?;
+    let value = u32::from_str_radix(hex, 16).map_err(|_| format!("颜色配置无效：{role}"))?;
+    let rgba = if hex.len() == 6 {
+        (value << 8) | 255
+    } else {
+        value
+    };
+    Ok([24, 16, 8, 0].map(|shift| f64::from((rgba >> shift) & 255) / 255.))
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::palette_color;
+
+    #[test]
+    fn native_colors_use_the_shared_palette_in_both_appearances() {
+        assert_eq!(
+            palette_color(false, "muted").unwrap(),
+            [107. / 255., 106. / 255., 100. / 255., 1.]
+        );
+        assert_eq!(
+            palette_color(true, "paper").unwrap(),
+            [30. / 255., 29. / 255., 27. / 255., 1.]
+        );
+        for dark in [false, true] {
+            for role in ["paper", "ink", "muted", "line"] {
+                assert!(palette_color(dark, role).is_ok());
+            }
+            assert_eq!(palette_color(dark, "line").unwrap()[3], 18. / 255.);
+        }
+        assert!(palette_color(false, "missing").is_err());
+    }
+}
+
 #[derive(Deserialize)]
 pub struct NoteInfo {
     words: usize,
@@ -275,18 +317,13 @@ mod mac {
         let parent = unsafe { &*pointer.cast::<NSView>() };
         close_info();
         let dark = window.theme().ok() == Some(tauri::Theme::Dark);
-        let color = |rgb: u32| {
-            NSColor::colorWithSRGBRed_green_blue_alpha(
-                f64::from((rgb >> 16) & 255) / 255.,
-                f64::from((rgb >> 8) & 255) / 255.,
-                f64::from(rgb & 255) / 255.,
-                1.,
-            )
+        let color = |[red, green, blue, alpha]: [f64; 4]| {
+            NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha)
         };
-        let paper = color(if dark { 0x1e1d1b } else { 0xfdfcf9 });
-        let muted = color(if dark { 0x8e8b83 } else { 0x7a7872 });
-        let ink = color(if dark { 0xf2f0ea } else { 0x363433 });
-        let line = color(if dark { 0x3a3936 } else { 0xe8e6dc });
+        let paper = color(palette_color(dark, "paper")?);
+        let muted = color(palette_color(dark, "muted")?);
+        let ink = color(palette_color(dark, "ink")?);
+        let line = color(palette_color(dark, "line")?);
         let rect =
             |x, y, width, height| NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
         let background = NSView::initWithFrame(NSView::alloc(mtm), rect(0., 0., 300., 210.));

@@ -2,34 +2,7 @@
  * Dark Theme Variables
  */
 
-.darkmode {
-  /* Base Colors */
-  --bg-color: #1E1D1B;
-  --text-color: #D6D1C6;
-  --text-secondary: #B5B1A7;
-  --link-color: #54C59F;
-  --border-color: #3A3936;
-  --quote-bar: #4A4843;
-  --code-bg: #282724;
-  --diagram-bg: #282724;
-  --media-pulse: #34332F;
-
-  /* Mermaid Diagram */
-  --mermaid-node-bg: #2F2E2B;
-  --mermaid-text-color: #E7E9EA;
-  --mermaid-border-color: #45433F;
-  --mermaid-line-color: #54C59F;
-  --mermaid-edge-label-bg: transparent;
-
-  /* Syntax Highlight - Dark */
-  --hljs-base: #ABB2BF;
-  --hljs-comment: #ABB2BF;
-  --hljs-keyword: #9B79F7;
-  --hljs-string: #8FFCCD;
-  --hljs-number: #F7CC8F;
-  --hljs-attribute: #F7CC8F;
-  --hljs-title: #99E0FC;
-}
+/* Color aliases in theme-light.css follow the shared palette in both appearances. */
 
 /* Dark Mode Base Styles */
 .darkmode html,
@@ -57,28 +30,28 @@
 }
 
 .darkmode .heti .markdown-alert-note {
-  --alert-color: #4493f8;
-  --alert-bg: rgba(68, 147, 248, 0.1);
+  --alert-color: rgb(var(--alert-note-rgb));
+  --alert-bg: rgba(var(--alert-note-rgb), var(--alert-opacity));
 }
 
 .darkmode .heti .markdown-alert-tip {
-  --alert-color: #3fb950;
-  --alert-bg: rgba(63, 185, 80, 0.1);
+  --alert-color: rgb(var(--alert-tip-rgb));
+  --alert-bg: rgba(var(--alert-tip-rgb), var(--alert-opacity));
 }
 
 .darkmode .heti .markdown-alert-important {
-  --alert-color: #ab7df8;
-  --alert-bg: rgba(171, 125, 248, 0.1);
+  --alert-color: rgb(var(--alert-important-rgb));
+  --alert-bg: rgba(var(--alert-important-rgb), var(--alert-opacity));
 }
 
 .darkmode .heti .markdown-alert-warning {
-  --alert-color: #d29922;
-  --alert-bg: rgba(210, 153, 34, 0.1);
+  --alert-color: rgb(var(--alert-warning-rgb));
+  --alert-bg: rgba(var(--alert-warning-rgb), var(--alert-opacity));
 }
 
 .darkmode .heti .markdown-alert-caution {
-  --alert-color: #f85149;
-  --alert-bg: rgba(248, 81, 73, 0.1);
+  --alert-color: rgb(var(--alert-caution-rgb));
+  --alert-bg: rgba(var(--alert-caution-rgb), var(--alert-opacity));
 }
 
 .darkmode .heti blockquote,
@@ -96,7 +69,7 @@
 }
 
 .darkmode input[type='checkbox'] {
-  border: 1px solid white;
+  border: 1px solid var(--switch-knob);
 }
 
 .darkmode img[loading="lazy"] {
@@ -105,17 +78,17 @@
 }
 
 .darkmode .heti mark {
-  background-color: rgba(77, 74, 0, 0.88);
+  background-color: var(--mark-background);
 }
 
 .darkmode .heti sup:target,
 .darkmode .heti sup a:target,
 .darkmode .heti .heti-fn li:target {
-  background-color: #3a6188;
+  background-color: var(--footnote-target);
 }
 
 .darkmode .heti u[title] {
-  border-block-end-color: rgba(255, 255, 255, 0.54);
+  border-block-end-color: var(--underline);
 }
 
 .darkmode .heti .heti-fn {
@@ -123,5 +96,5 @@
 }
 
 .darkmode .lightense-backdrop {
-  background-color: rgba(30, 29, 27, .95) !important;
+  background-color: var(--media-backdrop) !important;
 }

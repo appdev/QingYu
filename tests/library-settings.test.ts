@@ -9,6 +9,18 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, fn) => { ha
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 beforeEach(() => { handlers.clear(); vi.clearAllMocks(); document.body.innerHTML = '<div id="app-shell"></div>'; delete document.body.dataset.syncBusy; delete document.body.dataset.libraryBusy; });
 
+it('allows choosing another directory or quitting after startup access fails, without saving or syncing cached notes', async () => {
+  const book = { loadError: true, root: undefined, chooseRoot: vi.fn(), reload: vi.fn() };
+  const actions = { save: vi.fn(), sync: vi.fn(), refresh: vi.fn(), error: vi.fn() };
+  await setupFileLibrary(book as unknown as Notebook, actions);
+  await handlers.get('library-command')!({ payload: 'library-reload' });
+  expect(book.reload).toHaveBeenCalledOnce(); expect(invoke).toHaveBeenCalledWith('library_watch');
+  await handlers.get('settings-library-request')!({ payload: { id: 'recover', change: true } });
+  expect(book.chooseRoot).toHaveBeenCalledOnce(); expect(actions.save).not.toHaveBeenCalled();
+  await handlers.get('library-before-exit')!({ payload: null });
+  expect(invoke).toHaveBeenCalledWith('library_finish_exit'); expect(actions.sync).not.toHaveBeenCalled();
+});
+
 it('collects document-window saves before syncing and exiting, and cancels quit if any document refuses', async () => {
   const order: string[] = [];
   const actions = { save: vi.fn(async () => { order.push('local'); return true; }), prepareExit: vi.fn(async () => { order.push('documents'); }), cancelExit: vi.fn(async () => {}), sync: vi.fn(async () => { order.push('sync'); }), refresh: vi.fn(), error: vi.fn() };

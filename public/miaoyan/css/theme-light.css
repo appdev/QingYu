@@ -4,34 +4,33 @@
 
 :root {
   /* Brand Colors */
-  --primary-color: #1C5D33;
-  --primary-light: rgba(28, 93, 51, 0.12);
+  --primary-color: var(--brand);
+  --primary-light: color-mix(in srgb, var(--brand) 12%, transparent);
 
   /* Base Colors */
-  --bg-color: #FDFCF9;
-  --text-color: #262626;
-  --text-secondary: #6B6A64;
-  --link-color: #1C5D33;
-  --border-color: #E8E6DC;
-  --quote-bar: #DDD9CD;
-  --code-bg: #F5F4ED;
-  --diagram-bg: #F5F4ED;
-  --media-pulse: #E9E7DD;
+  --bg-color: var(--paper);
+  --text-color: var(--render-text);
+  --text-secondary: var(--quote-text);
+  --link-color: var(--brand);
+  --border-color: var(--border);
 
-  /* Syntax Highlight - Light */
-  --hljs-base: #24292e;
-  --hljs-comment: #6a737d;
-  --hljs-keyword: #d73a49;
-  --hljs-string: #032f62;
-  --hljs-number: #005cc5;
-  --hljs-attribute: #e36209;
-  --hljs-title: #6f42c1;
+  --code-bg: var(--code);
+  --diagram-bg: var(--code);
+
+  /* Renderer aliases resolve through the shared light/dark palette. */
+  --hljs-base: var(--highlight-base);
+  --hljs-comment: var(--highlight-comment);
+  --hljs-keyword: var(--highlight-keyword);
+  --hljs-string: var(--highlight-string);
+  --hljs-number: var(--highlight-number);
+  --hljs-attribute: var(--highlight-attribute);
+  --hljs-title: var(--highlight-title);
 
   /* Mermaid Diagram */
-  --mermaid-node-bg: #FDFCF9;
-  --mermaid-text-color: #262626;
-  --mermaid-border-color: var(--border-color);
-  --mermaid-line-color: var(--primary-color);
+  --mermaid-node-bg: var(--diagram-node);
+  --mermaid-text-color: var(--diagram-text);
+  --mermaid-border-color: var(--diagram-border);
+  --mermaid-line-color: var(--brand);
   --mermaid-edge-label-bg: transparent;
 
   /* Fonts */
@@ -49,5 +48,5 @@
 /* Lightense keeps the backdrop colour it was given at setup; after an
    in-place switch from dark the zoom would open on the dark paper. */
 .lightense-backdrop {
-  background-color: rgba(253, 252, 249, .8) !important;
+  background-color: var(--media-backdrop) !important;
 }

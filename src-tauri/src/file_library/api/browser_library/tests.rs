@@ -301,3 +301,31 @@ async fn attachment_paths_are_relative_to_notes_and_cannot_expose_metadata_or_sy
         );
     }
 }
+
+#[tokio::test]
+async fn attachment_upload_uses_note_version_and_preserves_named_binary_resources() {
+    let (dir, _state, app) = fixture();
+    let cookie = login(&app).await;
+    fs::write(dir.path().join("notes/test.md"), "# attachments").unwrap();
+    let snapshot = load(&app, &cookie).await;
+    let id = snapshot["notes"][0]["id"].as_str().unwrap();
+    let version = snapshot["versions"][id].as_str().unwrap();
+    let endpoint = format!("/api/web/assets/{id}");
+    let body = json!({"version":version,"upload":{"name":"说明.txt","bytes":[0,255,128]}});
+    assert_eq!(call(&app, "POST", &endpoint, "", body.clone()).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(call(&app, "POST", &endpoint, &cookie, json!({"version":"stale","upload":{"name":"a.pdf","bytes":[]}})).await.0, StatusCode::PRECONDITION_FAILED);
+    let (status, _, bytes) = call(&app, "POST", &endpoint, &cookie, body).await;
+    assert_eq!(status, StatusCode::OK, "{}",String::from_utf8_lossy(&bytes));
+    let receipt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(receipt["name"], "说明.txt"); assert_eq!(receipt["image"], false);
+    let path = receipt["path"].as_str().unwrap();
+    assert!(path.starts_with(".attachments/"));
+    let query: String = path.as_bytes().iter().map(|byte| format!("%{byte:02X}")).collect();
+    let (status, headers, bytes) = call(&app, "GET", &format!("{endpoint}?path={query}"), &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::OK); assert_eq!(bytes, [0,255,128]);
+    assert!(headers[header::CONTENT_DISPOSITION].to_str().unwrap().contains("filename*=UTF-8''"));
+    let after = load(&app, &cookie).await;
+    assert_eq!(after["notes"].as_array().unwrap().len(), 1); // A .txt attachment must not become another note.
+    let large = json!({"version":version,"upload":{"name":"large.bin","bytes":vec![255u8; MAX_BODY / 4 + 1]}});
+    assert_eq!(call(&app, "POST", &endpoint, &cookie, large).await.0, StatusCode::OK);
+}

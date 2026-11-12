@@ -1,4 +1,5 @@
 import '../prototypes/web-login/login.css';
+import './preferences';
 
 const form = document.querySelector<HTMLFormElement>('#login-form')!;
 const password = document.querySelector<HTMLInputElement>('#password')!;

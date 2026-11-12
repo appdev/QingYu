@@ -18,6 +18,7 @@ const JOURNAL: &str = ".miaoyan/transaction.json";
 pub(crate) mod folders;
 pub(crate) mod external;
 pub(crate) mod assets;
+pub(crate) mod attachments;
 #[cfg(feature = "app")]
 pub(crate) mod workspace;
 #[cfg(feature = "server")]
@@ -1542,9 +1543,52 @@ pub async fn library_open(
             app.path().app_data_dir().map_err(error)?.join("notes")
         }
     };
+    let opened = open_accessible_library(root, seed).await?;
     let mut lock = state.0.lock().map_err(error)?;
-    *lock = Some(DiskLibrary::open(root, seed)?);
+    *lock = Some(opened);
     Ok(lock.as_ref().unwrap().snapshot())
+}
+
+// Probe before taking the library lock or touching its index: OS permission
+// prompts can leave directory opens waiting indefinitely.
+#[cfg(any(feature = "app", test))]
+fn check_directory_access(
+    root: PathBuf,
+    timeout: std::time::Duration,
+    probe: impl FnOnce(&Path) -> io::Result<()> + Send + 'static,
+) -> Result<()> {
+    let (send, receive) = std::sync::mpsc::channel();
+    let path = root.clone();
+    std::thread::Builder::new().name("library-access".into()).spawn(move || {
+        let _ = send.send(probe(&path));
+    }).map_err(error)?;
+    match receive.recv_timeout(timeout) {
+        Ok(result) => result.map_err(|reason| format!("无法读取笔记目录 {}：{reason}。请检查目录访问权限，或在设置中更改笔记位置。", root.display())),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!("读取笔记目录超时：{}。请检查系统的文件夹访问提示，完成后使用“文件 → 重新读取笔记文件夹”，或在设置中更改笔记位置。原笔记未被覆盖。", root.display())),
+        Err(reason) => Err(error(reason)),
+    }
+}
+
+#[cfg(any(feature = "app", test))]
+fn read_library_directory(root: &Path) -> io::Result<()> {
+    let mut path = root;
+    loop {
+        match fs::read_dir(path) {
+            Ok(_) => return Ok(()),
+            Err(reason) if reason.kind() == io::ErrorKind::NotFound => {
+                path = path.parent().ok_or(reason)?;
+            }
+            Err(reason) => return Err(reason),
+        }
+    }
+}
+
+#[cfg(feature = "app")]
+async fn open_accessible_library(root: PathBuf, seed: Option<Library>) -> Result<DiskLibrary> {
+    tauri::async_runtime::spawn_blocking(move || {
+        check_directory_access(root.clone(), std::time::Duration::from_secs(10), read_library_directory)?;
+        DiskLibrary::open(root, seed)
+    }).await.map_err(error)?
 }
 #[cfg(feature = "app")]
 #[tauri::command]
@@ -1630,10 +1674,10 @@ pub async fn library_choose(
         })
         .await
         .map_err(error)?;
-        let mut lock = state.0.lock().map_err(error)?;
         if let Some(path) = chosen {
             let path = path.into_path().map_err(error)?;
-            let opened = DiskLibrary::open(path, None)?;
+            let opened = open_accessible_library(path, None).await?;
+            let mut lock = state.0.lock().map_err(error)?;
             let config = app.path().app_config_dir().map_err(error)?;
             fs::create_dir_all(&config).map_err(error)?;
             let path = config.join("library-location.json");
@@ -1644,6 +1688,7 @@ pub async fn library_choose(
             )?;
             *lock = Some(opened);
         }
+        let lock = state.0.lock().map_err(error)?;
         Ok(lock.as_ref().ok_or("尚未打开本地笔记库")?.snapshot())
     }
     #[cfg(mobile)]

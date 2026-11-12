@@ -18,7 +18,7 @@ export async function setupFileLibrary(book: Notebook, actions: { save(): Promis
       else if (payload === 'library-reload') await book.reload();
       else return;
       await actions.refresh();
-      if (payload === 'library-choose') await invoke('library_watch');
+      if (payload === 'library-choose' || payload === 'library-reload') await invoke('library_watch');
     } finally {
       changing = false; document.body.dataset.libraryBusy = 'false';
       if (shell) shell.inert = document.body.dataset.syncBusy === 'true';

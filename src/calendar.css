@@ -1,11 +1,11 @@
-#calendar-dialog { background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: 13px; padding: 24px; width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; box-shadow: 0 12px 40px #0004; }
-#calendar-dialog::backdrop { background: #0005; }
+#calendar-dialog { background: var(--paper); color: var(--ink); border: 1px solid var(--border); border-radius: 13px; padding: 24px; width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; box-shadow: 0 12px 40px var(--shadow-modal); }
+#calendar-dialog::backdrop { background: var(--overlay); }
 #calendar-dialog h2 { margin: 0 0 18px; font-size: 18px; }
 #calendar-dialog label { display: block; font-size: 13px; margin: 12px 0 7px; }
-#calendar-dialog input, #calendar-dialog select, #calendar-dialog textarea { display: block; width: 100%; min-width: 0; min-height: 36px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); font: inherit; box-sizing: border-box; }
+#calendar-dialog input, #calendar-dialog select, #calendar-dialog textarea { display: block; width: 100%; min-width: 0; min-height: 36px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--paper); color: var(--ink); font: inherit; box-sizing: border-box; }
 #calendar-dialog textarea { resize: vertical; }
 #calendar-dialog .calendar-help { color: var(--muted); font-size: 12px; line-height: 1.6; }
 #event-feedback { min-height: 20px; font-size: 13px; overflow-wrap: anywhere; }
-#event-feedback[data-error='true'] { color: #c94f4f; }
-#event-cancel { padding: 7px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--sand); cursor: pointer; }
+#event-feedback[data-error='true'] { color: var(--error); }
+#event-cancel { padding: 7px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--sand); cursor: pointer; }
 #calendar-dialog :disabled { opacity: .6; }

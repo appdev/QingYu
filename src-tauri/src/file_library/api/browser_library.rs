@@ -5,7 +5,7 @@ pub(super) fn router(state: Arc<Service>) -> Router<Arc<Service>> {
     Router::new()
         .route("/web/library", get(snapshot))
         .route("/web/commands", axum::routing::post(change))
-        .route("/web/assets/{id}", get(asset))
+        .route("/web/assets/{id}", get(asset).post(upload).layer(DefaultBodyLimit::max(assets::MAX_FILE * 4 + 65536)))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .route_layer(middleware::from_fn_with_state(state, browser_only))
 }
@@ -295,60 +295,11 @@ async fn asset(
     Query(query): Query<AssetQuery>,
 ) -> ApiResult<Response> {
     with_store(state, move |store| {
-        let note = store
-            .data
-            .notes
-            .iter()
-            .find(|n| n.id == id)
-            .ok_or_else(ApiError::not_found)?;
-        if query.path.len() > 4096
-            || query.path.contains(['\\', ':', '\0'])
-            || Path::new(&query.path).is_absolute()
-        {
-            return Err(ApiError::not_found());
-        }
-        let mut pieces: Vec<String> = Path::new(&note.path)
-            .parent()
-            .unwrap_or(Path::new(""))
-            .components()
-            .map(|p| p.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        for part in query.path.split('/') {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    if pieces.pop().is_none() {
-                        return Err(ApiError::not_found());
-                    }
-                }
-                value => pieces.push(value.into()),
-            }
-        }
-        let path = pieces.join("/");
-        if !assets::valid_path(&path) || pieces.iter().any(|part| part.starts_with('.')) {
-            return Err(ApiError::not_found());
-        }
-        let path = checked(&store.root, &path).map_err(|_| ApiError::not_found())?;
-        let meta = fs::metadata(&path).map_err(|_| ApiError::not_found())?;
-        if !meta.is_file() || meta.len() > 64 * 1024 * 1024 {
-            return Err(ApiError::not_found());
-        }
-        let content = fs::read(&path).map_err(|_| ApiError::not_found())?;
-        let mime = match path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "png" => "image/png",
-            "jpg" | "jpeg" => "image/jpeg",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            "avif" => "image/avif",
-            "svg" => "image/svg+xml",
-            _ => "application/octet-stream",
-        };
+        let path = attachments::resolve(store, &id, &query.path).map_err(|_| ApiError::not_found())?;
+        let content = attachments::read(&path).map_err(|_| ApiError::not_found())?;
+        let mime = attachments::mime(&path);
+        let filename: String = path.file_name().unwrap_or_default().to_string_lossy().as_bytes().iter().map(|byte| if byte.is_ascii_alphanumeric() || b"-_.".contains(byte) { (*byte as char).to_string() } else { format!("%{byte:02X}") }).collect();
+        let disposition = format!("{}; filename*=UTF-8''{filename}", if mime.starts_with("image/") || ["application/pdf", "text/plain"].contains(&mime) { "inline" } else { "attachment" });
         Ok((
             [
                 (header::CONTENT_TYPE, mime),
@@ -359,11 +310,7 @@ async fn asset(
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
                 (
                     header::CONTENT_DISPOSITION,
-                    if mime.starts_with("image/") {
-                        "inline"
-                    } else {
-                        "attachment"
-                    },
+                    disposition.as_str(),
                 ),
             ],
             content,
@@ -371,6 +318,15 @@ async fn asset(
             .into_response())
     })
     .await
+}
+
+#[derive(Deserialize)]
+struct AttachmentUpload { version: String, upload: attachments::Upload }
+async fn upload(State(state): State<Arc<Service>>, RoutePath(id): RoutePath<String>, Json(request): Json<AttachmentUpload>) -> ApiResult<Json<attachments::ImportedAttachment>> {
+    with_store(state, move |store| {
+        versioned_note(store, &id, &request.version)?;
+        attachments::import(store, &id, request.upload).map(Json).map_err(|_| ApiError::bad_request("Invalid attachment name or file exceeds 64 MiB"))
+    }).await
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
  */
 
 const ThemeConfig = {
-  // Use theme-config.js as single source of truth
+  // theme-config.js maps the shared palette to renderer roles.
   getThemeColors(isDark = false) {
     return window.ThemeColors.getThemeColors(isDark);
   },
@@ -26,7 +26,7 @@ const ThemeConfig = {
       textColor: themeColors.textColor,
       nodeBackground: themeColors.primaryColor,
       clusterBackground: themeColors.secondaryColor,
-      borderColor: isDark ? '#E7E9EA' : '#262626',
+      borderColor: themeColors.textColor,
       lineColor: themeColors.lineColor
     });
 
@@ -48,7 +48,7 @@ const ThemeConfig = {
     const textColor = overrides.textColor ?? themeColors.textColor;
     const nodeBackground = overrides.nodeBackground ?? themeColors.primaryColor;
     const clusterBackground = overrides.clusterBackground ?? themeColors.secondaryColor;
-    const borderColor = overrides.borderColor ?? (isDark ? '#E7E9EA' : '#262626');
+    const borderColor = overrides.borderColor ?? (themeColors.textColor);
     const lineColor = overrides.lineColor ?? themeColors.lineColor;
     const edgeLabelBackground = overrides.edgeLabelBg ?? nodeBackground;
 

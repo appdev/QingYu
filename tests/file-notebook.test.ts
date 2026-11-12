@@ -18,6 +18,17 @@ beforeEach(() => {
 function fixture() { const storage = { getItem: () => null, setItem: vi.fn() }; return { storage, book: new Notebook(storage, '# 旧草稿') }; }
 
 describe('file-backed Notebook contract', () => {
+  it('preserves notes and blocks saves after an inaccessible startup, then retries the disk on reload', async () => {
+    const { book, storage } = fixture(), before = structuredClone(book.data);
+    vi.mocked(invoke).mockRejectedValueOnce('读取笔记目录超时');
+    await expect(book.openFiles()).rejects.toBe('读取笔记目录超时');
+    expect(book.loadError).toBe(true); expect(book.data).toEqual(before); expect(book.root).toBeUndefined();
+    await expect(book.save('不能覆盖')).rejects.toThrow('笔记库读取失败');
+    expect(storage.setItem).not.toHaveBeenCalled();
+    await book.reload();
+    expect(invoke).toHaveBeenLastCalledWith('library_open', { seed: null });
+    expect(book.loadError).toBe(false); expect(book.current.id).toBe('disk');
+  });
   it('uses disk source on open and never writes the localStorage backup after migration', async () => {
     const { book, storage } = fixture(); await book.openFiles();
     expect(book.current.source).toBe('# 来自真实文件\r\n');
