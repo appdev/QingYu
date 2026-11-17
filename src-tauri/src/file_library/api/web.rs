@@ -255,7 +255,7 @@ pub(super) async fn gate(
         );
     let endpoint = matches!(
         path,
-        "/auth/login" | "/auth/logout" | "/auth/session" | "/api"
+        "/auth/login" | "/auth/logout" | "/auth/session" | "/api" | "/mcp"
     ) || path.starts_with("/api/");
     let mut response =
         if public || endpoint || state.web.as_ref().unwrap().authenticated(request.headers()) {

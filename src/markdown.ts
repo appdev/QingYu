@@ -1,10 +1,12 @@
-// Historical markdown-it baseline for compatibility comparisons; runtime preview is in preview.ts.
+// HTML rendering for note pictures and template examples. The editor uses Markra.
 import MarkdownIt from 'markdown-it';
 import footnote from 'markdown-it-footnote';
 import taskLists from 'markdown-it-task-lists';
+import { parseMarkdownCalloutMarker } from '@markra/shared';
 import alertIcons from './alert-icons.json';
 import { emphasisLanguage } from './emphasis';
 import { markdownBody } from './document-text';
+import { markdownImageSizeSuffix } from './vendor/markra/editor/codemirror/syntax';
 export { markdownBody } from './document-text';
 
 const md = new MarkdownIt({ html: true, breaks: false, linkify: false, typographer: false })
@@ -78,7 +80,7 @@ md.core.ruler.after('source-positions', 'github-alerts', (state) => {
     const open = tokens[index];
     const inline = tokens[index + 2];
     if (open.type !== 'blockquote_open' || tokens[index + 1]?.type !== 'paragraph_open' || inline?.type !== 'inline') continue;
-    const marker = inline.content.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:\n|$)/i);
+    const marker = parseMarkdownCalloutMarker(inline.content);
     if (!marker) continue;
     let depth = 1;
     let close = index + 1;
@@ -88,18 +90,43 @@ md.core.ruler.after('source-positions', 'github-alerts', (state) => {
       if (tokens[close].type !== 'blockquote_close') continue;
     }
     if (close === tokens.length) continue;
-    const kind = marker[1].toUpperCase() as keyof typeof alertIcons;
+    const headerEnd = inline.content.indexOf('\n');
+    const header = headerEnd < 0 ? inline.content : inline.content.slice(0, headerEnd);
+    const caption = header.trimStart().slice(marker.source.length).trim() || marker.label;
+    const icon = marker.tone === 'quote' ? '<path d="M0 3h6v7l-2 3H1l2-3H0zm10 0h6v7l-2 3h-3l2-3h-3z"/>' :
+      `<path d="${alertIcons[marker.tone.toUpperCase() as keyof typeof alertIcons]}"/>`;
     open.tag = tokens[close].tag = 'div';
-    open.attrJoin('class', `markdown-alert markdown-alert-${kind.toLowerCase()}`);
-    inline.content = inline.content.slice(marker[0].length);
+    open.attrJoin('class', `markdown-alert markdown-alert-${marker.tone}`);
+    inline.content = headerEnd === -1 ? '' : inline.content.slice(headerEnd + 1);
     inline.children = [];
     md.inline.parse(inline.content, md, state.env, inline.children);
     const title = new state.Token('html_block', '', 0);
-    title.content = `<p class="markdown-alert-title"><svg class="markdown-alert-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="${alertIcons[kind]}"/></svg>${kind[0] + kind.slice(1).toLowerCase()}</p>\n`;
+    title.content = `<p class="markdown-alert-title"><svg class="markdown-alert-icon" viewBox="0 0 16 16" aria-hidden="true">${icon}</svg>${md.utils.escapeHtml(caption)}</p>\n`;
     if (!inline.content) tokens.splice(index + 1, 3, title);
     else tokens.splice(index + 1, 0, title);
   }
 });
+
+md.core.ruler.after('github-alerts', 'standalone-images', ({ tokens }) => {
+  const lineBoundary = (type?: string) => !type || type === 'softbreak' || type === 'hardbreak';
+  for (const [index, token] of tokens.entries()) {
+    if (token.type !== 'inline' || tokens[index - 1]?.type !== 'paragraph_open') continue;
+    token.children?.forEach((child, offset, siblings) => {
+      if (child.type === 'image' && lineBoundary(siblings[offset - 1]?.type) && lineBoundary(siblings[offset + 1]?.type)) {
+        child.attrSet('data-standalone-image', '');
+      }
+    });
+  }
+});
+
+const renderImage = md.renderer.rules.image!;
+md.renderer.rules.image = (tokens, index, options, env, renderer) => {
+  const token = tokens[index];
+  if (token.attrGet('data-standalone-image') === null) return renderImage(tokens, index, options, env, renderer);
+  const alt = renderer.renderInlineAsText(token.children ?? [], options, env);
+  token.attrSet('alt', markdownImageSizeSuffix.test(token.content) ? alt.replace(markdownImageSizeSuffix, '') : alt);
+  return renderer.renderToken(tokens, index, options);
+};
 
 export function renderMarkdown(source: string): { html: string; offset: number } {
   const { body, offset } = markdownBody(source);

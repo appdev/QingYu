@@ -44,23 +44,64 @@ it('includes descendants when selecting a parent and collapses a selected descen
   expect(row('parent').getAttribute('aria-pressed')).toBe('true'); expect(book.current.id).toBe('nested');
 });
 
+it('keeps a folder’s date grouping separate from All Notes and its subfolders', async () => {
+  const { row, arrow } = fixture();
+  const button = (selector: string) => document.querySelector<HTMLButtonElement>(selector)!;
+  const headings = () => [...document.querySelectorAll('#notes-list h3')].map(item => item.textContent);
+  const select = async (id: string) => {
+    row(id).click();
+    await vi.waitFor(() => expect(row(id).getAttribute('aria-pressed')).toBe('true'));
+  };
+  await select('parent');
+  expect(headings()).toEqual(['今天']);
+  button('#list-more-button').click();
+  button('[role=menuitem][aria-label="按日期分组"]').click();
+  button('[role=menuitemradio][aria-label="关闭"]').click();
+  await vi.waitFor(() => expect(headings()).toEqual([]));
+
+  await select('');
+  expect(headings()).toEqual(['今天']);
+  arrow('parent').click();
+  await vi.waitFor(() => expect(row('child')).not.toBeNull());
+  await select('child');
+  expect(headings()).toEqual(['今天']);
+  await select('parent');
+  expect(headings()).toEqual([]);
+});
+
 it('creates under the right-clicked parent without changing selection or forcing a collapsed parent open', async () => {
   const { book, row, arrow, sidebar, error } = fixture();
   arrow('parent').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-  await vi.waitFor(() => expect(document.querySelector('[aria-label="新建子文件夹"]')).not.toBeNull());
-  document.querySelector<HTMLButtonElement>('[aria-label="新建子文件夹"]')!.click();
+  await vi.waitFor(() => expect(document.querySelector('[role=menuitem][aria-label="新建文件夹"]')).not.toBeNull());
+  document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="新建文件夹"]')!.click();
   await vi.waitFor(() => expect(document.querySelector<HTMLDialogElement>('#folder-dialog')!.open).toBe(true));
   document.querySelector<HTMLInputElement>('#folder-name')!.value = '新增';
   document.querySelector('#folder-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   await vi.waitFor(() => expect(document.querySelector<HTMLDialogElement>('#folder-dialog')!.open).toBe(false));
   const child = book.data.folders.find(folder => folder.path === '父目录/新增')!;
-  expect(child).toBeDefined(); expect(row('parent').getAttribute('aria-pressed')).toBe('true'); expect(row(child.id)).toBeNull();
+  expect(child).toBeDefined(); expect(row('parent').getAttribute('aria-pressed')).toBe('false'); expect(row(child.id)).toBeNull();
   arrow('parent').click(); await vi.waitFor(() => expect(row(child.id)).not.toBeNull());
   await book.folderAction('rename', 'parent', '改名'); sidebar.refresh();
   expect(row(child.id)).not.toBeNull(); expect(row('parent').getAttribute('aria-expanded')).toBe('true');
   const second = createSidebar(() => book, { async select() { return true; }, async create() { return true; }, async save() { return true; }, reload() {}, error });
   second.refresh(); expect(row(child.id)).not.toBeNull();
   expect(error).not.toHaveBeenCalled();
+});
+
+it('moves only among siblings, keeps children attached and restores the chosen order on reload', async () => {
+  const { book, row, arrow } = fixture();
+  const order = () => [...document.querySelectorAll<HTMLElement>('.folder-entry .folder-row')].map(row => row.dataset.folderId);
+  const [first, second] = order();
+  arrow('parent').click(); await vi.waitFor(() => expect(row('child')).not.toBeNull());
+  row(second!).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[aria-label="下移"]')?.disabled).toBe(true));
+  document.querySelector<HTMLButtonElement>('[aria-label="上移"]')!.click();
+  await vi.waitFor(() => expect(order().filter(id => id !== 'child')).toEqual([second, first]));
+  expect(order()[order().indexOf('parent') + 1]).toBe('child');
+  expect(book.data.folders.find(folder => folder.id === 'child')!.path).toBe('父目录/子目录');
+  document.body.innerHTML = readFileSync('index.html', 'utf8').match(/<body[^>]*>([\s\S]*)<\/body>/)![1];
+  createSidebar(() => book, { async select() { return true; }, async create() { return true; }, async save() { return true; }, reload() {}, error: vi.fn() });
+  expect(order().filter(id => id !== 'child')).toEqual([second, first]);
 });
 
 it('uses outline arrow keys and commits an inline rename before collapsing its branch', async () => {

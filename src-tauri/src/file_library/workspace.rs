@@ -1,4 +1,4 @@
-//! Temporary, metadata-free sibling view. Never replaces the configured library.
+//! Editor windows and their save-before-close lifecycle.
 use super::*;
 use tauri::Emitter;
 use std::sync::{atomic::{AtomicBool, Ordering}, mpsc};
@@ -8,6 +8,12 @@ struct Document {
     pending: Vec<PathBuf>,
     #[cfg(desktop)]
     _watch: external::Watch,
+}
+
+#[derive(Clone)]
+struct NoteWindow {
+    root: PathBuf,
+    initial_note: String,
 }
 
 struct ExitRound {
@@ -33,8 +39,9 @@ impl ExitRound {
 #[derive(Default)]
 pub struct Workspace {
     documents: Mutex<HashMap<String, Document>>,
+    notes: Mutex<HashMap<String, NoteWindow>>,
     requests: Mutex<Vec<PathBuf>>,
-    opening: Mutex<()>,
+    pub(super) opening: Mutex<()>,
     quitting: AtomicBool,
     exit: Mutex<Option<ExitRound>>,
 }
@@ -43,6 +50,38 @@ pub(super) fn with_document<T>(app: &tauri::AppHandle, label: &str, run: impl Fn
     let state = app.state::<Workspace>();
     let documents = state.documents.lock().map_err(error)?;
     run(&documents.get(label).ok_or("文档窗口不存在")?.store)
+}
+
+impl Workspace {
+    fn labels(&self) -> Result<HashSet<String>> {
+        let mut labels: HashSet<_> = self.documents.lock().map_err(error)?.keys().cloned().collect();
+        labels.extend(self.notes.lock().map_err(error)?.keys().cloned());
+        Ok(labels)
+    }
+
+    pub(super) fn has_note_windows(&self) -> Result<bool> {
+        Ok(!self.notes.lock().map_err(error)?.is_empty())
+    }
+}
+
+pub(super) fn check_library_window(app: &tauri::AppHandle, label: &str, root: &Path) -> Result<bool> {
+    if label == "main" { return Ok(false); }
+    let state = app.state::<Workspace>();
+    let notes = state.notes.lock().map_err(error)?;
+    let window = notes.get(label).ok_or("请在笔记库窗口中操作")?;
+    if window.root != root { return Err("笔记库位置已更改，当前窗口无法访问新目录".into()); }
+    Ok(true)
+}
+
+pub(super) fn library_changed(app: &tauri::AppHandle, root: &str, origin: Option<&str>) {
+    let state = app.state::<Workspace>();
+    let labels: Vec<_> = state.notes.lock().map(|notes| notes.iter()
+        .filter(|(_, window)| window.root == Path::new(root))
+        .map(|(label, _)| label.clone()).collect()).unwrap_or_default();
+    if labels.is_empty() && origin.is_some() { return; }
+    for label in std::iter::once("main").chain(labels.iter().map(String::as_str)) {
+        if Some(label) != origin { let _ = app.emit_to(label, "library-files-changed", root); }
+    }
 }
 
 #[cfg(desktop)]
@@ -63,16 +102,18 @@ pub fn show_library(app: &tauri::AppHandle) -> Result<()> {
 }
 
 pub fn has_documents(app: &tauri::AppHandle) -> bool {
-    app.state::<Workspace>().documents.lock().is_ok_and(|docs| !docs.is_empty())
+    app.state::<Workspace>().labels().is_ok_and(|labels| !labels.is_empty())
 }
 
 pub fn is_document(app: &tauri::AppHandle, label: &str) -> bool {
-    app.state::<Workspace>().documents.lock().is_ok_and(|docs| docs.contains_key(label))
+    let state = app.state::<Workspace>();
+    state.documents.lock().is_ok_and(|docs| docs.contains_key(label)) || state.notes.lock().is_ok_and(|notes| notes.contains_key(label))
 }
 
 pub fn destroyed(app: &tauri::AppHandle, label: &str) {
     let state = app.state::<Workspace>();
     if let Ok(mut docs) = state.documents.lock() { docs.remove(label); }
+    if let Ok(mut notes) = state.notes.lock() { notes.remove(label); }
     if let Ok(mut round) = state.exit.lock() {
         if let Some(round) = round.as_mut() { let id = round.id.clone(); round.reply(&id, label, false); }
     };
@@ -114,8 +155,8 @@ fn cancel_exit(app: &tauri::AppHandle) {
     let state = app.state::<Workspace>();
     if let Ok(mut round) = state.exit.lock() { *round = None; }
     state.quitting.store(false, Ordering::Release);
-    if let Ok(docs) = state.documents.lock() {
-        for label in docs.keys() { let _ = app.emit_to(label, "workspace-exit-cancelled", ()); }
+    if let Ok(labels) = state.labels() {
+        for label in labels { let _ = app.emit_to(&label, "workspace-exit-cancelled", ()); }
     };
 }
 
@@ -132,7 +173,7 @@ pub fn workspace_exit_reply(state: State<'_, Workspace>, window: tauri::WebviewW
 
 #[tauri::command]
 pub fn workspace_ready(state: State<'_, Workspace>, window: tauri::WebviewWindow) -> Result<Option<String>> {
-    if !state.documents.lock().map_err(error)?.contains_key(window.label()) { return Err("文档窗口不存在".into()); }
+    if !is_document(window.app_handle(), window.label()) { return Err("文档窗口不存在".into()); }
     Ok(state.exit.lock().map_err(error)?.as_ref().filter(|round| round.pending.contains(window.label())).map(|round| round.id.clone()))
 }
 
@@ -144,7 +185,7 @@ pub async fn workspace_prepare_exit(app: tauri::AppHandle, window: tauri::Webvie
         let (receive, labels, request) = {
             let _creation = state.opening.lock().map_err(error)?;
             if state.quitting.swap(true, Ordering::AcqRel) { return Err("应用已经在退出".into()); }
-            let labels: HashSet<String> = state.documents.lock().map_err(error)?.keys().cloned().collect();
+            let labels = state.labels()?;
             if labels.is_empty() { return Ok(()); }
             let (send, receive) = mpsc::channel(); let request = id();
             *state.exit.lock().map_err(error)? = Some(ExitRound { id: request.clone(), pending: labels.clone(), result: Some(send) });
@@ -234,6 +275,69 @@ fn focus(app: &tauri::AppHandle, label: &str) -> Result<()> {
 }
 
 #[tauri::command]
+pub async fn workspace_open_note(app: tauri::AppHandle, window: tauri::WebviewWindow, note_id: String) -> Result<()> {
+    if window.label() != "main" { return Err("请在笔记库中打开独立窗口".into()); }
+    #[cfg(mobile)]
+    { let _ = (app, note_id); Err("独立笔记窗口仅在桌面端可用".into()) }
+    #[cfg(desktop)]
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Workspace>();
+        let _creation = state.opening.lock().map_err(error)?;
+        if state.quitting.load(Ordering::Acquire) { return Err("应用正在退出，暂不能打开文件".into()); }
+        let (root, title) = {
+            let library = app.state::<FileLibrary>();
+            let store = library.0.lock().map_err(error)?;
+            let store = store.as_ref().ok_or("请先打开本地笔记库")?;
+            let note = store.data.notes.iter().find(|note| note.id == note_id && !note.trashed).ok_or("笔记不存在")?;
+            (store.root.clone(), display_title(&note.path))
+        };
+        let mut notes = state.notes.lock().map_err(error)?;
+        if let Some((label, _)) = notes.iter().find(|(_, note)| note.root == root && note.initial_note == note_id) {
+            let label = label.clone();
+            drop(notes);
+            return focus(&app, &label);
+        }
+        let label = format!("document-note-{}", id());
+        notes.insert(label.clone(), NoteWindow { root, initial_note: note_id });
+        drop(notes);
+        let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
+            .title(title).inner_size(720., 620.).min_inner_size(480., 360.);
+        #[cfg(target_os = "macos")]
+        let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(18., 30.));
+        if let Err(reason) = builder.build() {
+            state.notes.lock().map_err(error)?.remove(&label);
+            return Err(error(reason));
+        }
+        focus(&app, &label)
+    }).await.map_err(error)?
+}
+
+fn note_snapshot(store: &DiskLibrary, note_id: &str) -> Result<Snapshot> {
+    if !store.data.notes.iter().any(|note| note.id == note_id) { return Err("笔记不存在".into()); }
+    let mut snapshot = store.snapshot();
+    snapshot.library.active_id = note_id.into();
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn workspace_note_snapshot(app: tauri::AppHandle, window: tauri::WebviewWindow, note_id: Option<String>) -> Result<Snapshot> {
+    let workspace = app.state::<Workspace>();
+    let scope = workspace.notes.lock().map_err(error)?.get(window.label()).cloned().ok_or("独立笔记窗口不存在")?;
+    let library = app.state::<FileLibrary>();
+    let library = library.0.lock().map_err(error)?;
+    let store = library.as_ref().ok_or("请先打开本地笔记库")?;
+    if scope.root != store.root { return Err("笔记库位置已更改，当前窗口无法访问新目录".into()); }
+    let note_id = note_id.as_deref().unwrap_or(&scope.initial_note);
+    let snapshot = note_snapshot(store, note_id)?;
+    drop(library);
+    if let Some(note) = snapshot.library.notes.iter().find(|note| note.id == note_id) {
+        let _ = window.set_title(&display_title(&note.path));
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow, path: Option<String>) -> Result<Option<String>> {
     authorize_editor(&window)?;
     #[cfg(mobile)]
@@ -286,7 +390,7 @@ pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow,
             }
         }
         #[cfg(target_os = "macos")]
-        let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true).traffic_light_position(tauri::LogicalPosition::new(16., 20.));
+        let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true).traffic_light_position(tauri::LogicalPosition::new(18., 30.));
         if let Err(reason) = builder.build() { state.documents.lock().map_err(error)?.remove(&label); return Err(error(reason)); }
         focus(&app, &label)?;
         Ok(Some(label))
@@ -456,6 +560,22 @@ mod tests {
         let mut round = ExitRound { id: "quit-2".into(), pending: HashSet::from(["document-a".into()]), result: Some(send) };
         round.reply("quit-2", "document-a", false); assert!(receive.recv().unwrap().is_err());
         assert!(round.pending.contains("document-a"));
+    }
+
+    #[test]
+    fn a_library_note_snapshot_selects_only_in_its_own_window() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("a.md"), "first note").unwrap();
+        fs::write(directory.path().join("b.md"), "second note").unwrap();
+        let store = DiskLibrary::open(directory.path().into(), None).unwrap();
+        let active = &store.data.active_id;
+        let other = store.data.notes.iter().find(|note| note.id != *active).unwrap();
+        let snapshot = note_snapshot(&store, &other.id).unwrap();
+        assert_eq!(snapshot.library.active_id, other.id);
+        assert_eq!(snapshot.library.notes, store.data.notes);
+        assert_eq!(snapshot.revision, store.revision);
+        assert_eq!(note_snapshot(&store, active).unwrap().library.active_id, *active);
+        assert!(note_snapshot(&store, "removed").is_err());
     }
 
     #[cfg(desktop)]

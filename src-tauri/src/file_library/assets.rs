@@ -39,76 +39,85 @@ pub(super) fn trash_path(path: &str) -> bool {
         .is_some_and(|(token, rest)| Uuid::parse_str(token).is_ok() && valid_path(rest))
 }
 
-pub(super) fn scan_assets(root: &Path) -> Result<Vec<Asset>> {
-    fn visit(
-        root: &Path,
-        directory: &Path,
-        output: &mut Vec<Asset>,
-        total: &mut usize,
-    ) -> Result<()> {
-        for entry in fs::read_dir(directory).map_err(error)? {
-            let entry = entry.map_err(error)?;
-            let filename = entry
-                .file_name()
-                .into_string()
-                .map_err(|_| "附件名称不是有效 UTF-8")?;
-            if [".miaoyan", ".miaoyan-conflicts", ".git"]
-                .iter()
-                .any(|s| filename.eq_ignore_ascii_case(s))
-            {
-                continue;
-            }
-            let kind = entry.file_type().map_err(error)?;
-            // Credentials stay local even if the library includes an ancestor of the app config directory.
-            if kind.is_file() && filename.eq_ignore_ascii_case("s3-connection.json") {
-                continue;
-            }
-            if kind.is_symlink() {
-                continue;
-            }
-            if kind.is_dir() {
-                visit(root, &entry.path(), output, total)?;
-            } else if kind.is_file() && (!allowed(&entry.path()) || entry.path().strip_prefix(root).is_ok_and(|path| path.components().any(|part| part.as_os_str() == ".attachments"))) {
-                let path = entry
-                    .path()
-                    .strip_prefix(root)
-                    .map_err(error)?
-                    .to_str()
-                    .ok_or("附件路径不是有效 UTF-8")?
-                    .replace('\\', "/");
-                if !valid_path(&path) {
-                    return Err(format!("附件路径不能跨平台同步：{path}"));
-                }
-                let meta = entry.metadata().map_err(error)?;
-                if meta.len() > MAX_FILE as u64 {
-                    return Err(format!("附件超过 64 MiB，未跳过或删除文件：{path}"));
-                }
-                // Bound the actual read too: another process may grow the file after metadata().
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                fs::File::open(checked(root, &path)?)
-                    .map_err(error)?
-                    .take((MAX_FILE + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .map_err(error)?;
-                if bytes.len() > MAX_FILE {
-                    return Err(format!("附件超过 64 MiB：{path}"));
-                }
-                *total = total.checked_add(bytes.len()).ok_or("附件总大小超出限制")?;
-                if *total > MAX_TOTAL {
-                    return Err("本次附件快照超过 256 MiB，已停止同步并保留本地文件".into());
-                }
-                output.push(Asset {
-                    path,
-                    bytes,
-                    modified: meta.modified().map(millis).unwrap_or(0.0),
-                });
-            }
+pub(super) fn visit_asset_files(
+    root: &Path,
+    directory: &Path,
+    visit: &mut impl FnMut(String, fs::Metadata) -> Result<()>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory).map_err(error)? {
+        let entry = entry.map_err(error)?;
+        let filename = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "附件名称不是有效 UTF-8")?;
+        if [".miaoyan", ".miaoyan-conflicts", ".git"]
+            .iter()
+            .any(|s| filename.eq_ignore_ascii_case(s))
+        {
+            continue;
         }
-        Ok(())
+        let kind = entry.file_type().map_err(error)?;
+        // Credentials stay local even if the library includes an ancestor of the app config directory.
+        if kind.is_file() && filename.eq_ignore_ascii_case("s3-connection.json") {
+            continue;
+        }
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            visit_asset_files(root, &entry.path(), visit)?;
+        } else if kind.is_file()
+            && (!allowed(&entry.path())
+                || entry.path().strip_prefix(root).is_ok_and(|path| {
+                    path.components()
+                        .any(|part| part.as_os_str() == ".attachments")
+                }))
+        {
+            let path = entry
+                .path()
+                .strip_prefix(root)
+                .map_err(error)?
+                .to_str()
+                .ok_or("附件路径不是有效 UTF-8")?
+                .replace('\\', "/");
+            visit(path, entry.metadata().map_err(error)?)?;
+        }
     }
+    Ok(())
+}
+
+pub(super) fn scan_assets(root: &Path) -> Result<Vec<Asset>> {
     let mut files = Vec::new();
-    visit(root, root, &mut files, &mut 0)?;
+    let mut total: usize = 0;
+    visit_asset_files(root, root, &mut |path, meta| {
+        if !valid_path(&path) {
+            return Err(format!("附件路径不能跨平台同步：{path}"));
+        }
+        if meta.len() > MAX_FILE as u64 {
+            return Err(format!("附件超过 64 MiB，未跳过或删除文件：{path}"));
+        }
+        // Bound the actual read too: another process may grow the file after metadata().
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        fs::File::open(checked(root, &path)?)
+            .map_err(error)?
+            .take((MAX_FILE + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(error)?;
+        if bytes.len() > MAX_FILE {
+            return Err(format!("附件超过 64 MiB：{path}"));
+        }
+        total = total.checked_add(bytes.len()).ok_or("附件总大小超出限制")?;
+        if total > MAX_TOTAL {
+            return Err("本次附件快照超过 256 MiB，已停止同步并保留本地文件".into());
+        }
+        files.push(Asset {
+            path,
+            bytes,
+            modified: meta.modified().map(millis).unwrap_or(0.0),
+        });
+        Ok(())
+    })?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let mut names = HashSet::new();
     if files

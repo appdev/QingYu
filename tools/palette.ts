@@ -8,9 +8,7 @@ export const palettePath = fileURLToPath(new URL('../src/palette.json', import.m
 export function paletteCSS(colors: typeof palette) {
   return Object.entries(colors).map(([mode, tokens]) => {
     const selector = mode === 'light' ? ':root' : ':root[data-theme="dark"]';
-    const arrow = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='12' viewBox='0 0 8 12'%3E%3Cpath d='m1 4 3-3 3 3M1 8l3 3 3-3' stroke='${encodeURIComponent(tokens.muted)}' stroke-width='1.3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`;
-    const values = { ...tokens, 'select-arrow': arrow };
-    return `${selector} {\n${Object.entries(values).map(([name, value]) => `  --${name}: ${value};`).join('\n')}\n}`;
+    return `${selector} {\n${Object.entries(tokens).map(([name, value]) => `  --${name}: ${value};`).join('\n')}\n}`;
   }).join('\n');
 }
 

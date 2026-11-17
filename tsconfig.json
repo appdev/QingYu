@@ -8,7 +8,13 @@
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"],
+    "paths": {
+      "@markra/editor/codemirror": ["./src/vendor/markra/editor/codemirror/index.ts"],
+      "@markra/shared": ["./src/vendor/markra/shared/index.ts"],
+      "@markra/markdown": ["./src/vendor/markra/markdown/index.ts"],
+      "@markra/ai": ["./src/vendor/markra/ai-types.ts"]
+    }
   },
   "include": ["src", "tests", "vite.config.ts"]
 }

@@ -1,13 +1,22 @@
 //! Browser operations share the desktop transactions, never accept an entire client library.
 use super::*;
+use crate::file_library::storage_usage::{StorageUsage, UsageTarget};
 
 pub(super) fn router(state: Arc<Service>) -> Router<Arc<Service>> {
     Router::new()
         .route("/web/library", get(snapshot))
+        .route("/web/storage-usage", get(storage_usage))
         .route("/web/commands", axum::routing::post(change))
+        .route("/web/link-preview", axum::routing::post(link_preview).layer(DefaultBodyLimit::max(12 * 1024)))
         .route("/web/assets/{id}", get(asset).post(upload).layer(DefaultBodyLimit::max(assets::MAX_FILE * 4 + 65536)))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .route_layer(middleware::from_fn_with_state(state, browser_only))
+}
+
+async fn link_preview(
+    body: std::result::Result<Json<crate::link_preview::PreviewRequest>, JsonRejection>,
+) -> ApiResult<Json<Option<crate::link_preview::PreviewResource>>> {
+    Ok(Json(crate::link_preview::fetch(payload(body)?).await))
 }
 
 async fn browser_only(State(state): State<Arc<Service>>, request: Request, next: Next) -> Response {
@@ -50,6 +59,16 @@ fn view(store: &DiskLibrary) -> ApiResult<Json<serde_json::Value>> {
 
 async fn snapshot(State(state): State<Arc<Service>>) -> ApiResult<Json<serde_json::Value>> {
     with_store(state, |store| view(store)).await
+}
+
+async fn storage_usage(State(state): State<Arc<Service>>) -> ApiResult<Json<StorageUsage>> {
+    let target = {
+        let store = state.store.lock().map_err(|_| ApiError::internal())?;
+        UsageTarget::new(&store)
+    };
+    tokio::task::spawn_blocking(move || target.measure().map(Json).map_err(|_| ApiError::internal()))
+        .await
+        .map_err(|_| ApiError::internal())?
 }
 
 #[derive(Deserialize)]

@@ -1,27 +1,32 @@
 import { popupMenu, type MenuItem } from './popup-menu';
-import type { Notebook } from './notebook';
+import { noteTitle, visibleNotes, type Notebook } from './notebook';
+import { noteText } from './document-text';
 
 type FolderType = 'all' | 'folder' | 'root' | 'trash';
 export function folderMenuItems(type: FolderType, clicked: boolean): MenuItem[] {
-  const category = type === 'folder' || type === 'root';
-  const items: MenuItem[] = [
-    { text: '新建文件夹', shortcut: '⇧⌘N', enabled: false },
-    { text: '新建子文件夹', enabled: category },
+  const create = [{ text: '新建笔记' }, { text: '新建文件夹' }];
+  const terminal = { text: '在终端中打开', shortcut: '⌘J' };
+  const finder = { text: '在 Finder 中显示', shortcut: '⌥⌘R' };
+  if (!clicked || type === 'all') return [...create, { text: '' }, terminal];
+  if (type === 'trash') return [finder];
+  return [
+    { text: '在新窗口打开', enabled: false }, { text: '' }, ...create, { text: '' },
     { text: '重命名文件夹', shortcut: '⇧F6', enabled: type === 'folder' },
-    { text: '移动到…', enabled: type === 'folder' },
-    { text: '在 Finder 中显示', shortcut: '⌥⌘R', enabled: category || type === 'trash' },
-    { text: '' },
-    { text: '在终端中打开', shortcut: '⌘J', enabled: type !== 'trash' },
-    { text: '移到废纸篓', shortcut: '⇧⌘⌫', enabled: type === 'folder' },
+    { text: '制作副本', enabled: false },
+    ...(type === 'folder' ? [{ text: '移动到…' }] : []),
+    ...(type === 'folder' ? [{ text: '' }, { text: '上移' }, { text: '下移' }] : []),
+    { text: '' }, finder, terminal,
+    ...(type === 'folder' ? [{ text: '' }, { text: '移到废纸篓', shortcut: '⇧⌘⌫', destructive: true }] : []),
   ];
-  // SidebarProjectView.willOpenMenu hides invalid items on rows, disables them on blank space.
-  return clicked ? items.filter(item => item.enabled) : items;
 }
 
 export function createFolderMenu(getBook: () => Notebook, actions: {
   create(parentId?: string): Promise<void>;
+  createNote(folderId: string | null): Promise<void>;
   change(run: () => Promise<void>): Promise<void>;
+  reorder(id: string, direction: -1 | 1, apply: boolean): boolean;
   error(message: string): void;
+  mobile: boolean;
 }) {
   let finishEdit: (() => Promise<boolean>) | undefined;
   function rename(id: string) {
@@ -54,22 +59,53 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     input.onblur = () => { void finish(); };
   }
   const open = async (id: string | null, type: FolderType, clicked: boolean, x: number, y: number) => {
-    const items = folderMenuItems(type, clicked).filter(item => !getBook().server || !['在 Finder 中显示', '在终端中打开', '移到废纸篓'].includes(item.text));
+    const book = getBook();
+    const items = folderMenuItems(type, clicked).filter(item =>
+      !((book.server || actions.mobile) && ['在 Finder 中显示', '在终端中打开'].includes(item.text)) &&
+      !(book.server && item.text === '移到废纸篓') && !(actions.mobile && ['在新窗口打开', '上移', '下移'].includes(item.text)));
     const run = (action: 'move' | 'trash' | 'reveal' | 'terminal') => actions.change(() => getBook().folderAction(action, type === 'trash' ? 'trash' : id));
     for (const item of items) {
-      if (item.text === '移动到…' && getBook().server) {
-        const folder = getBook().data.folders.find(folder => folder.id === id);
-        item.items = getBook().data.folders.filter(other => other.id !== id && !other.path?.startsWith(folder?.path + '/'))
+      if (id && (item.text === '上移' || item.text === '下移')) {
+        const direction = item.text === '上移' ? -1 : 1;
+        item.enabled = actions.reorder(id, direction, false);
+        item.run = () => { actions.reorder(id, direction, true); };
+        continue;
+      }
+      if (item.text === '移动到…' && book.server) {
+        const folder = book.data.folders.find(folder => folder.id === id)!;
+        const parent = folder.path?.includes('/') ? folder.path.slice(0, folder.path.lastIndexOf('/')) : '';
+        item.items = book.data.folders.filter(other => other.id !== id && other.path !== parent && !other.path?.startsWith(folder.path + '/'))
           .map(other => ({ text: other.path || other.name, run: () => actions.change(() => getBook().folderAction('move', id, other.id)) }));
+        item.enabled = item.items.length > 0;
         continue;
       }
       item.run = ({
-      '新建文件夹': () => actions.create(), '新建子文件夹': () => actions.create(id ?? undefined),
-      '重命名文件夹': () => { if (id) rename(id); }, '移动到…': () => run('move'),
-      '在 Finder 中显示': () => run('reveal'), '在终端中打开': () => run('terminal'), '移到废纸篓': () => run('trash'),
-    } as Record<string, () => void | Promise<void>>)[item.text];
+        '新建笔记': () => actions.createNote(id), '新建文件夹': () => actions.create(id ?? undefined),
+        '重命名文件夹': () => { if (id) rename(id); }, '移动到…': () => run('move'),
+        '在 Finder 中显示': () => run('reveal'), '在终端中打开': () => run('terminal'), '移到废纸篓': () => run('trash'),
+      } as Record<string, () => void | Promise<void>>)[item.text];
+      if ((!book.root || actions.mobile) && ['在 Finder 中显示', '在终端中打开', '移动到…', '移到废纸篓'].includes(item.text)) item.enabled = false;
+      if (actions.mobile && book.root && ['新建文件夹', '重命名文件夹'].includes(item.text)) item.enabled = false;
     }
-    await popupMenu(items, x, y, actions.error, () => document.querySelector<HTMLElement>('.folder-row[aria-pressed=true]')?.focus());
+    const menu = items.filter((item, index) => item.text || index > 0 && index < items.length - 1 && Boolean(items[index + 1].text));
+    if (!menu.length) return;
+    const preview = actions.mobile && clicked ? document.createElement('article') : undefined;
+    if (preview) {
+      const notes = visibleNotes(book.data, id, '', type === 'trash'), cards = document.createElement('div');
+      cards.className = 'context-folder-preview';
+      for (const note of notes.slice(0, 4)) {
+        const card = document.createElement('div'), title = document.createElement('strong'), summary = document.createElement('p');
+        title.textContent = noteTitle(note); summary.textContent = noteText(note.source).summary;
+        card.append(title, summary); cards.append(card);
+      }
+      const title = document.createElement('strong'), count = document.createElement('p');
+      title.textContent = book.data.folders.find(folder => folder.id === id)?.name ?? '全部笔记';
+      count.textContent = `${notes.length} 篇笔记`;
+      preview.append(cards, title, count);
+    }
+    const restoreFocus = () => [...document.querySelectorAll<HTMLElement>('.folder-row')].find(row =>
+      (row.dataset.folderId || null) === id && (row.dataset.trash === 'true') === (type === 'trash'))?.focus({ preventScroll: true });
+    await popupMenu(menu, x, y, actions.error, restoreFocus, '文件夹操作', preview);
   };
   return { open, rename, finishRename: () => finishEdit?.() ?? Promise.resolve(true) };
 }

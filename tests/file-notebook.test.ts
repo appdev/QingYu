@@ -11,6 +11,11 @@ beforeEach(() => {
     if (command === 'library_commit') {
       const request = args as { next: Library; revision: number };
       expect(request.revision).toBe(revision); disk = structuredClone(request.next); revision++;
+    } else if (command === 'library_save_note') {
+      const request = args as { noteId: string; expectedSource: string; source: string };
+      const note = disk.notes.find(note => note.id === request.noteId)!;
+      if (note.source !== request.expectedSource) throw new Error('笔记正文已更新，未覆盖');
+      note.source = request.source; revision++;
     }
     return { library: structuredClone(disk), root: '/test/documents/MiaoYan Editor', revision };
   });
@@ -18,6 +23,39 @@ beforeEach(() => {
 function fixture() { const storage = { getItem: () => null, setItem: vi.fn() }; return { storage, book: new Notebook(storage, '# 旧草稿') }; }
 
 describe('file-backed Notebook contract', () => {
+  it('keeps local selection in a note window across shared edits, links, and external deletion', async () => {
+    const other = { ...disk.notes[0], id: 'other', source: '另一篇正文' };
+    disk.notes.push(other);
+    const { book, storage } = fixture();
+    const sharedInvoke = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === 'workspace_note_snapshot') {
+        const snapshot = await sharedInvoke(command, args) as { library: Library };
+        snapshot.library.activeId = (args as { noteId?: string } | undefined)?.noteId ?? 'other';
+        return snapshot;
+      }
+      if (command === 'library_reconcile') {
+        return { snapshot: await sharedInvoke(command, args), backups: [] };
+      }
+      return sharedInvoke(command, args);
+    });
+    await book.attachNoteWindow();
+    expect(book.current.id).toBe('other');
+    await book.save('独立窗口正文');
+    expect(disk.activeId).toBe('disk');
+    expect(book.current).toMatchObject({ id: 'other', source: '独立窗口正文' });
+    await book.select('disk');
+    await book.select('other');
+    expect(invoke).toHaveBeenLastCalledWith('workspace_note_snapshot', { noteId: 'other' });
+    disk.notes = [disk.notes[0]]; revision++;
+    await book.reconcile(book.root!, { noteId: 'other', source: '待保存正文' });
+    expect(invoke).toHaveBeenLastCalledWith('library_reconcile', expect.objectContaining({
+      buffer: { noteId: 'other', source: '待保存正文', expectedSource: '独立窗口正文' },
+    }));
+    expect(book.current).toBeUndefined();
+    expect(storage.setItem).not.toHaveBeenCalled();
+  });
+
   it('preserves notes and blocks saves after an inaccessible startup, then retries the disk on reload', async () => {
     const { book, storage } = fixture(), before = structuredClone(book.data);
     vi.mocked(invoke).mockRejectedValueOnce('读取笔记目录超时');
@@ -42,6 +80,22 @@ describe('file-backed Notebook contract', () => {
     expect(disk.notes.find(note => note.id === 'disk')).toMatchObject({ source: '刚输入的内容', title: '新名称' });
     const active = book.current.id;
     await book.save('稍后提交到原文档', 'disk'); expect(book.current.id).toBe(active); expect(book.current.source).toBe('');
+  });
+  it('sends only the edited body and its expected source, preserving another note updated on disk', async () => {
+    const { book, storage } = fixture(); await book.openFiles();
+    const other = { ...disk.notes[0], id: 'other', path: '另一份.md', source: '其他窗口写入' };
+    disk.notes.push(other); revision++;
+    await book.save('当前窗口正文');
+    expect(invoke).toHaveBeenLastCalledWith('library_save_note', {
+      root: '/test/documents/MiaoYan Editor', noteId: 'disk', expectedSource: diskSeed.notes[0].source, source: '当前窗口正文',
+    });
+    expect(book.current).toMatchObject({ id: 'disk', source: '当前窗口正文' });
+    expect(book.data.notes.find(note => note.id === 'other')).toEqual(other);
+    disk.notes[0].source = '同一篇的另一版本';
+    await expect(book.save('当前窗口仍待处理')).rejects.toThrow('正文已更新');
+    expect(book.current.source).toBe('当前窗口正文');
+    expect(disk.notes[0].source).toBe('同一篇的另一版本');
+    expect(storage.setItem).not.toHaveBeenCalled();
   });
   it('keeps the complete in-memory state unchanged when a disk rename is rejected', async () => {
     const { book, storage } = fixture(); await book.openFiles(); const before = JSON.stringify(book.data);

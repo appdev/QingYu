@@ -18,6 +18,9 @@ use subtle::ConstantTimeEq;
 const MAX_BODY: usize = 4 * 1024 * 1024;
 mod web;
 mod browser_library;
+mod mcp;
+#[cfg(all(feature = "app", desktop))]
+pub(crate) mod desktop;
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
 struct ApiError(StatusCode, &'static str, &'static str);
@@ -99,16 +102,14 @@ impl Service {
     }
 }
 
-async fn authorize(State(state): State<Arc<Service>>, request: Request, next: Next) -> Response {
-    let token = if request
-        .headers()
+fn bearer_access(state: &Service, headers: &HeaderMap) -> (bool, bool) {
+    let token = if headers
         .get_all(header::AUTHORIZATION)
         .iter()
         .count()
         == 1
     {
-        request
-            .headers()
+        headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split_once(' '))
@@ -123,6 +124,11 @@ async fn authorize(State(state): State<Arc<Service>>, request: Request, next: Ne
     let read = token
         .zip(state.read_token)
         .is_some_and(|(hash, expected)| bool::from(hash.ct_eq(&expected)));
+    (write, read)
+}
+
+async fn authorize(State(state): State<Arc<Service>>, request: Request, next: Next) -> Response {
+    let (write, read) = bearer_access(&state, request.headers());
     // Explicit Bearer credentials never inherit the browser's higher privileges.
     let session = !request.headers().contains_key(header::AUTHORIZATION)
         && state
@@ -169,11 +175,13 @@ fn router(state: Arc<Service>) -> Router {
     if state.web.is_some() {
         web::router(&state)
             .merge(api.layer(auth))
+            .merge(mcp::router(state.clone()))
             .layer(middleware::from_fn_with_state(state.clone(), web::gate))
             .with_state(state)
     } else {
         api.fallback(|| async { ApiError::not_found() })
             .layer(auth)
+            .merge(mcp::router(state.clone()))
             .with_state(state)
     }
 }

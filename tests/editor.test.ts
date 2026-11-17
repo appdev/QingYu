@@ -1,8 +1,53 @@
 import { describe, expect, it } from 'vitest';
 import { EditorSelection, EditorState } from '@codemirror/state';
-import { formatTransaction, replaceSource, toggleTask } from '../src/format';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { formatTransaction, moveItemTransaction, replaceSource, toggleTask } from '../src/format';
 import { markdownBody, renderMarkdown } from '../src/markdown';
 import { emphasisLanguage } from '../src/emphasis';
+
+describe('moving Markdown items', () => {
+  const state = (doc: string, selected: string, range = false) => {
+    const from = doc.indexOf(selected);
+    return EditorState.create({ doc, extensions: markdown({ base: markdownLanguage }),
+      selection: { anchor: range ? from + selected.length : from, head: from } });
+  };
+
+  it('swaps whole parent items without losing child order or caret', () => {
+    const doc = 'Packing\n- Bags\n  - Passport\n  - Charger\n- Shoes\n';
+    const expected = 'Packing\n- Shoes\n- Bags\n  - Passport\n  - Charger\n';
+    expect(moveItemTransaction(state(doc, 'Bags'), false)?.newDoc.toString()).toBe(expected);
+    const up = moveItemTransaction(state(doc, 'Shoes'), true)!;
+    expect(up.newDoc.toString()).toBe(expected);
+    expect(up.newSelection.main.head).toBe(expected.indexOf('Shoes'));
+    expect(moveItemTransaction(state(doc, 'Charger'), true)?.newDoc.toString()).toBe(
+      'Packing\n- Bags\n  - Charger\n  - Passport\n- Shoes\n');
+    expect(moveItemTransaction(state(doc, 'Charger'), false)).toBeNull();
+  });
+
+  it('moves selected lines and preserves backwards selection', () => {
+    const selected = '中文一\n中文二';
+    const edit = moveItemTransaction(state(`标题\n${selected}\nThree`, selected, true), false)!;
+    expect(edit.newDoc.toString()).toBe(`标题\nThree\n${selected}`);
+    expect(edit.newSelection.main.anchor).toBe(edit.newDoc.length);
+    expect(edit.newSelection.main.head).toBe(edit.newDoc.length - selected.length);
+  });
+
+  it('keeps the title, trailing newline and structured blocks intact', () => {
+    const code = '\x60\x60\x60js\nfirst();\nsecond();\n\x60\x60\x60';
+    const doc = `Title\n${code}\n\nFinal\n`;
+    expect(moveItemTransaction(state(doc, 'Title'), false)).toBeNull();
+    expect(moveItemTransaction(state(doc, 'first'), true)).toBeNull();
+    expect(moveItemTransaction(state(doc, 'Final'), false)).toBeNull();
+    const table = '| Header |\n| --- |\n| Value |';
+    const note = `Title\n\n${table}\n\nAfter\n`;
+    expect(moveItemTransaction(state(note, 'Value'), false)).toBeNull();
+    expect(moveItemTransaction(state(note.replace('After', '## After'), 'Value'), false)?.newDoc.toString()).toBe(
+      `Title\n\n\n${table}\n## After\n`);
+    const typed = '<!-- pane-table: Header=choice Yes|No -->\n' + table;
+    expect(moveItemTransaction(state(`Title\n\n${typed}\n\n## After\n`, 'Value'), false)?.newDoc.toString()).toBe(
+      `Title\n\n\n${typed}\n## After\n`);
+  });
+});
 
 describe('legacy markdown-it comparison baseline (not the runtime preview)', () => {
   it('shares upright CJK and italic Latin emphasis rules between both modes', () => {
@@ -54,6 +99,10 @@ describe('legacy markdown-it comparison baseline (not the runtime preview)', () 
     expect(html).not.toContain('markdown-alert-warning');
     expect(html).not.toContain('markdown-alert-caution');
     expect(renderMarkdown('> [!NOTE]').html).not.toContain('<p></p>');
+    const titled = renderMarkdown('> [!DANGER]+ 标题 <script>\n> 保留 **正文**').html;
+    expect(titled).toContain('class="markdown-alert markdown-alert-caution"');
+    expect(titled).toContain('标题 &lt;script&gt;</p>');
+    expect(titled).toContain('<strong>正文</strong>');
   });
   it('keeps fenced code literal and renders tables and footnotes', () => {
     const { html } = renderMarkdown('```swift\nlet text = "<b>不是 HTML</b>"\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n文字[^1]\n\n[^1]: 注释');
@@ -61,6 +110,11 @@ describe('legacy markdown-it comparison baseline (not the runtime preview)', () 
     expect(html).toContain('&lt;b&gt;不是 HTML&lt;/b&gt;');
     expect(html).toContain('<table');
     expect(html).toContain('footnote');
+  });
+  it('marks standalone images for export and strips their size metadata from the label', () => {
+    const { html } = renderMarkdown('前文\n![**山景**|cover](cover.png "备注")\n后文\n\n正文 ![行内|small](inline.png)');
+    expect(html).toContain('<img src="cover.png" alt="山景" title="备注" data-standalone-image="">');
+    expect(html).toContain('<img src="inline.png" alt="行内|small">');
   });
   it('matches MiaoYan footnote numbering without adding a separator', () => {
     const { html } = renderMarkdown('第一处[^one]，再次[^one]，第二条[^two]。\n\n[^one]: 第一段\n\n    第二段\n\n[^two]: 第二条\n');
@@ -88,22 +142,24 @@ describe('source edits, selection and task write-back', () => {
     expect(next.doc.toString()).toBe('前文**你好🌸**后文');
     expect(next.sliceDoc(next.selection.main.from, next.selection.main.to)).toBe('你好🌸');
   });
-  it('leaves the caret inside an empty Markdown wrapper', () => {
+  it('puts the caret in the URL when opening an empty link draft', () => {
     const state = EditorState.create({ doc: '', selection: EditorSelection.cursor(0) });
     const next = formatTransaction(state, 'link').state;
-    expect(next.doc.toString()).toBe('[](https://)');
-    expect(next.selection.main.from).toBe(1);
+    expect(next.doc.toString()).toBe('[链接](https://)');
+    expect(next.selection.main.from).toBe(next.doc.length - 1);
   });
   it('quotes all selected lines without consuming the following line', () => {
     const state = EditorState.create({ doc: '第一行\n第二行\n第三行', selection: EditorSelection.range(0, 8) });
     expect(formatTransaction(state, 'quote').state.doc.toString()).toBe('> 第一行\n> 第二行\n第三行');
   });
   it('changes only the clicked task and preserves the editor selection', () => {
-    const state = EditorState.create({ doc: '- [ ] 第一项\n\n1. [x] 第二项', selection: EditorSelection.cursor(7) });
+    const state = EditorState.create({ doc: '- [ ] 第一项\n\n1. [x] 第二项\n\n```md\n- [ ] 示例\n```',
+      selection: EditorSelection.cursor(7), extensions: markdown({ base: markdownLanguage }) });
     const next = toggleTask(state, 3)!.state;
-    expect(next.doc.toString()).toBe('- [ ] 第一项\n\n1. [ ] 第二项');
+    expect(next.doc.toString()).toBe('- [ ] 第一项\n\n1. [ ] 第二项\n\n```md\n- [ ] 示例\n```');
     expect(next.selection.main.from).toBe(7);
     expect(toggleTask(state, 2)).toBeNull();
+    expect(toggleTask(state, 6)).toBeNull();
     expect(toggleTask(state, 50)).toBeNull();
   });
 });

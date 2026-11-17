@@ -21,7 +21,7 @@ class MainActivity : TauriActivity() {
     val dark = appDark ?: (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES)
     val bars = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark }
     enableEdgeToEdge(bars, bars)
-    window.decorView.setBackgroundColor(Color.parseColor(if (dark) "#1E1D1B" else "#FDFCF9"))
+    window.decorView.setBackgroundColor(if (dark) Color.BLACK else Color.WHITE)
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {

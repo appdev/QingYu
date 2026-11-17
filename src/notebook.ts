@@ -1,4 +1,5 @@
-import { noteText } from './document-text';
+import { noteText, noteTitle } from './document-text';
+import { dailyFolderName, dailyNoteId, dailyTitle, findDailyNote, type DailyNoteSettings } from './daily-note';
 import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
 import type { Asset, AssetSync } from './sync-files';
@@ -8,10 +9,12 @@ export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
 export type Folder = { id: string; name: string; path?: string };
 export type Note = { id: string; folderId: string; source: string; createdAt: number; updatedAt: number; conflictOf?: string; title?: string; pinned?: boolean; trashed?: boolean; path?: string; filename?: string; readOnly?: boolean };
-export const noteTitle = (note: Pick<Note, 'source' | 'title'>) => note.title ?? noteText(note.source).title;
+export { noteTitle } from './document-text';
 export type Checkpoint = { version: 1; target: string; state: State };
 export type Library = { version: 1; folders: Folder[]; notes: Note[]; activeId: string; sync?: Checkpoint };
 export type EditorBuffer = { noteId: string; source: string };
+export type NoteVersion = { id: string; updatedAt: number };
+type FileSnapshot = { library: Library; root: string; revision: number };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 
 function initialLibrary(source: string): Library {
@@ -54,6 +57,7 @@ export class Notebook {
   private disk?: { root: string; revision: number };
   private externalRevision = 0;
   external = false;
+  noteWindow = false;
   private remote?: ServerLibrary;
   get server() { return Boolean(this.remote); }
   constructor(private storage: Storage, starter: string) {
@@ -72,6 +76,18 @@ export class Notebook {
   get current() { return this.data.notes.find(note => note.id === this.data.activeId)!; }
   get root() { return this.disk?.root; }
   get assetRevision() { return this.disk?.revision ?? 0; }
+  get hasNoteHistory() { return Boolean(this.disk && !this.external && !this.loadError); }
+  noteVersions(noteId: string) {
+    return invoke<NoteVersion[]>('library_note_versions', { noteId });
+  }
+  noteVersion(noteId: string, version: string) {
+    return invoke<string>('library_note_version', { noteId, version });
+  }
+  restoreNoteVersion(noteId: string, version: string, expectedSource: string, root: string | undefined) { return this.run(async () => {
+    if (!this.hasNoteHistory || !root || root !== this.root || this.data.activeId !== noteId) throw new Error('原笔记已切换，请重新打开版本历史');
+    this.adopt(await invoke<FileSnapshot>('library_restore_note_version', { root, noteId, version, expectedSource }));
+    this.externalRevision++;
+  }); }
   importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> { return this.run(async () => {
     const note = this.data.notes.find(note => note.id === id);
     if (!note || note.readOnly || note.trashed) throw new Error('此笔记不可添加附件');
@@ -98,6 +114,11 @@ export class Notebook {
   async attachExternal() {
     this.adopt(await invoke('workspace_snapshot')); this.external = true;
   }
+  async attachNoteWindow() {
+    const snapshot = await invoke<FileSnapshot>('workspace_note_snapshot');
+    this.adopt(snapshot, snapshot.library.activeId);
+    this.noteWindow = true;
+  }
   activateExternal(path: string) { return this.run(async () => {
     if (!this.external || !this.disk) throw new Error('尚未打开外部文件目录');
     this.adopt(await invoke('workspace_activate_path', { path, revision: this.disk.revision }));
@@ -108,9 +129,11 @@ export class Notebook {
     try { this.adopt(await invoke('library_open', { seed })); }
     catch (error) { this.loadError = true; throw error; }
   }
-  private adopt(snapshot: { library: Library; root: string; revision: number }) {
+  private adopt(snapshot: FileSnapshot, activeId = this.noteWindow ? this.data.activeId : snapshot.library.activeId) {
     if (!validLibrary(snapshot.library)) throw new Error('本地文件笔记库格式无效');
-    this.data = snapshot.library; this.disk = { root: snapshot.root, revision: snapshot.revision }; this.persisted = true; this.loadError = false;
+    this.data = activeId === snapshot.library.activeId ? snapshot.library
+      : { ...snapshot.library, activeId: snapshot.library.notes.some(note => note.id === activeId) ? activeId : '' };
+    this.disk = { root: snapshot.root, revision: snapshot.revision }; this.persisted = true; this.loadError = false;
   }
   private run<T>(action: () => Promise<T>): Promise<T> {
     const operation = this.pending.then(action); this.pending = operation.catch(() => undefined); return operation;
@@ -121,20 +144,37 @@ export class Notebook {
       const snapshot = await this.remote.commit(this.data, next, intent);
       if (snapshot) this.adoptServer(snapshot, next.activeId); else this.data = next;
     }
-    else if (this.disk) this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }));
+    else if (this.disk) this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }), this.noteWindow ? next.activeId : undefined);
     else { this.storage.setItem(libraryKey, JSON.stringify(next)); this.data = next; this.persisted = true; }
   }
-  save(source: string, id = this.data.activeId) { const externalRevision = this.externalRevision; return this.run(async () => {
+  save(source: string, id = this.data.activeId, expectedSource?: string) { const externalRevision = this.externalRevision, root = this.disk?.root; return this.run(async () => {
     if (externalRevision !== this.externalRevision) throw new Error('文件已在外部变化，旧的延迟保存已取消');
+    if (root !== this.disk?.root) throw new Error('笔记库位置已更改，旧的延迟保存已取消');
     const current = this.data.notes.find(note => note.id === id);
     if (!current) { if (!id) return; throw new Error('笔记不存在'); }
+    if (expectedSource !== undefined && (current.source !== expectedSource || current.trashed)) {
+      throw new Error('笔记正文已更新，请重新查看引用');
+    }
+    if (expectedSource !== undefined && !this.disk && !this.remote && this.persisted
+      && this.storage.getItem(libraryKey) !== JSON.stringify(this.data)) {
+      throw new Error('笔记库已在其他窗口更新，请刷新后重试');
+    }
     const changed = current.source !== source;
     if (changed && current.readOnly) throw new Error('文件内容损坏或不可读，已阻止覆盖');
     if (!changed && this.persisted) return;
+    if (root && !this.external && !this.remote && changed) {
+      if (this.loadError) throw new Error('笔记库读取失败，未覆盖原有数据');
+      this.adopt(await invoke('library_save_note', { root, noteId: id, expectedSource: current.source, source }));
+      return;
+    }
     await this.commit(changed ? { ...this.data, notes: this.data.notes.map(note => note.id === current.id ? { ...note, source, updatedAt: Date.now() } : note) } : this.data);
   }); }
   select(id: string) { return this.run(async () => {
     if (!this.data.notes.some(note => note.id === id)) throw new Error('笔记不存在');
+    if (this.noteWindow) {
+      this.adopt(await invoke('workspace_note_snapshot', { noteId: id }), id);
+      return true;
+    }
     if (this.external && this.disk) {
       const snapshot = await invoke<{ library: Library; root: string; revision: number } | null>('workspace_select', { noteId: id, revision: this.disk.revision });
       if (!snapshot) return false;
@@ -143,12 +183,40 @@ export class Notebook {
     await this.commit({ ...this.data, activeId: id });
     return true;
   }); }
-  createNote(folderId: string, title = '') { return this.run(async () => {
+  private async insertNote(folderId: string, title: string, source: string, id: string = crypto.randomUUID(), now = Date.now()) {
     if (!this.data.folders.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
-    const now = Date.now(), id = crypto.randomUUID();
-    await this.commit({ ...this.data, notes: [{ id, folderId, source: '', createdAt: now, updatedAt: now, ...(title ? { title } : {}) }, ...this.data.notes], activeId: id }, 'create');
+    await this.commit({ ...this.data, notes: [{ id, folderId, source, createdAt: now, updatedAt: now, ...(title ? { title } : {}) }, ...this.data.notes], activeId: id }, 'create');
+  }
+  createNote(folderId: string, title = '') { return this.run(() => this.insertNote(folderId, title, '')); }
+  openToday(settings: DailyNoteSettings, now = new Date()) { return this.run(async () => {
+    if (this.external) throw new Error('请返回笔记库打开今日笔记');
+    for (let attempt = 0; ; attempt++) {
+      const { folder, note } = findDailyNote(this.data, settings, now);
+      if (note) {
+        if (this.current?.id !== note.id) await this.commit({ ...this.data, activeId: note.id });
+        return false;
+      }
+      try {
+        const folderId = folder?.id ?? await this.insertFolder(dailyFolderName, 'default');
+        const title = dailyTitle(now, settings.todayTitle);
+        let generation = 0, id = await dailyNoteId(folderId, now, generation);
+        while (this.data.notes.some(note => note.id === id)) id = await dailyNoteId(folderId, now, ++generation);
+        await this.insertNote(folderId, title, `# ${title}\n`, id, now.getTime());
+        return true;
+      } catch (error) {
+        // Another browser can win each of the two writes: first the folder, then the note.
+        if (!this.remote || attempt >= 2) throw error;
+        const snapshot = await this.remote.load().catch(() => undefined);
+        if (!snapshot) throw error;
+        const current = findDailyNote({ ...this.data, folders: snapshot.folders, notes: snapshot.notes }, settings, now);
+        if (!current.note && (folder || !current.folder)) throw error;
+        this.adoptServer(snapshot);
+      }
+    }
   }); }
-  createFolder(name: string, parentId = 'default') { return this.run(async () => {
+
+  createFolder(name: string, parentId = 'default') { return this.run(() => this.insertFolder(name, parentId)); }
+  private async insertFolder(name: string, parentId: string) {
     if (this.external) throw new Error('临时文件模式不管理文件夹，请返回笔记库操作');
     name = name.trim();
     if (!name || name.startsWith('.') || /[\\/:\x00-\x1f]/.test(name)) throw new Error('请输入有效的文件夹名称');
@@ -169,7 +237,7 @@ export class Notebook {
     const folder = { id: crypto.randomUUID(), name, path };
     await this.commit({ ...this.data, folders: [...this.data.folders, folder] });
     return folder.id;
-  }); }
+  }
   folderAction(action: 'rename' | 'move' | 'trash' | 'reveal' | 'terminal', folderId: string | null, value?: string) { return this.run(async () => {
     if (this.remote) {
       if (!folderId || !value || !['rename', 'move'].includes(action)) throw new Error('请在服务器配置笔记目录；此操作不适用于 Web');
@@ -242,30 +310,62 @@ export class Notebook {
   }
   reconcile(root: string, buffer?: EditorBuffer) { return this.run(async () => {
     if (!this.disk || this.disk.root !== root) return { changed: false, backups: [] as string[] };
-    const result = await invoke<{ snapshot: { library: Library; root: string; revision: number } | null; backups: string[] }>(this.external ? 'workspace_reconcile' : 'library_reconcile', { root, revision: this.disk.revision, buffer });
+    const expectedSource = !this.external && buffer ? this.data.notes.find(note => note.id === buffer.noteId)?.source : undefined;
+    const result = await invoke<{ snapshot: FileSnapshot | null; backups: string[] }>(this.external ? 'workspace_reconcile' : 'library_reconcile', {
+      root, revision: this.disk.revision, buffer: buffer && expectedSource !== undefined ? { ...buffer, expectedSource } : buffer,
+    });
     if (result.snapshot) { this.adopt(result.snapshot); this.externalRevision++; }
     return { changed: Boolean(result.snapshot), backups: result.backups };
   }); }
 }
 
-export function visibleNotes(library: Library, folderId: string | null, query: string, trashed = false) {
+export type NoteOrder = { key: 'updatedAt' | 'createdAt' | 'title'; reverse: boolean; grouped: boolean };
+export const defaultNoteOrder: NoteOrder = { key: 'updatedAt', reverse: false, grouped: true };
+function compareNotes(order: NoteOrder, a: Note, b: Note) {
+  const pinned = Number(Boolean(b.pinned && !b.trashed)) - Number(Boolean(a.pinned && !a.trashed));
+  if (pinned) return pinned;
+  const difference = order.key === 'title' ? noteTitle(a).localeCompare(noteTitle(b), undefined, { numeric: true }) : b[order.key] - a[order.key];
+  if (!difference && order.key === 'title') return b.updatedAt - a.updatedAt;
+  return order.reverse ? -difference : difference;
+}
+
+export function visibleNotes(library: Library, folderId: string | null, query: string, trashed = false, order = defaultNoteOrder) {
   const search = query.trim().toLocaleLowerCase();
   const selected = library.folders.find(folder => folder.id === folderId);
   const path = selected?.path ?? selected?.name;
   const included = new Set(library.folders.filter(folder => folder.id === folderId || path && (folder.path ?? folder.name).startsWith(path + '/')).map(folder => folder.id));
   return library.notes.filter(note => Boolean(note.trashed) === trashed && (!folderId || included.has(note.folderId)) && (!search || note.source.toLocaleLowerCase().includes(search) || noteTitle(note).toLocaleLowerCase().includes(search)))
-    .sort((a, b) => Number(Boolean(b.pinned && !b.trashed)) - Number(Boolean(a.pinned && !a.trashed)) || b.updatedAt - a.updatedAt);
+    .sort((a, b) => compareNotes(order, a, b));
 }
 
-export function groupNotes(notes: Note[]) {
-  const currentYear = new Date().getFullYear();
+const localDay = (now: Date, offset: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime();
+const listClock = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const listWeekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'long' });
+const listDate = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
+
+export function noteListDate(now: Date) {
+  const [sixDaysAgo, yesterday, today, tomorrow] = [-6, -1, 0, 1].map(offset => localDay(now, offset));
+  return (timestamp: number) => {
+    if (timestamp >= today && timestamp < tomorrow) return listClock.format(timestamp);
+    if (timestamp >= yesterday && timestamp < today) return '昨天';
+    return timestamp >= sixDaysAgo && timestamp < today ? listWeekday.format(timestamp) : listDate.format(timestamp);
+  };
+}
+
+export function groupNotes(notes: Note[], order = defaultNoteOrder, now = new Date()) {
+  const currentYear = now.getFullYear();
+  const [today, yesterday, week, month30] = [0, -1, -7, -30].map(offset => localDay(now, offset));
   const groups: { year: number; month: number; label: string; notes: Note[] }[] = [];
-  for (const note of [...notes].sort((a, b) => Number(Boolean(b.pinned && !b.trashed)) - Number(Boolean(a.pinned && !a.trashed)) || b.updatedAt - a.updatedAt)) {
-    const date = new Date(note.updatedAt), year = note.pinned && !note.trashed ? 0 : date.getFullYear();
-    const month = year === currentYear ? date.getMonth() + 1 : 0;
+  for (const note of [...notes].sort((a, b) => compareNotes(order, a, b))) {
+    const timestamp = order.key === 'createdAt' ? note.createdAt : note.updatedAt;
+    const date = new Date(timestamp), year = note.pinned && !note.trashed ? 0 : date.getFullYear();
+    const month = year ? date.getMonth() + 1 : 0;
+    const label = !year ? '置顶' : !order.grouped || order.key === 'title' ? '' : timestamp >= today ? '今天' : timestamp >= yesterday ? '昨天'
+      : timestamp >= week ? '过去 7 天' : timestamp >= month30 ? '过去 30 天'
+      : date.toLocaleDateString('zh-CN', { month: 'numeric', ...(year !== currentYear ? { year: 'numeric' } as const : {}) });
     const last = groups.at(-1);
-    if (last?.year === year && last.month === month) last.notes.push(note);
-    else groups.push({ year, month, label: !year ? '置顶' : month ? ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'][month - 1] : `${year}年`, notes: [note] });
+    if (last?.label === label) last.notes.push(note);
+    else groups.push({ year, month, label, notes: [note] });
   }
   return groups;
 }

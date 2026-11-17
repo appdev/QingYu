@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 
 export async function setupWorkspace(windowLabel: string, actions: {
   save(): Promise<boolean>;
-  select(path: string): Promise<void>;
+  select?(path: string): Promise<void>;
   error(message: string): void;
 }) {
   const documentWindow = windowLabel !== 'main';
@@ -40,7 +40,7 @@ export async function setupWorkspace(windowLabel: string, actions: {
       while (paths.length && !closing && !quitting) {
         const path = paths.shift()!;
         if (!await save()) { paths.length = 0; actions.error('当前文档尚未保存，请完成输入或处理保存错误后重新打开文件'); return; }
-        await actions.select(path);
+        await actions.select?.(path);
       }
     })().catch(reason => actions.error(reason instanceof Error ? reason.message : String(reason)))
       .finally(() => { selecting = undefined; if (!closing && !quitting) { document.body.inert = false; if (paths.length) void selectPending(); } });
@@ -89,10 +89,10 @@ export async function setupWorkspace(windowLabel: string, actions: {
     await listen('workspace-before-close', close, target);
     await listen<string>('workspace-before-exit', ({ payload }) => prepareExit(payload), target);
     await listen('workspace-exit-cancelled', () => { quitting = false; exitId = undefined; document.body.inert = false; void selectPending(); }, target);
-    await listen('workspace-select-request', receivePaths, target);
+    if (actions.select) await listen('workspace-select-request', receivePaths, target);
     const pending = await invoke<string | null>('workspace_ready');
     if (pending) await prepareExit(pending);
-    await receivePaths();
+    if (actions.select) await receivePaths();
   } else {
     async function receive() {
       try { queue.push(...await invoke<string[]>('workspace_requests')); await open(); }

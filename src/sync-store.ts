@@ -1,6 +1,12 @@
 import * as core from './vendor/mdsync/core';
-export type S3Settings = Pick<core.Config, 'endpoint' | 'region' | 'bucket' | 'prefix' | 'accessKeyId' | 'secretAccessKey'>;
-export function normalizeSettings(settings: S3Settings): core.Config {
+export type SyncMode = 'cloud' | 's3';
+type S3Fields = Pick<core.Config, 'endpoint' | 'region' | 'bucket' | 'prefix' | 'accessKeyId' | 'secretAccessKey'>;
+export type S3Settings = S3Fields & { mode?: SyncMode };
+export type S3Connection = S3Fields & Partial<Pick<core.Config, 'forcePathStyle' | 'concurrency'>>;
+export function syncMode(settings: S3Settings): SyncMode {
+  return settings.mode ?? ([settings.endpoint, settings.bucket, settings.accessKeyId, settings.secretAccessKey].some(value => value?.trim()) ? 's3' : 'cloud');
+}
+export function normalizeSettings(settings: S3Connection): core.Config {
   const endpoint = new URL(settings.endpoint.trim());
   if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) throw new Error('S3 地址需要使用 HTTPS');
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('S3 地址格式无效');
@@ -9,7 +15,7 @@ export function normalizeSettings(settings: S3Settings): core.Config {
   if (!prefix || prefix.split('/').some(part => !/^[A-Za-z0-9._-]+$/.test(part) || part === '.' || part === '..')) throw new Error('请输入独立同步前缀，仅支持字母、数字、点、下划线和短横线');
   if (!settings.accessKeyId.trim() || !settings.secretAccessKey) throw new Error('请填写 S3 访问凭证');
   return { ...core.defaultS3Config(), ...settings, endpoint: endpoint.href.replace(/\/+$/, ''), bucket, prefix, region: settings.region.trim() || 'us-east-1',
-    accessKeyId: settings.accessKeyId.trim(), concurrency: 2, forcePathStyle: true };
+    accessKeyId: settings.accessKeyId.trim(), concurrency: settings.concurrency ?? 2, forcePathStyle: settings.forcePathStyle ?? true };
 }
 export function createStore(config: core.Config): core.Storage {
   const store = core.createS3Adapter(config), sign = core.createS3Signer(config);

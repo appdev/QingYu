@@ -78,6 +78,53 @@ async fn load(app: &Router, cookie: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn storage_usage_reports_counts_from_the_mounted_library_to_the_editor_session() {
+    let (dir, _, app) = fixture();
+    let root = dir.path().join("notes");
+    fs::write(root.join("测试.md"), "正文").unwrap();
+    fs::write(root.join("图片.png"), [0; 21]).unwrap();
+    let path = "/api/web/storage-usage";
+    assert_eq!(call(&app, "GET", path, "", json!(null)).await.0, StatusCode::UNAUTHORIZED);
+    let cookie = login(&app).await;
+    let (status, headers, body) = call(&app, "GET", path, &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), json!({"notes":6,"files":21,"trash":0}));
+}
+
+#[tokio::test]
+async fn link_preview_requires_browser_session_and_rejects_private_targets() {
+    let (_dir, _state, app) = fixture();
+    let path = "/api/web/link-preview";
+    let target = json!({"target":"http://127.0.0.1/","image":false});
+    assert_eq!(
+        call(&app, "POST", path, "", target.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let cookie = login(&app).await;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::HOST, "notes.test")
+        .header(header::ORIGIN, "http://unrelated.test")
+        .header(header::COOKIE, &cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(target.to_string()))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let (status, headers, body) = call(&app, "POST", path, &cookie, target).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        json!(null)
+    );
+}
+
+#[tokio::test]
 async fn browser_routes_require_sessions_and_keep_public_token_scope_and_csrf_checks() {
     let (_dir, _state, app) = fixture();
     for path in [

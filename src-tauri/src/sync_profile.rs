@@ -7,6 +7,13 @@ use std::{
 use tauri::Manager;
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Mode {
+    Cloud,
+    S3,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Profile {
     endpoint: String,
@@ -15,6 +22,8 @@ pub struct Profile {
     prefix: String,
     access_key_id: String,
     secret_access_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<Mode>,
 }
 
 impl Profile {
@@ -147,6 +156,7 @@ mod tests {
             prefix: "notes".into(),
             access_key_id: "synthetic-id".into(),
             secret_access_key: "synthetic-secret".into(),
+            mode: None,
         };
         save(&path, &profile).unwrap();
         assert_eq!(
@@ -154,7 +164,12 @@ mod tests {
             profile.secret_access_key
         );
         profile.secret_access_key = "new-synthetic-secret".into();
+        profile.mode = Some(Mode::Cloud);
         save(&path, &profile).unwrap();
+        assert!(matches!(
+            load(&path).unwrap().unwrap().mode,
+            Some(Mode::Cloud)
+        ));
         assert_eq!(
             load(&path).unwrap().unwrap().secret_access_key,
             "new-synthetic-secret"
@@ -193,6 +208,7 @@ mod tests {
             prefix: "miaoyan/v1".into(),
             access_key_id: "".into(),
             secret_access_key: "".into(),
+            mode: None,
         };
         assert!(profile.validate().is_ok());
         profile.secret_access_key = "synthetic\nsecret".into();

@@ -1,13 +1,18 @@
-export function settingsSelect(select: HTMLSelectElement, title: string) {
+export function settingsSelect(select: HTMLSelectElement, title: string, mobile: boolean) {
   const element = document.createElement('span'); element.className = 'settings-select';
+  element.append(select);
+  element.insertAdjacentHTML('beforeend', '<span class="settings-select-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 6 3.5-3.5L11.5 6m-7 4 3.5 3.5 3.5-3.5"/></svg></span>');
+  if (!mobile) return { element, id: select.id, update() {}, destroy() {} };
   const button = document.createElement('button'); button.type = 'button'; button.className = 'settings-select-button'; button.id = `settings-select-${select.name}`;
   button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-expanded', 'false');
   if (select.getAttribute('aria-describedby')) button.setAttribute('aria-describedby', select.getAttribute('aria-describedby')!);
-  select.hidden = true; element.append(select, button);
+  select.hidden = true; element.append(button);
+  const label = document.createElement('span'); button.append(label);
   let dismiss: (() => void) | undefined;
   function update() {
     const text = select.selectedOptions[0]?.textContent ?? '';
-    button.textContent = text; button.setAttribute('aria-label', `${title}：${text}`);
+    label.textContent = text; button.setAttribute('aria-label', `${title}：${text}`);
+    button.disabled = select.disabled;
   }
   button.onclick = () => {
     if (dismiss) return;
@@ -50,5 +55,5 @@ export function settingsSelect(select: HTMLSelectElement, title: string) {
     (buttons.find(item => item.getAttribute('aria-checked') === 'true') ?? buttons[0])?.focus({ preventScroll: true });
   };
   update();
-  return { element, button, update, destroy() { dismiss?.(); } };
+  return { element, id: button.id, update, destroy() { dismiss?.(); } };
 }

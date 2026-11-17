@@ -1,42 +1,46 @@
 import './style.css';
+import { mountGlassButton, mountGlassToolbar } from './glass-controls';
+import 'glassy-liquid/components/progressive-blur';
+import { confirmLinkedNote, showNoteLinkPicker, showShare } from './reference-panels';
+import { openQuickOpen, type QuickCommand } from './quick-open';
 import starter from './starter.md?raw';
-import { setupContentSplit } from './content-split';
-import formatIcon from '../public/miaoyan/icons/icon_format.svg?raw';
-import previewIcon from '../public/miaoyan/icons/icon_preview.svg?raw';
-import splitIcon from '../public/miaoyan/icons/icon_editor_split.svg?raw';
-import editIcon from '../public/miaoyan/icons/newNote.svg?raw';
-import { Compartment, EditorState } from '@codemirror/state';
-import { Decoration, EditorView, ViewPlugin, drawSelection, keymap, type ViewUpdate, type DecorationSet } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { HighlightStyle, indentOnInput, syntaxHighlighting, syntaxTree } from '@codemirror/language';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { languages } from '@codemirror/language-data';
-import { searchKeymap } from '@codemirror/search';
-import { tags } from '@lezer/highlight';
-import { markdownBody } from './document-text';
-import { formatTransaction, replaceSource, toggleTask, type Format } from './format';
-import type { RichEditor } from './rich-editor';
-import { Notebook, noteTitle } from './notebook';
+import { firstLocalImage, markdownBody, plainMarkdownLine } from './document-text';
+import { editorItemMove, moveEditorItem, type Format } from './format';
+import { inlineFormatIcons, openEditorFormatPanel } from './editor-format-panel';
+import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { Calendar, FileDown, FolderInput, FolderPlus, Pin, PinOff, Settings, SquarePen } from 'lucide';
+import { createRichEditor, type RichEditor } from './rich-editor';
+import { webLinkPreview, webLinkThumbnail } from './web-link-preview';
+import { Notebook, noteTitle, type Note } from './notebook';
 import { createSidebar } from './sidebar';
-import { preferences, previewPreferences, settingsShortcut, native, mobile } from './preferences';
+import { changeNoteTextSize, noteTextSizeShortcut, preferences, settingsShortcut, native, mobile } from './preferences';
 import { connectPreferences, hostSync } from './settings-bridge';
+import { connectEditorHistoryMenu, connectMobileEditorHistory, refreshEditorHistory } from './editor-history-menu';
 import { createSyncSession } from './sync-session';
 import { openSettings } from './open-settings';
+import { sidebarAccount } from './client-account';
+import { dailyNoteChoices } from './daily-note';
+import type { SettingsSection } from './settings-view';
 import { startAutoSync } from './auto-sync';
-import { revealCaret } from './editor-viewport';
+import { keepEditorFocusForTouchButtons, keepPanelTargetVisible, keepMobileViewportAtTop, revealCaret } from './editor-viewport';
 import { invoke } from '@tauri-apps/api/core';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { setupCalendar } from './calendar';
-import { assetBase, attachmentMarkdown, openAttachment } from './attachments';
+import { assetBase, attachmentMarkdown, attachmentUrl, openAttachment } from './attachments';
 import { MAX_ASSET_BYTES, MAX_ASSETS_TOTAL } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
+import { popupMenu, popupMenuOpen } from './popup-menu';
+import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink } from './note-links';
+import { createNoteRelationsFooter } from './editor-note-relations';
+import { isLocalAsset } from './server-assets';
+import type { PictureRange, PictureRequest } from './note-picture';
 
 await requireWebSession();
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const workspace = $('#workspace');
-const frame = $<HTMLIFrameElement>('#preview');
+document.documentElement.dataset.platform = native && /Mac/.test(navigator.platform) ? 'macos' : 'other';
 const saveStatus = $('#save-status');
 function setStatus(message: string, error = false) {
   saveStatus.textContent = message;
@@ -44,6 +48,12 @@ function setStatus(message: string, error = false) {
 }
 const windowLabel = native ? getCurrentWindow().label : 'main';
 const documentWindow = !mobile && windowLabel.startsWith('document-');
+const noteWindow = documentWindow && windowLabel.startsWith('document-note-');
+if (noteWindow) {
+  $('#app-shell').dataset.noteWindow = '';
+  $('#library-sidebar').hidden = $('#sidebar-button').hidden = $('#new-empty-note').hidden = true;
+  $('#empty-note p').textContent = '找不到这篇笔记';
+}
 const serverLibrary = isServerLibrary();
 const notebook = new Notebook({ getItem: key => documentWindow || serverLibrary ? null : localStorage.getItem(key), setItem: (key, value) => {
   if (documentWindow || serverLibrary) throw new Error('当前笔记不能转存到浏览器笔记库');
@@ -51,7 +61,11 @@ const notebook = new Notebook({ getItem: key => documentWindow || serverLibrary 
 } }, documentWindow || serverLibrary ? '' : starter);
 if ('__TAURI_INTERNALS__' in window) {
   setStatus(documentWindow ? '正在打开文档…' : '正在打开本地笔记文件夹…');
-  try { if (documentWindow) await notebook.attachExternal(); else await notebook.openFiles(); }
+  try {
+    if (noteWindow) await notebook.attachNoteWindow();
+    else if (documentWindow) await notebook.attachExternal();
+    else await notebook.openFiles();
+  }
   catch (error) { notebook.loadError = true; setStatus(error instanceof Error ? error.message : String(error), true); }
 }
 else if (serverLibrary) {
@@ -59,12 +73,24 @@ else if (serverLibrary) {
   try { await notebook.openServer(); }
   catch (error) { notebook.loadError = true; setStatus(error instanceof Error ? error.message : String(error), true); }
 }
-const initial = notebook.current?.source ?? '';
-setupCalendar(() => notebook.current ? noteTitle(notebook.current) : '');
 let sidebar: ReturnType<typeof createSidebar> | undefined;
-let showingNote = Boolean(notebook.current);
+let showingNote = Boolean(notebook.current) && !(noteWindow && notebook.loadError);
+let linkLibrary = notebook.data;
+const availableNoteLinks = new Map<string, boolean>();
+function noteLinkExists(target: string) {
+  if (linkLibrary !== notebook.data) {
+    linkLibrary = notebook.data;
+    availableNoteLinks.clear();
+  }
+  let exists = availableNoteLinks.get(target);
+  if (exists === undefined) {
+    exists = Boolean(resolveNoteLink(linkLibrary, target, notebook.current).note);
+    availableNoteLinks.set(target, exists);
+  }
+  return exists;
+}
 $('#sync-button').onclick = async () => {
-  try { await openSettings(syncSession, 'sync'); }
+  try { await showSettings('sync'); }
   catch { setStatus('无法打开同步设置，本机笔记仍保留', true); }
 };
 const syncSession = createSyncSession(notebook, () => {
@@ -81,7 +107,7 @@ syncSession.subscribe(status => {
   syncBusy = status.busy;
   const button = $('#sync-button');
   button.dataset.state = status.busy ? 'syncing' : status.error ? 'error' : status.message ? 'synced' : 'idle';
-  const label = `S3 同步：${status.busy ? '正在同步…' : status.message || '尚未同步'}`;
+  const label = status.busy ? '正在同步…' : status.message || '存储与同步';
   button.title = `${label}\n点击查看同步设置`;
   button.setAttribute('aria-label', label);
   $('#app-shell').inert = status.busy || document.body.dataset.libraryBusy === 'true';
@@ -89,123 +115,104 @@ syncSession.subscribe(status => {
   if (status.busy) setStatus(status.message || '正在同步，请稍候…');
 });
 document.addEventListener('keydown', event => { if ((syncBusy || document.body.dataset.libraryBusy === 'true') && !(event.target instanceof Element && event.target.closest('.settings-inline')) && !settingsShortcut(event)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
-$('#settings-button').onclick = () => { void openSettings(syncSession).catch(() => setStatus('无法打开设置', true)); };
+function showSettings(section?: SettingsSection) {
+  return openSettings(syncSession, section, () => dailyNoteChoices(notebook.data));
+}
+$('#settings-button').onclick = () => { void showSettings().catch(() => setStatus('无法打开设置', true)); };
 document.addEventListener('keydown', event => {
-  if (settingsShortcut(event) && (!native || mobile)) { event.preventDefault(); void openSettings(syncSession); }
+  if (settingsShortcut(event) && (!native || mobile)) { event.preventDefault(); void showSettings(); }
 }, true);
 
-const formatItems: [Format, string, string, string][] = [
-  ['heading', '标题', '⌘⇧H', 'H'], ['bold', '粗体', '⌘B', 'B'], ['italic', '斜体', '⌘I', 'I'],
-  ['strike', '删除线', '⌘⇧X', 'S̶'], ['quote', '引用', '⌘⇧Q', '❯'], ['task', '任务列表', '⌘⇧T', '☑'],
-  ['code', '行内代码', '⌘E', '</>'], ['link', '链接', '⌘K', '↗'], ['table', '表格', '', '▦'],
+const formatItems: [Format, string, string?][] = [
+  ['bold', '粗体', '⌘B'], ['italic', '斜体', '⌘I'], ['underline', '下划线', '⌘U'],
+  ['strike', '删除线', '⌘⇧X'], ['highlight', '高亮', '⌘⇧E'],
+  ['title', '标题', '⌘⇧T'], ['heading', '二级标题', '⌘⇧H'], ['subheading', '三级标题', '⌘⇧J'], ['body', '正文', '⌘⇧B'],
+  ['code', '等宽', '⌘⇧M'], ['bullet', '• 项目符号列表', '⌘⇧7'], ['list', '– 短划线列表', '⌘⇧8'], ['ordered', '1. 编号列表', '⌘⇧9'],
+  ['quote', '块引用', "⌘'"], ['callout', '标注'], ['codeblock', '代码块'], ['divider', '分隔线'],
+  ['task', '任务清单', '⌘⇧L'], ['link', '链接', '⌘K'],
 ];
-const formatBindings = formatItems.filter(item => item[2]).map(([action]) => ({
-  key: ({ bold: 'Mod-b', italic: 'Mod-i', strike: 'Mod-Shift-x', heading: 'Mod-Shift-h', quote: 'Mod-Shift-q', task: 'Mod-Shift-t', code: 'Mod-e', link: 'Mod-k' } as Record<string, string>)[action],
-  run: () => { applyFormat(action); return true; },
-}));
+// 与 Pinto「格式」菜单一致的快捷键，按物理键位匹配，⇧7 这类组合在各键盘布局下都能触发。
+const formatShortcuts: Record<string, Format | 'attach'> = {
+  KeyB: 'bold', KeyI: 'italic', KeyU: 'underline', 'Shift-KeyX': 'strike', 'Shift-KeyE': 'highlight', 'Shift-KeyM': 'code',
+  'Shift-KeyT': 'title', 'Shift-KeyH': 'heading', 'Shift-KeyJ': 'subheading', 'Shift-KeyB': 'body', 'Shift-KeyL': 'task',
+  'Shift-Digit7': 'bullet', 'Shift-Digit8': 'list', 'Shift-Digit9': 'ordered', Quote: 'quote',
+  'Alt-KeyT': 'table', 'Shift-KeyD': 'date', 'Shift-KeyA': 'attach',
+  ...(mobile ? { KeyK: 'link' } : {}),
+};
 const menu = $('#format-menu');
 const mobileTools = $('#mobile-tools');
+const mobileSuggestions = document.createElement('div');
+mobileSuggestions.className = 'mobile-suggestions';
+if (mobile) mobileTools.append(mobileSuggestions);
 const desktop = !mobile;
-const wrapping = new Compartment();
-let mode: 'edit' | 'split' | 'preview' | 'rich' = 'edit';
-let richEditor: RichEditor | undefined;
-let richLoading: Promise<RichEditor> | undefined;
-let ready = false;
-let version = 0;
-let renderedVersion = -1;
-let sourceOffset = 0;
-let renderTimer: ReturnType<typeof setTimeout>;
+let closeFormatPanel: (() => void) | undefined;
+let refreshFormatPanel: (() => void) | undefined;
+let formatCell: ReturnType<RichEditor['captureTableFormat']> | undefined;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
-let scrollTimer: ReturnType<typeof setTimeout>;
-let ignoreScrollUntil = 0;
-let pendingRender: { id: number; source: string; noteId?: string; assetBase?: string } | null = null;
 
-const highlight = HighlightStyle.define([
-  { tag: [tags.heading1, tags.heading2, tags.heading3, tags.heading4, tags.heading5, tags.heading6], class: 'md-title' }, { tag: tags.emphasis, class: 'md-emphasis' },
-  { tag: tags.strong, class: 'md-strong' }, { tag: tags.strikethrough, class: 'md-strike' },
-  { tag: tags.link, class: 'md-link' }, { tag: tags.url, class: 'md-url' },
-  { tag: tags.quote, class: 'md-quote' }, { tag: tags.monospace, class: 'md-code' },
-  { tag: tags.keyword, class: 'md-keyword' }, { tag: tags.string, class: 'md-string' },
-  { tag: tags.number, class: 'md-number' }, { tag: tags.comment, class: 'md-comment' },
-  { tag: [tags.tagName, tags.angleBracket, tags.attributeName], class: 'md-html' },
-]);
-
-function decorations(view: EditorView): DecorationSet {
-  const ranges: ReturnType<Decoration['range']>[] = [];
-  const tree = syntaxTree(view.state);
-  for (const { from, to } of view.visibleRanges) {
-    tree.iterate({ from, to, enter(node) {
-      if (node.name === 'InlineCode') {
-        ranges.push(Decoration.mark({ class: 'md-inline-code' }).range(node.from, node.to));
-      } else if (node.name === 'TaskMarker') {
-        ranges.push(Decoration.mark({ class: 'md-task' }).range(node.from, node.to));
-      } else if (/^(HeaderMark|EmphasisMark|QuoteMark|ListMark|CodeMark|LinkMark|StrikethroughMark)$/.test(node.name) && !(node.name === 'CodeMark' && node.node.parent?.name === 'FencedCode')) {
-        ranges.push(Decoration.mark({ class: node.name === 'ListMark' ? 'md-list-mark md-mark' : 'md-mark' }).range(node.from, node.to));
-      }
-    } });
-  }
-  return Decoration.set(ranges, true);
+function applyFormat(action: Format, keepMenu = false) {
+  if (!currentWritingEditor()) return;
+  richEditor.format(action);
+  if (!keepMenu) closeMenu();
 }
+const noteRelations = createNoteRelationsFooter({
+  context: () => ({ library: notebook.data, note: notebook.external || notebook.loadError ? undefined : notebook.current }),
+  report: message => setStatus(message, true),
+  async open(id, line) {
+    if (!await selectNote(id)) return;
+    sidebar?.revealCurrent();
+    if (notebook.current?.id !== id) return;
+    richEditor.scrollToLine(line);
+  },
+  async write(id, before, after, target) {
+    const root = notebook.root;
+    if (!await saveDraft(true) || root !== notebook.root || notebook.current?.id !== target) return false;
+    try {
+      await notebook.save(after, id, before);
+      sidebar?.refresh();
+      return true;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+      return false;
+    }
+  },
+});
 
-const markdownDecorations = ViewPlugin.fromClass(class {
-  decorations: DecorationSet;
-  constructor(view: EditorView) { this.decorations = decorations(view); }
-  update(update: ViewUpdate) {
-    if (update.docChanged || update.viewportChanged || syntaxTree(update.startState) !== syntaxTree(update.state)) this.decorations = decorations(update.view);
-  }
-}, { decorations: plugin => plugin.decorations });
+const richEditor = createRichEditor($('#rich-editor'), () => {
+  refreshTitle();
+  try { notebook.stageDraft(sourceForSave()); }
+  catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
+  if (document.body.dataset.statusError !== 'true') setStatus('正在保留草稿…');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { void saveDraft(); }, 500);
+}, {
+  sortCheckedItems: () => preferences.value.sortCheckedItems,
+  relations: noteRelations,
+  suggestionsHost: mobile ? mobileSuggestions : undefined,
+  attachFile: mobile ? undefined : () => attachFromKeyboard(),
+  selectionChanged: () => refreshFormatPanel?.(),
+  openAsset(id, path) { void openAttachment(notebook, id, path).catch(error => setStatus(String(error), true)); },
+  openNoteLink(target) { void followNoteLink(target); },
+  noteLinkExists,
+  describeNoteLink(target) { return describeNoteLink(notebook.data, target, notebook.current); },
+  loadLinkPreview: { page: webLinkPreview, thumbnail: webLinkThumbnail },
+  sharePicture(source, selection) {
+    const request = pictureRequest(notebook.current, source, selection);
+    if (request) void import('./note-picture').then(({ showNotePicture }) => showNotePicture(request, focusEditor)).catch(() => setStatus('无法打开图片预览', true));
+  },
+  suggestNoteLinks(query, draft) {
+    const { data, current } = notebook;
+    const titles = () => noteLinkChoices(data, current?.id ?? '', query);
+    return query.includes('#') ? noteLinkHeadingChoices(data, current, query, draft).then(choices => choices.length ? choices : titles())
+      : titles();
+  },
+  onError: message => setStatus(message, true),
+});
+const { view } = richEditor;
 
-function applyFormat(action: Format) {
-  if (notebook.loadError || notebook.current?.readOnly) return;
-  if (!showingNote) return;
-  if (mode === 'rich') {
-    if (!richEditor || richEditor.composing) return;
-    richEditor.format(action);
-    closeMenu();
-    return;
-  }
-  if (view.compositionStarted) return;
-  if (mode === 'preview') setMode('edit');
-  view.dispatch(formatTransaction(view.state, action));
-  view.focus();
-  closeMenu();
+function sourceForSave() {
+  return view.state.doc.toString();
 }
-
-function createNoteState(source: string) {
-  return EditorState.create({
-    doc: source,
-    extensions: [
-      history(), drawSelection(), indentOnInput(), wrapping.of(preferences.value.lineWrap ? EditorView.lineWrapping : []),
-      markdown({ base: markdownLanguage, codeLanguages: languages }),
-      syntaxHighlighting(highlight), markdownDecorations,
-      EditorView.contentAttributes.of({ 'aria-label': 'Markdown 原文', spellcheck: 'false', autocapitalize: 'off' }),
-      keymap.of([
-        ...formatBindings,
-        indentWithTab, ...defaultKeymap, ...historyKeymap, ...searchKeymap,
-      ]),
-      EditorView.updateListener.of(update => {
-        if (!update.docChanged) return;
-        version++;
-        refreshTitle();
-        try { notebook.stageDraft(update.state.doc.toString()); }
-        catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
-        if (document.body.dataset.statusError !== 'true') setStatus('正在保留草稿…');
-        clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => { void saveDraft(); }, 500);
-        scheduleRender();
-      }),
-      EditorView.editable.of(!notebook.loadError && !notebook.current?.readOnly),
-      EditorState.readOnly.of(notebook.loadError || Boolean(notebook.current?.readOnly)),
-      EditorView.domEventHandlers({
-        compositionend() { setTimeout(() => { scheduleRender(0); saveDraft(); }, 30); },
-        scroll() { syncPreview(); },
-        focus() { updateViewport(); },
-        blur() { saveDraft(); updateViewport(); },
-      }),
-    ],
-  });
-}
-const view = new EditorView({ parent: $('#editor'), state: createNoteState(initial) });
 
 function refreshTitle(force = false) {
   if (force || !$('#rename-note')) $('#note-title').textContent = showingNote ? noteTitle({ ...notebook.current, source: view.state.doc.toString() }) : '未选择笔记';
@@ -217,11 +224,10 @@ async function saveDraft(includeTitle = false) {
   if (!includeTitle && document.body.dataset.libraryBusy === 'true') {
     clearTimeout(saveTimer); saveTimer = setTimeout(() => { void saveDraft(); }, 500); return false;
   }
-  if (view.compositionStarted || richEditor?.composing) return false;
-  richEditor?.flush();
+  if (richEditor.composing) return false;
   clearTimeout(saveTimer);
   saveTimer = undefined;
-  const text = view.state.doc.toString();
+  const source = sourceForSave();
   const note = notebook.current;
   if (!note) return true;
   const titleInput = includeTitle ? document.querySelector<HTMLInputElement>('#rename-note') : null;
@@ -229,17 +235,19 @@ async function saveDraft(includeTitle = false) {
   const titleValue = titleInput?.value;
   const stored = note.source;
   // CodeMirror normalizes line endings internally; viewing a CRLF draft is not an edit.
-  const changed = stored.replace(/\r\n?/g, '\n') !== text;
+  const changed = stored.replace(/\r\n?/g, '\n') !== source.replace(/\r\n?/g, '\n');
   try {
-    await notebook.save(changed ? text : stored, note.id);
+    await notebook.save(changed ? source : stored, note.id);
     if (titleInput?.isConnected && titleInput.dataset.noteId) {
       if (titleValue?.trim()) await notebook.renameNote(titleInput.dataset.noteId, titleValue);
       if (titleInput.value !== titleValue) return saveDraft(includeTitle);
       refreshTitle(true);
       sidebar?.refresh();
     }
-    if (note.id === notebook.data.activeId && view.state.doc.toString() !== text) return saveDraft(includeTitle);
-    if (note.id === notebook.data.activeId && view.state.doc.toString() === text) setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.server ? '笔记已保存到服务器' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
+    if (note.id === notebook.data.activeId) {
+      if (sourceForSave() !== source) return saveDraft(includeTitle);
+      setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.server ? '笔记已保存到服务器' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
+    }
     if (changed) sidebar?.refresh();
     return true;
   } catch (error) {
@@ -248,37 +256,97 @@ async function saveDraft(includeTitle = false) {
   }
 }
 
-function showCurrentNote(selected: boolean) {
+const visitHistory: string[] = [];
+let visitIndex = -1, movingInHistory = false;
+const noteBack = $<HTMLButtonElement>('#note-back');
+const noteForward = $<HTMLButtonElement>('#note-forward');
+
+function historyDestination(step: -1 | 1) {
+  const available = new Set(notebook.data.notes.filter(note => !note.trashed).map(note => note.id));
+  for (let index = visitIndex + step; index >= 0 && index < visitHistory.length; index += step) {
+    if (available.has(visitHistory[index])) return index;
+  }
+  return -1;
+}
+function updateHistoryButtons() {
+  noteBack.disabled = movingInHistory || historyDestination(-1) < 0;
+  noteForward.disabled = movingInHistory || historyDestination(1) < 0;
+}
+async function stepHistory(step: -1 | 1) {
+  const index = historyDestination(step);
+  if (movingInHistory || index < 0) return;
+  movingInHistory = true; updateHistoryButtons();
+  try {
+    if (await selectNote(visitHistory[index], index)) sidebar?.revealCurrent();
+  } finally { movingInHistory = false; updateHistoryButtons(); }
+}
+noteBack.onclick = () => { void stepHistory(-1); };
+noteForward.onclick = () => { void stepHistory(1); };
+
+function showCurrentNote(selected: boolean, fromHistory?: number) {
+  closeFormatPanel?.();
+  closeMenu();
   clearTimeout(saveTimer);
   saveTimer = undefined;
-  richEditor?.deactivate();
+  richEditor.deactivate();
   showingNote = selected;
   workspace.hidden = !selected;
+  refreshEditorHistory();
   $('#empty-note').hidden = selected;
-  for (const kind of ['format', 'edit', 'rich', 'split', 'preview']) $<HTMLButtonElement>(`#${kind}-button`).disabled = !selected || Boolean(notebook.current?.readOnly && (kind === 'rich' || kind === 'format')) || notebook.loadError;
+  for (const kind of ['format', 'checklist', 'table', 'attach', 'note-more', 'share']) $<HTMLButtonElement>(`#${kind}-button`).disabled = !selected || Boolean(notebook.current?.readOnly && ['format', 'checklist', 'table', 'attach'].includes(kind)) || notebook.loadError;
   if (selected) {
-    // Each document gets its own history, so Undo cannot restore a different note's content.
-    view.setState(createNoteState(notebook.current.source));
-    version++;
-    renderedVersion = -1;
-    pendingRender = null;
-    sourceOffset = 0;
-    scheduleRender(0);
-    if (mode === 'rich' && notebook.current.readOnly) { mode = 'edit'; workspace.dataset.mode = mode; }
-    if (mode === 'rich') richEditor?.activate(notebook.current.source, notebook.current.id, notebook.server || native ? notebook.current.id : undefined, assetBase(notebook));
-    view.requestMeasure();
+    const note = notebook.current;
+    if (fromHistory !== undefined) visitIndex = fromHistory;
+    else if (!note.trashed && visitHistory[visitIndex] !== note.id) {
+      visitHistory.splice(visitIndex + 1, visitHistory.length, note.id);
+      if (visitHistory.length > 101) visitHistory.shift();
+      visitIndex = visitHistory.length - 1;
+    }
+    richEditor.activate(note.source, note.id, notebook.server || native ? note.id : undefined, assetBase(notebook),
+      notebook.loadError || Boolean(note.readOnly));
   }
+  updateHistoryButtons();
   refreshTitle();
 }
 
-async function selectNote(id: string | null) {
+async function selectNote(id: string | null, fromHistory?: number) {
+  if (movingInHistory && fromHistory === undefined) return false;
   if (!await saveDraft(true)) return false;
-  if (id === notebook.data.activeId && showingNote) return true;
+  if (id === notebook.data.activeId && showingNote) {
+    if (fromHistory !== undefined) visitIndex = fromHistory;
+    return true;
+  }
   try {
     if (id && !await notebook.select(id)) return false;
-    showCurrentNote(id !== null);
+    showCurrentNote(id !== null, fromHistory);
     return true;
   } catch { setStatus('无法切换笔记，当前内容仍保留在编辑区', true); return false; }
+}
+
+function focusEditor() {
+  richEditor.focus();
+}
+
+async function followNoteLink(target: string) {
+  const { note, heading } = resolveNoteLink(notebook.data, target, notebook.current);
+  if (!note) {
+    const segments = target.split('#')[0].split('/');
+    const title = segments.pop()?.trim().replace(/\.(?:md|markdown)$/i, '');
+    const current = notebook.current;
+    const folderId = segments.length ? notebook.data.folders.find(folder => (folder.path || folder.name) === segments.join('/'))?.id : current?.folderId;
+    if (!title || !current || !folderId || current.readOnly || notebook.external) { setStatus('找不到链接指向的笔记', true); return; }
+    confirmLinkedNote(title, async () => {
+      if (notebook.current?.id === current.id && await createNote(folderId, title)) sidebar?.revealCurrent();
+    });
+    return;
+  }
+  if (!await selectNote(note.id)) return;
+  sidebar?.revealCurrent();
+  if (!heading) return;
+  const doc = view.state.doc;
+  const position = await noteHeadingOffset(doc.toString(), heading);
+  if (position === undefined || doc !== view.state.doc || !showingNote || notebook.current?.id !== note.id) return;
+  richEditor.scrollToLine(doc.lineAt(position).number);
 }
 
 async function createNote(folderId: string, title = '') {
@@ -286,109 +354,336 @@ async function createNote(folderId: string, title = '') {
   try {
     await notebook.createNote(folderId, title);
     showCurrentNote(true);
-    if (mode === 'preview') await setMode('edit');
-    if (mode === 'rich') richEditor?.focus(); else if (mode === 'edit' || mode === 'split') view.focus();
+    focusEditor();
     return true;
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error), true); return false; }
 }
-function scheduleRender(delay = 150) {
-  clearTimeout(renderTimer);
-  // Let the system IME finish its composition without preview-triggered layout work.
-  if (view.compositionStarted) return;
-  renderTimer = setTimeout(() => {
-    if (view.compositionStarted) return;
-    const source = view.state.doc.toString();
-    sourceOffset = markdownBody(source).offset;
-    pendingRender = { id: version, source, noteId: notebook.server || native ? notebook.current?.id : undefined, assetBase: assetBase(notebook) };
-    if (mode === 'preview' || mode === 'split') sendRender();
-  }, delay);
+let openingToday = false;
+async function openTodayNote() {
+  if (openingToday || notebook.loadError || notebook.external || syncBusy || document.body.dataset.libraryBusy === 'true' ||
+    document.querySelector('dialog[open]')) return;
+  openingToday = true;
+  try {
+    if (!await saveDraft(true)) return;
+    const previous = notebook.current;
+    const created = await notebook.openToday(preferences.value);
+    if (!showingNote || previous?.id !== notebook.current?.id || previous.source !== notebook.current.source) showCurrentNote(true);
+    sidebar?.openCurrent();
+    view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
+    richEditor.focus();
+    setStatus(created ? '已创建今日笔记' : '已打开今日笔记');
+  } catch (error) { setStatus(error instanceof Error ? error.message : String(error), true); }
+  finally { openingToday = false; }
 }
-function sendRender() {
-  if (ready && pendingRender && !view.compositionStarted) frame.contentWindow?.postMessage({ type: 'render', ...pendingRender }, location.origin);
+
+function closeMenu() {
+  menu.hidden = true;
+  formatCell = undefined;
+  if (!closeFormatPanel) $('#format-button').setAttribute('aria-expanded', 'false');
 }
-function previewReady() {
-  ready = true;
-  frame.contentWindow?.postMessage({ type: 'preferences', ...previewPreferences() }, location.origin);
-  if (mode === 'preview' || mode === 'split') sendRender();
+function bindChecklistTool(button: HTMLElement) {
+  button.addEventListener('pointerdown', event => {
+    if (event.button === 0 && document.activeElement?.closest('.cm-markra-table')) event.preventDefault();
+  });
+  button.onclick = () => applyFormat('task');
 }
-async function setMode(next: typeof mode) {
-  if (!showingNote) return;
-  if ((notebook.loadError || notebook.current?.readOnly) && next === 'rich') return;
-  if (view.compositionStarted || richEditor?.composing) return;
-  richEditor?.deactivate();
-  if (next === 'split' && matchMedia('(max-width: 640px)').matches) next = 'preview';
-  mode = next;
-  workspace.dataset.mode = mode;
-  contentSplit.modeChanged();
-  for (const kind of ['edit', 'split', 'preview', 'rich']) $(`#${kind}-button`).setAttribute('aria-pressed', String(kind === mode));
-  if (next === 'rich') {
-    closeMenu();
-    $('#rich-pane').setAttribute('aria-busy', 'true');
-    try {
-      richLoading ??= import('./rich-editor').then(({ createRichEditor }) => createRichEditor($('#rich-editor'), source => {
-        const transaction = replaceSource(view.state, source);
-        if (transaction) view.dispatch(transaction);
-      }, { openAsset(id, path) { void openAttachment(notebook, id, path).catch(error => setStatus(String(error), true)); } }));
-      richEditor = await richLoading;
-      if (mode === 'rich') { richEditor.activate(view.state.doc.toString(), notebook.current.id, notebook.server || native ? notebook.current.id : undefined, assetBase(notebook)); richEditor.focus(); }
-    } catch (error) {
-      console.error(error);
-      richLoading = undefined;
-      $('#rich-editor').textContent = '正在加载所见即所得编辑器…';
-      if (mode === 'rich') {
-        void setMode('edit');
-        setStatus('所见即所得加载失败，原文仍可编辑', true);
-      }
-    } finally { $('#rich-pane').setAttribute('aria-busy', 'false'); }
-  } else if (next !== 'edit') {
-    if (pendingRender && renderedVersion !== pendingRender.id) sendRender();
-    syncPreview();
-  }
-  view.requestMeasure();
-  updateViewport();
+bindChecklistTool($('#checklist-button'));
+function pictureRequest(note: Note, source: string, selection?: PictureRange): PictureRequest | undefined {
+  if (!note || note.trashed || note.readOnly) return;
+  return { title: noteTitle({ ...note, source }), source, selection, image: async href => {
+    if (!isLocalAsset(href) || href.startsWith('/') && !/^\/(?:i|files)\//u.test(href)) return;
+    const path = decodeURIComponent(href.split(/[?#]/u)[0]);
+    const type = path.toLowerCase().match(/\.(png|jpe?g|webp|gif|bmp)$/u)?.[1];
+    if (!type) return;
+    let blob: Blob;
+    if (native) {
+      const bytes = await invoke<ArrayBuffer>('note_picture_asset', { noteId: note.id, path });
+      blob = new Blob([bytes], { type: `image/${type === 'jpg' ? 'jpeg' : type}` });
+    } else {
+      if (!notebook.server) return;
+      const response = await fetch(`/api/web/assets/${encodeURIComponent(note.id)}?${new URLSearchParams({ path })}`);
+      if (!response.ok) return;
+      blob = await response.blob();
+    }
+    return new Promise<string | undefined>((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
+      reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob);
+    });
+  } };
 }
-function closeMenu() { menu.hidden = true; $('#format-button').setAttribute('aria-expanded', 'false'); }
-$('#format-button').innerHTML = formatIcon;
-$('#edit-button').innerHTML = editIcon;
-$('#split-button').innerHTML = splitIcon;
-$('#preview-button').innerHTML = previewIcon;
-$('#edit-button').onclick = () => { void setMode('edit'); if (mode === 'edit') view.focus(); };
-$('#rich-button').onclick = () => { void setMode(mode === 'rich' ? 'edit' : 'rich'); };
-$('#split-button').onclick = () => setMode(mode === 'split' ? 'edit' : 'split');
-$('#preview-button').onclick = () => setMode(mode === 'preview' ? 'edit' : 'preview');
-$('#format-button').onclick = () => {
-  menu.hidden = !menu.hidden;
-  if (desktop && !menu.hidden) menu.style.right = `${innerWidth - $('#format-button').getBoundingClientRect().right}px`;
-  $('#format-button').setAttribute('aria-expanded', String(!menu.hidden));
+function shareNote(anchor: HTMLElement, note: Note, source = note.source, selection?: PictureRange) {
+  const text = markdownBody(source).body.split('\n').map(plainMarkdownLine).join('\n');
+  const picture = pictureRequest(note, source, selection);
+  showShare(anchor, picture?.title ?? noteTitle({ ...note, source }), text, message => setStatus(message, true), picture);
+}
+$('#share-button').onclick = event => {
+  shareNote(event.currentTarget as HTMLElement, notebook.current, sourceForSave(), richEditor.pictureSelection());
 };
-for (const [action, label, shortcut, symbol] of formatItems) {
+
+const tableButton = $('#table-button');
+function bindTableTool(button: HTMLElement) {
+  const capture = () => richEditor.captureTableMenu(button);
+  let open: ReturnType<typeof capture>;
+  // Preserve the editing cell before WebKit transfers keyboard focus to the toolbar.
+  button.addEventListener('pointerdown', event => {
+    open = capture();
+    if (open) event.preventDefault();
+  });
+  button.addEventListener('pointercancel', () => { open = undefined; });
+  button.onclick = () => {
+    const panel = open ?? capture();
+    open = undefined;
+    if (panel) panel();
+    else applyFormat('table');
+  };
+}
+bindTableTool(tableButton);
+$('#note-more-button').onclick = event => {
+  const box = $('#note-more-button').getBoundingClientRect();
+  void sidebar?.showCurrentMenu(Math.max(8, box.right - 250), box.bottom + 6, event.detail === 0);
+};
+const untickButton = document.createElement('button');
+untickButton.textContent = '取消勾选全部任务';
+untickButton.role = 'menuitem';
+untickButton.dataset.format = 'untick';
+untickButton.onclick = () => {
+  closeMenu();
+  if (!currentWritingEditor()) return;
+  richEditor.untickChecklist();
+};
+function currentWritingEditor() {
+  return showingNote && !view.state.readOnly && !richEditor.composing ? view : null;
+}
+const moveItemButtons = ([true, false] as const).map(up => {
   const button = document.createElement('button');
+  button.type = 'button';
   button.role = 'menuitem';
-  button.innerHTML = `<span>${label}</span><kbd>${shortcut}</kbd>`;
-  button.onclick = () => applyFormat(action);
-  menu.appendChild(button);
-  if (action !== 'strike' && action !== 'table') {
-    const quick = document.createElement('button');
-    quick.textContent = symbol;
-    quick.setAttribute('aria-label', label);
-    quick.onclick = () => applyFormat(action);
-    mobileTools.appendChild(quick);
+  button.textContent = up ? '上移项目' : '下移项目';
+  button.title = up ? '上移项目 ⌃⌘↑' : '下移项目 ⌃⌘↓';
+  button.onclick = () => {
+    const editor = currentWritingEditor();
+    closeMenu();
+    if (editor) moveEditorItem(editor, up);
+  };
+  return button;
+});
+function showMobileFormat(trigger: HTMLButtonElement) {
+  if (closeFormatPanel || !currentWritingEditor()) return;
+  const cell = richEditor.captureTableFormat();
+  const input = cell ? cell.element()?.closest('table') ?? undefined : richEditor.input;
+  const scroller = richEditor.element;
+  const noteId = notebook.current?.id;
+  const events = new AbortController();
+  const restore = () => {
+    if (notebook.current?.id !== noteId) return;
+    if (!cell?.restore()) focusEditor();
+  };
+  trigger.setAttribute('aria-controls', 'editor-format-panel');
+  let layout: ReturnType<typeof keepPanelTargetVisible>;
+  const { dialog, close, refresh, useInput } = openEditorFormatPanel(trigger, () => cell ? {
+    active: new Set<Format>(['body', ...cell.active()]), canIndent: false, canOutdent: false,
+    inCode: false, isTitle: false, inTable: true, canFormatCell: cell.canFormat(),
+  } : richEditor.formatPanelState(), action => {
+    if (notebook.current?.id !== noteId || notebook.current?.readOnly) return;
+    if (cell) {
+      cell.apply(action);
+      const grid = cell.element()?.closest('table');
+      if (grid) { useInput(grid); cell.restore(); }
+    } else richEditor.applyFormatPanel(action);
+    layout.refresh();
+  }, shouldRestore => {
+    events.abort();
+    layout.stop();
+    closeFormatPanel = undefined;
+    refreshFormatPanel = undefined;
+    if (shouldRestore) restore();
+    updateViewport();
+  }, input);
+  closeFormatPanel = close;
+  layout = keepPanelTargetVisible(workspace, scroller, dialog, cell ? cell.bounds : richEditor.formatTargetBounds);
+  refreshFormatPanel = () => { refresh(); layout.refresh(); };
+  cell?.restore();
+  document.addEventListener('pointerdown', event => {
+    const target = event.target as Element;
+    if (dialog.contains(target)) return;
+    if (cell ? !cell.element()?.contains(target) : !scroller.contains(target) || target.closest('.cm-markra-table')) close();
+  }, { capture: true, signal: events.signal });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    close(true);
+  }, { capture: true, signal: events.signal });
+}
+const formatButton = $<HTMLButtonElement>('#format-button');
+formatButton.ariaHasPopup = mobile ? 'dialog' : 'menu';
+menu.tabIndex = -1;
+const formatChoices = () => [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled):not([hidden])')];
+formatButton.onclick = event => {
+  if (mobile) { showMobileFormat(formatButton); return; }
+  if (!menu.hidden) { closeMenu(); return; }
+  formatCell = richEditor.captureTableFormat();
+  const canFormatCell = formatCell?.canFormat();
+  const activeFormat = formatCell ? undefined : richEditor.paragraphFormat();
+  for (const button of menu.querySelectorAll<HTMLButtonElement>('button[data-format]')) {
+    const action = button.dataset.format as Format;
+    button.disabled = Boolean(formatCell && (!canFormatCell || (action !== 'code' && !inlineFormatIcons[action])));
+    if (button.role === 'menuitemradio') button.ariaChecked = String(action === activeFormat);
+  }
+  untickButton.hidden = Boolean(formatCell) || !richEditor.canUntickChecklist;
+  const editor = currentWritingEditor();
+  moveItemButtons.forEach((button, index) => {
+    button.hidden = document.documentElement.dataset.platform === 'macos';
+    button.disabled = Boolean(formatCell) || !editor || !editorItemMove(editor, index === 0);
+  });
+  menu.hidden = false;
+  const bounds = formatButton.getBoundingClientRect();
+  menu.style.left = `${Math.min(innerWidth - menu.offsetWidth - 8, Math.max(8, bounds.left + bounds.width / 2 - menu.offsetWidth / 2))}px`;
+  formatButton.ariaExpanded = 'true';
+  if (!event.detail) (formatChoices()[0] ?? menu).focus();
+};
+formatButton.onkeydown = event => {
+  if (mobile || event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  if (menu.hidden) formatButton.click();
+  else (formatChoices()[0] ?? menu).focus();
+};
+menu.onkeydown = event => {
+  const { key } = event;
+  if (key === 'Escape' || key === 'Tab') {
+    event.preventDefault();
+    event.stopPropagation();
+    closeMenu();
+    formatButton.focus({ preventScroll: true });
+    return;
+  }
+  const choices = formatChoices();
+  if (!choices.length) return;
+  const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+  if (key === 'Home') choices[0].focus();
+  else if (key === 'End') choices.at(-1)?.focus();
+  else if (key === 'ArrowDown' || key === 'ArrowRight') choices[(index + 1) % choices.length].focus();
+  else if (key === 'ArrowUp' || key === 'ArrowLeft') choices[(index + choices.length - 1) % choices.length].focus();
+  else return;
+  event.preventDefault();
+};
+const inlineFormats = document.createElement('div'); inlineFormats.className = 'format-inline';
+menu.append(inlineFormats);
+for (const [action, label, shortcut] of formatItems) {
+  if (action !== 'task' && action !== 'link') {
+    const button = document.createElement('button');
+    const icon = inlineFormatIcons[action];
+    button.role = ['title', 'heading', 'subheading', 'body', 'bullet', 'list', 'ordered', 'quote', 'callout'].includes(action) ? 'menuitemradio' : 'menuitem';
+    button.ariaLabel = label;
+    button.title = [label, shortcut].filter(Boolean).join(' ');
+    button.append(icon ? createLucideIcon(document, icon, 'format-inline-icon') : label);
+    button.onclick = event => {
+      const keyboard = !event.detail && document.activeElement === button;
+      if (formatCell) {
+        formatCell.apply(action);
+        if (!icon || !keyboard) formatCell.restore();
+        if (!icon) closeMenu();
+      } else applyFormat(action, Boolean(icon));
+      if (icon && keyboard && !menu.hidden) button.focus();
+    };
+    button.dataset.format = action;
+    (icon ? inlineFormats : menu).append(button);
+    if (action === 'ordered') menu.append(untickButton);
+    if (action === 'quote') menu.append(...moveItemButtons);
   }
 }
+const quickFormat = formatButton.cloneNode(true) as HTMLButtonElement;
+quickFormat.removeAttribute('id');
+quickFormat.setAttribute('aria-controls', 'editor-format-panel');
+quickFormat.setAttribute('aria-haspopup', 'dialog');
+quickFormat.onclick = () => showMobileFormat(quickFormat);
+const quickChecklist = $('#checklist-button').cloneNode(true) as HTMLButtonElement;
+quickChecklist.removeAttribute('id');
+bindChecklistTool(quickChecklist);
+const quickTable = tableButton.cloneNode(true) as HTMLButtonElement;
+quickTable.removeAttribute('id');
+quickTable.className = 'mobile-table-button';
+quickTable.title = quickTable.ariaLabel = '表格';
+quickTable.querySelector('svg')!.insertAdjacentHTML('beforeend', `
+  <g class="mobile-table-badge">
+    <rect x="11.7" y="12.4" width="11.7" height="8" rx="4" fill="var(--control-fill)" stroke="var(--control-fill)" stroke-width="2"/>
+    <g fill="currentColor" stroke="none">
+      <circle cx="14.65" cy="16.4" r="1"/><circle cx="17.55" cy="16.4" r="1"/><circle cx="20.45" cy="16.4" r="1"/>
+    </g>
+  </g>`);
+bindTableTool(quickTable);
+const quickLink = document.createElement('button');
+quickLink.type = 'button';
+quickLink.hidden = true;
+quickLink.ariaLabel = '添加链接';
+quickLink.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="m10 8 3.4-3.4a4.2 4.2 0 0 1 5.9 5.9l-3.4 3.4a4.2 4.2 0 0 1-5.9 0m4 2-3.4 3.4a4.2 4.2 0 0 1-5.9-5.9L8.1 10a4.2 4.2 0 0 1 5.9 0"/>
+</svg>`;
+quickLink.onpointerdown = event => event.preventDefault();
+quickLink.onclick = () => {
+  if (document.activeElement?.closest('.cm-markra-table')) applyFormat('link');
+};
+const mobileToolsGroup = document.createElement('div');
+mobileToolsGroup.className = 'mobile-tools-group';
+mobileToolsGroup.append(quickFormat, quickChecklist, quickLink, quickTable);
+mobileTools.append(mobileToolsGroup);
 const attachmentInput = document.createElement('input');
 attachmentInput.type = 'file'; attachmentInput.multiple = true; attachmentInput.hidden = true;
 document.body.append(attachmentInput);
-const attachmentButton = document.createElement('button');
-attachmentButton.role = 'menuitem'; attachmentButton.textContent = '插入图片或附件…';
-attachmentButton.hidden = !(native || notebook.server);
-menu.append(attachmentButton);
-attachmentButton.onclick = () => { richEditor?.captureSelection(); closeMenu(); attachmentInput.click(); };
+const attachButton = $('#attach-button');
+attachButton.setAttribute('aria-haspopup', 'menu');
+function openAttachmentMenu(anchor: HTMLElement) {
+  const box = anchor.getBoundingClientRect();
+  const insertInTable = richEditor.captureTableInsertion();
+  const choose = (accept: string) => {
+    richEditor.captureSelection();
+    attachmentInput.accept = accept;
+    attachmentInput.click();
+  };
+  const linkNote = () => {
+    const id = notebook.current?.id;
+    if (!id || !currentWritingEditor()) return;
+    const original = view.state.doc;
+    richEditor.captureSelection();
+    showNoteLinkPicker(anchor, query => noteLinkChoices(notebook.data, id, query), target => {
+      if (notebook.current?.id !== id || !currentWritingEditor() || view.state.doc !== original) return;
+      if (insertInTable) {
+        if (!insertInTable(selected => noteLinkMarkdown(target, selected))) setStatus('单元格已变化，请重新选择链接位置', true);
+      } else richEditor.insert(selected => noteLinkMarkdown(target, selected));
+    }, focusEditor);
+  };
+  void popupMenu([
+    { text: '选择照片或视频…', enabled: native || notebook.server, needsUserActivation: true, run: () => choose('image/*,video/*') },
+    { text: '添加文件…', enabled: native || notebook.server, needsUserActivation: true, run: () => choose('') },
+    { text: '' },
+    { text: '链接到笔记…', run: linkNote },
+    { text: '添加链接', run: () => applyFormat('link') },
+  ], box.left - 90, box.bottom + 6, message => setStatus(message, true), focusEditor, '添加附件');
+}
+function attachFromKeyboard() {
+  if (!currentWritingEditor()) return;
+  if (!native && !notebook.server) { setStatus('当前笔记库不支持添加文件', true); return; }
+  richEditor.captureSelection();
+  attachmentInput.accept = '';
+  attachmentInput.click();
+}
+attachButton.onclick = () => openAttachmentMenu(attachButton);
+const quickAttach = attachButton.cloneNode(true) as HTMLButtonElement;
+quickAttach.removeAttribute('id');
+quickAttach.onclick = () => openAttachmentMenu(quickAttach);
+mobileToolsGroup.append(quickAttach);
+const dismissKeyboard = document.createElement('button');
+dismissKeyboard.type = 'button';
+dismissKeyboard.className = 'dismiss-keyboard';
+dismissKeyboard.ariaLabel = '隐藏键盘';
+dismissKeyboard.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="19" height="12" rx="2"/><path d="M6 7h.1M10 7h.1m4 0h.1m4 0h.1M6 11h.1m3.9 0h4m4 0h.1m-8.6 7.5 2.5 2.5 2.5-2.5"/></svg>';
+dismissKeyboard.onclick = () => (document.activeElement as HTMLElement | null)?.blur();
+mobileTools.append(dismissKeyboard);
 async function insertAttachments(files: File[]) {
-  if (!files.length || !notebook.current || notebook.current.readOnly || view.compositionStarted || richEditor?.composing) return;
+  if (!files.length || !currentWritingEditor()) return;
   if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') { setStatus('正在处理其他操作，请稍后添加附件', true); return; }
   const id = notebook.current.id;
-  if (mode === 'rich') richEditor?.captureSelection();
-  const range = view.state.selection.main;
+  richEditor.captureSelection();
   try {
     if (files.some(file => file.size > MAX_ASSET_BYTES) || files.reduce((size, file) => size + file.size, 0) > MAX_ASSETS_TOTAL) throw new Error('单附件不能超过 64 MiB，每次最多 256 MiB');
     if (!await saveDraft(true)) return;
@@ -398,18 +693,12 @@ async function insertAttachments(files: File[]) {
       const attachment = await notebook.importAttachment(id, { name: file.name, bytes: Array.from(new Uint8Array(await file.arrayBuffer())) });
       if (notebook.current?.id !== id) throw new Error('当前笔记已切换，附件文件已保留，请重新插入');
       const markdown = attachmentMarkdown(attachment) + '\n\n';
-      if (mode === 'rich') {
-        $('#app-shell').inert = false;
-        richEditor?.insert(markdown);
-        $('#app-shell').inert = true;
-      }
-      else {
-        const selection = files.indexOf(file) === 0 ? range : view.state.selection.main;
-        view.dispatch({ changes: { from: selection.from, to: selection.to, insert: markdown }, selection: { anchor: selection.from + markdown.length }, scrollIntoView: true });
-      }
+      $('#app-shell').inert = false;
+      richEditor.insert(markdown);
+      $('#app-shell').inert = true;
       if (!await saveDraft(true)) throw new Error('附件已保留，但笔记尚未保存，请保持当前窗口打开后重试');
     }
-    scheduleRender(0); setStatus('图片与附件已保存');
+    setStatus('图片与附件已保存');
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error), true); }
   finally { document.body.dataset.libraryBusy = 'false'; $('#app-shell').inert = document.body.dataset.syncBusy === 'true'; }
 }
@@ -418,94 +707,241 @@ workspace.addEventListener('dragover', event => { if (event.dataTransfer?.types.
 workspace.addEventListener('drop', event => { if (!event.dataTransfer?.files.length) return; event.preventDefault(); event.stopImmediatePropagation(); void insertAttachments(Array.from(event.dataTransfer.files)); }, true);
 workspace.addEventListener('paste', event => { if (!event.clipboardData?.files.length) return; event.preventDefault(); event.stopImmediatePropagation(); void insertAttachments(Array.from(event.clipboardData.files)); }, true);
 // Toolbar presses must not dismiss the keyboard or move the editor selection.
+mountGlassToolbar($('.actions'));
+if (!mobile) mountGlassToolbar($('.notes-navigation'));
+mountGlassButton($<HTMLButtonElement>('#new-empty-note'));
+if (mobile) mountGlassButton($<HTMLButtonElement>('#new-note-button'));
 for (const bar of [$('.actions'), menu, mobileTools]) bar.addEventListener('pointerdown', event => {
   if ((event.target as HTMLElement).closest('button')) event.preventDefault();
 });
+if (mobile) keepEditorFocusForTouchButtons(mobileTools, button => !mobileSuggestions.contains(button));
 document.addEventListener('pointerdown', event => {
   if (!menu.contains(event.target as Node) && !$('#format-button').contains(event.target as Node)) closeMenu();
 });
+if (mobile) window.addEventListener('popstate', () => { closeMenu(); closeFormatPanel?.(); });
+function findInNote(direction?: 'next' | 'previous') {
+  if (document.querySelector('dialog[open], .search-picker:popover-open') || richEditor.composing) return false;
+  if (!showingNote) {
+    if (direction) return false;
+    $('#library-search-button').click();
+    return true;
+  }
+  return richEditor.find(direction);
+}
+let quickOpen: ReturnType<typeof openQuickOpen> | undefined;
+function toggleQuickOpen() {
+  if (!desktop || documentWindow || !sidebar || notebook.external || notebook.loadError || $('#app-shell').inert ||
+    document.querySelector('dialog[open], .search-picker:not(.quick-open):popover-open') || popupMenuOpen() ||
+    richEditor.composing) return false;
+  if (quickOpen) {
+    if (quickOpen.panel.contains(document.activeElement)) quickOpen.close();
+    else quickOpen.focus();
+    return true;
+  }
+  const previous = document.activeElement;
+  const currentId = notebook.current?.id;
+  const currentEditor = currentWritingEditor();
+  const previousDoc = currentEditor?.state.doc;
+  const cell = previous?.closest('.cm-markra-table') ? richEditor.captureTableFormat() : undefined;
+  const root = notebook.root;
+  closeMenu();
+  quickOpen = openQuickOpen({
+    library: notebook.data,
+    commands() {
+      const rows: QuickCommand[] = [
+        { title: '新建笔记', icon: SquarePen, shortcut: '⌘N', keywords: ['new note', 'create'], run: () => $('#new-note-button').click() },
+        { title: '今日笔记', icon: Calendar, shortcut: '⌘T', keywords: ['today', 'daily'], run: () => { void openTodayNote(); } },
+        { title: '新建文件夹', icon: FolderPlus, shortcut: '⇧⌘N', keywords: ['new folder'], run: () => $('#new-folder-button').click() },
+      ];
+      const note = notebook.current;
+      if (showingNote && note && !note.trashed) rows.push({
+        title: note.pinned ? '取消置顶' : '置顶笔记', icon: note.pinned ? PinOff : Pin,
+        detail: noteTitle(note), keywords: ['pin', 'unpin'],
+        run: () => { void notebook.togglePin(note.id).then(() => sidebar?.refresh()).catch(error => setStatus(String(error), true)); },
+      });
+      if (showingNote && note && !note.trashed && notebook.data.folders.some(folder => folder.id !== note.folderId)) rows.push({
+        title: '移动笔记…', icon: FolderInput, detail: noteTitle(note), keywords: ['move', 'folder'], run: () => { void sidebar?.moveCurrentNote(); },
+      });
+      if (native) rows.push(
+        { title: '导入文件…', icon: FileDown, keywords: ['import files'], run: () => { void emitTo('main', 'library-command', 'library-import'); } },
+        { title: '导入文件夹…', icon: FileDown, keywords: ['import folder'], run: () => { void emitTo('main', 'library-command', 'library-import-folder'); } },
+      );
+      return rows.concat({ title: '设置…', icon: Settings, shortcut: '⌘,', keywords: ['settings', 'preferences'], run: () => $('#settings-button').click() });
+    },
+    async openNote(note) {
+      if (notebook.root !== root || !notebook.data.notes.some(item => item.id === note.id && !item.trashed) || !await selectNote(note.id)) return;
+      sidebar?.revealCurrent();
+      focusEditor();
+    },
+    showAll: query => sidebar?.searchAll(query),
+    restore() {
+      if (currentId === notebook.current?.id && previousDoc === currentEditor?.state.doc && cell?.restore()) return;
+      if (previous instanceof HTMLElement && previous.isConnected && !previous.closest('[inert]')) previous.focus({ preventScroll: true });
+    },
+    closed() { quickOpen = undefined; },
+  });
+  return true;
+}
+
+function commandK() {
+  if (richEditor.composing || $('#app-shell').inert ||
+    document.querySelector('dialog[open], .search-picker:not(.quick-open):popover-open') || popupMenuOpen()) return false;
+  const target = document.activeElement;
+  const editor = currentWritingEditor();
+  if (editor && target && editor.contentDOM.contains(target)) {
+    const cell = target.closest('.cm-markra-table');
+    const selection = cell ? window.getSelection() : null;
+    const picked = cell ? selection && !selection.isCollapsed && cell.contains(selection.anchorNode) && cell.contains(selection.focusNode)
+      : target === editor.contentDOM && !editor.state.selection.main.empty;
+    if (picked) { applyFormat('link'); return true; }
+  }
+  return toggleQuickOpen();
+}
+
+function foldSections(expanded: boolean) {
+  if (!showingNote || richEditor.composing || document.querySelector('dialog[open], .search-picker:popover-open')) return false;
+  void richEditor.foldHeadings(expanded);
+  return true;
+}
 document.addEventListener('keydown', event => {
-  if (mode !== 'rich' || !$('#rich-editor').contains(document.activeElement) || event.isComposing || event.altKey || (!event.metaKey && !event.ctrlKey)) return;
-  const binding = formatBindings.find(item => item.key === `Mod-${event.shiftKey ? 'Shift-' : ''}${event.key.toLowerCase()}`);
-  if (binding) { event.preventDefault(); event.stopPropagation(); binding.run(); }
+  if (desktop && document.documentElement.dataset.platform !== 'macos' && !event.isComposing && event.shiftKey && !event.altKey &&
+    (/Mac/.test(navigator.platform) ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) && event.key.toLowerCase() === 'd') {
+    const editor = currentWritingEditor();
+    if (editor?.contentDOM === document.activeElement && !editor.compositionStarted) {
+      event.preventDefault(); event.stopPropagation(); applyFormat('date'); return;
+    }
+  }
+  if (desktop && !event.isComposing && !event.altKey && !event.shiftKey && !event.repeat &&
+    (/Mac/.test(navigator.platform) ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) &&
+    event.key.toLowerCase() === 'k' && commandK()) {
+    event.preventDefault(); event.stopPropagation(); return;
+  }
+  if (!event.isComposing && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
+      && event.key.toLowerCase() === 'f' && findInNote()) {
+    event.preventDefault(); event.stopPropagation(); return;
+  }
+  if (desktop && document.documentElement.dataset.platform === 'macos' && !event.isComposing
+    && event.metaKey && event.altKey && event.shiftKey && !event.ctrlKey
+    && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && foldSections(event.key === 'ArrowRight')) {
+    event.preventDefault(); event.stopPropagation(); return;
+  }
+  if (desktop && document.documentElement.dataset.platform !== 'macos' && !event.isComposing
+    && event.ctrlKey && !event.shiftKey && (/Mac/.test(navigator.platform) ? event.metaKey && !event.altKey : event.altKey && !event.metaKey)
+    && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    const editor = currentWritingEditor();
+    if (editor && editor.contentDOM === document.activeElement) {
+      if (moveEditorItem(editor, event.key === 'ArrowUp')) closeMenu();
+      event.preventDefault(); event.stopPropagation(); return;
+    }
+  }
+  const backKey = event.key === '[' || event.code === 'BracketLeft' && !event.key;
+  const forwardKey = event.key === ']' || event.code === 'BracketRight' && !event.key;
+  if (desktop && !event.isComposing && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey
+    && (backKey || forwardKey) && !document.querySelector('dialog[open], .search-picker:popover-open')) {
+    const step = backKey ? -1 : 1;
+    if (!(step < 0 ? noteBack : noteForward).disabled) {
+      event.preventDefault(); event.stopPropagation();
+      void stepHistory(step);
+      return;
+    }
+  }
+  if (!view.dom.contains(document.activeElement) || event.isComposing || (!event.metaKey && !event.ctrlKey)) return;
+  const action = formatShortcuts[`${event.altKey ? 'Alt-' : ''}${event.shiftKey ? 'Shift-' : ''}${event.code}`];
+  if (!action || (action === 'attach' && mobile)) return;
+  event.preventDefault(); event.stopPropagation();
+  if (action === 'attach') attachFromKeyboard();
+  else applyFormat(action);
 }, true);
+function resizeNoteText(action: 'bigger' | 'smaller' | 'actual') {
+  try { changeNoteTextSize(action); }
+  catch (error) { setStatus(error instanceof Error ? error.message : '无法保存字号', true); }
+}
+document.addEventListener('keydown', event => {
+  const action = noteTextSizeShortcut(event);
+  if (!desktop || !action || document.querySelector('dialog[open]')) return;
+  event.preventDefault();
+  resizeNoteText(action);
+});
 document.addEventListener('keydown', event => {
   if (event.isComposing) return;
   if (event.key === 'Escape') closeMenu();
   if (!event.metaKey && !event.ctrlKey) return;
-  if (event.key === '3') { event.preventDefault(); setMode(mode === 'preview' ? 'edit' : 'preview'); }
-  if (event.key === '\\') { event.preventDefault(); setMode(mode === 'split' ? 'edit' : 'split'); }
   if (event.key.toLowerCase() === 's') { event.preventDefault(); clearTimeout(saveTimer); void saveDraft(true); }
 });
 function preserveOnLeave() {
+  if (!showingNote) return true;
   if (!notebook.server) { void saveDraft(true); return true; }
   // Navigation can abort HTTP saves; the per-note draft is recovered after reopening.
-  try { richEditor?.flush(); notebook.stageDraft(view.state.doc.toString()); return true; }
+  try { notebook.stageDraft(sourceForSave()); return true; }
   catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); return false; }
 }
 window.addEventListener('pagehide', preserveOnLeave);
 document.addEventListener('visibilitychange', () => { if (document.hidden) preserveOnLeave(); });
-
-function syncPreview() {
-  if (mode !== 'split' || performance.now() < ignoreScrollUntil) return;
-  clearTimeout(scrollTimer);
-  scrollTimer = setTimeout(() => {
-    const position = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
-    const line = view.state.doc.lineAt(position.from).number - sourceOffset;
-    frame.contentWindow?.postMessage({ type: 'scroll', line: Math.max(1, line) }, location.origin);
-  }, 50);
-}
-window.addEventListener('message', ({ source, origin, data }) => {
-  if (source !== frame.contentWindow || origin !== location.origin) return;
-  if (data.type === 'preview-ready') previewReady();
-  if (data.type === 'preview-rendered') { renderedVersion = data.id; syncPreview(); }
-  if (data.type === 'preview-error') setStatus('部分预览未完成，原文已保留', true);
-  if (data.type === 'open-asset' && data.noteId === notebook.current?.id && typeof data.path === 'string') void openAttachment(notebook, data.noteId, data.path).catch(error => setStatus(String(error), true));
-  if (data.type === 'task') {
-    if (notebook.loadError || notebook.current?.readOnly) return;
-    if (view.compositionStarted || renderedVersion !== version || !Number.isInteger(data.line)) return;
-    const transaction = toggleTask(view.state, data.line + sourceOffset);
-    if (transaction) { view.dispatch(transaction); scheduleRender(0); }
-  }
-  if (data.type === 'preview-scroll' && mode === 'split' && Number.isFinite(data.line)) {
-    const number = Math.max(1, Math.min(view.state.doc.lines, Math.floor(data.line) + sourceOffset));
-    const rect = view.lineBlockAt(view.state.doc.line(number).from);
-    ignoreScrollUntil = performance.now() + 160;
-    view.scrollDOM.scrollTop = rect.top;
-  }
-});
-// The cached iframe can finish before this module installs its message listener.
-frame.addEventListener('load', previewReady);
-if (frame.contentDocument?.readyState === 'complete') previewReady();
-
-const contentSplit = setupContentSplit(workspace, () => view.requestMeasure(), message => setStatus(message, true));
 
 let nativeKeyboard = false;
 function updateViewport() {
   const viewport = window.visualViewport;
   const height = viewport?.height ?? innerHeight;
   document.body.style.height = `${height}px`;
-  const keyboard = nativeKeyboard || innerHeight - height > 100;
-  document.body.classList.toggle('keyboard-open', keyboard);
-  mobileTools.hidden = !(keyboard && mode !== 'preview' && matchMedia('(pointer: coarse)').matches);
-  if (mode === 'split' && matchMedia('(max-width: 640px)').matches) setMode('edit');
+  if (mobile) keepMobileViewportAtTop();
+  const editing = document.activeElement?.closest('#rich-editor [contenteditable="true"]');
+  mobileTools.hidden = !mobile || !showingNote || Boolean(notebook.current?.readOnly) || !editing;
+  const inTable = Boolean(editing?.matches('.cm-markra-table'));
+  mobileSuggestions.hidden = inTable;
+  quickLink.hidden = !inTable;
+  quickAttach.hidden = inTable;
+  mobileToolsGroup.toggleAttribute('data-in-table', inTable);
   view.requestMeasure();
-  if (mode === 'rich') requestAnimationFrame(() => { if (!richEditor?.composing) revealCaret(richEditor?.element); });
+  requestAnimationFrame(() => {
+    if (mobile) {
+      // Read the root layout before measuring WebKit's visual viewport after a keyboard resize.
+      const layoutHeight = document.documentElement.clientHeight;
+      document.body.classList.toggle('keyboard-open', nativeKeyboard || layoutHeight - (viewport?.height ?? layoutHeight) > 100);
+    }
+    if (!richEditor.composing && !closeFormatPanel) revealCaret(richEditor.element);
+  });
 }
 window.visualViewport?.addEventListener('resize', updateViewport);
 window.addEventListener('resize', updateViewport);
+if (mobile) {
+  window.addEventListener('scroll', keepMobileViewportAtTop);
+  window.visualViewport?.addEventListener('scroll', keepMobileViewportAtTop);
+  for (const event of ['focusin', 'focusout']) workspace.addEventListener(event, () => queueMicrotask(updateViewport));
+}
 
 window.addEventListener('native-keyboard', event => { nativeKeyboard = Boolean((event as CustomEvent).detail); updateViewport(); });
-document.documentElement.dataset.platform = '__TAURI_INTERNALS__' in window && /Mac/.test(navigator.platform) ? 'macos' : 'other';
-sidebar = createSidebar(() => notebook, { select: selectNote, create: createNote, save: () => saveDraft(true), reload: () => showCurrentNote(Boolean(notebook.current)), error: message => setStatus(message, true) });
+document.documentElement.toggleAttribute('data-web', !native);
+if (document.documentElement.dataset.platform === 'macos' && !mobile && !documentWindow) {
+  $('#app-shell').dataset.macSidebarFoot = '';
+  const account = $<HTMLButtonElement>('#sidebar-account');
+  account.onclick = () => { void showSettings('account').catch(() => setStatus('无法打开账户设置', true)); };
+  const refreshAccount = sidebarAccount(account);
+  window.addEventListener('focus', refreshAccount);
+  void refreshAccount();
+}
+sidebar = createSidebar(() => notebook, {
+  select: selectNote, create: createNote, openToday: openTodayNote, focusEditor, save: () => saveDraft(true),
+  share: shareNote,
+  quickOpen: toggleQuickOpen,
+  thumbnail(note) {
+    const image = firstLocalImage(note.source);
+    return image ? attachmentUrl(notebook, note.id, image) : undefined;
+  },
+  noteWindow,
+  openNoteWindow: native && desktop && !documentWindow && !notebook.loadError ? id => invoke('workspace_open_note', { noteId: id }) : undefined,
+  libraryChanged: richEditor.refreshNoteLinks,
+  reload: () => showCurrentNote(Boolean(notebook.current)), status: setStatus, error: message => setStatus(message, true),
+}, mobile);
 showCurrentNote(showingNote);
-if (!notebook.loadError) void saveDraft();
+if (!notebook.loadError) {
+  if (!documentWindow && preferences.value.todayOpenOnLaunch) await openTodayNote();
+  else void saveDraft();
+}
 refreshTitle();
-scheduleRender(0);
 updateViewport();
 watchWebSession(async expired => {
   if (expired && notebook.server) {
-    if (view.compositionStarted || richEditor?.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true') return false;
+    if (richEditor.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true') return false;
     return preserveOnLeave();
   }
   if (syncBusy || document.body.dataset.libraryBusy === 'true') { setStatus('正在保存或同步，请稍后退出', true); return false; }
@@ -514,14 +950,13 @@ watchWebSession(async expired => {
 if (serverLibrary && !notebook.loadError) {
   offerServerDrafts(notebook.data);
   const refresh = async () => {
-    const current = notebook.current, id = notebook.data.activeId, text = view.state.doc.toString();
+    const current = notebook.current, id = notebook.data.activeId, source = sourceForSave();
     const ready = () => {
-      richEditor?.flush();
       return !document.body.inert && document.body.dataset.libraryBusy !== 'true'
       && !document.querySelector('#rename-note,.rename-folder,dialog[open],.note-context-menu')
-      && !notebook.loadError && !saveTimer && !view.compositionStarted && !richEditor?.composing
-      && id === notebook.data.activeId && text === view.state.doc.toString()
-      && (!notebook.current || text.replace(/\r\n?/g, '\n') === notebook.current.source.replace(/\r\n?/g, '\n'));
+      && !notebook.loadError && !saveTimer && !richEditor.composing
+      && id === notebook.data.activeId && source === sourceForSave()
+      && (!notebook.current || source.replace(/\r\n?/g, '\n') === notebook.current.source.replace(/\r\n?/g, '\n'));
     };
     try {
       if (await notebook.refreshServer(ready)) {
@@ -536,8 +971,7 @@ if (serverLibrary && !notebook.loadError) {
   window.addEventListener('focus', refresh);
   setInterval(() => { if (!document.hidden) void refresh(); }, 15_000);
   window.addEventListener('beforeunload', event => {
-    richEditor?.flush();
-    if (notebook.current && (view.compositionStarted || richEditor?.composing || saveTimer || view.state.doc.toString() !== notebook.current.source)) { event.preventDefault(); event.returnValue = ''; }
+    if (showingNote && notebook.current && (richEditor.composing || saveTimer || sourceForSave().replace(/\r\n?/g, '\n') !== notebook.current.source.replace(/\r\n?/g, '\n'))) { event.preventDefault(); event.returnValue = ''; }
   });
 }
 if ('__TAURI_INTERNALS__' in window) {
@@ -546,6 +980,8 @@ if ('__TAURI_INTERNALS__' in window) {
     const { setupFileLibrary } = await import('./file-library-ui');
     await setupFileLibrary(notebook, {
       save: () => saveDraft(true),
+      openToday: openTodayNote,
+      quickOpen: toggleQuickOpen,
       prepareExit: mobile ? undefined : () => invoke('workspace_prepare_exit'),
       cancelExit: mobile ? undefined : () => invoke('workspace_cancel_exit'),
       sync: async () => { await autoSync?.sync(); },
@@ -554,22 +990,21 @@ if ('__TAURI_INTERNALS__' in window) {
   }
   const { setupFileWatch } = await import('./file-watch');
   await setupFileWatch(notebook, {
-    pending: () => Boolean(saveTimer || view.compositionStarted || richEditor?.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true'),
-    buffer() { richEditor?.flush(); return showingNote && notebook.current ? { noteId: notebook.current.id, source: view.state.doc.toString() } : undefined; },
+    pending: () => Boolean(saveTimer || richEditor.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true'),
+    buffer() { return showingNote && notebook.current ? { noteId: notebook.current.id, source: sourceForSave() } : undefined; },
     refresh(previous) {
       const current = notebook.current;
       if (previous?.id !== current?.id || previous?.source !== current?.source || previous?.readOnly !== current?.readOnly) {
         const selection = view.state.selection.main, top = view.scrollDOM.scrollTop;
-        const richPane = document.querySelector<HTMLElement>('.vditor-content');
-        const richTop = richPane?.scrollTop;
+        const before = view.state.doc.toString();
         showCurrentNote(Boolean(current));
         if (previous?.id === current?.id && current) {
+          richEditor.markChanges(before);
           view.dispatch({ selection: { anchor: Math.min(selection.anchor, view.state.doc.length), head: Math.min(selection.head, view.state.doc.length) } });
           view.scrollDOM.scrollTop = top;
-          if (richPane && richTop !== undefined) richPane.scrollTop = richTop;
         } else refreshTitle(true);
       } else refreshTitle();
-      if (current && previous?.id === current.id && previous.path !== current.path && !current.readOnly && view.state.doc.toString() !== current.source.replace(/\r\n?/g, '\n')) {
+      if (current && previous?.id === current.id && previous.path !== current.path && !current.readOnly && sourceForSave().replace(/\r\n?/g, '\n') !== current.source.replace(/\r\n?/g, '\n')) {
         clearTimeout(saveTimer); saveTimer = setTimeout(() => { void saveDraft(); }, 500);
       }
       sidebar?.refresh();
@@ -582,7 +1017,7 @@ if ('__TAURI_INTERNALS__' in window) {
     const { setupWorkspace } = await import('./workspace');
     await setupWorkspace(windowLabel, {
       save: () => saveDraft(true),
-      async select(path) {
+      select: noteWindow ? undefined : async path => {
         const previous = notebook.current;
         await notebook.activateExternal(path);
         const current = notebook.current;
@@ -592,14 +1027,31 @@ if ('__TAURI_INTERNALS__' in window) {
       error: message => setStatus(message, true),
     });
   }
-  if (!documentWindow) autoSync = startAutoSync(syncSession, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile);
+  if (!documentWindow) autoSync = startAutoSync(syncSession, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile, preferences);
 }
-window.addEventListener('preferences-applied', () => {
-  view.dispatch({ effects: wrapping.reconfigure(preferences.value.lineWrap ? EditorView.lineWrapping : []) });
-  view.requestMeasure();
-  if (ready) frame.contentWindow?.postMessage({ type: 'preferences', ...previewPreferences() }, location.origin);
-});
+window.addEventListener('preferences-applied', richEditor.requestMeasure);
 window.addEventListener('settings-error', event => setStatus((event as CustomEvent<string>).detail, true));
+if (native && desktop && !documentWindow) void listen<string>('note-text-size', ({ payload }) => {
+  if (payload === 'bigger' || payload === 'smaller' || payload === 'actual') resizeNoteText(payload);
+}, { target: 'main' });
+if (native && desktop) void listen<string>('note-sections', ({ payload }) => {
+  if (payload === 'collapse' || payload === 'expand') foldSections(payload === 'expand');
+}, { target: windowLabel }).catch(console.warn);
+if (native && desktop) void listen<string>('note-find', ({ payload }) => {
+  if (payload === 'open') findInNote();
+  else if (payload === 'previous' || payload === 'next') findInNote(payload);
+}, { target: windowLabel }).catch(console.warn);
 void connectPreferences().catch(() => setStatus('无法应用系统窗口设置', true));
+if (mobile) connectMobileEditorHistory($<HTMLButtonElement>('#note-undo'), () => currentWritingEditor() ?? undefined);
+else void connectEditorHistoryMenu({
+  current: currentWritingEditor,
+  apply(action) {
+    if (['title', 'heading', 'subheading', 'body', 'bullet', 'list', 'ordered', 'quote', 'codeblock'].includes(action)
+        && !document.activeElement?.closest('.cm-markra-table')) {
+      richEditor.applyFormatPanel(action);
+      closeMenu();
+      focusEditor();
+    } else applyFormat(action);
+  },
+}).catch(console.warn);
 if (!documentWindow) void hostSync(syncSession).catch(() => setStatus('无法连接同步设置', true));
-void setMode(preferences.value.defaultMode);

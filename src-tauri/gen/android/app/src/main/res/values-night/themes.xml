@@ -2,5 +2,7 @@
     <!-- Base application theme. -->
     <style name="Theme.miaoyan_editor" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowBackground">@color/editor_background</item>
+        <item name="android:colorAccent">@color/editor_accent</item>
+        <item name="colorPrimary">@color/editor_accent</item>
     </style>
 </resources>

@@ -2,7 +2,11 @@
 
 :root {
   color-scheme: light dark;
-  --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  accent-color: var(--brand);
+  --navigation-duration: 280ms;
+  --navigation-easing: cubic-bezier(.22, .61, .36, 1);
+  --font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --code-font: ui-monospace, "SF Mono", Menlo, monospace;
   font-family: var(--font);
   font-size: 16px;
   background: var(--paper);
@@ -10,7 +14,16 @@
   -webkit-font-smoothing: subpixel-antialiased;
 }
 
+:root[data-mobile] {
+  --ink: var(--mobile-ink);
+  --muted: var(--mobile-muted);
+  --editor-ink: var(--ink);
+  --render-text: var(--ink);
+  --quote-text: var(--muted);
+}
+
 * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 45%, transparent) transparent; }
+::selection { background: var(--selection); color: var(--ink); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { border: 1px solid transparent; border-radius: 8px; background: color-mix(in srgb, var(--ink) 45%, transparent); background-clip: padding-box; }

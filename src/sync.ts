@@ -1,7 +1,7 @@
 import type { Folder, Library, Notebook } from './notebook';
 import * as core from './vendor/mdsync/core';
 import { SyncFiles, scope, ownedPath, notePath, metaPath, folderPath, assetPath, assetRelative, MAX_ASSET_BYTES, MAX_ASSETS_TOTAL, type NoteMeta } from './sync-files';
-import { createStore, normalizeSettings, openKey, type S3Settings } from './sync-store';
+import { createStore, normalizeSettings, openKey, type S3Connection } from './sync-store';
 
 const textEncoder = new TextEncoder();
 const parse = <T>(text: string | null): T => { if (text === null) throw new Error('远端同步文件缺失'); return JSON.parse(text) as T; };
@@ -99,7 +99,7 @@ async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, resu
   return result.diff.conflicts.length;
 }
 
-export async function syncNotebook(book: Notebook, settings: S3Settings, progress: (message: string) => void = () => undefined, beforeCommit: () => boolean | Promise<boolean> = () => true) {
+export async function syncNotebook(book: Notebook, settings: S3Connection, progress: (message: string) => void = () => undefined, beforeCommit: () => boolean | Promise<boolean> = () => true) {
   if (book.loadError) throw new Error('本机笔记库读取失败，已停止同步');
   const expected = JSON.stringify(book.data), library = JSON.parse(expected) as Library;
   if (library.notes.some(note => note.readOnly)) throw new Error('笔记库含不可读或损坏的文件，已停止同步，避免上传不完整正文');
@@ -114,7 +114,7 @@ export async function syncNotebook(book: Notebook, settings: S3Settings, progres
   for (let attempt = 0; attempt < 6; attempt++) {
     progress(attempt ? '远端发生变化，正在重新合并…' : '正在比较笔记库…');
     const deps: core.Dependencies = { space: core.VAULT_SPACE, adapter: files, storage, scope, key, state,
-      maxFileBytes: MAX_ASSET_BYTES, concurrency: 2, history: { horizon: null } };
+      maxFileBytes: MAX_ASSET_BYTES, concurrency: config.concurrency, history: { horizon: null } };
     const context: core.Context = { persistState: async next => { state = next; deps.state = next; }, getFreshState: () => state,
       setProgress: () => undefined, reportProgressSoon: () => undefined, logInfo: async () => undefined };
     try {

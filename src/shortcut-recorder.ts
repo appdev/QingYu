@@ -18,11 +18,11 @@ export function createShortcutRecorder(onError: (message: string) => void) {
   const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'shortcut-clear'; clear.textContent = '×'; clear.setAttribute('aria-label', '清除唤起快捷键');
   control.append(record, clear);
   record.textContent = '正在读取…'; clear.hidden = true;
-  let status: ShortcutStatus | undefined, recording = false, disposed = false, generation = 0, applying = false;
+  let recording = false, disposed = false, generation = 0, applying = false;
   let jobs: Promise<unknown> = Promise.resolve();
   function show(value: ShortcutStatus) {
     if (disposed) return;
-    status = value; recording = value.recording;
+    recording = value.recording;
     record.textContent = recording ? '请按快捷键…' : value.shortcut ? shortcutLabel(value.shortcut) : '设置快捷键';
     record.title = recording ? 'Esc 取消录入' : value.shortcut ? shortcutLabel(value.shortcut) : '点击后按下快捷键组合';
     control.dataset.recording = String(recording); clear.hidden = !value.shortcut || recording;
@@ -51,5 +51,5 @@ export function createShortcutRecorder(onError: (message: string) => void) {
   const refresh = () => { void request('status'); };
   window.addEventListener('focus', refresh); window.addEventListener('blur', cancel);
   const loaded = request('status');
-  return { control, loaded, async reset() { if (status) return request('set', status.defaultShortcut); }, destroy() { cancel(); disposed = true; window.removeEventListener('focus', refresh); window.removeEventListener('blur', cancel); } };
+  return { control, loaded, destroy() { cancel(); disposed = true; window.removeEventListener('focus', refresh); window.removeEventListener('blur', cancel); } };
 }

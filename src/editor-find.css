@@ -1,0 +1,38 @@
+.cm-editor .cm-panels-top:has(.qingyu-find) { border-bottom: 1px solid var(--line); }
+.qingyu-find { padding: 8px 7px 4px; font: 11px/1.2 var(--font); }
+.qingyu-find-main, .qingyu-find-replace { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.qingyu-find-replace { margin-top: 3px; }
+.qingyu-find [hidden] { display: none; }
+.qingyu-find-field, .qingyu-find-replace > input {
+  flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--paper); color: var(--ink);
+}
+.qingyu-find-field { display: flex; align-items: center; border-radius: 12px; height: 20px; padding: 0 4px; }
+.qingyu-find-field:focus-within, .qingyu-find-replace > input:focus { outline: 3px solid color-mix(in srgb, var(--brand) 50%, transparent); outline-offset: 0; }
+.qingyu-find-field > input { flex: 1; min-width: 0; border: 0; outline: 0; padding: 0 2px; background: transparent; }
+.qingyu-find-field > input::-webkit-search-cancel-button { display: none; }
+.qingyu-find :is(input, button) { font: inherit; color: inherit; }
+.qingyu-find :is(button, label) { cursor: pointer; white-space: nowrap; }
+.qingyu-find button { background: var(--control-fill); border: 0; height: 20px; padding: 0 9px; border-radius: 4px; }
+.qingyu-find button:disabled { cursor: default; color: var(--muted); opacity: .65; }
+.qingyu-find button:hover:not(:disabled) { background: var(--control-hover); }
+.qingyu-find-field button { padding: 0; display: grid; place-items: center; background: transparent; color: var(--muted); height: 16px; }
+.qingyu-find-options { width: 22px; flex: 0 0 auto; }
+.qingyu-find-options svg { width: 16px; height: 13px; }
+.qingyu-find output { color: var(--muted); padding: 0 3px; font-variant-numeric: tabular-nums; }
+.qingyu-find .qingyu-find-clear { background: var(--muted); color: var(--paper); width: 12px; height: 12px; border-radius: 50%; }
+.qingyu-find-steps { display: flex; align-items: center; }
+.qingyu-find-steps button + button { border-inline-start: 1px solid var(--paper); }
+.qingyu-find-steps button:first-child { border-start-end-radius: 0; border-end-end-radius: 0; }
+.qingyu-find-steps button:last-child { border-start-start-radius: 0; border-end-start-radius: 0; }
+.qingyu-find-steps [data-find] { width: 17px; padding: 0; }
+.qingyu-find-steps svg { width: 11px; height: 11px; vertical-align: middle; fill: none; stroke: currentColor; stroke-width: 1.1; }
+.qingyu-find-replace-toggle { display: flex; align-items: center; gap: 4px; }
+.qingyu-find-replace-toggle input { width: 12px; height: 12px; margin: 0; accent-color: var(--brand); }
+.qingyu-find-replace > input { border-radius: 5px; height: 21px; padding: 0 7px; }
+.cm-editor:has(.qingyu-find[data-matches=true]) .cm-scroller { background: color-mix(in srgb, var(--paper), black 19%); }
+#rich-editor .cm-editor:has(.qingyu-find[data-matches=true]) :is(.cm-markra-code-line, .cm-markra-code-language) { background-color: color-mix(in srgb, var(--code), black 19%); }
+#rich-editor .cm-editor:has(.qingyu-find) :is(.cm-searchMatch, .cm-markra-search-match) { background: var(--paper); }
+#rich-editor .cm-editor:has(.qingyu-find) :is(.cm-searchMatch-selected, .cm-markra-search-match-current) { background: var(--find-current); color: var(--find-current-ink); }
+:root[data-mobile] .qingyu-find { padding: 7px 10px; font-size: 13px; }
+:root[data-mobile] .qingyu-find :is(.qingyu-find-field, .qingyu-find-done, .qingyu-find-steps button, .qingyu-find-replace > input) { height: 33px; }
+:root[data-mobile] .qingyu-find-steps [data-find] { width: 30px; }

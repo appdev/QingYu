@@ -8,6 +8,38 @@ function storage(initial: Record<string, string> = {}) {
 }
 
 describe('local notebook and legacy migration', () => {
+  it('creates one daily note per local day and reopens a renamed note', async () => {
+    const memory = storage();
+    const book = new Notebook(memory, '# 普通笔记');
+    const settings = { todayFolder: '', todayTitle: 'iso' } as const;
+    const today = new Date(2026, 10, 16, 14, 5);
+    await expect(Promise.all([book.openToday(settings, today), book.openToday(settings, today)])).resolves.toEqual([true, false]);
+    const id = book.current.id;
+    expect(book.data.folders.find(folder => folder.id === book.current.folderId)?.name).toBe('每日笔记');
+    expect(book.current.source).toBe('# 2026-11-16\n');
+    await book.renameNote(id, '今日工作');
+    const reopened = new Notebook(memory, '');
+    await expect(reopened.openToday({ ...settings, todayTitle: 'weekday' }, today)).resolves.toBe(false);
+    expect(reopened.current.id).toBe(id);
+    expect(reopened.current.title).toBe('今日工作');
+    await expect(reopened.openToday(settings, new Date(2026, 10, 17, 0, 1))).resolves.toBe(true);
+    expect(reopened.current.source).toBe('# 2026-11-17\n');
+    expect(reopened.current.id).not.toBe(id);
+  });
+  it('opens a previously imported ISO daily note and recreates it after moving it to trash', async () => {
+    const book = new Notebook(storage(), '# 普通笔记');
+    const imported = await book.createFolder('Journal');
+    const data = book.data;
+    data.notes.push({ id: 'imported', folderId: imported, title: '2026-11-16', source: '旧日记', createdAt: 1000, updatedAt: 1000 });
+    const settings = { todayFolder: '', todayTitle: 'iso' } as const;
+    const today = new Date(2026, 10, 16, 14, 5);
+    await expect(book.openToday(settings, today)).resolves.toBe(false);
+    expect(book.current.id).toBe('imported');
+    await book.trashNote('imported', true);
+    await expect(book.openToday(settings, today)).resolves.toBe(true);
+    expect(book.current.source).toBe('# 2026-11-16\n');
+    expect(book.current.id).not.toBe('imported');
+  });
   it('migrates the exact legacy source once and preserves the old key as a backup', async () => {
     const source = '---\r\ntitle: 原样\r\n---\r\n# 中文 🌸\r\n\r\n| a | b |\r\n';
     const store = storage({ [legacyDraftKey]: source });
@@ -128,7 +160,21 @@ describe('note context operations', () => {
 });
 
 describe('sidebar document information', () => {
-  it('groups this year by month and other years by year, keeping pinned notes together', () => {
+  it('keeps pinned notes first and sorts equal titles by latest edit in either direction', () => {
+    const book = new Notebook(storage(), '# 笔记');
+    const first = book.current;
+    book.data.notes = [
+      { ...first, id: 'older', title: '项目 2', updatedAt: 100 },
+      { ...first, id: 'pinned', title: '项目 10', updatedAt: 100, pinned: true },
+      { ...first, id: 'recent', title: '项目 2', updatedAt: 200 },
+      { ...first, id: 'other', title: '项目 3', updatedAt: 300 },
+    ];
+    const sorted = (reverse: boolean) => visibleNotes(book.data, null, '', false, { key: 'title', reverse, grouped: true }).map(note => note.id);
+    expect(sorted(false)).toEqual(['pinned', 'recent', 'older', 'other']);
+    expect(sorted(true)).toEqual(['pinned', 'other', 'recent', 'older']);
+  });
+
+  it('groups recent notes by day and older notes by month, keeping pinned notes together', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date(2026, 10, 11));
@@ -144,16 +190,18 @@ describe('sidebar document information', () => {
         { ...first, id: 'future', updatedAt: new Date(2027, 0, 1).getTime() },
       ];
       expect(groupNotes(notes).map(g => [g.label, g.notes.map(n => n.id)])).toEqual([
-        ['置顶', ['pinned-new', 'pinned-old']], ['2027年', ['future']], ['四月', ['april']],
-        ['二月', ['february-a', 'february-b']], ['2025年', ['last-november', 'last-october']],
+        ['置顶', ['pinned-new', 'pinned-old']], ['今天', ['future']], ['4月', ['april']],
+        ['2月', ['february-a', 'february-b']], ['2025/11', ['last-november']], ['2025/10', ['last-october']],
       ]);
       vi.setSystemTime(new Date(2027, 0, 1));
-      expect(groupNotes(notes).map(g => g.label)).toEqual(['置顶', '一月', '2026年', '2025年']);
+      expect(groupNotes(notes).map(g => g.label)).toEqual(['置顶', '今天', '2026/4', '2026/2', '2025/11', '2025/10']);
     } finally { vi.useRealTimers(); }
   });
   it('uses the shared frontmatter rules for titles and extracts a plain summary', async () => {
     expect(noteText('---\ntitle: hidden\n---\n# **中文标题**\n\n正文 [链接](https://example.com) 与 `code`')).toEqual({ title: '中文标题', summary: '正文 链接 与 code' });
     expect(noteText('')).toEqual({ title: '未命名', summary: '无更多文本' });
+    expect(noteText('# 图片\n\n![照片\\[一\\]|cover](/cover.webp)')).toEqual({ title: '图片', summary: '照片[一]' });
+    expect(noteText('# 图片\n\n正文 ![行内图|small](/inline.webp)')).toEqual({ title: '图片', summary: '正文 行内图|small' });
     expect(noteText('# 只有标题')).toEqual({ title: '只有标题', summary: '无更多文本' });
   });
   it('filters title/body case-insensitively within a folder and groups by modification year', async () => {

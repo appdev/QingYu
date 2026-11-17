@@ -24,6 +24,16 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); });
 const actions = () => ({ save: vi.fn(async () => true), select: vi.fn(async (_path: string) => {}), error: vi.fn() });
 
+it('saves a shared note window before closing without polling external paths', async () => {
+  const { save, error } = actions();
+  await setupWorkspace('document-note-a', { save, error });
+  expect(invoke).not.toHaveBeenCalledWith('workspace_paths');
+  expect(handlers.has('workspace-select-request')).toBe(false);
+  await handlers.get('workspace-before-close')!({ payload: null });
+  expect(save).toHaveBeenCalledOnce();
+  expect(invoke).toHaveBeenLastCalledWith('workspace_finish_close');
+});
+
 it('saves before switching within a directory window and consumes requests queued during startup', async () => {
   const current = actions(), order: string[] = [];
   current.save.mockImplementation(async () => { order.push('save'); return true; });

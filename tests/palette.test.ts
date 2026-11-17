@@ -8,7 +8,7 @@ import { palettePath, palettePlugin } from '../tools/palette';
 it('compiles both appearances from one palette and tracks edits to the source', async () => {
   expect(Object.keys(palette.dark).sort()).toEqual(Object.keys(palette.light).sort());
   const result = await postcss([palettePlugin]).process('@qingyu-palette;', { from: 'src/theme.css' });
-  expect(result.css).toContain('--muted: #6B6A64');
+  expect(result.css).toContain(`--muted: ${palette.light.muted}`);
   expect(result.css).toContain(':root[data-theme="dark"]');
   expect(result.css).not.toContain('@qingyu-palette');
   expect(result.messages).toContainEqual(expect.objectContaining({ type: 'dependency', file: palettePath }));

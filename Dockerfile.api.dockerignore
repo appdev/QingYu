@@ -4,7 +4,6 @@
 !package-lock.json
 !index.html
 !settings.html
-!preview.html
 !login.html
 !tsconfig.json
 !vite.config.ts
@@ -12,6 +11,8 @@
 !src/**
 !public/
 !public/**
+!tools/
+!tools/palette.ts
 !prototypes/
 !prototypes/web-login/
 !prototypes/web-login/*.css
@@ -24,6 +25,7 @@
 !src-tauri/src/**
 !src-tauri/plugins/
 !src-tauri/plugins/**
+src-tauri/plugins/*/android/build/
 **/.env*
 **/.git/**
 **/node_modules/**

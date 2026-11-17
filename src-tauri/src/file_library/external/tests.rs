@@ -10,6 +10,7 @@ fn buffer(store: &DiskLibrary, source: &str) -> Option<EditorBuffer> {
     Some(EditorBuffer {
         note_id: store.data.active_id.clone(),
         source: source.into(),
+        expected_source: None,
     })
 }
 
@@ -66,6 +67,7 @@ fn source_contract_back_up_only_the_owned_active_buffer_and_keep_backup_out_of_n
     let stale_other_owner = Some(EditorBuffer {
         note_id: "another-note".into(),
         source: "wrong buffer".into(),
+        expected_source: None,
     });
     assert!(store
         .reconcile(stale_other_owner)
@@ -91,6 +93,25 @@ fn deleted_unsaved_buffer_is_backed_up_and_failure_to_backup_leaves_memory_untou
     );
     assert!(store.data.notes.is_empty());
     assert!(!temp.path().join("a.md").exists());
+}
+
+#[test]
+fn another_window_backs_up_only_a_dirty_draft_against_its_own_baseline() {
+    let (temp, mut store) = fixture();
+    fs::write(temp.path().join("b.md"), "另一篇初稿").unwrap();
+    store.reconcile(None).unwrap();
+    let note = store.data.notes.iter().find(|note| note.path == "b.md").unwrap().clone();
+    assert_ne!(store.data.active_id, note.id);
+    let root = store.snapshot().root;
+    store.save_note_body(&root, &note.id, &note.source, "另一窗口已保存".into(), "edit").unwrap();
+    let buffer = |source: &str| Some(EditorBuffer {
+        note_id: note.id.clone(), source: source.into(), expected_source: Some(note.source.clone()),
+    });
+    assert!(store.reconcile(buffer(&note.source)).unwrap().backups.is_empty());
+    let conflict = store.reconcile(buffer("独立窗口待保存草稿")).unwrap();
+    assert_eq!(conflict.backups.len(), 1);
+    assert_eq!(fs::read_to_string(temp.path().join(&conflict.backups[0])).unwrap(), "独立窗口待保存草稿");
+    assert_eq!(fs::read_to_string(temp.path().join(&note.path)).unwrap(), "另一窗口已保存");
 }
 
 #[test]

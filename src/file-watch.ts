@@ -24,10 +24,18 @@ export async function setupFileWatch(book: Notebook, actions: {
     if (document.body.inert || document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true' || actions.pending()) { schedule(root, 1600); return; }
     running = true;
     document.body.dataset.libraryBusy = 'true';
-    const shell = document.querySelector<HTMLElement>('#app-shell'); if (shell) shell.inert = true;
+    const shell = document.querySelector<HTMLElement>('#app-shell');
+    const active = document.activeElement;
+    const focused = active instanceof HTMLElement && shell && !shell.inert && shell.contains(active) ? active : undefined;
+    const selection = document.getSelection();
+    const selected = selection?.rangeCount ? selection.getRangeAt(0) : undefined;
+    const range = selected && focused?.contains(selected.commonAncestorContainer) ? selected.cloneRange() : undefined;
+    const backward = range && !range.collapsed && selection?.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset;
+    const previous = book.current;
+    if (shell) shell.inert = true;
     let delay = 150;
     try {
-      const previous = book.current, result = await book.reconcile(root, actions.buffer());
+      const result = await book.reconcile(root, actions.buffer());
       if (result.changed) actions.refresh(previous);
       if (result.backups.length) actions.backedUp(result.backups);
     } catch (reason) {
@@ -35,7 +43,18 @@ export async function setupFileWatch(book: Notebook, actions: {
       pendingRoot = root; delay = 1600;
     } finally {
       running = false; document.body.dataset.libraryBusy = 'false';
-      if (shell) shell.inert = document.body.dataset.syncBusy === 'true';
+      if (shell) {
+        shell.inert = document.body.dataset.syncBusy === 'true';
+        // An own-save notification can make WebKit drop the editor's focus even when nothing was reloaded.
+        if (!stopped && !shell.inert && !document.body.inert && root === book.root && previous?.id === book.current?.id
+          && focused && shell.contains(focused) && document.activeElement === document.body) {
+          focused.focus({ preventScroll: true });
+          if (range && focused.contains(range.commonAncestorContainer) && document.activeElement === focused) {
+            if (backward) selection?.setBaseAndExtent(range.endContainer, range.endOffset, range.startContainer, range.startOffset);
+            else { selection?.removeAllRanges(); selection?.addRange(range); }
+          }
+        }
+      }
       if (pendingRoot) schedule(pendingRoot, delay);
     }
   }
@@ -44,6 +63,6 @@ export async function setupFileWatch(book: Notebook, actions: {
   const unlistenError = await listen<{ root: string; error: string }>(`${prefix}-watch-error`, ({ payload }) => { if (payload.root === book.root) actions.error(payload.error); }, { target: windowLabel });
   try { if (book.root && !book.external) await invoke('library_watch'); }
   catch (reason) { actions.error(`文件监听未启动：${reason instanceof Error ? reason.message : String(reason)}`); }
-  if (book.root && book.external) schedule(book.root);
+  if (book.root && (book.external || book.noteWindow)) schedule(book.root);
   return () => { stopped = true; clearTimeout(timer); unlisten(); unlistenError(); };
 }

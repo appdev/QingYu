@@ -11,7 +11,7 @@
   --color-paper: var(--paper); --color-paper-2: var(--code); --color-paper-3: var(--sand);
   --color-ink: var(--ink); --color-ink-2: var(--secondary); --color-muted: var(--muted);
   --color-rule: var(--border); --color-rule-2: var(--input-border);
-  --color-accent: var(--brand); --color-accent-ink: var(--paper); --color-focus: var(--brand);
+  --color-accent: var(--primary-fill); --color-accent-ink: var(--primary-ink); --color-focus: var(--brand);
   --color-accent-hover: var(--brand-hover); --color-accent-active: var(--brand-active);
   --color-notice: var(--notice); --color-notice-paper: var(--notice-paper);
   --color-error: var(--error);

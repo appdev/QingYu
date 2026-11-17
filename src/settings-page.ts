@@ -2,10 +2,12 @@ import './style.css';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { connectPreferences, remoteSync } from './settings-bridge';
+import { connectEditorHistoryMenu } from './editor-history-menu';
 import { mountSettings, type SettingsSection } from './settings-view';
 
 const root = document.querySelector<HTMLElement>('#settings-root')!;
 root.style.height = '100%';
+void connectEditorHistoryMenu().catch(console.warn);
 try {
   await connectPreferences();
   const view = mountSettings(root, await remoteSync(), () => { void getCurrentWindow().close(); });

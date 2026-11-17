@@ -1,6 +1,24 @@
-import { noteTitle, type Notebook, type Library } from './notebook';
-import { markdownBody } from './document-text';
+import { CopyPlus, Pin, PinOff, Trash2, Undo2 } from 'lucide';
+import { noteTitle, type Notebook, type Library, type Note } from './notebook';
+import { markdownBody, plainMarkdownLine } from './document-text';
+import { showLockNotePanel } from './reference-panels';
 import { popupMenu, dismissPopupMenu as dismiss, popupMenuOpen, type MenuItem as Item } from './popup-menu';
+import { noteLinkTargets, resolveNoteLink } from './note-links';
+import { folderRows } from './folder-tree';
+import folderIcon from '../public/miaoyan/icons/folder.svg?raw';
+import { createLucideIcon } from './vendor/markra/shared/lucide';
+
+const newWindowIcon: typeof Pin = [
+  ['path', { d: 'M11 19H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5M2 8h20M6 5.5h.01M9 5.5h.01' }],
+  ['circle', { cx: '17.5', cy: '17.5', r: '4.5' }],
+  ['path', { d: 'M17.5 15.5v4m-2-2h4' }],
+];
+
+// Web equivalents for Pinto's system symbols.
+const toolbarIcons: Record<string, typeof Pin> = {
+  在新窗口打开笔记: newWindowIcon, 置顶: Pin, 取消置顶: PinOff,
+  制作副本: CopyPlus, 移到废纸篓: Trash2, 恢复笔记: Undo2,
+};
 
 export function noteInformation(library: Library, id: string) {
   const note = library.notes.find(note => note.id === id);
@@ -14,16 +32,106 @@ export function noteInformation(library: Library, id: string) {
     else if (/[\p{L}\p{N}]/u.test(scalar) || inWord && /['’]/.test(scalar)) { if (!inWord) words++; inWord = true; }
     else inWord = false;
   }
-  const title = noteTitle(note);
-  const backlinks = [...new Set(library.notes.filter(other => !other.trashed && [...other.source.matchAll(/\[\[([^\]]+)\]\]/g)].some(match => match[1].trim() === title)).map(noteTitle))].sort();
+  const backlinks = [...new Set(library.notes.filter(other => other.id !== id && !other.trashed
+    && [...noteLinkTargets(markdownBody(other.source).body)].some(target =>
+      resolveNoteLink(library, target, other).note?.id === id)).map(noteTitle))].sort();
   const date = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   return { words, modified: date.format(note.updatedAt), created: date.format(note.createdAt), backlinks };
 }
 
+function showMoveFolderSheet(rows: { name: string; depth: number; current: boolean; run: () => void }[], restoreFocus: () => void) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'note-move-sheet';
+  dialog.setAttribute('aria-labelledby', 'note-move-title');
+  dialog.innerHTML = `<button type="button" class="note-move-grabber" aria-label="展开文件夹列表" aria-expanded="false"></button>
+    <header><h2 id="note-move-title" tabindex="-1" autofocus>移动到</h2><button type="button" class="icon-button" aria-label="取消">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg>
+    </button></header><ul></ul>`;
+  const grabber = dialog.querySelector<HTMLButtonElement>('.note-move-grabber')!;
+  const motion = () => typeof dialog.animate === 'function' && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const slide = { transform: 'translateY(100%)' };
+  let opening: Animation | undefined;
+  let closing = false;
+  function dismiss(choose?: () => void) {
+    if (closing) return;
+    closing = true;
+    const finish = () => { dialog.close(); choose?.(); };
+    if (!motion()) { finish(); return; }
+    const transform = getComputedStyle(dialog).transform;
+    opening?.cancel();
+    dialog.inert = true;
+    void dialog.animate([{ transform }, slide], { duration: 180, easing: 'ease-in', fill: 'forwards' }).finished.then(finish, finish);
+  }
+  const setExpanded = (expanded: boolean) => {
+    dialog.toggleAttribute('data-expanded', expanded);
+    grabber.ariaExpanded = String(expanded);
+    grabber.ariaLabel = expanded ? '缩小文件夹列表' : '展开文件夹列表';
+  };
+  let startY = 0, startHeight = 0, dragged = false;
+  grabber.onpointerdown = event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    startY = event.clientY; startHeight = dialog.getBoundingClientRect().height; dragged = false;
+    grabber.setPointerCapture(event.pointerId);
+  };
+  grabber.onpointermove = event => {
+    if (!grabber.hasPointerCapture(event.pointerId) || Math.abs(event.clientY - startY) < 5) return;
+    dialog.toggleAttribute('data-dragging', true);
+    dialog.style.setProperty('--sheet-drag-height', `${Math.max(96, startHeight + startY - event.clientY)}px`);
+  };
+  function stopDragging() {
+    delete dialog.dataset.dragging;
+    dialog.style.removeProperty('--sheet-drag-height');
+  }
+  grabber.onlostpointercapture = stopDragging;
+  grabber.onpointerup = event => {
+    if (!grabber.hasPointerCapture(event.pointerId)) return;
+    const distance = event.clientY - startY;
+    stopDragging();
+    if (Math.abs(distance) < 24) return;
+    dragged = true;
+    if (distance > 0 && !dialog.hasAttribute('data-expanded')) dismiss();
+    else setExpanded(distance < 0);
+  };
+  grabber.onclick = event => { if (!dragged || event.detail === 0) setExpanded(!dialog.hasAttribute('data-expanded')); };
+  dialog.querySelector<HTMLButtonElement>('header button')!.onclick = () => dismiss();
+  dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
+  dialog.addEventListener('click', event => {
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dismiss();
+  });
+  const list = dialog.querySelector('ul')!;
+  for (const { name, depth, current, run } of rows) {
+    const item = document.createElement('li'), button = document.createElement('button');
+    button.type = 'button'; button.disabled = current;
+    button.style.setProperty('--folder-depth', String(depth));
+    button.innerHTML = `<span class="sidebar-icon" aria-hidden="true">${folderIcon}</span><span></span>`;
+    button.lastElementChild!.textContent = name;
+    if (current) {
+      button.setAttribute('aria-current', 'location');
+      button.insertAdjacentHTML('beforeend', '<svg class="note-move-current" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>');
+    }
+    button.onclick = () => dismiss(run);
+    item.append(button); list.append(item);
+  }
+  dialog.addEventListener('close', () => { dialog.remove(); restoreFocus(); }, { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  if (motion()) opening = dialog.animate([slide, { transform: 'none' }], { duration: 280, easing: 'cubic-bezier(.2,.8,.28,1)' });
+}
+
 export function createNoteMenu(getBook: () => Notebook, actions: {
   save(): Promise<boolean>;
+  share?(anchor: HTMLElement, note: Note): void;
   change(mutate: () => Promise<void>, reload?: boolean): Promise<void>;
   error(message: string): void;
+  status?(message: string): void;
+  revealTitle?(): void;
+  mobile?: boolean;
+  activate?(id: string): Promise<boolean>;
+  folderOrder?(): readonly string[];
+  openNoteWindow?(id: string): Promise<void>;
+  noteWindow?: boolean;
 }) {
   let infoPanel: HTMLElement | undefined, nativeInfo = false;
   function dismissInfo() {
@@ -32,6 +140,7 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
   }
   document.addEventListener('pointerdown', event => { if (!infoPanel?.contains(event.target as Node)) dismissInfo(); });
   window.addEventListener('resize', () => { dismiss(); dismissInfo(); });
+  window.addEventListener('popstate', () => { dismiss(); dismissInfo(); });
   document.querySelector('#notes-list')?.addEventListener('scroll', () => { dismiss(); dismissInfo(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && infoPanel) { dismissInfo(); document.querySelector<HTMLElement>('.note-row[aria-selected=true]')?.focus(); } });
   document.addEventListener('keydown', async event => {
@@ -44,7 +153,7 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     if (!event.altKey && !note.trashed) {
       if (event.shiftKey && event.key.toLowerCase() === 'p') run = () => actions.change(() => getBook().togglePin(note.id));
       if (!event.shiftKey && event.key.toLowerCase() === 'd') run = () => actions.change(() => getBook().duplicateNote(note.id), true);
-      if (!event.shiftKey && event.key.toLowerCase() === 'r') run = () => rename(note.id);
+      if (!event.shiftKey && event.key.toLowerCase() === 'r' && !note.readOnly) run = () => renameSelected(note.id);
       if (event.key === 'Backspace' && !getBook().external) run = () => actions.change(() => getBook().trashNote(note.id));
     }
     if (run) { event.preventDefault(); if (await actions.save()) await run(); }
@@ -53,6 +162,7 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
   function rename(id: string) {
     const note = getBook().data.notes.find(note => note.id === id);
     if (!note) return;
+    actions.revealTitle?.();
     dismissInfo();
     const title = document.querySelector<HTMLElement>('#note-title')!;
     const input = document.createElement('input'); input.id = 'rename-note'; input.dataset.noteId = id; input.ariaLabel = '笔记名称'; input.value = noteTitle(note); input.maxLength = 500;
@@ -83,12 +193,16 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     };
     input.onblur = () => { void finish(); };
   }
+  async function renameSelected(id: string) {
+    if (getBook().data.activeId !== id && !await actions.activate?.(id)) return;
+    rename(id);
+  }
   document.querySelector('#note-title')?.addEventListener('dblclick', () => { if (getBook().current && !getBook().loadError) rename(getBook().current.id); });
   document.addEventListener('rename-current-note', () => { if (getBook().current && !getBook().loadError) rename(getBook().current.id); });
 
-  async function showInfo(id: string) {
+  async function showInfo(id: string, toolbar = false) {
     if (!await actions.save()) return;
-    const row = document.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(id)}"]`);
+    const row = document.querySelector<HTMLElement>(toolbar ? '#note-more-button' : `.note-row[data-note-id="${CSS.escape(id)}"]`);
     if (!row) return;
     dismissInfo();
     const info = noteInformation(getBook().data, id), anchor = row.getBoundingClientRect();
@@ -111,39 +225,123 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     panel.style.setProperty('--arrow-top', `${Math.max(22, Math.min(anchor.top + anchor.height / 2 - parseFloat(panel.style.top), panel.offsetHeight - 22))}px`);
     infoPanel = panel; panel.focus();
   }
-  return async (id: string, x: number, y: number) => {
+  return async (id: string, x: number, y: number, surface?: 'move' | { keyboard: boolean }) => {
+    const toolbar = typeof surface === 'object';
+    const anchor = toolbar ? document.querySelector<HTMLButtonElement>('#note-more-button') ?? undefined : undefined;
+    const closeToolbar = anchor?.getAttribute('aria-expanded') === 'true';
     dismiss(); dismissInfo();
+    if (closeToolbar) return;
     const note = getBook().data.notes.find(note => note.id === id);
     if (!note) return;
     const change = async (run: () => Promise<void>, reload = false) => { if (await actions.save()) await actions.change(run, reload); };
-    const trash: Item = { text: '废纸篓', run: () => change(() => getBook().trashNote(id)) };
-    const items: Item[] = [
-      { text: '显示简介', shortcut: '⌥⌘I', run: () => showInfo(id) }, { text: '' },
-      ...(note.trashed ? [{ text: '恢复笔记', run: () => change(() => getBook().trashNote(id, false)) }] : [
-        { text: note.pinned ? '取消置顶' : '置顶', shortcut: '⇧⌘P', run: () => change(() => getBook().togglePin(id)) },
-        { text: '制作副本', shortcut: '⌘D', run: () => change(() => getBook().duplicateNote(id), true) },
-        { text: '重命名', shortcut: '⌘R', run: () => rename(id) },
-        ...(!getBook().external ? [{ text: '移到废纸篓', shortcut: '⌘⌫', run: trash.run }] : []),
-      ]),
-      { text: '导出', items: [{ text: 'Markdown', run: () => { void (async () => {
-        if (!await actions.save()) return;
-        const latest = getBook().data.notes.find(note => note.id === id);
-        if (!latest) return;
-        const filename = noteTitle(latest).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_') + '.md';
-        if ('__TAURI_INTERNALS__' in window) {
-          try { const { invoke } = await import('@tauri-apps/api/core'); await invoke('export_markdown', { filename, source: latest.source }); }
-          catch { actions.error('Markdown 导出失败，笔记原文仍保留'); }
-          return;
-        }
-        const url = URL.createObjectURL(new Blob([latest.source], { type: 'text/markdown;charset=utf-8' }));
-        const link = document.createElement('a'); link.href = url; link.download = filename;
-        document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      })(); } }] },
-      ...(!getBook().external ? [{ text: '移动', items: [
-        ...(!note.trashed ? [trash, { text: '' }] : []),
-        ...getBook().data.folders.filter(folder => note.trashed || folder.id !== note.folderId).map(folder => ({ text: folder.name, run: () => change(() => getBook().moveNote(id, folder.id)) })),
-      ] }] : []),
+    const row = () => document.querySelector<HTMLElement>(`.note-row[data-note-id="${CSS.escape(id)}"]`);
+    const restoreFocus = () => (toolbar ? document.querySelector<HTMLElement>('#note-more-button') : row())?.focus({ preventScroll: true });
+    const compact = actions.mobile && !toolbar;
+    const trash: Item = { text: compact ? '删除' : '移到废纸篓', destructive: true, run: () => change(() => getBook().trashNote(id)) };
+    const recover: Item = { text: '恢复笔记', run: () => change(() => getBook().trashNote(id, false)) };
+    const lock: Item = { text: '锁定笔记…', run: showLockNotePanel };
+    const versions: Item = { text: '版本历史…', enabled: getBook().hasNoteHistory, async run() {
+      if (!await actions.save()) return;
+      const book = getBook();
+      if (book.current?.id !== id && !await actions.activate?.(id)) return;
+      if (!book.hasNoteHistory || book.current?.id !== id || book !== getBook()) return;
+      const { showNoteHistory } = await import('./note-history');
+      if (book.current?.id !== id || book !== getBook()) return;
+      showNoteHistory(book, book.current, restoreFocus, async () => {
+        await actions.change(async () => {}, true);
+        actions.status?.('已恢复历史版本');
+      });
+    } };
+    const pin: Item = { text: note.pinned ? '取消置顶' : '置顶', shortcut: '⇧⌘P', enabled: !getBook().external, run: () => change(() => getBook().togglePin(id)) };
+    const duplicate: Item = { text: '制作副本', shortcut: '⌘D', enabled: !note.readOnly, run: () => change(() => getBook().duplicateNote(id), true) };
+    const { folders } = getBook().data;
+    const canMoveTo = (folderId: string) => note.trashed || folderId !== note.folderId;
+    const moveTo = (folderId: string) => change(() => getBook().moveNote(id, folderId));
+    const pickDestination = (folderId: string) => { void moveTo(folderId).catch(reason => actions.error(reason instanceof Error ? reason.message : String(reason))); };
+    const destination = (folderId: string, text: string): Item => ({
+      text, enabled: canMoveTo(folderId), run: () => moveTo(folderId),
+    });
+    const orderedFolders = () => [
+      ...folders.filter(folder => folder.id === 'default' || folder.path === '').map(folder => ({ folder, depth: 0, parentId: null, hasChildren: false })),
+      ...folderRows(folders, new Set(folders.map(folder => folder.id)), actions.folderOrder?.()),
     ];
-    await popupMenu(items, x, y, actions.error, () => document.querySelector<HTMLElement>('.note-row[aria-selected=true]')?.focus(), '笔记操作');
+    const move: Item = { text: compact ? '移动' : '移动到…', enabled: folders.some(folder => canMoveTo(folder.id)) };
+    if (compact || surface === 'move') {
+      move.run = () => showMoveFolderSheet(orderedFolders().map(({ folder, depth }) => ({
+        name: folder.name, depth, current: !canMoveTo(folder.id),
+        run: () => pickDestination(folder.id),
+      })), restoreFocus);
+      if (surface === 'move') { if (move.enabled && !getBook().external) move.run(); return; }
+    } else if (!toolbar && !getBook().external) {
+      const moveItems: Item[] = [];
+      const submenus = new Map<string | null, Item[]>([[null, moveItems]]);
+      for (const { folder, parentId, hasChildren } of orderedFolders()) {
+        const target = destination(folder.id, folder.name);
+        const siblings = submenus.get(parentId)!;
+        if (!hasChildren) { siblings.push(target); continue; }
+        const items = [target, { text: '' }];
+        submenus.set(folder.id, items);
+        siblings.push({ text: folder.name, items });
+      }
+      move.items = moveItems;
+    }
+    const share: Item = { text: compact ? '分享' : '分享…', enabled: Boolean(actions.share && !note.readOnly), async run() {
+      if (!await actions.save()) return;
+      const latest = getBook().data.notes.find(item => item.id === id), anchor = row();
+      if (latest && !latest.trashed && !latest.readOnly && anchor) actions.share?.(anchor, latest);
+    } };
+    const opening: Item[] = actions.mobile || actions.noteWindow || getBook().external ? [] : [{
+      text: '在新窗口打开笔记', enabled: Boolean(actions.openNoteWindow),
+      async run() { if (await actions.save()) await actions.openNoteWindow?.(id); },
+    }];
+    const details: Item[] = [
+      { text: '显示简介', shortcut: '⌥⌘I', run: () => showInfo(id, toolbar) },
+      { text: '重命名', shortcut: '⌘R', enabled: !note.readOnly, run: () => renameSelected(id) },
+    ];
+    if (!actions.mobile && '__TAURI_INTERNALS__' in window && getBook().root && note.path) {
+      const platform = navigator.platform;
+      const text = /Mac/.test(platform) ? '在 Finder 中显示'
+        : /Win/.test(platform) ? '在文件资源管理器中显示' : '在文件管理器中显示';
+      details.push({ text, async run() {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('library_reveal_note', { noteId: id });
+      } });
+    }
+    const moving = toolbar || getBook().external ? [] : [move];
+    const deleting = getBook().external ? [] : [trash];
+    const groups = note.trashed ? [[recover], moving]
+      : toolbar ? [[...opening, pin, duplicate], deleting]
+        .map(group => group.filter(item => item.enabled !== false))
+      : compact ? [[share, ...moving, ...deleting], [pin, lock, duplicate]]
+      : [opening, [pin, lock], [duplicate], [share], [...moving, versions], details, deleting];
+    const items = groups.filter(group => group.length).flatMap((group, index) => index ? [{ text: '' }, ...group] : group);
+    if (anchor) for (const item of items) {
+      const icon = toolbarIcons[item.text];
+      if (icon && !item.icon) item.icon = createLucideIcon(document, icon, '');
+    }
+    const preview = compact ? document.createElement('article') : undefined;
+    if (preview) {
+      const title = document.createElement('strong');
+      title.textContent = noteTitle(note);
+      const body = document.createElement('div');
+      const source = markdownBody(note.source).body.replace(/^\s*#[^\n]*\n?/, '');
+      for (const line of source.trim().split(/\r?\n/).slice(0, 12)) {
+        const text = plainMarkdownLine(line);
+        if (!text) continue;
+        const paragraph = document.createElement('p');
+        const task = line.match(/^\s*[-*+]\s+\[([ xX])\]/);
+        if (task) {
+          const marker = document.createElement('span');
+          marker.className = 'context-task'; marker.ariaHidden = 'true';
+          if (task[1] !== ' ') { marker.classList.add('checked'); marker.textContent = '✓'; }
+          paragraph.append(marker);
+        }
+        paragraph.append(text);
+        body.append(paragraph);
+      }
+      preview.append(title, body);
+    }
+    await popupMenu(items, x, y, actions.error, restoreFocus, '笔记操作', preview, compact && !note.trashed ? groups[0].length : 0,
+      anchor && toolbar ? { anchor, keyboard: surface.keyboard } : undefined);
   };
 }

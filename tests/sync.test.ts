@@ -184,6 +184,22 @@ describe('MDSync application synchronization', () => {
     expect(b.book.data.notes).toHaveLength(3);
     await sync(a.book); expect(a.book.data.notes).toHaveLength(3);
   });
+  it('keeps legacy note metadata and body together in sync conflict copies', async () => {
+    const header = '---\nqingyu-template-app: budget-log\nqingyu-template-data: ';
+    const app = (amount: number) => header + JSON.stringify({ expenses: [{ amount, what: '咖啡 ☕' }] }) + '\n---\n# 预算\n\n周末出门。\n';
+    const a = newBook(), b = newBook();
+    await a.book.save(app(0));
+    await b.book.save(app(0));
+    await sync(a.book); await sync(b.book);
+    await a.book.save(app(18)); await b.book.save(app(22));
+    await sync(a.book); await sync(b.book); await sync(a.book);
+    for (const { book } of [a, b]) {
+      const sources = book.data.notes.filter(note => note.source.startsWith(header)).map(note => note.source);
+      expect(sources).toHaveLength(2);
+      expect(sources).toContain(app(18));
+      expect(sources).toContain(app(22));
+    }
+  });
   it('detects first-sync same-ID conflicts instead of overwriting either library', async () => {
     const a = newBook(), b = newBook(); await a.book.save('FIRST'); await b.book.save('SECOND');
     await sync(a.book); await sync(b.book);

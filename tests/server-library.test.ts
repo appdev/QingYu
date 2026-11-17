@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Notebook, type Library } from '../src/notebook';
 import { isServerLibrary, type ServerSnapshot } from '../src/server-library';
+import { webcrypto } from 'node:crypto';
+import { dailyNoteId } from '../src/daily-note';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => { throw new Error('Native transport must not be used'); }) }));
 const fetchMock = vi.fn();
 const note = { id: 'one', folderId: 'default', source: '# Server', createdAt: 1, updatedAt: 1, title: 'Server' };
@@ -55,6 +57,23 @@ it('uses shared folder commands and never falls back to browser storage when the
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({kind:'createFolder',parentId:'default',name:'项目'});
   fetchMock.mockRejectedValueOnce(new Error('offline'));await expect(notebook.save('offline draft')).rejects.toThrow('无法连接');
   expect(notebook.current.source).toBe('# Server');
+});
+
+it('opens the other tab’s daily note after racing both the folder and note writes', async () => {
+  vi.stubGlobal('crypto', webcrypto);
+  const now = new Date(2026, 10, 16, 10);
+  const dayFolder = { id: 'daily', name: '每日笔记', path: '每日笔记' };
+  const id = await dailyNoteId(dayFolder.id, now, 0);
+  const folderExists = snapshot(); folderExists.folders.push(dayFolder);
+  const noteExists = structuredClone(folderExists);
+  noteExists.notes.push({ ...note, id, folderId: dayFolder.id, source: '# 2026-11-16\n', title: '2026-11-16', createdAt: now.getTime() });
+  fetchMock.mockResolvedValueOnce(ok(snapshot()))
+    .mockResolvedValueOnce({ ok: false, status: 409 }).mockResolvedValueOnce(ok(folderExists))
+    .mockResolvedValueOnce({ ok: false, status: 400 }).mockResolvedValueOnce(ok(noteExists));
+  const notebook = book(); await notebook.openServer();
+  await expect(notebook.openToday({ todayFolder: '', todayTitle: 'iso' }, now)).resolves.toBe(false);
+  expect(notebook.current.id).toBe(id);
+  expect(fetchMock).toHaveBeenCalledTimes(5);
 });
 
 it('isolates drafts and successful-save cleanup across tabs, including identical text', async () => {

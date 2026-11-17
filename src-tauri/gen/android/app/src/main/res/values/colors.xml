@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="editor_background">#FDFCF9</color>
+    <color name="editor_background">#FFFFFF</color>
+    <color name="editor_accent">#A85700</color>
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>
     <color name="purple_700">#FF3700B3</color>

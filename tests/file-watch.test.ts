@@ -28,6 +28,38 @@ it('coalesces bursts, ignores old roots, and leaves the editor untouched for own
   expect(actions.refresh).not.toHaveBeenCalled(); expect(document.body.dataset.libraryBusy).toBe('false');
 });
 
+it('restores the active table cell and caret after an own-save notification', async () => {
+  const { book, actions, event } = await fixture();
+  const shell = document.querySelector<HTMLElement>('#app-shell')!;
+  shell.innerHTML = '<table contenteditable="true"><tr><td tabindex="0">表格文字</td></tr></table>';
+  const cell = shell.querySelector('td')!;
+  const selection = document.getSelection()!;
+  Object.defineProperty(shell, 'inert', { set(value: boolean) {
+    if (value) { cell.blur(); selection.removeAllRanges(); }
+  } });
+  cell.focus();
+  selection.collapse(cell.firstChild, 2);
+  event(); await vi.advanceTimersByTimeAsync(150);
+  expect(book.reconcile).toHaveBeenCalledOnce();
+  expect(actions.refresh).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(cell);
+  expect(selection.anchorNode).toBe(cell.firstChild);
+  expect(selection.anchorOffset).toBe(2);
+});
+
+it('does not take focus back from a control outside the library while a reconcile is running', async () => {
+  const { book, event } = await fixture();
+  const editor = document.querySelector('#app-shell')!.appendChild(document.createElement('textarea'));
+  const outside = document.body.appendChild(document.createElement('button'));
+  editor.focus();
+  book.reconcile.mockImplementationOnce(async () => {
+    outside.focus();
+    return { changed: false, backups: [] };
+  });
+  event(); await vi.advanceTimersByTimeAsync(150);
+  expect(document.activeElement).toBe(outside);
+});
+
 it('has one deferred recheck during pending saves, composition, folder operations or sync', async () => {
   const { book, actions, event } = await fixture();
   actions.pending.mockReturnValue(true);

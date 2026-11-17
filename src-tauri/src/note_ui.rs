@@ -1,4 +1,46 @@
 use serde::Deserialize;
+use tauri::Manager;
+
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn show_table_handle_menu(
+    window: tauri::WebviewWindow,
+    menu: serde_json::Value,
+) -> Result<Option<usize>, String> {
+    if window.label() != "main" {
+        return Err("请在编辑器中打开表格菜单".into());
+    }
+    tauri_plugin_editor_menu::show(window.app_handle(), menu).await
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn table_clipboard_has_text(window: tauri::WebviewWindow) -> Result<bool, String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::NSArray;
+    check_editor_window(&window)?;
+    let types = NSArray::from_slice(&[unsafe { NSPasteboardTypeString }]);
+    Ok(NSPasteboard::generalPasteboard().canReadItemWithDataConformingToTypes(&types))
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn table_clipboard(window: tauri::WebviewWindow, text: Option<String>) -> Result<Option<String>, String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::NSString;
+    check_editor_window(&window)?;
+    if !window.is_focused().map_err(|error| error.to_string())? {
+        return Err("请在当前编辑窗口操作剪贴板".into());
+    }
+    let board = NSPasteboard::generalPasteboard();
+    let text_type = unsafe { NSPasteboardTypeString };
+    if let Some(text) = text {
+        board.clearContents();
+        return board.setString_forType(&NSString::from_str(&text), text_type)
+            .then_some(None).ok_or_else(|| "无法复制到剪贴板".into());
+    }
+    Ok(board.stringForType(text_type).map(|value| value.to_string()))
+}
 
 #[cfg(any(target_os = "macos", test))]
 fn palette_color(dark: bool, role: &str) -> Result<[f64; 4], String> {
@@ -26,17 +68,17 @@ mod palette_tests {
     fn native_colors_use_the_shared_palette_in_both_appearances() {
         assert_eq!(
             palette_color(false, "muted").unwrap(),
-            [107. / 255., 106. / 255., 100. / 255., 1.]
+            [106. / 255., 106. / 255., 106. / 255., 1.]
         );
         assert_eq!(
             palette_color(true, "paper").unwrap(),
-            [30. / 255., 29. / 255., 27. / 255., 1.]
+            [0., 0., 0., 1.]
         );
         for dark in [false, true] {
             for role in ["paper", "ink", "muted", "line"] {
                 assert!(palette_color(dark, role).is_ok());
             }
-            assert_eq!(palette_color(dark, "line").unwrap()[3], 18. / 255.);
+            assert!(palette_color(dark, "line").unwrap()[3] < 1.);
         }
         assert!(palette_color(false, "missing").is_err());
     }
@@ -74,9 +116,51 @@ pub async fn prompt_folder_name(window: tauri::WebviewWindow) -> Result<Option<S
     }
 }
 
+#[tauri::command]
+pub fn link_applications(
+    window: tauri::WebviewWindow,
+    target: String,
+) -> Result<Vec<(String, String, bool)>, String> {
+    check_editor_window(&window)?;
+    #[cfg(target_os = "macos")]
+    return mac::link_applications(&target);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = target;
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+pub async fn open_external_link(
+    window: tauri::WebviewWindow,
+    target: String,
+    application: Option<String>,
+) -> Result<(), String> {
+    check_editor_window(&window)?;
+    #[cfg(target_os = "macos")]
+    return mac::open_external_link(&target, application.as_deref()).await;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (target, application);
+        Err("当前平台使用默认链接处理程序".into())
+    }
+}
+
+fn check_editor_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == "main"
+        || crate::file_library::workspace::is_document(window.app_handle(), window.label())
+    {
+        Ok(())
+    } else {
+        Err("请在编辑器中完成此操作".into())
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) use folder_dialog::{
     confirm_trash as confirm_folder_trash, destination as choose_folder_destination,
+    sheet as show_native_sheet,
 };
 
 #[cfg(target_os = "macos")]
@@ -89,7 +173,7 @@ mod folder_dialog {
     use std::sync::mpsc::SyncSender;
     type Reply<T> = SyncSender<Result<T, String>>;
 
-    async fn sheet<T: Send + 'static>(
+    pub(crate) async fn sheet<T: Send + 'static>(
         window: tauri::WebviewWindow,
         show: impl FnOnce(MainThreadMarker, &NSWindow, Reply<T>) + Send + 'static,
     ) -> Result<T, String> {
@@ -112,7 +196,7 @@ mod folder_dialog {
             })
             .map_err(|reason| reason.to_string())?;
         tauri::async_runtime::spawn_blocking(move || {
-            receive.recv().map_err(|_| "文件夹窗口已关闭".to_string())?
+            receive.recv().map_err(|_| "窗口已关闭".to_string())?
         })
         .await
         .map_err(|reason| reason.to_string())?
@@ -196,8 +280,8 @@ mod mac {
     use objc2::{rc::Retained, runtime::ProtocolObject, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::*;
     use objc2_foundation::{
-        NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect,
-        NSRectEdge, NSSize, NSString,
+        NSArray, NSError, NSFileManager, NSNotification, NSNotificationCenter, NSObjectProtocol,
+        NSPoint, NSProcessInfo, NSRect, NSRectEdge, NSSize, NSString, NSURL,
     };
     use std::{cell::RefCell, ptr::NonNull};
 
@@ -206,24 +290,113 @@ mod mac {
         static INFO: RefCell<Option<Retained<NSPopover>>> = const { RefCell::new(None) };
     }
 
+    fn external_url(target: &str) -> Result<Retained<NSURL>, String> {
+        let url = tauri::Url::parse(target).map_err(|_| "链接格式无效")?;
+        if !matches!(url.scheme(), "http" | "https" | "mailto" | "tel") {
+            return Err("不支持此类外部链接".into());
+        }
+        NSURL::URLWithString(&NSString::from_str(url.as_str())).ok_or_else(|| "链接格式无效".into())
+    }
+
+    #[test]
+    fn editor_link_accepts_only_external_link_schemes() {
+        assert!(external_url("https://example.com").is_ok());
+        assert!(external_url("mailto:test@example.com").is_ok());
+        assert!(external_url("file:///Applications/Safari.app").is_err());
+        assert!(external_url("javascript:alert(1)").is_err());
+    }
+
+    pub fn link_applications(target: &str) -> Result<Vec<(String, String, bool)>, String> {
+        let url = external_url(target)?;
+        let workspace = NSWorkspace::sharedWorkspace();
+        let default = workspace.URLForApplicationToOpenURL(&url).and_then(|app| app.path());
+        let manager = NSFileManager::defaultManager();
+        let mut apps: Vec<_> = workspace
+            .URLsForApplicationsToOpenURL(&url)
+            .iter()
+            .filter_map(|app| {
+                let path = app.path()?;
+                let is_default = default.as_deref() == Some(&*path);
+                let label = manager.displayNameAtPath(&path).to_string();
+                Some((path.to_string(), label, is_default))
+            })
+            .collect();
+        apps.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.1.cmp(&right.1)));
+        Ok(apps)
+    }
+
+    pub async fn open_external_link(target: &str, application: Option<&str>) -> Result<(), String> {
+        let receive = {
+            let url = external_url(target)?;
+            let workspace = NSWorkspace::sharedWorkspace();
+            let Some(application) = application else {
+                return workspace.openURL(&url).then_some(()).ok_or_else(|| "无法打开链接".into());
+            };
+            let app = workspace
+                .URLsForApplicationsToOpenURL(&url)
+                .iter()
+                .find(|app| app.path().is_some_and(|path| path.to_string() == application))
+                .ok_or("此应用无法打开该链接")?;
+            let (send, receive) = std::sync::mpsc::sync_channel(1);
+            let completion = RcBlock::new(
+                move |_: *mut NSRunningApplication, error: *mut NSError| {
+                    // AppKit owns the error for the duration of this callback.
+                    let result = unsafe { error.as_ref() }
+                        .map_or(Ok(()), |error| Err(error.localizedDescription().to_string()));
+                    let _ = send.send(result);
+                },
+            );
+            workspace.openURLs_withApplicationAtURL_configuration_completionHandler(
+                &NSArray::from_retained_slice(&[url]),
+                &app,
+                &NSWorkspaceOpenConfiguration::configuration(),
+                Some(&completion),
+            );
+            receive
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            receive.recv().map_err(|_| "无法打开链接".to_string())?
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
     // MiaoYan Extensions/NSMenu+.swift: use template SF Symbols so AppKit owns hover and dark-mode tint.
     fn menu_icons(menu: &NSMenu, moving: bool) {
-        let note_menu = menu
-            .itemArray()
-            .iter()
-            .any(|item| item.title().to_string() == "显示简介");
-        let moving = moving || menu.title().to_string() == "移动";
+        if callout_menu_icons(menu) {
+            return;
+        }
+        let note_menu = menu.itemArray().iter().any(|item| {
+            matches!(
+                item.title().to_string().as_str(),
+                "显示简介" | "版本历史…" | "恢复笔记"
+            )
+        });
+        let moving = moving || matches!(menu.title().to_string().as_str(), "移动" | "移动到…");
         let folder_menu = menu.itemArray().iter().any(|item| {
             [
                 "新建文件夹",
+                "新建笔记",
                 "新建子文件夹",
                 "在终端中打开",
                 "在 Finder 中显示",
             ]
             .contains(&item.title().to_string().as_str())
         });
-        if !note_menu && !folder_menu && !moving {
+        let table_menu = menu.itemArray().iter().any(|item| {
+            matches!(item.title().to_string().as_str(), "在下方插入行" | "在左侧插入列")
+        });
+        let editor_menu = table_menu || menu.itemArray().iter().any(|item| {
+            matches!(item.title().to_string().as_str(), "打开链接" | "打开笔记" | "打开附件" | "打开图片" | "复制代码" | "分享为图片…" | "取消勾选此清单的所有任务")
+        });
+        if !note_menu && !folder_menu && !moving && !editor_menu {
             return;
+        }
+        if table_menu {
+            menu.setAllowsContextMenuPlugIns(false);
+            if NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 15 {
+                menu.setAutomaticallyInsertsWritingToolsItems(false);
+            }
         }
         if note_menu || folder_menu {
             menu.setMinimumWidth(210.0);
@@ -235,16 +408,45 @@ mod mac {
             let title = item.title().to_string();
             let symbol = match title.as_str() {
                 "显示简介" => "info.circle",
-                "置顶" | "取消置顶" => "flag",
+                "置顶" => "pin",
+                "取消置顶" => "pin.slash",
+                "锁定笔记…" => "lock",
+                "在新窗口打开笔记" | "在新窗口打开" => "macwindow",
+                "分享…" => "square.and.arrow.up",
+                "分享为图片…" => "photo",
+                "制作成应用…" => "app",
+                "版本历史…" => "clock.arrow.circlepath",
                 "制作副本" => "plus.square.on.square",
                 "重命名" | "重命名文件夹" => "pencil",
                 "新建文件夹" | "新建子文件夹" => "folder.badge.plus",
+                "新建笔记" => "square.and.pencil",
+                "上移" => "arrow.up",
+                "下移" => "arrow.down",
                 "在 Finder 中显示" => "folder",
                 "在终端中打开" => "terminal",
                 "移到废纸篓" | "废纸篓" => "trash",
                 "导出" => "square.and.arrow.up",
-                "移动" => "arrow.up.right.circle",
+                "移动" | "移动到…" => "arrow.up.right.circle",
                 "恢复笔记" => "arrow.uturn.backward",
+                "打开链接" => "arrow.up.right",
+                "打开笔记" => "doc.text",
+                "打开附件" | "打开图片" => "eye",
+                "图片尺寸" => "arrow.up.left.and.arrow.down.right",
+                "打开方式" => "arrow.up.forward.app",
+                "复制链接" | "复制代码" => "doc.on.doc",
+                "显示为链接" => "link",
+                "紧凑显示" => "capsule",
+                "显示为卡片" => "rectangle.portrait.topthird.inset.filled",
+                "从笔记中移除" => "trash",
+                "取消勾选此清单的所有任务" => "checklist.unchecked",
+                "剪切" => "scissors",
+                "复制" => "document.on.document",
+                "粘贴" => "document.on.clipboard",
+                "在下方插入行" => "arrow.down",
+                "在上方插入行" => "arrow.up",
+                "在右侧插入列" => "arrow.right",
+                "在左侧插入列" => "arrow.left",
+                "删除行" | "删除列" | "删除表格" => "trash",
                 _ if moving => "folder",
                 _ => continue,
             };
@@ -255,12 +457,86 @@ mod mac {
                 image.setTemplate(true);
                 item.setImage(Some(&image));
             }
-            if title == "移动" {
+            if matches!(title.as_str(), "移动" | "移动到…") {
                 if let Some(submenu) = item.submenu() {
                     menu_icons(&submenu, true);
                 }
             }
         }
+    }
+
+    fn callout_menu_icons(menu: &NSMenu) -> bool {
+        let kinds = [
+            ("Note", "pencil", "alert-note-rgb"),
+            ("Info", "info.circle.fill", "alert-note-rgb"),
+            ("Tip", "lightbulb.fill", "alert-tip-rgb"),
+            ("Success", "checkmark.circle.fill", "alert-tip-rgb"),
+            ("Question", "questionmark.circle.fill", "alert-warning-rgb"),
+            ("Warning", "exclamationmark.triangle.fill", "alert-warning-rgb"),
+            ("Danger", "bolt.fill", "alert-caution-rgb"),
+            ("Bug", "ladybug.fill", "alert-caution-rgb"),
+            ("Example", "list.bullet", "alert-important-rgb"),
+            ("Quote", "quote.opening", "alert-quote-rgb"),
+        ];
+        let items = menu.itemArray();
+        if items.len() != kinds.len()
+            || !items
+                .iter()
+                .map(|item| item.title().to_string())
+                .eq(kinds.map(|kind| kind.0))
+        {
+            return false;
+        }
+        let Some(main) = MainThreadMarker::new() else {
+            return false;
+        };
+        let appearance = NSApplication::sharedApplication(main).effectiveAppearance();
+        let mode = if appearance.name().to_string().contains("Dark") {
+            "dark"
+        } else {
+            "light"
+        };
+        let palette: serde_json::Value =
+            serde_json::from_str(include_str!("../../src/palette.json")).unwrap_or_default();
+        let supports_color = NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 12;
+        for (item, (_, symbol, role)) in items.iter().zip(kinds) {
+            let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str(symbol),
+                Some(&item.title()),
+            ) else {
+                continue;
+            };
+            let rgb: Vec<_> = palette[mode][role]
+                .as_str()
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|channel| channel.trim().parse::<u8>().ok())
+                .collect();
+            if let (true, [red, green, blue]) = (supports_color, rgb.as_slice()) {
+                let color = NSColor::colorWithSRGBRed_green_blue_alpha(
+                    f64::from(*red) / 255.,
+                    f64::from(*green) / 255.,
+                    f64::from(*blue) / 255.,
+                    1.,
+                );
+                let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                    13.,
+                    unsafe { NSFontWeightSemibold },
+                );
+                let palette = NSImageSymbolConfiguration::configurationWithPaletteColors(
+                    &NSArray::from_retained_slice(&[color]),
+                );
+                if let Some(image) = image.imageWithSymbolConfiguration(
+                    &config.configurationByApplyingConfiguration(&palette),
+                ) {
+                    image.setTemplate(false);
+                    item.setImage(Some(&image));
+                    continue;
+                }
+            }
+            item.setImage(Some(&image));
+        }
+        true
     }
 
     pub fn install_menu_icons() {
@@ -320,7 +596,7 @@ mod mac {
         let color = |[red, green, blue, alpha]: [f64; 4]| {
             NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, alpha)
         };
-        let paper = color(palette_color(dark, "paper")?);
+        let card = color(palette_color(dark, "card")?);
         let muted = color(palette_color(dark, "muted")?);
         let ink = color(palette_color(dark, "ink")?);
         let line = color(palette_color(dark, "line")?);
@@ -331,7 +607,7 @@ mod mac {
         background
             .layer()
             .ok_or("简介视图不可用")?
-            .setBackgroundColor(Some(&paper.CGColor()));
+            .setBackgroundColor(Some(&card.CGColor()));
         let content = &background;
         for (top, text, bold) in [
             (14., format!("字数：{}", info.words), false),

@@ -1,8 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import type { Notebook } from './notebook';
+import { dailyNoteChoices } from './daily-note';
 
-export async function setupFileLibrary(book: Notebook, actions: { save(): Promise<boolean>; prepareExit?(): Promise<void>; cancelExit?(): Promise<void>; sync?(): Promise<void>; refresh(): void | Promise<void>; error(message: string): void }) {
+export async function setupFileLibrary(book: Notebook, actions: { save(): Promise<boolean>; openToday?(): Promise<void>; quickOpen?(): boolean; prepareExit?(): Promise<void>; cancelExit?(): Promise<void>; sync?(): Promise<void>; refresh(): void | Promise<void>; error(message: string): void }) {
   let quitting = false;
   let changing = false;
   async function command(payload: string) {
@@ -25,13 +26,16 @@ export async function setupFileLibrary(book: Notebook, actions: { save(): Promis
     }
   }
   await listen<string>('library-command', async ({ payload }) => {
+    if (payload === 'library-today') { if (!changing && !quitting) await actions.openToday?.(); return; }
+    if (payload === 'library-quick-open') { if (!changing && !quitting) actions.quickOpen?.(); return; }
     try { await command(payload); } catch (error) { actions.error(error instanceof Error ? error.message : String(error)); }
   }, { target: 'main' });
-  await listen<{ id: string; change: boolean }>('settings-library-request', async ({ payload }) => {
+  await listen<{ id: string; change: boolean; daily?: boolean }>('settings-library-request', async ({ payload }) => {
     if (typeof payload.id !== 'string' || typeof payload.change !== 'boolean') return;
     try {
       if (payload.change) await command('library-choose');
-      await emitTo('settings', 'settings-library-reply', { id: payload.id, root: book.root ?? '' });
+      const daily = !payload.change && payload.daily === true ? dailyNoteChoices(book.data) : undefined;
+      await emitTo('settings', 'settings-library-reply', { id: payload.id, root: book.root ?? '', ...(daily ? { daily } : {}) });
     } catch (error) { await emitTo('settings', 'settings-library-reply', { id: payload.id, error: error instanceof Error ? error.message : String(error) }); }
   }, { target: 'main' });
   await listen('library-close-main', async () => {
@@ -51,7 +55,7 @@ export async function setupFileLibrary(book: Notebook, actions: { save(): Promis
       if (!book.loadError && actions.sync) {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
-          await Promise.race([actions.sync().catch(() => {}), new Promise<void>(resolve => { timeout = setTimeout(resolve, 3000); })]);
+          await Promise.race([actions.sync().catch(() => {}), new Promise<void>(resolve => { timeout = setTimeout(resolve, 30_000); })]);
         } catch { /* Local data is saved; sync failures must never prevent quitting. */ }
         finally { clearTimeout(timeout); }
       }

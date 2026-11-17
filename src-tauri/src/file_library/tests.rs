@@ -85,6 +85,48 @@ fn create(store: &mut DiskLibrary, title: Option<&str>, body: &str) -> Note {
 }
 
 #[test]
+fn saving_a_note_body_preserves_other_notes_and_the_active_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = open(directory.path());
+    let first = create(&mut store, Some("第一篇"), "一\r\n");
+    let second = create(&mut store, Some("第二篇"), "二\n");
+    let root = store.snapshot().root;
+
+    store.save_note_body(&root, &second.id, &second.source, "第二篇其他窗口\n".into(), "edit").unwrap();
+    store.save_note_body(&root, &first.id, &first.source, "第一篇窗口\n".into(), "edit").unwrap();
+    let latest = store.snapshot();
+    assert_eq!(latest.library.active_id, second.id);
+    assert_eq!(latest.library.notes[0].source, "第一篇窗口\n");
+    assert_eq!(latest.library.notes[1].source, "第二篇其他窗口\n");
+    assert_eq!(fs::read_to_string(directory.path().join(&first.path)).unwrap(), "第一篇窗口\n");
+    assert_eq!(fs::read_to_string(directory.path().join(&second.path)).unwrap(), "第二篇其他窗口\n");
+
+    store.save_note_body(&root, &first.id, &first.source, "第一篇窗口\n".into(), "edit").unwrap();
+    assert_eq!(store.revision, latest.revision);
+    assert!(store.save_note_body(&root, &first.id, &first.source, "同一篇旧草稿".into(), "edit").unwrap_err().contains("正文已更新"));
+    assert!(store.save_note_body("/another-library", &first.id, "第一篇窗口\n", "旧笔记库内容".into(), "edit").unwrap_err().contains("位置已更改"));
+    assert_eq!(store.data, latest.library);
+}
+
+#[test]
+fn saving_a_note_body_checks_disk_bytes_even_on_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = open(directory.path());
+    let note = create(&mut store, Some("笔记"), "初稿");
+    let path = directory.path().join(note.path);
+    let root = store.snapshot().root;
+    let revision = store.revision;
+    fs::write(&path, "外部文件改写").unwrap();
+
+    for source in ["当前窗口草稿", note.source.as_str()] {
+        assert!(store.save_note_body(&root, &note.id, &note.source, source.into(), "edit").unwrap_err().contains("磁盘文件已被外部修改"));
+    }
+    assert_eq!(fs::read_to_string(path).unwrap(), "外部文件改写");
+    assert_eq!(store.revision, revision);
+    assert_eq!(store.data.notes[0].source, note.source);
+}
+
+#[test]
 fn matches_executed_swift_namehelper_for_unicode_slashes_and_numeric_suffixes() {
     #[derive(Deserialize)]
     struct Case {

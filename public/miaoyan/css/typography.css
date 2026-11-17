@@ -342,6 +342,11 @@ blockquote blockquote {
   --alert-bg: rgba(var(--alert-caution-rgb), var(--alert-opacity));
 }
 
+.heti .markdown-alert-quote {
+  --alert-color: rgb(var(--alert-quote-rgb));
+  --alert-bg: rgba(var(--alert-quote-rgb), var(--alert-opacity));
+}
+
 /* Tables */
 .heti table {
   box-sizing: border-box;

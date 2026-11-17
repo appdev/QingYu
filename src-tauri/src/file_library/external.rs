@@ -5,6 +5,8 @@ use super::*;
 pub struct EditorBuffer {
     pub(super) note_id: String,
     pub(super) source: String,
+    #[serde(default)]
+    pub(super) expected_source: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -52,32 +54,27 @@ impl DiskLibrary {
         next.scan()?;
         validate(&next.data)?;
         let mut backups = vec![];
-        if let Some(buffer) = buffer.filter(|buffer| buffer.note_id == self.data.active_id) {
-            if let Some(old) = self
-                .data
-                .notes
-                .iter()
-                .find(|note| note.id == buffer.note_id)
-            {
-                let external = next.data.notes.iter().find(|note| note.id == old.id);
-                let changed = external.is_some_and(|note| !same_text(&note.source, &old.source));
-                let removed_draft = external.is_none() && !same_text(&buffer.source, &old.source);
-                if (changed || removed_draft)
-                    && !external.is_some_and(|note| same_text(&buffer.source, &note.source))
-                {
+        if let Some(buffer) = buffer.filter(|buffer| buffer.expected_source.is_some() || buffer.note_id == self.data.active_id) {
+            let old = self.data.notes.iter().find(|note| note.id == buffer.note_id);
+            let external = next.data.notes.iter().find(|note| note.id == buffer.note_id);
+            if let Some(expected) = buffer.expected_source.as_deref().or_else(|| old.map(|note| note.source.as_str())) {
+                if !same_text(&buffer.source, expected) && !external.is_some_and(|note| {
+                    same_text(&note.source, expected) || same_text(&note.source, &buffer.source)
+                }) {
                     let directory = checked(&self.root, ".miaoyan-conflicts")?;
                     fs::create_dir_all(&directory).map_err(error)?;
-                    let base = Path::new(&old.path)
+                    let old_path = Path::new(old.or(external).map(|note| note.path.as_str()).unwrap_or("笔记.md"));
+                    let base = old_path
                         .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy();
-                    let project = Path::new(&old.path)
+                    let project = old_path
                         .parent()
                         .and_then(Path::file_name)
                         .or_else(|| self.root.file_name())
                         .unwrap_or_default()
                         .to_string_lossy();
-                    let extension = Path::new(&old.path)
+                    let extension = old_path
                         .extension()
                         .unwrap_or_default()
                         .to_string_lossy();
@@ -113,6 +110,7 @@ impl DiskLibrary {
 #[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_reconcile(
+    window: tauri::WebviewWindow,
     state: State<'_, FileLibrary>,
     root: String,
     revision: u64,
@@ -120,16 +118,21 @@ pub async fn library_reconcile(
 ) -> Result<Reconciled> {
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("尚未打开本地笔记库")?;
+    workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
     if store.root != Path::new(&root) {
         return Ok(Reconciled {
             snapshot: None,
             backups: vec![],
         });
     }
-    if store.revision != revision {
-        return Err("笔记库正在变化，稍后重新检查外部变化".into());
+    let mut result = store.reconcile(buffer)?;
+    let scanned_change = result.snapshot.is_some();
+    if result.snapshot.is_none() && store.revision != revision {
+        result.snapshot = Some(store.snapshot());
     }
-    store.reconcile(buffer)
+    drop(lock);
+    if scanned_change { workspace::library_changed(window.app_handle(), &root, Some(window.label())); }
+    Ok(result)
 }
 
 #[cfg(desktop)]
@@ -229,7 +232,7 @@ pub async fn library_watch(app: tauri::AppHandle, state: State<'_, FileLibrary>)
                     serde_json::json!({ "root": path, "error": reason }),
                 );
             }
-            let _ = emitter.emit_to("main", "library-files-changed", &path);
+            workspace::library_changed(&emitter, &path, None);
         })?;
         *watch = Some(next);
         let _ = app.emit_to("main", "library-files-changed", &payload);

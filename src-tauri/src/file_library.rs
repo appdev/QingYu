@@ -18,10 +18,12 @@ const JOURNAL: &str = ".miaoyan/transaction.json";
 pub(crate) mod folders;
 pub(crate) mod external;
 pub(crate) mod assets;
+pub(crate) mod storage_usage;
 pub(crate) mod attachments;
+pub(crate) mod history;
 #[cfg(feature = "app")]
 pub(crate) mod workspace;
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", all(feature = "app", desktop)))]
 pub mod api;
 
 fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
@@ -1042,6 +1044,41 @@ impl DiskLibrary {
     pub fn commit(&mut self, next: Library, intent: &str) -> Result<()> {
         self.commit_bytes(next, intent, &HashMap::new(), None)
     }
+
+    #[cfg(any(feature = "app", test))]
+    fn save_note_body(
+        &mut self,
+        root: &str,
+        note_id: &str,
+        expected_source: &str,
+        source: String,
+        intent: &str,
+    ) -> Result<()> {
+        if root != self.root.to_string_lossy() {
+            return Err("笔记库位置已更改，未保存旧窗口中的正文".into());
+        }
+        let index = self.data.notes.iter().position(|note| note.id == note_id)
+            .ok_or("笔记不存在")?;
+        let note = &self.data.notes[index];
+        if note.read_only {
+            return Err("文件内容损坏或不可读，已阻止保存".into());
+        }
+        if note.source == source {
+            let bytes = self.bytes.get(note_id).ok_or("文件不可读，未覆盖原文件")?;
+            if fs::read(checked(&self.root, &note.path)?).map_err(error)? != *bytes {
+                return Err("磁盘文件已被外部修改，未覆盖，请重新读取笔记文件夹".into());
+            }
+            return Ok(());
+        }
+        if note.source != expected_source {
+            return Err("笔记正文已更新，未覆盖磁盘版本，当前草稿仍保留在编辑器".into());
+        }
+        let mut next = self.data.clone();
+        next.notes[index].source = source;
+        next.notes[index].updated_at = now();
+        self.commit(next, intent)
+    }
+
     fn commit_bytes(
         &mut self,
         mut next: Library,
@@ -1081,6 +1118,8 @@ impl DiskLibrary {
             }
         }
         let mut operations = match assets { Some(sync) if intent == "sync" => assets::operations(&self.root, sync)?, Some(_) => return Err("附件只能随同步事务提交".into()), None => vec![] };
+        let generation = self.revision + 1;
+        let committed_at = now() as u64;
         let mut occupied: HashSet<String> = HashSet::new();
         for folder in &mut next.folders {
             if let Some(old) = self.data.folders.iter().find(|f| f.id == folder.id) {
@@ -1176,6 +1215,9 @@ impl DiskLibrary {
                     });
                 }
                 if changed {
+                    if let Some(version) = history::capture(&self.root, old, intent, generation, committed_at)? {
+                        operations.push(version);
+                    }
                     operations.push(Operation::Write {
                         path: path.clone(),
                         before: bytes.to_vec(),
@@ -1278,7 +1320,6 @@ impl DiskLibrary {
                 .first()
                 .map_or(String::new(), |note| note.id.clone());
         }
-        let generation = self.revision + 1;
         let journal = checked(&self.root, JOURNAL)?;
         let mut transaction = Transaction {
             generation,
@@ -1523,9 +1564,14 @@ fn default_library_directory(documents: PathBuf) -> PathBuf {
 #[tauri::command]
 pub async fn library_open(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, FileLibrary>,
     seed: Option<Library>,
 ) -> Result<Snapshot> {
+    if window.label() != "main" { return Err("请在主窗口打开笔记库".into()); }
+    if let Some(store) = state.0.lock().map_err(error)?.as_ref() {
+        return Ok(store.snapshot());
+    }
     let config = app
         .path()
         .app_config_dir()
@@ -1593,19 +1639,87 @@ async fn open_accessible_library(root: PathBuf, seed: Option<Library>) -> Result
 #[cfg(feature = "app")]
 #[tauri::command]
 pub async fn library_commit(
+    window: tauri::WebviewWindow,
     state: State<'_, FileLibrary>,
-    next: Library,
+    mut next: Library,
     revision: u64,
     intent: String,
     assets: Option<assets::AssetSync>,
 ) -> Result<Snapshot> {
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
+    let note_window = workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
     if store.revision != revision {
         return Err("笔记库已发生变化，请重新打开后再操作".into());
     }
+    if note_window {
+        if next.folders != store.data.folders || next.sync != store.data.sync || assets.is_some()
+            || !(matches!(intent.as_str(), "edit" | "create") || intent.starts_with("duplicate:"))
+        {
+            return Err("请在主窗口管理笔记库".into());
+        }
+        next.active_id.clone_from(&store.data.active_id);
+    }
     store.commit_bytes(next, &intent, &HashMap::new(), assets.as_ref())?;
-    Ok(store.snapshot())
+    let snapshot = store.snapshot();
+    drop(lock);
+    workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));
+    Ok(snapshot)
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub async fn library_save_note(
+    window: tauri::WebviewWindow,
+    state: State<'_, FileLibrary>,
+    root: String,
+    note_id: String,
+    expected_source: String,
+    source: String,
+) -> Result<Snapshot> {
+    let mut lock = state.0.lock().map_err(error)?;
+    let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
+    workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
+    let revision = store.revision;
+    store.save_note_body(&root, &note_id, &expected_source, source, "edit")?;
+    let snapshot = store.snapshot();
+    drop(lock);
+    if snapshot.revision != revision {
+        workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));
+    }
+    Ok(snapshot)
+}
+
+#[cfg(all(feature = "app", desktop))]
+#[tauri::command]
+pub async fn library_reveal_note(
+    window: tauri::WebviewWindow,
+    state: State<'_, FileLibrary>,
+    note_id: String,
+) -> Result<()> {
+    if window.label() != "main" {
+        return Err("请在笔记库中定位文件".into());
+    }
+    let path = {
+        let lock = state.0.lock().map_err(error)?;
+        let store = lock.as_ref().ok_or("请先打开本地笔记库")?;
+        let note = store
+            .data
+            .notes
+            .iter()
+            .find(|note| note.id == note_id && !note.trashed)
+            .ok_or("笔记不存在或已移到废纸篓")?;
+        checked(&store.root, &note.path)?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if !path.is_file() {
+            return Err("找不到笔记文件，可能已被移动或删除".into());
+        }
+        tauri_plugin_opener::reveal_item_in_dir(path)
+            .map_err(|reason| format!("无法在文件管理器中显示笔记：{reason}"))
+    })
+    .await
+    .map_err(error)?
 }
 
 #[cfg(feature = "app")]
@@ -1663,6 +1777,9 @@ pub async fn library_choose(
     #[cfg(desktop)]
     {
         use tauri_plugin_dialog::DialogExt;
+        if app.state::<workspace::Workspace>().has_note_windows()? {
+            return Err("请关闭独立笔记窗口后再更改笔记库位置".into());
+        }
         let window = app.get_webview_window("settings").filter(|settings| settings.is_focused().unwrap_or(false)).unwrap_or(window);
         let chosen = tauri::async_runtime::spawn_blocking(move || {
             window
@@ -1677,16 +1794,27 @@ pub async fn library_choose(
         if let Some(path) = chosen {
             let path = path.into_path().map_err(error)?;
             let opened = open_accessible_library(path, None).await?;
-            let mut lock = state.0.lock().map_err(error)?;
-            let config = app.path().app_config_dir().map_err(error)?;
-            fs::create_dir_all(&config).map_err(error)?;
-            let path = config.join("library-location.json");
-            atomic(
-                &path,
-                &serde_json::to_vec(&opened.root).map_err(error)?,
-                path.exists(),
-            )?;
-            *lock = Some(opened);
+            let mcp = app.state::<api::desktop::LocalMcp>();
+            let mut listener = mcp.0.lock().await;
+            let stop_mcp = listener.as_ref().is_some_and(|listener| listener.root != opened.root);
+            {
+                let workspace = app.state::<workspace::Workspace>();
+                let _opening = workspace.opening.lock().map_err(error)?;
+                if workspace.has_note_windows()? {
+                    return Err("请关闭独立笔记窗口后再更改笔记库位置".into());
+                }
+                let mut lock = state.0.lock().map_err(error)?;
+                let config = app.path().app_config_dir().map_err(error)?;
+                fs::create_dir_all(&config).map_err(error)?;
+                let path = config.join("library-location.json");
+                atomic(
+                    &path,
+                    &serde_json::to_vec(&opened.root).map_err(error)?,
+                    path.exists(),
+                )?;
+                *lock = Some(opened);
+            }
+            if stop_mcp { api::desktop::stop(&mut listener).await; }
         }
         let lock = state.0.lock().map_err(error)?;
         Ok(lock.as_ref().ok_or("尚未打开本地笔记库")?.snapshot())
@@ -1700,12 +1828,15 @@ pub async fn library_choose(
 
 #[cfg(feature = "app")]
 #[tauri::command]
-pub async fn library_reload(state: State<'_, FileLibrary>) -> Result<Snapshot> {
+pub async fn library_reload(window: tauri::WebviewWindow, state: State<'_, FileLibrary>) -> Result<Snapshot> {
     let mut lock = state.0.lock().map_err(error)?;
     let current = lock.as_ref().ok_or("请先打开本地笔记库")?;
+    workspace::check_library_window(window.app_handle(), window.label(), &current.root)?;
     let reopened = DiskLibrary::open(current.root.clone(), None)?;
     let snapshot = reopened.snapshot();
     *lock = Some(reopened);
+    drop(lock);
+    workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));
     Ok(snapshot)
 }
 
@@ -1732,6 +1863,9 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
     };
     files.append(&PredefinedMenuItem::separator(app)?)?;
     for (id, text, key) in [
+        ("library-today", "今日笔记", Some("CmdOrCtrl+T")),
+        #[cfg(target_os = "macos")]
+        ("library-quick-open", "跳转到笔记…", None),
         ("workspace-open", "打开文件…", Some("CmdOrCtrl+O")),
         ("workspace-close", "返回笔记库", Some("CmdOrCtrl+Shift+W")),
         ("library-choose", "更改笔记库位置…", None),

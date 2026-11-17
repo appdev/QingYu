@@ -3,11 +3,38 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo } from '@tauri-apps/api/event';
 import { setupFileLibrary } from '../src/file-library-ui';
+import { libraryLocation } from '../src/library-settings';
+import { remoteSync } from '../src/settings-bridge';
 import type { Notebook } from '../src/notebook';
 const handlers = vi.hoisted(() => new Map<string, (event: { payload: any }) => Promise<void>>());
+vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, fn) => { handlers.set(name, fn); return () => {}; }), emitTo: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 beforeEach(() => { handlers.clear(); vi.clearAllMocks(); document.body.innerHTML = '<div id="app-shell"></div>'; delete document.body.dataset.syncBusy; delete document.body.dataset.libraryBusy; });
+
+it.each([
+  ['settings-library-request', 'settings-library-reply', { root: '/notes' }, '/notes', libraryLocation],
+  ['settings-sync-request', 'settings-sync-reply', { config: { region: 'us-east-1' } }, { region: 'us-east-1' }, async () => (await remoteSync()).load()],
+] as const)('recovers a read if the first %s is sent before the main window is listening', async (request, reply, data, expected, load) => {
+  vi.useFakeTimers();
+  try {
+    let ready = false;
+    vi.mocked(emitTo).mockImplementation(async (_, event, payload) => {
+      if (ready && event === request) await handlers.get(reply)!({ payload: { ...data, id: (payload as { id: string }).id } });
+    });
+    const delivered = vi.fn();
+    void load().then(delivered);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(emitTo).toHaveBeenCalledTimes(1);
+    expect(delivered).not.toHaveBeenCalled();
+    ready = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(delivered).toHaveBeenCalledExactlyOnceWith(expected);
+    const count = vi.mocked(emitTo).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(emitTo).toHaveBeenCalledTimes(count);
+  } finally { vi.mocked(emitTo).mockResolvedValue(undefined); vi.useRealTimers(); }
+});
 
 it('allows choosing another directory or quitting after startup access fails, without saving or syncing cached notes', async () => {
   const book = { loadError: true, root: undefined, chooseRoot: vi.fn(), reload: vi.fn() };
@@ -49,14 +76,14 @@ it('saves locally then exits immediately when sync fails, without a confirmation
   expect(actions.error).not.toHaveBeenCalled();
 });
 
-it('bounds an unfinished sync on exit to three seconds without waiting on the sync busy flag', async () => {
+it('bounds an unfinished sync on exit to thirty seconds without waiting on the sync busy flag', async () => {
   vi.useFakeTimers();
   try {
     const actions = { save: vi.fn(async () => true), sync: vi.fn(() => new Promise<void>(() => {})), refresh: vi.fn(), error: vi.fn() };
     await setupFileLibrary({ loadError: false } as Notebook, actions);
     document.body.dataset.syncBusy = 'true';
     const exit = handlers.get('library-before-exit')!({ payload: null });
-    await vi.advanceTimersByTimeAsync(2999); expect(invoke).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(29_999); expect(invoke).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1); await exit;
     expect(actions.save).toHaveBeenCalledOnce(); expect(invoke).toHaveBeenCalledExactlyOnceWith('library_finish_exit');
   } finally { document.body.inert = false; vi.useRealTimers(); }
@@ -85,6 +112,21 @@ it('reads the live note directory and flushes the editor before switching it', a
   await handlers.get('settings-library-request')!({ payload: { id: 'choose', change: true } });
   expect(order).toEqual(['save', 'choose']); expect(actions.refresh).toHaveBeenCalledOnce();
   expect(emitTo).toHaveBeenLastCalledWith('settings', 'settings-library-reply', { id: 'choose', root: '/new-notes' }); expect(document.querySelector<HTMLElement>('#app-shell')!.inert).toBe(false);
+});
+
+it('routes the native Today command and returns picker metadata without note bodies', async () => {
+  const book = { root: '/notes', data: {
+    folders: [{ id: 'default', name: '备忘录' }, { id: 'project', name: '项目', path: '工作/项目' }],
+    notes: [{ id: 'note', folderId: 'project', title: '复盘', source: '# 复盘\n\n仅保留在正文', updatedAt: 1000 }],
+  } } as unknown as Notebook;
+  const actions = { save: vi.fn(), openToday: vi.fn().mockResolvedValue(undefined), refresh: vi.fn(), error: vi.fn() };
+  await setupFileLibrary(book, actions);
+  await handlers.get('library-command')!({ payload: 'library-today' });
+  expect(actions.openToday).toHaveBeenCalledOnce();
+  await handlers.get('settings-library-request')!({ payload: { id: 'daily', change: false, daily: true } });
+  expect(emitTo).toHaveBeenLastCalledWith('settings', 'settings-library-reply', {
+    id: 'daily', root: '/notes', daily: { folders: [['default', '备忘录'], ['project', '工作/项目']] },
+  });
 });
 
 it('blocks switching during sync or unfinished input and restores the editing lock after a cancelled picker', async () => {

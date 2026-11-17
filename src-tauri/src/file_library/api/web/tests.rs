@@ -16,7 +16,7 @@ fn fixture() -> (tempfile::TempDir, Arc<Service>, Router) {
         "<html><head></head><body>private editor</body></html>",
     )
     .unwrap();
-    for name in ["settings.html", "preview.html", "auth/private.html"] {
+    for name in ["settings.html", "auth/private.html"] {
         let path = public.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "private page").unwrap();
@@ -68,6 +68,40 @@ async fn call(
     (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+#[tokio::test]
+async fn mcp_accepts_only_bearer_when_the_web_editor_is_enabled() {
+    let (_dir, _, app) = fixture();
+    let cookie = sign_in(&app).await;
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/mcp",
+            Some(&cookie),
+            None,
+            list.clone(),
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/mcp",
+        Some(&cookie),
+        None,
+        list,
+        Some(READ_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["result"]["tools"].as_array().unwrap().len(), 3);
+}
+
 async fn sign_in(app: &Router) -> String {
     let (status, headers, _) = call(
         app,
@@ -102,7 +136,6 @@ async fn pages_require_a_session_and_encoded_assets_cannot_bypass_the_gate() {
         "/",
         "/index.html",
         "/settings.html",
-        "/preview.html",
         "/auth/private.html",
         "/assets/../index.html",
         "/assets/%2e%2e/index.html",

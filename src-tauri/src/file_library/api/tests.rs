@@ -55,6 +55,120 @@ async fn list(app: &Router) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn mcp_reuses_read_write_access_and_document_versions() {
+    let (dir, _, app) = fixture();
+    let rpc = |token, method, params| {
+        call(
+            &app,
+            "POST",
+            "/mcp",
+            token,
+            json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}),
+            None,
+        )
+    };
+    assert_eq!(
+        rpc(None, "tools/list", json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, headers, init) = rpc(Some(READ_TOKEN), "initialize",
+        json!({"protocolVersion":"2025-06-18","clientInfo":{"name":"test","version":"1"},"capabilities":{}})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    let read = rpc(Some(READ_TOKEN), "tools/list", json!({})).await.2;
+    assert_eq!(read["result"]["tools"].as_array().unwrap().len(), 3);
+    let write = rpc(Some(TOKEN), "tools/list", json!({})).await.2;
+    assert_eq!(write["result"]["tools"].as_array().unwrap().len(), 5);
+    let create = json!({"name":"create_note","arguments":{"folderId":"default","title":"回归 MCP","source":"# 文本"}});
+    let forbidden = rpc(Some(READ_TOKEN), "tools/call", create.clone()).await.2;
+    assert_eq!(forbidden["result"]["isError"], true);
+    let created = rpc(Some(TOKEN), "tools/call", create).await.2;
+    let note = &created["result"]["structuredContent"];
+    let id = note["id"].as_str().unwrap();
+    let version = note["version"].as_str().unwrap();
+    let found = rpc(
+        Some(READ_TOKEN),
+        "tools/call",
+        json!({"name":"search_notes","arguments":{"q":"回归 MCP"}}),
+    )
+    .await
+    .2;
+    assert_eq!(found["result"]["structuredContent"]["items"][0]["id"], id);
+    let update =
+        json!({"name":"update_note","arguments":{"id":id,"version":version,"source":"新版正文"}});
+    let edited = rpc(Some(TOKEN), "tools/call", update.clone()).await.2;
+    assert_eq!(edited["result"]["structuredContent"]["source"], "新版正文");
+    let conflict = rpc(Some(TOKEN), "tools/call", update).await.2;
+    assert!(conflict["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("version_conflict (412)"));
+    let path = edited["result"]["structuredContent"]["path"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(dir.path().join(path)).unwrap(),
+        "新版正文"
+    );
+}
+
+#[tokio::test]
+async fn mcp_rejects_browser_origins_and_duplicate_auth_and_accepts_notifications() {
+    let (_dir, _, app) = fixture();
+    let exchange = |method| {
+        axum::http::Request::builder()
+            .method(method)
+            .uri("/mcp")
+            .header(header::CONTENT_TYPE, "application/json")
+    };
+    let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let request = exchange("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::ORIGIN, "https://example.com")
+        .body(Body::from(notification))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let request = exchange("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::AUTHORIZATION, "Bearer other")
+        .body(Body::from(notification))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let request = exchange("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header("mcp-protocol-version", "1970-01-01")
+        .body(Body::from(notification))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    let request = exchange("POST")
+        .header(header::AUTHORIZATION, format!("Bearer {READ_TOKEN}"))
+        .body(Body::from(notification))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::ACCEPTED
+    );
+    let request = exchange("GET")
+        .header(header::AUTHORIZATION, format!("Bearer {READ_TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(request).await.unwrap().status(),
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+}
+
+#[tokio::test]
 async fn authentication_covers_every_route_and_restricts_read_tokens() {
     let (_dir, _state, app) = fixture();
     for (method, path) in [

@@ -1,4 +1,4 @@
-#calendar-dialog { background: var(--paper); color: var(--ink); border: 1px solid var(--border); border-radius: 13px; padding: 24px; width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; box-shadow: 0 12px 40px var(--shadow-modal); }
+#calendar-dialog { background: var(--card); color: var(--ink); border: 1px solid var(--border); border-radius: 13px; padding: 24px; width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; box-shadow: 0 12px 40px var(--shadow-modal); }
 #calendar-dialog::backdrop { background: var(--overlay); }
 #calendar-dialog h2 { margin: 0 0 18px; font-size: 18px; }
 #calendar-dialog label { display: block; font-size: 13px; margin: 12px 0 7px; }

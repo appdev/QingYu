@@ -48,7 +48,11 @@ export function setupCalendar(getTitle: () => string) {
     reminder.onchange = () => { field('event-custom').hidden = reminder.value !== 'custom'; minutes.required = reminder.value === 'custom'; };
     let busy = false, saved = false;
     current.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
-    current.addEventListener('close', () => { current.remove(); dialog = undefined; button.focus(); });
+    current.addEventListener('close', () => {
+      current.remove(); dialog = undefined;
+      const trigger = button.closest('#format-menu') ? document.getElementById('format-button') : button;
+      trigger?.focus();
+    });
     cancel.onclick = () => { if (!busy) current.close(); };
     form.onsubmit = async event => {
       event.preventDefault();

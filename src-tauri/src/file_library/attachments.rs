@@ -166,13 +166,14 @@ fn with_store<T>(
     run: impl FnOnce(&DiskLibrary) -> Result<T>,
 ) -> Result<T> {
     use tauri::Manager;
-    if label == "main" {
-        let state = app.state::<FileLibrary>();
-        let lock = state.0.lock().map_err(error)?;
-        run(lock.as_ref().ok_or("请先打开笔记库")?)
-    } else {
-        workspace::with_document(app, label, run)
+    if !label.starts_with("document-note-") && label != "main" {
+        return workspace::with_document(app, label, run);
     }
+    let state = app.state::<FileLibrary>();
+    let lock = state.0.lock().map_err(error)?;
+    let store = lock.as_ref().ok_or("请先打开笔记库")?;
+    workspace::check_library_window(app, label, &store.root)?;
+    run(store)
 }
 
 #[cfg(feature = "app")]
@@ -225,6 +226,18 @@ pub async fn attachment_import(
 ) -> Result<ImportedAttachment> {
     with_store(window.app_handle(), window.label(), |store| {
         import(store, &id, upload)
+    })
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub async fn note_picture_asset(window: tauri::WebviewWindow, note_id: String, path: String) -> Result<tauri::ipc::Response> {
+    with_store(window.app_handle(), window.label(), |store| {
+        let file = resolve(store, &note_id, &path)?;
+        if !matches!(mime(&file), "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/bmp") {
+            return Err("无法将此附件作为图片导出".into());
+        }
+        Ok(tauri::ipc::Response::new(read(&file)?))
     })
 }
 

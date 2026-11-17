@@ -11,7 +11,7 @@
   --bg-color: var(--paper);
   --text-color: var(--render-text);
   --text-secondary: var(--quote-text);
-  --link-color: var(--brand);
+  --link-color: var(--link);
   --border-color: var(--border);
 
   --code-bg: var(--code);

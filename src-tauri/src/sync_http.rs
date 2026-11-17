@@ -15,7 +15,12 @@ struct Target {
 }
 
 impl Target {
-    fn new(endpoint: &str, bucket: &str, prefix: &str) -> Result<Self, String> {
+    fn new(
+        endpoint: &str,
+        bucket: &str,
+        prefix: &str,
+        force_path_style: bool,
+    ) -> Result<Self, String> {
         let mut url = Url::parse(endpoint).map_err(|_| "S3 地址格式无效")?;
         let local = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
         if !(url.scheme() == "https" || url.scheme() == "http" && local)
@@ -43,10 +48,16 @@ impl Target {
         {
             return Err("Bucket 或同步前缀无效".into());
         }
-        url.path_segments_mut()
-            .map_err(|_| "S3 地址格式无效")?
-            .pop_if_empty()
-            .push(bucket);
+        if force_path_style {
+            url.path_segments_mut()
+                .map_err(|_| "S3 地址格式无效")?
+                .pop_if_empty()
+                .push(bucket);
+        } else {
+            let host = format!("{bucket}.{}", url.host_str().ok_or("S3 地址格式无效")?);
+            url.set_host(Some(&host))
+                .map_err(|_| "S3 Bucket 地址无效")?;
+        }
         Ok(Self {
             bucket: url,
             prefix: format!("{prefix}/"),
@@ -61,7 +72,8 @@ impl Target {
         {
             return false;
         }
-        if url.path() == self.bucket.path() {
+        let root = self.bucket.path().trim_end_matches('/');
+        if url.path().trim_end_matches('/') == root {
             let prefixes: Vec<_> = url
                 .query_pairs()
                 .filter(|(name, _)| name == "prefix")
@@ -70,10 +82,7 @@ impl Target {
                 && prefixes.len() == 1
                 && prefixes[0].1.starts_with(&self.prefix);
         }
-        !url.path().contains('%')
-            && url
-                .path()
-                .starts_with(&format!("{}/{}", self.bucket.path(), self.prefix))
+        !url.path().contains('%') && url.path().starts_with(&format!("{root}/{}", self.prefix))
     }
 }
 
@@ -90,11 +99,17 @@ pub fn sync_set_target(
     endpoint: String,
     bucket: String,
     prefix: String,
+    force_path_style: Option<bool>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("不允许的同步窗口".into());
     }
-    let target = Target::new(&endpoint, &bucket, &prefix)?;
+    let target = Target::new(
+        &endpoint,
+        &bucket,
+        &prefix,
+        force_path_style.unwrap_or(true),
+    )?;
     *state.target.lock().map_err(|_| "同步网络状态不可用")? = Some(target);
     Ok(())
 }
@@ -218,7 +233,7 @@ mod tests {
     use super::*;
     #[test]
     fn limits_requests_to_the_configured_namespace() {
-        let target = Target::new("https://s3.example.test", "test", "miaoyan/v1").unwrap();
+        let target = Target::new("https://s3.example.test", "test", "miaoyan/v1", true).unwrap();
         let allowed = |url, method| target.allows(&Url::parse(url).unwrap(), &method);
         assert!(allowed(
             "https://s3.example.test/test/miaoyan/v1/objects/abc",
@@ -260,11 +275,35 @@ mod tests {
     }
     #[test]
     fn rejects_unscoped_or_insecure_targets() {
-        assert!(Target::new("http://s3.example.test", "test", "miaoyan/v1").is_err());
-        assert!(Target::new("https://user:pass@s3.example.test", "test", "miaoyan/v1").is_err());
-        assert!(Target::new("https://s3.example.test", "test", "").is_err());
-        assert!(Target::new("https://s3.example.test", "test", "../outside").is_err());
-        assert!(Target::new("http://127.0.0.1:9000", "test", "test-prefix").is_ok());
+        assert!(Target::new("http://s3.example.test", "test", "miaoyan/v1", true).is_err());
+        assert!(Target::new(
+            "https://user:pass@s3.example.test",
+            "test",
+            "miaoyan/v1",
+            true
+        )
+        .is_err());
+        assert!(Target::new("https://s3.example.test", "test", "", true).is_err());
+        assert!(Target::new("https://s3.example.test", "test", "../outside", true).is_err());
+        assert!(Target::new("http://127.0.0.1:9000", "test", "test-prefix", true).is_ok());
+    }
+    #[test]
+    fn isolates_qingyu_cloud_prefix_for_virtual_hosted_buckets() {
+        let target =
+            Target::new("https://s3.example.test", "test", "repo/qingyu/v1", false).unwrap();
+        for (path, method, expected) in [
+            (
+                "/?list-type=2&prefix=repo%2Fqingyu%2Fv1%2F",
+                Method::GET,
+                true,
+            ),
+            ("/repo/qingyu/v1/objects/test", Method::PUT, true),
+            ("/repo/miaoyan/v1/objects/test", Method::PUT, false),
+            ("/repo/qingyu/v10/objects/test", Method::DELETE, false),
+        ] {
+            let url = Url::parse(&format!("https://test.s3.example.test{path}")).unwrap();
+            assert_eq!(target.allows(&url, &method), expected);
+        }
     }
     #[test]
     fn live_s3_native_transport_when_configured() {
@@ -284,7 +323,7 @@ mod tests {
             expected: u16,
         }
         let probe: Probe = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        let target = Target::new(&probe.endpoint, &probe.bucket, &probe.prefix).unwrap();
+        let target = Target::new(&probe.endpoint, &probe.bucket, &probe.prefix, true).unwrap();
         let client = Client::builder()
             .redirect(Policy::none())
             .timeout(Duration::from_secs(30))

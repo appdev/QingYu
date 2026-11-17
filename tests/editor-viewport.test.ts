@@ -1,8 +1,23 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { revealCaret } from '../src/editor-viewport';
+import { keepPanelTargetVisible, keepMobileViewportAtTop, revealCaret, showEditorInputPanel } from '../src/editor-viewport';
 
-afterEach(() => { vi.restoreAllMocks(); document.body.replaceChildren(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
+
+it('resets the page scroll from keyboard focus and preserves panning while zoomed', () => {
+  const scrollTo = vi.fn();
+  vi.stubGlobal('scrollTo', scrollTo);
+  vi.stubGlobal('scrollY', 68);
+  vi.stubGlobal('visualViewport', { scale: 1 });
+  keepMobileViewportAtTop();
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith(0, 0);
+  vi.stubGlobal('scrollY', 0);
+  keepMobileViewportAtTop();
+  vi.stubGlobal('scrollY', 68);
+  vi.stubGlobal('visualViewport', { scale: 2 });
+  keepMobileViewportAtTop();
+  expect(scrollTo).toHaveBeenCalledTimes(1);
+});
 function editor(top: number, bottom: number) {
   const root = document.createElement('div'); root.contentEditable = 'true'; root.tabIndex = 0;
   const p = document.createElement('p'); p.textContent = '中文光标'; root.append(p); document.body.append(root); root.focus();
@@ -30,4 +45,61 @@ it('does not scroll an unfocused editor or a selection belonging to another fiel
   getSelection()!.removeAllRanges(); getSelection()!.addRange(foreign);
   revealCaret(root); expect(root.scrollTop).toBe(100);
   expect(other.scrollTop).toBe(100); revealCaret();
+});
+
+it('makes room for the format panel and reveals its target without taking focus', () => {
+  const workspace = document.createElement('div');
+  const scroller = workspace.appendChild(document.createElement('div'));
+  const panel = document.body.appendChild(document.createElement('dialog'));
+  panel.tabIndex = 0;
+  panel.focus();
+  let panelTop = 350;
+  let frame: FrameRequestCallback;
+  let resize: ResizeObserverCallback;
+  const disconnect = vi.fn();
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frame = callback; return 1; });
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: ResizeObserverCallback) { resize = callback; }
+    observe() {}
+    disconnect = disconnect;
+  });
+  vi.spyOn(workspace, 'getBoundingClientRect').mockReturnValue({ bottom: 600 } as DOMRect);
+  vi.spyOn(panel, 'getBoundingClientRect').mockImplementation(() => ({ top: panelTop }) as DOMRect);
+  vi.spyOn(scroller, 'getBoundingClientRect').mockImplementation(() => ({
+    top: 52, bottom: 600 - parseFloat(workspace.style.paddingBottom || '0'),
+  }) as DOMRect);
+  const layout = keepPanelTargetVisible(workspace, scroller, panel, () => ({
+    top: 405 - scroller.scrollTop, bottom: 445 - scroller.scrollTop,
+  }));
+  frame!(0);
+  expect(workspace.style.paddingBottom).toBe('250px');
+  expect(scroller.scrollTop).toBe(103);
+  expect(document.activeElement).toBe(panel);
+  panelTop = 400;
+  resize!([], {} as ResizeObserver);
+  frame!(0);
+  expect(workspace.style.paddingBottom).toBe('200px');
+  expect(scroller.scrollTop).toBe(103);
+  layout.stop();
+  expect(workspace.style.paddingBottom).toBe('');
+  expect(disconnect).toHaveBeenCalledOnce();
+});
+
+it('keeps the editor interactive while the panel owns the soft-keyboard space', () => {
+  const input = editor(100, 120);
+  input.setAttribute('inputmode', 'text');
+  const dialog = document.createElement('dialog');
+  const panel = showEditorInputPanel(dialog, input);
+  expect(dialog.open).toBe(true);
+  expect(document.activeElement).toBe(input);
+  expect(input.getAttribute('inputmode')).toBe('none');
+  const replacement = editor(100, 120);
+  panel.useInput(replacement);
+  expect(input.getAttribute('inputmode')).toBe('text');
+  expect(replacement.getAttribute('inputmode')).toBe('none');
+  panel.close();
+  expect(dialog.isConnected).toBe(false);
+  expect(replacement.getAttribute('inputmode')).toBeNull();
+  expect(document.activeElement).toBe(document.body);
 });

@@ -1,3 +1,6 @@
+#[cfg(any(feature = "app", feature = "server"))]
+mod link_preview;
+
 #[cfg(feature = "app")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,14 +13,20 @@ pub fn run() {
     let builder = builder
         .register_uri_scheme_protocol("qingyu-asset", |context, request| file_library::attachments::response(context.app_handle(), context.webview_label(), request))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .plugin(tauri_plugin_calendar::init())
         .plugin(tauri_plugin_attachments::init())
         .manage(sync_http::SyncHttp::default())
+        .manage(client_account::ClientAccount::default())
         .manage(file_library::FileLibrary::default())
         .manage(file_library::workspace::Workspace::default())
         .manage(ExitPermit(std::sync::atomic::AtomicBool::new(false)));
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(tauri_plugin_editor_menu::init());
     #[cfg(desktop)]
-    let builder = builder.manage(activation_shortcut::ActivationShortcut::default());
+    let builder = builder
+        .manage(activation_shortcut::ActivationShortcut::default())
+        .manage(file_library::api::desktop::LocalMcp::default());
     builder.setup(|app| {
             #[cfg(desktop)]
             {
@@ -34,18 +43,39 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            client_account::account_status,
+            client_account::account_login,
+            client_account::account_logout,
+            client_account::account_redeem,
+            client_account::account_redemptions,
+            client_account::account_sync_config,
+            client_account::account_check_sync,
+            client_account::account_open_portal,
             sync_http::sync_set_target,
             sync_http::sync_request,
             sync_profile::sync_load_profile,
             sync_profile::sync_save_profile,
-            export_markdown,
+            note_picture::note_picture_action,
             create_calendar_event,
             note_ui::show_note_info,
             note_ui::close_note_info,
             note_ui::prompt_folder_name,
+            note_ui::link_applications,
+            note_ui::open_external_link,
+            link_preview::fetch_link_preview,
+            #[cfg(target_os = "macos")]
+            note_ui::table_clipboard_has_text,
+            #[cfg(target_os = "macos")]
+            note_ui::table_clipboard,
+            #[cfg(target_os = "ios")]
+            note_ui::show_table_handle_menu,
             file_library::library_open,
+            #[cfg(desktop)]
+            file_library::api::desktop::local_mcp,
             file_library::workspace::workspace_requests,
             file_library::workspace::workspace_open,
+            file_library::workspace::workspace_open_note,
+            file_library::workspace::workspace_note_snapshot,
             file_library::workspace::workspace_snapshot,
             file_library::workspace::workspace_paths,
             file_library::workspace::workspace_activate_path,
@@ -60,9 +90,17 @@ pub fn run() {
             file_library::workspace::workspace_cancel_exit,
             file_library::workspace::library_hide_main,
             file_library::library_commit,
+            file_library::library_save_note,
+            #[cfg(desktop)]
+            file_library::library_reveal_note,
+            file_library::history::library_note_versions,
+            file_library::history::library_note_version,
+            file_library::history::library_restore_note_version,
             file_library::assets::library_sync_assets,
+            file_library::storage_usage::library_storage_usage,
             file_library::attachments::attachment_import,
             file_library::attachments::attachment_open,
+            file_library::attachments::note_picture_asset,
             file_library::library_import,
             file_library::library_choose,
             file_library::library_reload,
@@ -71,7 +109,8 @@ pub fn run() {
             file_library::folders::library_folder_action,
             settings::open_settings,
             settings::apply_preferences,
-            settings::system_fonts,
+            #[cfg(target_os = "macos")]
+            settings::editor_menu_state,
             library_finish_exit,
             activation_shortcut_command
         ])
@@ -117,16 +156,20 @@ pub fn run() {
         });
 }
 mod file_library;
-#[cfg(feature = "server")]
+#[cfg(any(feature = "server", all(feature = "app", desktop)))]
 pub use file_library::api;
 #[cfg(feature = "app")]
 mod note_ui;
+#[cfg(feature = "app")]
+mod note_picture;
 #[cfg(feature = "app")]
 mod settings;
 #[cfg(feature = "app")]
 mod sync_http;
 #[cfg(feature = "app")]
 mod sync_profile;
+#[cfg(feature = "app")]
+mod client_account;
 
 #[cfg(feature = "app")]
 #[tauri::command]
@@ -159,45 +202,3 @@ fn library_finish_exit(app: tauri::AppHandle, window: tauri::WebviewWindow, perm
 }
 #[cfg(feature = "app")]
 struct ExitPermit(std::sync::atomic::AtomicBool);
-
-#[cfg(feature = "app")]
-#[tauri::command]
-async fn export_markdown(
-    window: tauri::WebviewWindow,
-    filename: String,
-    source: String,
-) -> Result<bool, String> {
-    #[cfg(desktop)]
-    use tauri_plugin_dialog::DialogExt;
-    if filename.is_empty()
-        || filename
-            .chars()
-            .any(|c| c.is_control() || c == '/' || c == '\\')
-    {
-        return Err("导出文件名称无效".into());
-    }
-    #[cfg(mobile)]
-    {
-        let _ = (window, source);
-        return Err("请在桌面端导出 Markdown".into());
-    }
-    #[cfg(desktop)]
-    tauri::async_runtime::spawn_blocking(move || {
-        let Some(path) = window
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .set_file_name(filename)
-            .add_filter("Markdown", &["md"])
-            .blocking_save_file()
-        else {
-            return Ok(false);
-        };
-        let path = path.into_path().map_err(|_| "请选择本地文件位置")?;
-        std::fs::write(path, source.as_bytes())
-            .map_err(|_| "导出失败，请检查文件权限和剩余空间")?;
-        Ok(true)
-    })
-    .await
-    .map_err(|_| "导出未能完成".to_string())?
-}

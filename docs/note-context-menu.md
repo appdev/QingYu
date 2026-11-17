@@ -11,6 +11,6 @@
 - `Controllers/ViewController+Action.swift:duplicate/loadMoveMenu`：复制最新内容；移动子菜单包含废纸篓和其他文件夹。
 - `Business/Note.swift:getDupeName`：副本命名。
 
-桌面使用 Tauri 系统原生菜单，网页开发环境提供可键盘操作菜单；网页开发环境的草稿不代表桌面文件存储。Finder、路径、深链、PPT、PDF/图片导出和版本历史尚未实现。Markdown 导出通过系统保存对话框额外保存单篇副本。
+桌面 App 使用 Tauri 系统原生菜单，可在 Finder、Windows 文件资源管理器或 Linux 默认文件管理器中定位笔记原文件。网页提供可键盘操作的菜单，Web 和移动端隐藏文件定位入口。
 
 验证记录在 `artifacts/note-menu/`。不访问真实 S3；手机测试保持暂停。
