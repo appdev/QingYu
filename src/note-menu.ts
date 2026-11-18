@@ -1,4 +1,4 @@
-import { CopyPlus, Pin, PinOff, Trash2, Undo2 } from 'lucide';
+import { CopyPlus, Folder as FolderIcon, Pin, PinOff, Trash2, Undo2 } from 'lucide';
 import { noteTitle, type Notebook, type Library, type Note } from './notebook';
 import { markdownBody, plainMarkdownLine } from './document-text';
 import { showLockNotePanel } from './reference-panels';
@@ -129,11 +129,33 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
   revealTitle?(): void;
   mobile?: boolean;
   activate?(id: string): Promise<boolean>;
+  selection?(): readonly string[];
   folderOrder?(): readonly string[];
   openNoteWindow?(id: string): Promise<void>;
   noteWindow?: boolean;
 }) {
   let infoPanel: HTMLElement | undefined, nativeInfo = false;
+  function selectedNotes(id: string) {
+    const selected = actions.selection?.() ?? [];
+    return (selected.includes(id) ? selected : [id])
+      .map(id => getBook().data.notes.find(note => note.id === id)).filter(note => note !== undefined);
+  }
+  async function changeNotes(notes: Note[], run: (note: Note) => Promise<void>) {
+    const book = getBook(), root = book.root;
+    if (!await actions.save()) return;
+    await actions.change(async () => {
+      let completed = 0;
+      try {
+        for (const note of notes) {
+          if (getBook() !== book || book.root !== root) throw new Error('笔记库已切换，请重新选择笔记');
+          await run(note); completed++;
+        }
+      } catch (reason) {
+        if (notes.length > 1) throw new Error(`批量操作中断，已完成 ${completed}/${notes.length} 篇：${reason instanceof Error ? reason.message : String(reason)}`);
+        throw reason;
+      }
+    });
+  }
   function dismissInfo() {
     infoPanel?.remove(); infoPanel = undefined;
     if (nativeInfo) { nativeInfo = false; void import('@tauri-apps/api/core').then(({ invoke }) => invoke('close_note_info')).catch(() => undefined); }
@@ -148,6 +170,15 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     const row = document.activeElement?.closest<HTMLElement>('.note-row');
     const note = getBook().data.notes.find(note => note.id === row?.dataset.noteId);
     if (!note) return;
+    const selected = selectedNotes(note.id);
+    if (selected.length > 1) {
+      if (!event.altKey && event.key === 'Backspace' && !note.trashed && !getBook().external) {
+        event.preventDefault();
+        try { await changeNotes(selected, note => getBook().trashNote(note.id)); }
+        catch (reason) { actions.error(reason instanceof Error ? reason.message : String(reason)); }
+      }
+      return;
+    }
     let run: (() => void | Promise<void>) | undefined;
     if (event.altKey && event.key.toLowerCase() === 'i') run = () => showInfo(note.id);
     if (!event.altKey && !note.trashed) {
@@ -198,7 +229,6 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     rename(id);
   }
   document.querySelector('#note-title')?.addEventListener('dblclick', () => { if (getBook().current && !getBook().loadError) rename(getBook().current.id); });
-  document.addEventListener('rename-current-note', () => { if (getBook().current && !getBook().loadError) rename(getBook().current.id); });
 
   async function showInfo(id: string, toolbar = false) {
     if (!await actions.save()) return;
@@ -233,12 +263,14 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     if (closeToolbar) return;
     const note = getBook().data.notes.find(note => note.id === id);
     if (!note) return;
+    const notes = toolbar || surface === 'move' ? [note] : selectedNotes(id);
+    const multiple = notes.length > 1;
     const change = async (run: () => Promise<void>, reload = false) => { if (await actions.save()) await actions.change(run, reload); };
     const row = () => document.querySelector<HTMLElement>(`.note-row[data-note-id="${CSS.escape(id)}"]`);
     const restoreFocus = () => (toolbar ? document.querySelector<HTMLElement>('#note-more-button') : row())?.focus({ preventScroll: true });
-    const compact = actions.mobile && !toolbar;
-    const trash: Item = { text: compact ? '删除' : '移到废纸篓', destructive: true, run: () => change(() => getBook().trashNote(id)) };
-    const recover: Item = { text: '恢复笔记', run: () => change(() => getBook().trashNote(id, false)) };
+    const compact = actions.mobile && !toolbar && !multiple;
+    const trash: Item = { text: multiple ? `删除 ${notes.length} 篇笔记` : compact ? '删除' : '移到废纸篓', destructive: true, run: () => changeNotes(notes, note => getBook().trashNote(note.id)) };
+    const recover: Item = { text: multiple ? `恢复 ${notes.length} 篇笔记` : '恢复笔记', run: () => changeNotes(notes, note => getBook().trashNote(note.id, false)) };
     const lock: Item = { text: '锁定笔记…', run: showLockNotePanel };
     const versions: Item = { text: '版本历史…', enabled: getBook().hasNoteHistory, async run() {
       if (!await actions.save()) return;
@@ -255,17 +287,23 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     const pin: Item = { text: note.pinned ? '取消置顶' : '置顶', shortcut: '⇧⌘P', enabled: !getBook().external, run: () => change(() => getBook().togglePin(id)) };
     const duplicate: Item = { text: '制作副本', shortcut: '⌘D', enabled: !note.readOnly, run: () => change(() => getBook().duplicateNote(id), true) };
     const { folders } = getBook().data;
-    const canMoveTo = (folderId: string) => note.trashed || folderId !== note.folderId;
-    const moveTo = (folderId: string) => change(() => getBook().moveNote(id, folderId));
+    const canMoveTo = (folderId: string) => notes.some(note => note.trashed || folderId !== note.folderId);
+    const moveTo = (folderId: string) => changeNotes(notes.filter(note => note.trashed || folderId !== note.folderId), note => getBook().moveNote(note.id, folderId));
     const pickDestination = (folderId: string) => { void moveTo(folderId).catch(reason => actions.error(reason instanceof Error ? reason.message : String(reason))); };
     const destination = (folderId: string, text: string): Item => ({
       text, enabled: canMoveTo(folderId), run: () => moveTo(folderId),
+      ...(multiple ? { icon: createLucideIcon(document, FolderIcon, '') } : {}),
     });
     const orderedFolders = () => [
       ...folders.filter(folder => folder.id === 'default' || folder.path === '').map(folder => ({ folder, depth: 0, parentId: null, hasChildren: false })),
       ...folderRows(folders, new Set(folders.map(folder => folder.id)), actions.folderOrder?.()),
     ];
-    const move: Item = { text: compact ? '移动' : '移动到…', enabled: folders.some(folder => canMoveTo(folder.id)) };
+    const move: Item = { text: multiple ? `移动 ${notes.length} 篇笔记到…` : compact ? '移动' : '移动到…', enabled: folders.some(folder => canMoveTo(folder.id)) };
+    if (multiple) {
+      move.icon = createLucideIcon(document, FolderIcon, '');
+      trash.icon = createLucideIcon(document, Trash2, '');
+      recover.icon = createLucideIcon(document, Undo2, '');
+    }
     if (compact || surface === 'move') {
       move.run = () => showMoveFolderSheet(orderedFolders().map(({ folder, depth }) => ({
         name: folder.name, depth, current: !canMoveTo(folder.id),
@@ -309,7 +347,8 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     }
     const moving = toolbar || getBook().external ? [] : [move];
     const deleting = getBook().external ? [] : [trash];
-    const groups = note.trashed ? [[recover], moving]
+    const groups = multiple ? note.trashed ? [[recover], moving] : [moving, deleting]
+      : note.trashed ? [[recover], moving]
       : toolbar ? [[...opening, pin, duplicate], deleting]
         .map(group => group.filter(item => item.enabled !== false))
       : compact ? [[share, ...moving, ...deleting], [pin, lock, duplicate]]

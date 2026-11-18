@@ -14,8 +14,22 @@ import java.io.File
 @InvokeArg
 class OpenArgs { lateinit var path: String; lateinit var mime: String }
 
+@InvokeArg
+class ShareArgs { lateinit var title: String; lateinit var text: String }
+
 @TauriPlugin
 class AttachmentsPlugin(private val activity: Activity) : Plugin(activity) {
+    @Command
+    fun shareText(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(ShareArgs::class.java)
+            val intent = Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_SUBJECT, args.title).putExtra(Intent.EXTRA_TEXT, args.text)
+            activity.startActivity(Intent.createChooser(intent, "发送副本"))
+            invoke.resolve()
+        } catch (error: Exception) { invoke.reject("无法打开系统分享") }
+    }
+
     @Command
     fun openFile(invoke: Invoke) {
         try {

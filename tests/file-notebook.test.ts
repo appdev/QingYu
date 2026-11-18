@@ -23,6 +23,29 @@ beforeEach(() => {
 function fixture() { const storage = { getItem: () => null, setItem: vi.fn() }; return { storage, book: new Notebook(storage, '# 旧草稿') }; }
 
 describe('file-backed Notebook contract', () => {
+  it('reads attachment bytes from the captured disk revision through either IPC encoding', async () => {
+    const { book } = fixture();
+    await book.openFiles();
+    const location = { root: book.root, revision: book.assetRevision };
+    const asset = { path: '.attachments/test.pdf', size: 3, modified: 1 };
+    const bytes = Uint8Array.of(0, 255, 128);
+    vi.mocked(invoke).mockResolvedValueOnce([asset]);
+    expect(await book.readSyncAssets()).toEqual([asset]);
+    expect(invoke).toHaveBeenLastCalledWith('library_sync_assets', location);
+    for (const reply of [bytes.buffer, [...bytes]]) {
+      vi.mocked(invoke).mockResolvedValueOnce(reply);
+      expect(await book.readAsset(asset, location)).toEqual(bytes);
+      expect(invoke).toHaveBeenLastCalledWith('library_read_asset', { ...location, asset });
+    }
+    const large = new Uint8Array(3 * 8192 + 2).fill(255);
+    const staged = { path: 'stage', hash: 'hash' };
+    vi.mocked(invoke).mockResolvedValueOnce(staged);
+    expect(await book.stageAsset('batch', large, location)).toEqual(staged);
+    expect(invoke).toHaveBeenLastCalledWith('library_stage_asset', {
+      ...location, batch: 'batch', encoded: Buffer.from(large).toString('base64'),
+    });
+  });
+
   it('keeps local selection in a note window across shared edits, links, and external deletion', async () => {
     const other = { ...disk.notes[0], id: 'other', source: '另一篇正文' };
     disk.notes.push(other);

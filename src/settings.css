@@ -40,7 +40,7 @@
 .settings-search input { width: 100%; min-width: 0; border: 0; outline: none; padding: 0; background: transparent; }
 .settings-tabs button[aria-selected='true'], .settings-search-results button[aria-current='true'] { background: var(--settings-selection); color: var(--ink); }
 .settings button { cursor: default; }
-.settings button:where(:not(.primary-button)):hover { background: var(--control-hover); }
+.settings button:where(:not(.primary-button, .secondary-button, .quiet-button)):hover { background: var(--control-hover); }
 .settings-tabs button:hover, .settings-search-results button:hover { background: var(--settings-selection); }
 .settings-pages { flex: 1; overflow-y: auto; scrollbar-width: thin; padding: 4px 32px 20px; }
 .settings-page:focus { outline: none; }
@@ -105,8 +105,10 @@
 .settings-sync-form .client-list { margin-bottom: 0; }
 .settings-sync-status { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .settings-sync-status:empty { display: none; }
-.settings .settings-sync-now { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--settings-ground); color: var(--ink); font-size: 13px; font-weight: 500; }
-.settings-mobile .settings-sync-now { min-height: 40px; font-size: 15px; }
+.settings-sync-error { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--settings-ground); }
+.settings-sync-error pre { margin: 0 0 10px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; user-select: text; -webkit-user-select: text; }
+.settings :is(.settings-sync-now, .settings-sync-test, .settings-sync-copy) { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--settings-ground); color: var(--ink); font-size: 13px; font-weight: 500; }
+.settings-mobile :is(.settings-sync-now, .settings-sync-test, .settings-sync-copy) { min-height: 40px; font-size: 15px; }
 .settings button:disabled, .settings input:disabled { opacity: .5; }
 .settings-back { display: none; border: 0; background: transparent; }
 .settings-inline { position: fixed; z-index: 100; inset: 0; margin: 0; padding: 0; border: 0; max-width: none; max-height: none; }
@@ -336,7 +338,7 @@
 .settings-tabs .settings-account-link { height: 48px; margin-bottom: 13px; padding-inline: 6px; gap: 9px; font-weight: 600; }
 .settings-account-link svg { padding: 9px; width: 36px; height: 36px; border-radius: 50%; background: var(--avatar-fill); color: var(--avatar-ink); }
 .settings-tabs .settings-account-link .settings-avatar { width: 36px; height: 36px; margin: 0; font-size: 16px; }
-.settings-account-link .settings-avatar > svg { width: 18px; height: 18px; padding: 0; background: transparent; }
+.settings .settings-avatar > svg { width: 50%; height: 50%; padding: 0; background: transparent; }
 .settings-tabs .settings-group-start { margin-top: 19px; }
 .settings:not(.settings-mobile) .settings-pages { padding: 14px 20px 20px; }
 .settings-reference-row { padding: 10px; min-height: 40px; gap: 10px; background: var(--settings-group-fill); border-color: var(--row-line); }
@@ -388,7 +390,7 @@
 }
 .settings .client-list button.settings-row:not(:disabled):hover { background: var(--settings-selection); }
 .settings .client-list button.settings-row:disabled { opacity: .6; }
-.settings .client-list .settings-row:not(:last-child) { border-bottom: 1px solid var(--row-line); }
+.settings .client-list .settings-row:not(:last-child):not(.client-sign-in-entry) { border-bottom: 1px solid var(--row-line); }
 .client-list .settings-label > span { font-size: 13px; font-weight: 400; }
 .client-list .settings-label small { white-space: normal; overflow-wrap: anywhere; }
 .client-list .settings-row > span:nth-child(2):not(.settings-avatar) { color: var(--muted); text-align: end; overflow-wrap: anywhere; }
@@ -435,11 +437,8 @@
   border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--control-fill); font-size: 14px;
 }
 .settings-mobile :is(.client-sign-in, .client-inline-form) input { font-size: 17px; }
-.settings .client-sign-in .primary-button {
-  min-height: var(--client-field-height); border: 0; border-radius: 14px; color: var(--primary-ink);
-  background: var(--primary-fill); font-size: 14px; font-weight: 600;
-}
-.settings .client-sign-in .primary-button:disabled { opacity: .55; }
+/* 登录表单的按钮是 Pinto 的表单尺寸：桌面 40px、圆角 14、15px 字，和输入框同高。 */
+.settings .client-sign-in .primary-button { height: var(--client-field-height, 40px); border-radius: 14px; font-size: 15px; }
 .settings .client-text-button { min-height: 36px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--link); font-size: 14px; }
 .settings .client-sign-in .client-text-button { min-height: 24px; }
 .settings .client-sign-in .client-sign-in-close { position: absolute; inset: 8px 8px auto auto; min-width: 28px; color: var(--muted); font-size: 19px; }

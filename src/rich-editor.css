@@ -27,6 +27,11 @@
 :is(#rich-editor, #note-history-editor) :is(.cm-selectionBackground, .cm-content ::selection) { background: var(--selection); }
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title) { font-size: calc(28em / 13); font-weight: 700; line-height: 1.18; }
 :is(#rich-editor, #note-history-editor) .cm-markra-note-title { padding-block-end: 4px; }
+/* 空笔记的「标题」提示：提示所在的那一行直接按标题排（字号、粗细、行高），光标和提示一样高、对齐；
+   打下第一个字后这一行变成真正的标题行，样式相同，不会跳。提示本身只是淡色，光标不在编辑区时不显示。 */
+#rich-editor .cm-line:has(> .cm-placeholder) { font-size: calc(28em / 13); font-weight: 700; line-height: 1.18; padding-block-end: 4px; }
+#rich-editor .cm-placeholder { color: var(--muted); opacity: .6; }
+#rich-editor .cm-editor:not(.cm-focused) .cm-placeholder { visibility: hidden; }
 :is(#rich-editor, #note-history-editor) .cm-markra-h2 { font-size: 1.25em; line-height: 1.26; }
 :is(#rich-editor, #note-history-editor) .cm-markra-h3 { font-size: 1.1em; font-weight: 600; }
 :is(#rich-editor, #note-history-editor) .qingyu-fold-heading { position: relative; }
@@ -345,6 +350,7 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-image-line 
 :is(#rich-editor, #note-history-editor)[data-read-only=true] .cm-content { cursor: auto; }
 :root[data-mobile] :is(#rich-editor, #note-history-editor) .cm-content { padding-inline: 24px; }
 :root[data-mobile] :is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title) { font-size: 2em; }
+:root[data-mobile] #rich-editor .cm-line:has(> .cm-placeholder) { font-size: 2em; padding-block-end: 10px; }
 :root[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-note-title { padding-block-end: 10px; }
 :root[data-mobile] :is(#rich-editor, #note-history-editor) {
   --rich-editor-leading: 1.55;
@@ -436,44 +442,73 @@ button.note-date-chip { cursor: pointer; }
 .note-date-days [aria-current='date'] { color: var(--link); font-weight: 600; }
 .note-date-days [aria-pressed='true'], .note-date-days [aria-pressed='true']:hover { background: color-mix(in srgb, var(--brand) 18%, transparent); color: var(--link); font-weight: 600; }
 
-/* 图片和图表的放大查看器（双击图片或右键「打开图片」）。Pinto 在 macOS 上用系统 Quick Look，
-   这里做成同样的居中浮窗：半透明遮罩、圆角面板、顶部工具条，图片等比缩放且不超过原尺寸。 */
+/* 图片和图表的查看器（双击或空格打开图片、右键「打开图片」、放大图表）。
+   按「预览」「照片」的看法：整窗压暗模糊，图片居中浮起，深色玻璃工具条浮在底部中央。 */
 .markra-media-viewer-dialog {
-  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 24px;
-  background: color-mix(in srgb, var(--mode-dark) 40%, transparent);
-  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  --viewer-glass-fill: color-mix(in srgb, var(--mode-dark) 58%, transparent);
+  --viewer-ink: var(--mode-light);
+  position: fixed; inset: 0; z-index: 60;
+  background: color-mix(in srgb, var(--mode-dark) 62%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(120%); backdrop-filter: blur(24px) saturate(120%);
+  animation: media-viewer-fade .18s ease-out;
 }
-.markra-media-viewer-panel {
-  display: flex; flex-direction: column; min-width: 320px; max-width: min(100%, 1200px); max-height: 100%;
-  overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--card);
-  box-shadow: 0 24px 80px var(--shadow-raised);
+.markra-media-viewer-panel { position: absolute; inset: 0; }
+.markra-media-viewer-content {
+  position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; outline: none;
+  padding: 48px 48px 104px; cursor: default; touch-action: none;
 }
+.markra-media-viewer-content[data-zoom]:not([data-zoom="1"]) { cursor: grab; }
+.markra-media-viewer-content[data-dragging=true] { cursor: grabbing; }
+.markra-media-viewer-canvas { display: grid; place-items: center; transform-origin: center; transition: transform .2s cubic-bezier(.2,.8,.2,1); }
+.markra-media-viewer-content[data-dragging=true] .markra-media-viewer-canvas { transition: none; }
+.markra-media-viewer-media {
+  display: block; width: auto; height: auto; max-width: calc(100vw - 96px); max-height: calc(100dvh - 152px);
+  margin: 0; border-radius: 12px; object-fit: contain; pointer-events: auto; -webkit-user-drag: none; user-select: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--mode-light) 10%, transparent), 0 24px 64px color-mix(in srgb, var(--mode-dark) 45%, transparent);
+  animation: media-viewer-rise .24s cubic-bezier(.2,.8,.2,1);
+}
+svg.markra-media-viewer-media { background: var(--paper); padding: 16px; box-sizing: content-box; }
 .markra-media-viewer-toolbar {
-  display: flex; flex: none; align-items: center; justify-content: flex-end; gap: 2px; height: 44px; padding: 0 8px;
-  border-bottom: 1px solid var(--line); color: var(--ink); user-select: none;
+  position: absolute; left: 50%; bottom: 28px; translate: -50% 0; z-index: 1;
+  display: flex; align-items: center; gap: 2px; height: 44px; max-width: calc(100vw - 32px); padding: 0 6px;
+  border-radius: 999px; color: var(--viewer-ink); user-select: none;
+  box-shadow: 0 12px 36px color-mix(in srgb, var(--mode-dark) 40%, transparent);
+  animation: media-viewer-rise .24s cubic-bezier(.2,.8,.2,1);
 }
 .markra-media-viewer-toolbar button {
-  display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
-  background: transparent; color: inherit; cursor: default;
+  position: relative; z-index: 1; display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: default;
+  transition: background-color .12s ease-out;
 }
-.markra-media-viewer-toolbar button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
-.markra-media-viewer-toolbar button:active { background: color-mix(in srgb, var(--ink) 14%, transparent); }
+.markra-media-viewer-toolbar button:hover { background: color-mix(in srgb, var(--mode-light) 14%, transparent); }
+.markra-media-viewer-toolbar button:active { background: color-mix(in srgb, var(--mode-light) 22%, transparent); }
+.markra-media-viewer-toolbar button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .markra-media-viewer-toolbar button[aria-pressed=true] { color: var(--brand); }
-.markra-media-viewer-toolbar svg { width: 16px; height: 16px; }
-.markra-media-viewer-zoom-value { min-width: 44px; text-align: center; font: 12px/1 var(--font); font-variant-numeric: tabular-nums; color: var(--muted); }
-.markra-media-viewer-close-button { margin-inline-start: 8px; }
-.markra-media-viewer-content {
-  display: grid; place-items: center; flex: 1; min-height: 200px; overflow: hidden; outline: none;
-  background: var(--paper); cursor: grab; touch-action: none;
+.markra-media-viewer-toolbar button:disabled { opacity: .35; background: transparent; }
+.markra-media-viewer-counter {
+  position: relative; z-index: 1; min-width: 40px; text-align: center;
+  font: 500 12px/1 var(--font); font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--mode-light) 72%, transparent);
 }
-.markra-media-viewer-content[data-dragging=true] { cursor: grabbing; }
-.markra-media-viewer-canvas { display: grid; place-items: center; transform-origin: center; }
-.markra-media-viewer-media {
-  display: block; width: auto; height: auto; max-width: min(calc(100vw - 50px), 1198px); max-height: calc(100dvh - 95px);
-  margin: 0; border-radius: 0; object-fit: contain; pointer-events: none; -webkit-user-drag: none;
+.markra-media-viewer-toolbar svg { width: 17px; height: 17px; stroke-width: 1.8; }
+.markra-media-viewer-title {
+  position: relative; z-index: 1; max-width: 220px; padding: 0 8px 0 10px; overflow: hidden;
+  font: 600 13px/1 var(--font); text-overflow: ellipsis; white-space: nowrap;
 }
-.markra-media-viewer-dialog[data-fullscreen=true] { padding: 0; }
-.markra-media-viewer-dialog[data-fullscreen=true] .markra-media-viewer-panel { width: 100%; height: 100%; max-width: none; border: 0; border-radius: 0; }
-.markra-media-viewer-dialog[data-fullscreen=true] .markra-media-viewer-media { max-width: 100vw; max-height: calc(100dvh - 45px); }
-html[data-mobile] .markra-media-viewer-dialog { padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); }
+.markra-media-viewer-separator { position: relative; z-index: 1; flex: none; width: 1px; height: 18px; margin: 0 6px; background: color-mix(in srgb, var(--mode-light) 18%, transparent); }
+.markra-media-viewer-zoom-value {
+  position: relative; z-index: 1; min-width: 46px; text-align: center;
+  font: 500 12px/1 var(--font); font-variant-numeric: tabular-nums; color: color-mix(in srgb, var(--mode-light) 72%, transparent);
+}
+.markra-media-viewer-dialog[data-fullscreen=true] .markra-media-viewer-content { padding: 0 0 88px; }
+.markra-media-viewer-dialog[data-fullscreen=true] .markra-media-viewer-media { max-width: 100vw; max-height: calc(100dvh - 88px); border-radius: 0; box-shadow: none; }
+@keyframes media-viewer-fade { from { opacity: 0; } }
+@keyframes media-viewer-rise { from { opacity: 0; scale: .96; } }
+@media (prefers-reduced-motion: reduce) {
+  .markra-media-viewer-dialog, .markra-media-viewer-media, .markra-media-viewer-toolbar { animation: none; }
+  .markra-media-viewer-canvas { transition: none; }
+}
+html[data-mobile] .markra-media-viewer-content { padding: max(16px, env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom)); }
+html[data-mobile] .markra-media-viewer-media { max-width: calc(100vw - 32px); max-height: calc(100dvh - 140px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+html[data-mobile] .markra-media-viewer-toolbar { bottom: max(20px, env(safe-area-inset-bottom)); height: 48px; }
 html[data-mobile] .markra-media-viewer-toolbar button { width: 40px; height: 40px; }
+html[data-mobile] .markra-media-viewer-fullscreen-button { display: none; }

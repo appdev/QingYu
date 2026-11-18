@@ -3,6 +3,16 @@ use super::*;
 pub(super) const MAX_FILE: u64 = assets::MAX_FILE as u64;
 
 pub(super) fn resolve(store: &DiskLibrary, id: &str, value: &str) -> Result<PathBuf> {
+    let relative = relative_path(store, id, value)?;
+    let path = checked(&store.root, &relative)?;
+    let meta = fs::metadata(&path).map_err(|_| "附件不存在，可能尚未完成同步")?;
+    if !meta.is_file() || meta.len() > MAX_FILE {
+        return Err("附件不可读取或超过 64 MiB".into());
+    }
+    Ok(path)
+}
+
+pub(super) fn relative_path(store: &DiskLibrary, id: &str, value: &str) -> Result<String> {
     let note = store
         .data
         .notes
@@ -44,12 +54,7 @@ pub(super) fn resolve(store: &DiskLibrary, id: &str, value: &str) -> Result<Path
     {
         return Err("附件路径属于笔记库内部文件".into());
     }
-    let path = checked(&store.root, &relative)?;
-    let meta = fs::metadata(&path).map_err(|_| "附件不存在，可能尚未完成同步")?;
-    if !meta.is_file() || meta.len() > MAX_FILE {
-        return Err("附件不可读取或超过 64 MiB".into());
-    }
-    Ok(path)
+    Ok(relative)
 }
 
 pub(super) fn read(path: &Path) -> Result<Vec<u8>> {
@@ -182,7 +187,7 @@ pub fn response(
     label: &str,
     request: tauri::http::Request<Vec<u8>>,
 ) -> tauri::http::Response<Vec<u8>> {
-    let result: Result<(&str, Vec<u8>)> = (|| {
+    let result: Result<Option<(&str, Vec<u8>)>> = (|| {
         if request.method() != tauri::http::Method::GET {
             return Err("不支持的资源请求".into());
         }
@@ -195,12 +200,22 @@ pub fn response(
             .1
             .into_owned();
         with_store(app, label, |store| {
-            let path = resolve(store, id, &value)?;
-            Ok((mime(&path), read(&path)?))
+            match resolve(store, id, &value) {
+                Ok(path) => Ok(Some((mime(&path), read(&path)?))),
+                Err(reason) if store.data.sync.as_ref().is_some_and(|sync| sync["version"].as_u64() == Some(2)) => {
+                    let relative = relative_path(store, id, &value)?;
+                    if !checked(&store.root, &relative)?.exists() && assets::placeholders::load(store)?.contains_key(&relative) {
+                        Ok(None)
+                    } else {
+                        Err(reason)
+                    }
+                }
+                Err(reason) => Err(reason),
+            }
         })
     })();
     match result {
-        Ok((mime, bytes)) => tauri::http::Response::builder()
+        Ok(Some((mime, bytes))) => tauri::http::Response::builder()
             .header("Content-Type", mime)
             .header("Cache-Control", "no-store")
             .header("X-Content-Type-Options", "nosniff")
@@ -209,6 +224,12 @@ pub fn response(
                 "sandbox; default-src 'none'; style-src 'unsafe-inline'",
             )
             .body(bytes)
+            .unwrap(),
+        Ok(None) => tauri::http::Response::builder()
+            .status(404)
+            .header("X-QingYu-Placeholder", "1")
+            .header("Cache-Control", "no-store")
+            .body(Vec::new())
             .unwrap(),
         Err(_) => tauri::http::Response::builder()
             .status(404)

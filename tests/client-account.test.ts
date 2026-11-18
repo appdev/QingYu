@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { mountClientAccount, sidebarAccount } from '../src/client-account';
@@ -26,6 +27,25 @@ function accountPages() {
   document.body.append(root);
   return { root, pages };
 }
+
+it('uses the sidebar guest icon for every signed-out settings avatar', async () => {
+  vi.mocked(invoke).mockResolvedValue(null);
+  const markup = new DOMParser().parseFromString(readFileSync('index.html', 'utf8'), 'text/html');
+  const sidebar = markup.querySelector<HTMLButtonElement>('#sidebar-account')!;
+  const refresh = sidebarAccount(sidebar);
+  const { root, pages } = accountPages();
+  const tab = root.appendChild(document.createElement('button'));
+  tab.innerHTML = '<span class="settings-avatar">Q</span><strong>本地账户</strong>';
+  const controller = mountClientAccount(pages, tab, vi.fn());
+  try {
+    await refresh();
+    await vi.waitFor(() => expect(pages.account.querySelector<HTMLButtonElement>('.client-sign-in-entry')?.hidden).toBe(false));
+    const expected = sidebar.querySelector('svg')!.outerHTML;
+    const avatars = root.querySelectorAll('.settings-avatar');
+    expect(avatars).toHaveLength(3);
+    for (const avatar of avatars) expect(avatar.innerHTML).toBe(expected);
+  } finally { controller.destroy(); root.remove(); }
+});
 
 it('submits only after the password step and updates or clears the account card', async () => {
   const ipc = vi.mocked(invoke);
@@ -110,6 +130,9 @@ it('submits only after the password step and updates or clears the account card'
     expect(ipc).toHaveBeenLastCalledWith('account_logout', { accountId: 'id', everywhere: false });
     expect(alert.open).toBe(false);
     expect(tab.querySelector('.settings-avatar svg')).not.toBeNull();
+    for (const avatar of root.querySelectorAll('.settings-avatar')) {
+      expect(avatar.innerHTML).toBe(tab.querySelector('.settings-avatar')!.innerHTML);
+    }
     expect(pages.signIn.querySelector('[data-profile-email]')?.textContent).toBe('');
   } finally { controller.destroy(); root.remove(); }
 });

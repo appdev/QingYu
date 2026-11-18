@@ -33,7 +33,7 @@ export function setupCalendar(getTitle: () => string) {
       <label for="event-notes">备注（可选）</label><textarea id="event-notes" rows="3" maxlength="20000"></textarea>
       <p class="calendar-help">按当前设备时区创建。Apple / Android 保存到系统日历；Windows / Linux 需在默认日历软件中确认导入。提醒通知由日历软件和系统设置控制。</p>
       <p id="event-feedback" role="status" aria-live="polite"></p>
-      <div class="dialog-actions"><button id="event-cancel" type="button">取消</button><button id="event-save" class="primary-button" type="submit">保存到日历</button></div>
+      <div class="dialog-actions"><button id="event-cancel" class="secondary-button" type="button">取消</button><button id="event-save" class="primary-button" type="submit">保存到日历</button></div>
     </form>`;
     document.body.append(dialog);
     const current = dialog;

@@ -1,17 +1,17 @@
 import type { Folder, Library, Notebook } from './notebook';
 import * as core from './vendor/mdsync/core';
-import { SyncFiles, scope, ownedPath, notePath, metaPath, folderPath, assetPath, assetRelative, MAX_ASSET_BYTES, MAX_ASSETS_TOTAL, type NoteMeta } from './sync-files';
+import { SyncFiles, scope, ownedPath, notePath, metaPath, folderPath, assetPath, assetRelative, MAX_ASSET_BYTES, type NoteMeta } from './sync-files';
 import { createStore, normalizeSettings, openKey, type S3Connection } from './sync-store';
 
 const textEncoder = new TextEncoder();
+const AUTO_DOWNLOAD_BYTES = 1_000_000;
 const parse = <T>(text: string | null): T => { if (text === null) throw new Error('远端同步文件缺失'); return JSON.parse(text) as T; };
 async function copyId(id: string, token: string) { return `conflict-${(await core.sha256Hex(textEncoder.encode(`${id}\n${token}`))).slice(0, 40)}`; }
 function checkHead(head: core.Head | null) {
   if (!head) return;
   if (head.version !== 3 || !head.files || Object.keys(head.files).length > 30000 || Object.entries(head.files).some(([path, entry]) =>
     !ownedPath(path) || !/^[a-f0-9]{64}$/.test(entry.hash) || !Number.isFinite(entry.size) || entry.size < 0 || entry.size > (path.startsWith('assets/') ? MAX_ASSET_BYTES : 4 * 1024 * 1024) ||
-    !Number.isFinite(entry.mtime) || !Number.isFinite(new Date(entry.mtime).getTime()))) throw new Error('远端笔记库协议或文件格式无效，已停止同步');
-  if (Object.entries(head.files).reduce((sum, [path, entry]) => sum + (path.startsWith('assets/') ? entry.size : 0), 0) > MAX_ASSETS_TOTAL) throw new Error('远端附件快照超过 256 MiB，已停止同步');
+    !Number.isFinite(entry.mtime) || entry.mtime < 0 || !Number.isFinite(new Date(entry.mtime).getTime()))) throw new Error('远端笔记库协议或文件格式无效，已停止同步');
 }
 
 async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, result: core.Comparison) {
@@ -26,24 +26,17 @@ async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, resu
   for (const conflict of result.diff.conflicts.filter(c => c.path.startsWith('assets/'))) {
     const path = conflict.path, local = files.files.get(path), other = remote.files[path];
     if (other) {
-      // Download into a separate adapter: binary conflicts must never overwrite the local copy.
-      const incoming = new SyncFiles({ version: 1, notes: [], folders: [], activeId: '' });
-      const isolated = { ...deps, adapter: incoming, state: { ...structuredClone(deps.state), vaultId: remote.vaultId, baseline: null, hashCache: {} } as core.State };
-      const context: core.Context = { persistState: async state => { isolated.state = state; }, getFreshState: () => isolated.state,
-        setProgress() {}, reportProgressSoon() {}, logInfo: async () => {} };
-      const download = await core.compare(isolated, remote);
-      await core.pullPathsOp(isolated, download, [path], context);
-      const value = incoming.files.get(path);
-      if (!value) throw new Error('附件冲突版本未完整下载，已停止同步');
+      const bytes = await core.loadRemoteBytes(deps, other.hash, other.size);
+      if (!bytes || bytes.length !== other.size) throw new Error('附件冲突版本未完整下载，已停止同步');
       let destination = path;
       if (local) {
         const relative = assetRelative(path), slash = relative.lastIndexOf('/'), dot = relative.lastIndexOf('.');
         const split = dot > slash + 1 ? dot : relative.length;
         destination = assetPath(`${relative.slice(0, split)}（冲突-${other.hash.slice(0, 12)}）${relative.slice(split)}`);
         const existing = files.files.get(destination);
-        if (existing && await core.sha256Hex(existing.bytes) !== await core.sha256Hex(value.bytes)) throw new Error('附件冲突副本名称已被占用，未覆盖文件');
+        if (existing && await core.sha256Hex(new Uint8Array(await files.readBinary(destination))) !== other.hash) throw new Error('附件冲突副本名称已被占用，未覆盖文件');
       }
-      files.set(destination, value.bytes, other.mtime);
+      await files.writeAsset(destination, bytes, other.mtime);
     }
     acknowledge(path);
   }
@@ -84,7 +77,9 @@ async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, resu
       if (source === null || other.id !== id) throw new Error('远端笔记内容无效');
       if (local && files.files.has(bodyPath)) {
         const duplicate = await copyId(id, `${remote.files[bodyPath]!.hash}:${remote.files[metadata]!.hash}`);
-        const meta: NoteMeta = { ...other, id: duplicate, conflictOf: id };
+        // 分享链接属于原笔记，冲突副本不能共用同一个链接。
+        const { share: _share, ...rest } = other;
+        const meta: NoteMeta = { ...rest, id: duplicate, conflictOf: id };
         files.put(metaPath(duplicate), JSON.stringify(meta), other.createdAt);
         files.put(notePath(duplicate), source, remote.files[bodyPath]!.mtime);
       } else {
@@ -95,7 +90,7 @@ async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, resu
     // Only these explicitly resolved paths adopt the remote base; unread notes are never claimed.
     acknowledge(bodyPath); acknowledge(metadata);
   }
-  deps.state = { ...deps.state, vaultId: remote.vaultId, baseline: base, hashCache: {} };
+  deps.state = { ...deps.state, vaultId: remote.vaultId, baseline: base };
   return result.diff.conflicts.length;
 }
 
@@ -105,69 +100,138 @@ export async function syncNotebook(book: Notebook, settings: S3Connection, progr
   if (library.notes.some(note => note.readOnly)) throw new Error('笔记库含不可读或损坏的文件，已停止同步，避免上传不完整正文');
   const config = normalizeSettings(settings), storage = createStore(config), target = storage.identity();
   const saved = library.sync?.target === target ? library.sync.state : null;
-  let state: core.State = saved ? { ...structuredClone(saved), hashCache: {} } : { deviceId: crypto.randomUUID(), deviceName: '轻羽 QingYu', vaultId: null, baseline: null, hashCache: {} };
+  let state: core.State = saved ? structuredClone(saved) : { deviceId: crypto.randomUUID(), deviceName: '轻羽 QingYu', vaultId: null, baseline: null, hashCache: {} };
+  const location = { root: book.root, revision: book.assetRevision };
   const assets = await book.readSyncAssets();
-  const files = new SyncFiles(library, assets);
-  progress('正在连接 S3…');
-  const key = await openKey(storage);
-  let conflictCount = 0;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    progress(attempt ? '远端发生变化，正在重新合并…' : '正在比较笔记库…');
-    const deps: core.Dependencies = { space: core.VAULT_SPACE, adapter: files, storage, scope, key, state,
-      maxFileBytes: MAX_ASSET_BYTES, concurrency: config.concurrency, history: { horizon: null } };
-    const context: core.Context = { persistState: async next => { state = next; deps.state = next; }, getFreshState: () => state,
-      setProgress: () => undefined, reportProgressSoon: () => undefined, logInfo: async () => undefined };
-    try {
-      let result = await core.compare(deps);
-      checkHead(result.remote);
-      if (!result.remote && state.baseline) throw new Error('远端索引缺失，未将本机笔记视为已删除；请检查前缀或恢复远端');
-      // Equal bytes were read on both sides, even if no push/pull was necessary on this device.
-      if (result.remote && result.diff.converged.length) {
-        state = { ...state, vaultId: result.remote.vaultId, baseline: core.advanceBaselineForPaths(state.baseline, result.remote,
-          new Set(result.diff.converged), result.snapshot.emptyFolders, scope), hashCache: {} };
-        deps.state = state;
-      }
-      if (result.diff.conflicts.length) {
-        progress('正在合并修改…');
-        await core.autoMergeOp(deps, { ...result, diff: { ...result.diff, conflicts: result.diff.conflicts.filter(c => !c.path.startsWith('assets/')) } }, context);
-        result = await core.compare(deps);
-        checkHead(result.remote);
-        if (result.diff.conflicts.length) {
-          conflictCount += await preserveConflicts(files, deps, result);
-          state = deps.state;
-          result = await core.compare(deps);
-          checkHead(result.remote);
-        }
-      }
-      if (result.diff.conflicts.length) throw new Error('远端持续变化，请稍后再次同步');
-      if (result.diff.remoteChanges.length) {
-        progress('正在接收远端笔记…');
-        const outcome = await core.pullPathsOp(deps, result, result.diff.remoteChanges.map(change => change.path), context);
-        for (const path of outcome.touchedPaths) {
-          const value = files.files.get(path), entry = result.remote?.files[path];
-          if (value && entry) value.mtime = entry.mtime;
-        }
-        state.hashCache = {}; deps.state = state;
-        result = await core.compare(deps);
-        checkHead(result.remote);
-      }
-      // A changed remote after the pull is compared again rather than pushed over.
-      if (result.diff.conflicts.length || result.diff.remoteChanges.length) continue;
-      const merged = files.toLibrary(library.activeId);
-      const afterAssets = files.toAssets();
-      if (result.diff.localChanges.length) {
-        progress('正在上传笔记…');
-        const head = await core.pushPaths(deps, result, result.diff.localChanges.map(change => change.path));
-        state = core.advanceSessionAfterPush(state, result, head, scope);
-      }
-      progress('正在保存同步结果…');
-      if (!await beforeCommit()) throw new Error('当前输入尚未保存，已保留本机内容，请完成输入后再次同步');
-      await book.commitSync(merged, { version: 1, target, state: { ...state, hashCache: {} } }, expected, { before: assets, after: afterAssets });
-      return { conflicts: conflictCount, notes: merged.notes.length, folders: merged.folders.length, assets: afterAssets.length };
-    } catch (error) {
-      if (error instanceof core.ConcurrentPushError) continue;
-      throw error;
+  const placeholders = await book.readAssetPlaceholders();
+  const savedCount = library.sync?.version === 2 ? library.sync.placeholderCount : 0;
+  if (Object.keys(placeholders).length !== savedCount) throw new Error('附件占位索引与同步记录不匹配，已停止同步');
+  if (savedCount && !saved) throw new Error('请先使用原 S3 连接下载全部附件，再切换同步目标');
+  const batch = crypto.randomUUID();
+  let hasStage = false;
+  const files = new SyncFiles(library, assets, {
+    read: asset => book.readAsset(asset, location),
+    stage: bytes => {
+      hasStage = true;
+      return book.stageAsset(batch, bytes, location);
+    },
+    readStage: asset => book.readStagedAsset(batch, asset),
+  });
+  for (const [path, value] of Object.entries(placeholders)) {
+    const key = assetPath(path);
+    assetRelative(key);
+    const entry = saved?.baseline?.files[key];
+    if (!entry || entry.hash !== value.hash || entry.size !== value.size || entry.mtime !== value.mtime) {
+      throw new Error('附件占位与同步基线不匹配，已停止同步');
     }
+    if (!files.files.has(key)) files.setPlaceholder(key, value);
   }
-  throw new Error('多台设备持续修改，已保留本机内容，请稍后再次同步');
+  const onDemand = settings.assetDownload === 'on-demand';
+  try {
+    return await syncFiles();
+  } finally {
+    if (hasStage) await book.releaseAssetStage(batch).catch(() => undefined);
+  }
+
+  async function syncFiles() {
+    progress('正在连接 S3…');
+    const key = await openKey(storage);
+    let conflictCount = 0;
+    let originalEntries: Record<string, core.Entry> | undefined;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      progress(attempt ? '远端发生变化，正在重新合并…' : '正在比较笔记库…');
+      const deps: core.Dependencies = { space: core.VAULT_SPACE, adapter: files, storage, scope, key, state,
+        maxFileBytes: MAX_ASSET_BYTES, concurrency: config.concurrency, history: { horizon: null } };
+      const context: core.Context = { persistState: async next => { state = next; deps.state = next; }, getFreshState: () => state,
+        setProgress: () => undefined, reportProgressSoon: () => undefined, logInfo: async () => undefined };
+      const compare = async () => {
+        // Hash only disk-backed entries can reuse local cache records after adapter writes.
+        deps.state.hashCache = Object.fromEntries(Object.entries(deps.state.hashCache).filter(([path]) => {
+          const value = files.files.get(path);
+          return value && 'original' in value && assetPath(value.original.path) === path;
+        }));
+        const result = await core.compare(deps);
+        checkHead(result.remote);
+        if (result.snapshot.skipped.length) throw new Error(`无法扫描同步文件：${result.snapshot.skipped[0]!.path}`);
+        state.hashCache = result.updatedCache;
+        return result;
+      };
+      try {
+        let result = await compare();
+        originalEntries ??= result.snapshot.files;
+        if (!result.remote && state.baseline) throw new Error('远端索引缺失，未将本机笔记视为已删除；请检查前缀或恢复远端');
+        // Equal bytes were read on both sides, even if no push/pull was necessary on this device.
+        if (result.remote && result.diff.converged.length) {
+          state = { ...state, vaultId: result.remote.vaultId, baseline: core.advanceBaselineForPaths(state.baseline, result.remote,
+            new Set(result.diff.converged), result.snapshot.emptyFolders, scope) };
+          deps.state = state;
+        }
+        if (result.diff.conflicts.length) {
+          progress('正在合并修改…');
+          await core.autoMergeOp(deps, { ...result, diff: { ...result.diff, conflicts: result.diff.conflicts.filter(c => !c.path.startsWith('assets/')) } }, context);
+          result = await compare();
+          if (result.diff.conflicts.length) {
+            conflictCount += await preserveConflicts(files, deps, result);
+            state = deps.state;
+            result = await compare();
+          }
+        }
+        if (result.diff.conflicts.length) throw new Error('远端持续变化，请稍后再次同步');
+        if (result.diff.remoteChanges.length) {
+          progress('正在接收远端笔记…');
+          const remote = result.remote;
+          if (!remote) throw new Error('缺少远端同步记录');
+          // A real local file can follow a rename without downloading its bytes from S3.
+          const retainedMoves = new Set(result.diff.moves.flatMap(move => {
+            const source = files.files.get(move.from);
+            return move.side === 'local' || source && !('placeholder' in source) ? [move.from, move.to] : [];
+          }));
+          const deferred = new Set(result.diff.remoteChanges.map(({ path }) => path).filter(path =>
+            onDemand && path.startsWith('assets/') && !retainedMoves.has(path) && (remote.files[path]?.size ?? 0) >= AUTO_DOWNLOAD_BYTES));
+          const pull = result.diff.remoteChanges.map(({ path }) => path).filter(path => !deferred.has(path));
+          if (pull.length) {
+            const moves = result.diff.moves.filter(({ from, to }) => !deferred.has(from) && !deferred.has(to));
+            const outcome = await core.pullPathsOp(deps, { ...result, diff: { ...result.diff, moves } }, pull, context);
+            for (const path of outcome.touchedPaths) {
+              const value = files.files.get(path), entry = remote.files[path];
+              if (value && entry) value.mtime = entry.mtime;
+            }
+          }
+          if (deferred.size) {
+            for (const path of deferred) files.setPlaceholder(path, remote.files[path]!);
+            state = { ...state, vaultId: remote.vaultId, baseline: core.advanceBaselineForPaths(state.baseline, remote, deferred, result.snapshot.emptyFolders, scope) };
+            deps.state = state;
+          }
+          result = await compare();
+        }
+        // A changed remote after the pull is compared again rather than pushed over.
+        if (result.diff.conflicts.length || result.diff.remoteChanges.length) continue;
+        if (!onDemand) {
+          for (const [path, value] of files.files) {
+            if (!('placeholder' in value)) continue;
+            progress('正在下载附件…');
+            const bytes = await core.loadRemoteBytes(deps, value.placeholder, value.size);
+            if (bytes?.length !== value.size) throw new Error('附件下载不完整，已停止同步');
+            await files.writeAsset(path, bytes, value.mtime);
+          }
+        }
+        const merged = files.toLibrary(library.activeId);
+        const { sync, count } = await files.assetChanges(originalEntries);
+        if (result.diff.localChanges.length) {
+          progress('正在上传笔记…');
+          const head = await core.pushPaths(deps, result, result.diff.localChanges.map(change => change.path));
+          state = core.advanceSessionAfterPush(state, result, head, scope);
+        }
+        progress('正在保存同步结果…');
+        if (!await beforeCommit()) throw new Error('当前输入尚未保存，已保留本机内容，请完成输入后再次同步');
+        const placeholderCount = Object.keys(sync.placeholders).length;
+        await book.commitSync(merged, placeholderCount ? { version: 2, target, state, placeholderCount } : { version: 1, target, state }, expected, sync, location);
+        return { conflicts: conflictCount, notes: merged.notes.length, folders: merged.folders.length, assets: count };
+      } catch (error) {
+        if (error instanceof core.ConcurrentPushError) continue;
+        throw error;
+      }
+    }
+    throw new Error('多台设备持续修改，已保留本机内容，请稍后再次同步');
+  }
 }

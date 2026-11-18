@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { startAutoSync } from '../src/auto-sync';
+import { connectCloudAutoSync, startAutoSync } from '../src/auto-sync';
 import type { SyncStatus, SyncClient } from '../src/sync-session';
 import type { S3Settings } from '../src/sync-store';
 import type { Preferences, PreferenceStore } from '../src/preferences';
+import { PreferenceStore as Store } from '../src/preferences';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
 const settings = { endpoint: 'https://unit.invalid', bucket: 'test', prefix: 'notes', region: 'us-east-1', accessKeyId: 'test', secretAccessKey: 'test' };
 let dispose: (() => void) | undefined;
@@ -12,7 +19,7 @@ function fixture(blocked = () => false, onBackground = false, initial: S3Setting
   vi.useFakeTimers();
   const listeners = new Set<(s: SyncStatus) => void>();
   let status: SyncStatus = { busy: false, error: false, message: '' };
-  const client: SyncClient = { load: vi.fn(async () => initial), save: vi.fn(), flush: vi.fn(), run: vi.fn(async () => {}),
+  const client: SyncClient = { load: vi.fn(async () => initial), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(async () => {}),
     subscribe(fn) { listeners.add(fn); fn(status); return () => { listeners.delete(fn); }; } };
   const error = vi.fn(), auto = startAutoSync(client, blocked, error, onBackground, schedule);
   dispose = auto.stop;
@@ -86,4 +93,59 @@ it('joins a manual sync that starts while the native profile is loading', async 
   release(settings); await vi.advanceTimersByTimeAsync(0);
   expect(client.run).toHaveBeenCalledTimes(1);
   publish({ busy: false, error: false, message: '同步完成' }); await pending;
+});
+
+it('enables cloud sync and runs once on sign-in, preserves manual off on restart, and disables it on sign-out', async () => {
+  const saved = new Map<string, string>();
+  const storage = { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); } };
+  let preferences = new Store(storage);
+  const client: SyncClient = { load: vi.fn().mockResolvedValue(settings), save: vi.fn().mockResolvedValue(undefined), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: fn => { fn({ busy: false, error: false, message: '' }); return () => {}; } };
+  const sync = vi.fn().mockResolvedValue(undefined), error = vi.fn();
+  let changed!: () => void;
+  vi.mocked(listen).mockImplementation(async (_event, handler) => { changed = () => handler({} as never); return () => {}; });
+  vi.mocked(invoke).mockResolvedValue(null);
+  await connectCloudAutoSync(client, preferences, sync, error);
+  expect(sync).not.toHaveBeenCalled();
+  vi.mocked(invoke).mockResolvedValue({ profile: { id: 'account-a' } });
+  changed();
+  await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+  expect(client.save).toHaveBeenLastCalledWith({ ...settings, mode: 'cloud' });
+  expect(preferences.value).toMatchObject({ autoSyncCloudAccount: 'account-a', cloudSyncAccount: 'account-a' });
+  changed(); await Promise.resolve(); await Promise.resolve();
+  expect(sync).toHaveBeenCalledOnce();
+  preferences.update({ autoSyncCloudAccount: '' }); preferences = new Store(storage);
+  await connectCloudAutoSync(client, preferences, sync, error);
+  expect(sync).toHaveBeenCalledOnce(); expect(preferences.value.autoSyncCloudAccount).toBe('');
+  preferences.update({ autoSyncCloudAccount: 'account-a' });
+  vi.mocked(invoke).mockResolvedValue(null); changed();
+  await vi.waitFor(() => expect(preferences.value.autoSyncCloudAccount).toBe(''));
+  expect(preferences.value.cloudSyncAccount).toBe('');
+  vi.mocked(invoke).mockResolvedValue({ profile: { id: 'account-b' } }); changed();
+  await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+  expect(preferences.value.autoSyncCloudAccount).toBe('account-b'); expect(error).not.toHaveBeenCalled();
+});
+it('waits for an ongoing sync before enabling cloud sync after login', async () => {
+  const preferences = new Store({ getItem: () => null, setItem: vi.fn() });
+  const { client, publish } = fixture(() => true);
+  publish({ busy: true, error: false, message: '' });
+  vi.mocked(invoke).mockResolvedValue({ profile: { id: 'account-a' } });
+  const sync = vi.fn().mockResolvedValue(undefined);
+  const pending = connectCloudAutoSync(client, preferences, sync, vi.fn());
+  await vi.advanceTimersByTimeAsync(0);
+  expect(client.save).not.toHaveBeenCalled();
+  publish({ busy: false, error: false, message: '' }); await pending;
+  expect(client.save).toHaveBeenCalledOnce(); expect(sync).toHaveBeenCalledOnce();
+});
+it('stays quiet when the account is signed out or not ready, but reports other failures', async () => {
+  const { client, error } = fixture();
+  vi.mocked(client.run).mockRejectedValueOnce(new Error('请重新登录轻羽后同步'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(client.run).toHaveBeenCalledTimes(1);
+  expect(error).not.toHaveBeenCalled();
+  vi.mocked(client.run).mockRejectedValueOnce(new Error('轻羽套餐未开通或已到期'));
+  await vi.advanceTimersByTimeAsync(180000);
+  expect(error).not.toHaveBeenCalled();
+  vi.mocked(client.run).mockRejectedValueOnce(new Error('无法连接账号服务，请检查网络'));
+  await vi.advanceTimersByTimeAsync(180000);
+  expect(error).toHaveBeenCalledExactlyOnceWith('无法连接账号服务，请检查网络');
 });

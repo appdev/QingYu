@@ -19,6 +19,6 @@ export default defineConfig({
     },
   }],
   css: { postcss: { plugins: [palettePlugin] } },
-  build: { target: 'es2022', rollupOptions: { input: ['index.html', 'settings.html', 'login.html'] } },
+  build: { target: 'es2022', rollupOptions: { input: ['index.html', 'settings.html', 'login.html', 'menubar.html'] } },
   server: { watch: { ignored: ['**/src-tauri/**'] } },
 });

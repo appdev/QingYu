@@ -183,7 +183,7 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     const button = document.createElement('button'); button.type = 'button'; button.disabled = true;
     const title = { copy: '复制图片', save: '保存…', share: '分享…' }[action];
     button.textContent = title; button.dataset.pictureAction = action;
-    if (action === (detailed ? 'share' : 'copy')) button.className = 'primary-button';
+    button.className = action === (detailed ? 'share' : 'copy') ? 'primary-button' : 'secondary-button';
     if (action === 'share' && !isMac && !navigator.canShare?.({ files: [new File([], filename, { type: 'image/png' })] })) button.hidden = true;
     button.onclick = async () => {
       if (!result) return;
@@ -225,7 +225,7 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
 
 export function showNotePicture(request: PictureRequest, restoreFocus: () => void) {
   const dialog = document.createElement('dialog'); dialog.className = 'note-picture-dialog'; dialog.ariaLabel = '分享为图片';
-  const close = document.createElement('button'); close.type = 'button'; close.className = 'note-picture-done'; close.textContent = '完成'; close.onclick = () => dialog.close();
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'note-picture-done secondary-button'; close.textContent = '完成'; close.onclick = () => dialog.close();
   dialog.addEventListener('keydown', event => event.stopPropagation());
   dialog.append(close); document.body.append(dialog); dialog.showModal();
   const dispose = mountNotePicture(dialog, request, true);

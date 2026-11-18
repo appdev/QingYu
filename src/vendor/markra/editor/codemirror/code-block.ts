@@ -319,14 +319,14 @@ class MermaidPreviewWidget extends WidgetType {
     this.closeViewer(runtime);
     runtime.mediaViewer = openMediaViewer({
       labels: {
-        close: "Close enlarged Mermaid diagram",
-        dialog: "Enlarged Mermaid diagram",
-        enterFullscreen: "Enter full screen",
-        exitFullscreen: "Exit full screen",
-        reset: "Reset Mermaid diagram view",
-        viewport: "Mermaid diagram viewport",
-        zoomIn: "Zoom in Mermaid diagram",
-        zoomOut: "Zoom out Mermaid diagram",
+        close: "关闭",
+        dialog: "查看图表",
+        enterFullscreen: "全屏",
+        exitFullscreen: "退出全屏",
+        reset: "还原大小",
+        viewport: "图表",
+        zoomIn: "放大",
+        zoomOut: "缩小",
       },
       media: sourceSvg,
       mount: view.dom.closest(".markdown-paper") ?? view.dom.ownerDocument.body,

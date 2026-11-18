@@ -7,5 +7,4 @@
 #calendar-dialog .calendar-help { color: var(--muted); font-size: 12px; line-height: 1.6; }
 #event-feedback { min-height: 20px; font-size: 13px; overflow-wrap: anywhere; }
 #event-feedback[data-error='true'] { color: var(--error); }
-#event-cancel { padding: 7px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--sand); cursor: pointer; }
 #calendar-dialog :disabled { opacity: .6; }

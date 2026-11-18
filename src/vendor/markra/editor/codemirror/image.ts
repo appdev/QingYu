@@ -1,3 +1,4 @@
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import {
   Decoration,
@@ -9,6 +10,7 @@ import { defineMarkraPlugin } from "./plugin.ts";
 import {
   createMediaViewerEnlargeIcon,
   openMediaViewer,
+  type MediaViewerGallery,
   type MediaViewerHandle,
 } from "./media-viewer.ts";
 import {
@@ -141,6 +143,24 @@ export function imageMenuTarget(target: Element) {
     source: state.widget.details.source,
     openPreview: () => state.viewerButton.click(),
   };
+}
+
+/** 笔记里能显示的全部图片，按出现顺序，查看器用它前后切换。 */
+function noteImages(view: CodeMirrorView, resolver: ImagePreviewPluginOptions["resolveSource"]) {
+  const items: (MediaViewerGallery["items"][number] & { from: number })[] = [];
+  const tree = ensureSyntaxTree(view.state, view.state.doc.length, 200) ?? syntaxTree(view.state);
+  tree.iterate({
+    enter(node) {
+      if (node.name !== "Image") return;
+      const details = imageDetails(view.state, node.node as MarkraSyntaxNode);
+      const source = details && resolveImageSource(view, details, resolver);
+      if (details && source) {
+        items.push({ alt: details.alt.replace(markdownImageSizeSuffix, ""), from: node.from, source, title: details.title });
+      }
+      return false;
+    },
+  });
+  return items;
 }
 
 function updateImageElement(image: HTMLImageElement, widget: ImageWidget) {
@@ -362,20 +382,24 @@ class ImageWidget extends WidgetType {
       event.preventDefault();
       event.stopPropagation();
       state.mediaViewer?.close({ restoreFocus: false });
+      const items = noteImages(view, state.widget.resolver);
+      const index = items.findIndex(item => item.from === state.widget.from);
       state.mediaViewer = openMediaViewer({
+        gallery: index >= 0 ? { index, items, labels: { next: "下一张", previous: "上一张" } } : undefined,
         labels: {
-          close: "Close enlarged image",
-          dialog: "Enlarged image",
-          enterFullscreen: "Enter full screen",
-          exitFullscreen: "Exit full screen",
-          reset: "Reset image view",
-          viewport: "Image viewport",
-          zoomIn: "Zoom in image",
-          zoomOut: "Zoom out image",
+          close: "关闭",
+          dialog: "查看图片",
+          enterFullscreen: "全屏",
+          exitFullscreen: "退出全屏",
+          reset: "还原大小",
+          viewport: "图片",
+          zoomIn: "放大",
+          zoomOut: "缩小",
         },
         media: image,
         mount: view.dom.closest(".markdown-paper") ?? view.dom.ownerDocument.body,
-        restoreFocus: viewerButton,
+        // 关闭后回到正文，图片仍保持选中，和 Pinto 关掉 Quick Look 后一样。
+        restoreFocus: view.contentDOM,
       });
     };
     if (touchDevice) {

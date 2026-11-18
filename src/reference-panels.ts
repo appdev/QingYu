@@ -1,6 +1,12 @@
+import { invoke } from '@tauri-apps/api/core';
+import { native } from './preferences';
+import { mountMockWebShare, type ShareStore } from './mock-web-share';
+import { alertActions, showAlert } from './alert-dialog';
+
 type PickerChoice = { title: string; target: string; detail: string };
 type PickerChoices = (query: string) => PickerChoice[];
 type PickerAction = (target: string) => void;
+const lastShareTabs = new Map<string, number>();
 
 export function showNoteLinkPicker(anchor: HTMLElement, choices: PickerChoices, pick: PickerAction, restore: () => void) {
   const panel = document.createElement('div');
@@ -90,13 +96,15 @@ export function confirmLinkedNote(title: string, create: () => void) {
   const dialog = document.createElement('dialog');
   dialog.className = 'missing-note-link';
   dialog.setAttribute('aria-labelledby', 'missing-note-link-title');
-  dialog.innerHTML = '<h2 id="missing-note-link-title"></h2><p>还没有这个标题的笔记。</p><div class="dialog-actions"><button type="button" data-cancel autofocus>取消</button><button type="button" class="primary-button">新建笔记</button></div>';
+  dialog.innerHTML = '<h2 id="missing-note-link-title"></h2><p>还没有这个标题的笔记。</p>';
   dialog.querySelector('h2')!.textContent = `新建「${title}」？`;
-  dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick = () => dialog.close();
-  dialog.querySelector<HTMLButtonElement>('.primary-button')!.onclick = () => { dialog.close(); create(); };
+  const confirm = document.createElement('button'), cancel = document.createElement('button');
+  confirm.type = cancel.type = 'button'; confirm.textContent = '新建笔记'; cancel.textContent = '取消';
+  cancel.onclick = () => dialog.close();
+  confirm.onclick = () => { dialog.close(); create(); };
+  dialog.append(alertActions(confirm, cancel));
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
-  document.body.append(dialog);
-  dialog.showModal();
+  showAlert(dialog, confirm);
 }
 
 export function showLockNotePanel() {
@@ -112,7 +120,7 @@ export function showLockNotePanel() {
   dialog.addEventListener('close', () => dialog.remove(), { once: true }); dialog.showModal();
 }
 
-export function showShare(anchor: HTMLElement, title: string, text: string, report: (message: string) => void, picture?: import('./note-picture').PictureRequest) {
+export function showShare(anchor: HTMLElement, title: string, text: string, report: (message: string) => void, picture?: import('./note-picture').PictureRequest, noteKey: string = crypto.randomUUID(), shareStore?: ShareStore) {
   document.querySelector<HTMLElement>('.share-popover')?.hidePopover?.();
   const panel = document.createElement('div'); panel.className = 'share-popover'; panel.setAttribute('popover', 'auto'); panel.role = 'dialog'; panel.ariaLabel = '分享';
   panel.addEventListener('keydown', event => event.stopPropagation());
@@ -121,27 +129,41 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
   const buttons: HTMLButtonElement[] = [];
   let removePicture: (() => void) | undefined, revision = 0;
   function select(index: number) {
+    lastShareTabs.set(noteKey, index);
     const selected = ++revision;
     removePicture?.(); removePicture = undefined;
     for (const [i, button] of buttons.entries()) { button.setAttribute('aria-selected', String(i === index)); button.tabIndex = i === index ? 0 : -1; }
     content.replaceChildren();
     const detail = document.createElement('p'); detail.className = 'share-description';
-    detail.textContent = ['受邀成员可以实时看到你对笔记的修改。', '发送笔记的当前副本，之后的修改不会同步给收件人。', '获得链接的人都可查看。网页会随笔记更新，直到停止发布。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
+    detail.textContent = ['发送笔记的当前副本，之后的修改不会同步给收件人。', '获得链接的人都可查看。网页会随笔记更新，直到停止发布。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
     if (index === 0) {
-      const people = document.createElement('p'); people.className = 'share-unavailable'; people.textContent = '协作服务尚未接入，无法邀请或管理成员。';
-      const access = document.createElement('label'); access.className = 'share-access'; access.append(document.createTextNode('通过链接加入'));
-      const select = document.createElement('select'); select.disabled = true; select.ariaLabel = '通过链接加入';
-      for (const name of ['关闭', '可查看', '可编辑']) { const option = document.createElement('option'); option.textContent = name; select.append(option); }
-      access.append(select);
-      const invite = document.createElement('button'); invite.className = 'primary-button'; invite.textContent = '邀请成员…'; invite.disabled = true;
-      content.append(people, access, invite);
-    } else if (index === 1) {
-      for (const name of ['邮件', '信息', '备忘录', '无边记', '手记', '提醒事项']) {
-        const button = document.createElement('button'); button.textContent = name; button.disabled = true; content.append(button);
+      const nativeShare = native && (document.documentElement.dataset.platform === 'macos' || document.documentElement.hasAttribute('data-mobile'));
+      if (nativeShare || typeof navigator.share === 'function') {
+        const send = document.createElement('button'); send.textContent = '分享…'; send.className = 'primary-button share-send';
+        send.onclick = async () => {
+          send.disabled = true;
+          try {
+            if (nativeShare) {
+              const { x, y, width, height } = anchor.getBoundingClientRect();
+              await invoke('note_share_text', { title, text, anchor: { x, y, width, height } });
+            } else await navigator.share({ title, text });
+            panel.hidePopover();
+          } catch (err) {
+            if (!(err instanceof DOMException && err.name === 'AbortError')) report('无法打开系统分享，请重试或复制为纯文本');
+          } finally { send.disabled = false; }
+        };
+        content.append(send);
+      } else {
+        const unavailable = document.createElement('p'); unavailable.className = 'share-unavailable';
+        unavailable.textContent = '当前环境不支持系统分享，可复制为纯文本后发送。'; content.append(unavailable);
       }
       const copy = document.createElement('button'); copy.textContent = '复制为纯文本'; copy.className = 'share-copy';
       copy.onclick = async () => { try { await navigator.clipboard.writeText(text); panel.hidePopover(); } catch { report('无法复制，请检查剪贴板权限'); } }; content.append(copy);
-    } else if (index === 3 && picture) {
+      return;
+    } else if (index === 1) {
+      mountMockWebShare(content, noteKey, title, text, anchor, shareStore);
+      return;
+    } else if (index === 2 && picture) {
       void import('./note-picture').then(({ mountNotePicture }) => {
         if (panel.isConnected && selected === revision) removePicture = mountNotePicture(content, picture);
       }).catch(() => report('无法打开图片预览'));
@@ -149,26 +171,41 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     } else {
       const preview = document.createElement('div'); preview.className = 'share-preview';
       const heading = document.createElement('strong'), body = document.createElement('p'); heading.textContent = title; body.textContent = text.slice(0, 240); preview.append(heading, body); content.append(preview);
-      if (index === 3) {
+      if (index === 2) {
         const backgrounds = document.createElement('label'); backgrounds.className = 'share-access'; backgrounds.append(document.createTextNode('背景'));
         const select = document.createElement('select'); select.disabled = true; select.ariaLabel = '图片背景';
         for (const name of ['纯色', '纸张', '渐变']) { const option = document.createElement('option'); option.textContent = name; select.append(option); }
         backgrounds.append(select); content.append(backgrounds);
       }
       const actions = document.createElement('div'); actions.className = 'share-actions';
-      for (const [i, label] of (index === 2 ? ['发布网页…'] : ['复制图片', '保存…', '分享…']).entries()) {
-        const action = document.createElement('button'); if (!i) action.className = 'primary-button'; action.disabled = true; action.textContent = label; actions.append(action);
+      for (const [i, label] of ['复制图片', '保存…', '分享…'].entries()) {
+        const action = document.createElement('button'); action.className = i ? 'secondary-button' : 'primary-button'; action.disabled = true; action.textContent = label; actions.append(action);
       }
       content.append(actions);
     }
     const unavailable = document.createElement('p'); unavailable.className = 'share-unavailable'; unavailable.textContent = '灰色操作尚未接入。'; content.append(unavailable);
   }
-  for (const [index, title] of ['协作', '发送副本', '网页', '图片'].entries()) {
+  for (const [index, title] of ['发送副本', '网页', '图片'].entries()) {
     const button = document.createElement('button'); button.role = 'tab'; button.textContent = title; button.setAttribute('aria-controls', content.id);
     button.onclick = () => select(index); buttons.push(button); tabs.append(button);
     button.onkeydown = event => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); const next = (index + (event.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length; select(next); buttons[next].focus(); };
   }
-  panel.append(tabs, content); document.body.append(panel); select(1); panel.showPopover();
-  const box = anchor.getBoundingClientRect(); panel.style.left = `${Math.max(8, Math.min(box.right - panel.offsetWidth, innerWidth - panel.offsetWidth - 8))}px`; panel.style.top = `${Math.max(8, Math.min(box.bottom + 12, innerHeight - panel.offsetHeight - 8))}px`;
+  panel.append(tabs, content); document.body.append(panel); select(lastShareTabs.get(noteKey) ?? 0); panel.showPopover();
+  const box = anchor.getBoundingClientRect();
+  const center = box.left + box.width / 2;
+  const left = Math.max(8, Math.min(center - panel.offsetWidth / 2, innerWidth - panel.offsetWidth - 8));
+  const pointer = Math.max(20, Math.min(center - left, panel.offsetWidth - 20));
+  panel.style.left = `${left}px`;
+  panel.style.setProperty('--share-pointer-x', `${pointer}px`);
+
+  const below = innerHeight - box.bottom - 20;
+  const above = box.top - 20;
+  if (below < panel.offsetHeight && above > below) {
+    panel.dataset.placement = 'above';
+    panel.style.bottom = `${innerHeight - box.top + 12}px`;
+  } else {
+    panel.style.top = `${box.bottom + 12}px`;
+  }
+  panel.style.setProperty('--share-available-height', `${panel.dataset.placement === 'above' ? above : below}px`);
   panel.addEventListener('toggle', event => { if ((event as ToggleEvent).newState === 'closed') { removePicture?.(); panel.remove(); anchor.focus(); } });
 }

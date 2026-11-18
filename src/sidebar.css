@@ -1,5 +1,6 @@
 #app-shell { display: flex; flex: 1; min-height: 0; }
-#library-sidebar { position: relative; display: flex; flex-direction: column; flex-shrink: 0; width: calc(var(--folder-width, 268px) + var(--notes-width, 330px)); min-height: 0; background: var(--sidebar); }
+#library-sidebar { position: relative; display: flex; flex-direction: column; flex-shrink: 0; width: calc(var(--folder-width, 268px) + var(--notes-width, 330px)); min-height: 0; background: var(--sidebar); -webkit-user-select: none; user-select: none; }
+#library-sidebar input { -webkit-user-select: text; user-select: text; }
 .sidebar-panes { display: flex; flex: 1; min-height: 0; }
 .sidebar-footer { position: absolute; z-index: 2; left: 12px; bottom: max(12px, env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 24px; background: var(--paper); box-shadow: 0 2px 10px var(--shadow); }
 #app-shell[data-mac-sidebar-foot] .sidebar-footer { display: none; }
@@ -29,18 +30,26 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .folder-disclosure { position: absolute; top: 3px; left: calc(8px + var(--folder-depth, 0) * 14px); width: 14px; height: 26px; padding: 0; border: 0; background: transparent; color: var(--muted); display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .folder-disclosure svg { width: 12px; height: 12px; }
 .folder-disclosure[aria-expanded=true] svg { transform: rotate(90deg); }
-.rename-folder { width: 100%; min-width: 0; padding: 0; border: 0; outline: 1px solid var(--brand); border-radius: 2px; font: inherit; color: inherit; background: var(--paper); }
+/* 改名框比文字高一截：桌面 24px，在 28px 的行高亮里上下各留 2px，圆角与高亮同心；
+   手机字号更大，按字号放大。左内边距用负外边距抵消，文字仍和其他文件夹名对齐。 */
+.rename-folder { display: block; box-sizing: border-box; width: calc(100% + 6px); height: max(24px, 1.75em); min-width: 0; margin-left: -6px; padding: 0 6px; border: 0; outline: 1px solid var(--brand); border-radius: 6px; font: inherit; line-height: normal; color: inherit; background: var(--paper); }
 .note-context-menu button:disabled { color: var(--muted); opacity: .5; }
 .note-context-menu button:disabled:hover { background: transparent; color: var(--muted); }
 .folder-row { position: relative; border: 0; background: transparent; display: flex; width: 100%; height: 32px; align-items: center; gap: 6px; padding: 0 12px 0 calc(26px + var(--folder-depth, 0) * 14px); margin: 0; cursor: pointer; font-size: 14px; text-align: left; }
 .folder-row::before { content: ''; position: absolute; inset: 3px 6px 3px calc(6px + var(--folder-depth, 0) * 14px); border-radius: 8px; pointer-events: none; }
 .folder-row > span { position: relative; }
-.folder-row[aria-pressed='true']::before, .folder-row:hover::before, .folder-row.renaming::before { background: var(--folder-selection); }
+.folder-row[aria-pressed='true']::before, .folder-row:hover::before, .folder-entry:hover > .folder-row::before, .folder-row.renaming::before { background: var(--folder-selection); }
 .folder-row:focus-visible { outline: none; }
 .folder-row:focus-visible:not([aria-pressed='true'])::before { box-shadow: inset 0 0 0 1px var(--brand); }
 .folder-disclosure:focus-visible { border-radius: 5px; outline: 1px solid var(--brand); outline-offset: -1px; }
 .folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .folder-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* 悬停时计数原地换成「⋯」：24px 点击区，17px 圆圈的右边缘和计数末位对齐，切换不做过渡。 */
+.folder-row-more { position: absolute; top: 4px; right: 8.5px; display: none; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: default; }
+.folder-row-more svg { width: 17px; height: 17px; display: block; }
+.folder-row-more:hover { color: var(--brand); background: var(--control-fill); }
+.folder-entry:hover:not(:has(.renaming)) .folder-row-more { display: grid; }
+.folder-entry:hover:not(:has(.renaming)) .folder-count { opacity: 0; }
 #notes-pane { position: relative; width: var(--notes-width, 330px); flex-shrink: 0; min-width: 0; min-height: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; background: var(--list); }
 .notes-toolbar { gap: 11px; padding: 0 14px; }
 .notes-navigation { display: contents; }
@@ -63,6 +72,9 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .note-row-title { font-size: 14px; font-weight: 600; color: var(--ink); width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px; }
 .note-row-info { display: flex; gap: 7px; width: 100%; min-width: 0; font-size: 12px; line-height: 18px; }
 .note-row-info time { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 图标和日期之间 4px，对应 Pinto 详情行 HStack(spacing: 4)；日期不换行、不被截断。 */
+.note-row-date { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.note-row-shared { flex: none; width: 0.85em; height: 0.85em; color: var(--muted); stroke-width: 2.25; }
 .note-row-info > [aria-hidden=true] { color: var(--muted); }
 .note-row-summary { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-row-folder { display: flex; gap: 5px; align-items: center; width: 100%; color: var(--muted); font-size: 12px; line-height: 18px; }
@@ -71,6 +83,7 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .notes-empty { padding: 24px 11px; color: var(--muted); font-size: 13px; text-align: center; }
 #document-column { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #document-column .titlebar { padding-left: 25px; }
+.editor-scroll-edge, .editor-scroll-wash { display: none; }
 #sidebar-button { color: var(--muted); }
 #sidebar-button[aria-pressed='true'] { color: var(--brand); }
 .icon-button:disabled { opacity: .35; cursor: default; }
@@ -82,11 +95,9 @@ html[data-platform='macos'] #app-shell[data-sidebar='list'] .notes-toolbar { pad
 #app-shell[data-sidebar='note'] #library-sidebar { display: none; }
 #app-shell[data-note-window] .note-navigation { display: flex; align-items: center; gap: 6px; margin-inline-end: 12px; }
 #app-shell[data-note-window] .note-navigation .icon-button { width: 30px; height: 32px; }
+#app-shell[data-note-window] #document-column .titlebar { position: relative; z-index: 3; }
 #empty-note { flex: 1; display: grid; place-content: center; justify-items: center; gap: 14px; color: var(--muted); font-size: 15px; }
 #empty-note p { margin: 0; }
-.primary-button { background: var(--primary-fill); color: var(--primary-ink); border: 0; border-radius: 7px; padding: 7px 14px; font: inherit; cursor: pointer; }
-.primary-button:not(:disabled):hover { background: var(--brand-hover); }
-.primary-button:not(:disabled):active { background: var(--brand-active); }
 #sidebar-backdrop { display: none; }
 #folder-dialog { background: var(--card); color: var(--ink); border: 1px solid var(--border); border-radius: 13px; padding: 24px; width: min(340px, calc(100vw - 32px)); box-shadow: 0 12px 40px var(--shadow-modal); }
 #folder-dialog::backdrop { background: var(--overlay); }
@@ -95,7 +106,6 @@ html[data-platform='macos'] #app-shell[data-sidebar='list'] .notes-toolbar { pad
 #folder-name { width: 100%; height: 34px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--paper); color: var(--ink); font: inherit; }
 #folder-error { min-height: 20px; margin: 7px 0 14px; font-size: 12px; color: var(--error); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }
-#cancel-folder { padding: 7px 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--sand); cursor: pointer; }
 #rename-note { display: block; width: 100%; padding: 0; margin: 0; border: 0; border-radius: 0; outline: none; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
 #rename-note[aria-invalid] { text-decoration: underline wavy var(--error); text-underline-offset: 4px; }
 .note-info { position: fixed; z-index: 60; width: min(300px, calc(100vw - 16px)); height: 210px; padding: 14px; border: 1px solid var(--muted); border-radius: 20px; background: var(--paper); box-shadow: 0 5px 18px var(--shadow-raised); font: 12px var(--font); color: var(--muted); outline: none; }
@@ -111,6 +121,10 @@ html[data-platform='macos'] #app-shell[data-sidebar='list'] .notes-toolbar { pad
 :is(.note-context-menu, .toolbar-menu-items) > button { display: flex; align-items: center; justify-content: space-between; gap: 24px; width: 100%; border: 0; border-radius: 5px; background: transparent; padding: 6px 10px; text-align: left; font-size: 14px; cursor: default; }
 :is(.note-context-menu, .toolbar-menu-items) > button:is(:hover, :focus) { outline: none; background: var(--note-selection); color: var(--ink); }
 .note-context-menu kbd { font: 12px var(--font); opacity: .65; }
+/* 子菜单箭头与菜单图标同尺寸，颜色跟正文，不像快捷键那样变淡。 */
+.note-context-menu kbd:has(.context-submenu-chevron) { display: flex; opacity: 1; }
+.context-submenu-chevron { display: block; width: 14px; height: 14px; stroke-width: 2.2; color: var(--ink); }
+html[data-mobile] .context-submenu-chevron { width: 18px; height: 18px; }
 .note-context-menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 8px; }
 .note-context-menu.toolbar-context-menu {
   width: min(var(--toolbar-menu-width, calc(250 * var(--menu-unit))), calc(100vw - 16px)); min-width: 0; padding: 0;
@@ -384,10 +398,23 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
     background: light-dark(color-mix(in srgb, var(--mode-dark) 3.5%, transparent), color-mix(in srgb, var(--mode-light) 4.5%, transparent));
   }
   #app-shell[data-mac-sidebar-foot] .sidebar-services button > svg { width: 18px; height: 18px; margin-inline: 5px; }
-  #app-shell[data-mac-sidebar-foot] #sidebar-account { height: 41px; margin-top: 8px; color: var(--ink); font-weight: 600; }
+  #app-shell[data-mac-sidebar-foot] #sidebar-account {
+    display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 9px; align-content: center;
+    height: 41px; margin-top: 8px; color: var(--ink); font-weight: 600;
+  }
+  #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-avatar { grid-row: 1 / 3; }
+  #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-name { grid-row: 1 / 3; grid-column: 2; align-self: center; }
+  #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-spinner { grid-row: 1 / 3; grid-column: 3; }
+  .sidebar-account-status { display: none; }
+  /* 同步时账户名下多一行灰色小字说明进度（Pinto 只在头像旁转圈，这里补一行进度文字）。 */
+  body[data-sync-busy=true] #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-name { grid-row: 1; align-self: end; line-height: 16px; }
+  body[data-sync-busy=true] #app-shell[data-mac-sidebar-foot] .sidebar-account-status {
+    display: block; grid-row: 2; grid-column: 2; align-self: start; min-width: 0; overflow: hidden;
+    font: 400 11px/14px var(--font); color: var(--muted); text-overflow: ellipsis; white-space: nowrap;
+  }
   .sidebar-account-avatar {
     display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; overflow: hidden;
-    border-radius: 50%; background: var(--brand); color: color-mix(in srgb, var(--mode-dark) 78%, transparent); font-size: 11.2px;
+    border-radius: 50%; background: var(--brand); color: var(--avatar-ink); font-size: 11.2px;
     box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--ink) 10%, transparent);
   }
   .sidebar-account-avatar img { width: 100%; height: 100%; object-fit: cover; }
@@ -398,6 +425,10 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
   }
   body[data-sync-busy=true] .sidebar-account-spinner {
     opacity: 1; transition-delay: .7s; animation: sync-spin .8s linear infinite;
+  }
+  /* 同步出错：转圈换成一个红点，一直保留到下次同步成功。 */
+  body:not([data-sync-busy=true]) .sidebar-account-spinner[data-state=error] {
+    width: 8px; height: 8px; margin-inline-end: 11px; opacity: 1; border: 0; background: var(--error); animation: none;
   }
   @media (prefers-reduced-motion: reduce) {
     body[data-sync-busy=true] .sidebar-account-spinner { animation: none; }
@@ -478,14 +509,34 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
 #app-shell[data-mobile-page] .folder-row:last-child::after { border: 0; }
 #app-shell[data-mobile-page] .folder-disclosure { z-index: 1; left: auto; right: 36px; top: 13px; }
 #app-shell[data-mobile-page] .folder-toolbar .icon-button { border-radius: 50%; background: var(--mobile-row); box-shadow: 0 8px 24px var(--shadow); }
+#app-shell[data-mobile-page] .folder-toolbar :is(#new-folder-button, #edit-folders) { color: var(--ink); padding: 0; }
+#app-shell[data-mobile-page] .folder-toolbar #new-folder-button svg { width: 28px; height: 24px; }
+#app-shell[data-mobile-page] .folder-toolbar #edit-folders { width: auto; min-width: 44px; padding-inline: 16px; border-radius: 999px; font-size: 17px; }
+#app-shell[data-mobile-page] [data-editing-folders] .folder-toolbar #edit-folders { width: 44px; padding: 0; }
+#app-shell[data-mobile-page] .folder-toolbar #sidebar-account { padding: 0; background: var(--avatar-fill); color: var(--avatar-ink); box-shadow: none; }
+#app-shell[data-mobile-page] .folder-toolbar .sidebar-account-avatar {
+  display: grid; place-items: center; width: 100%; height: 100%; overflow: hidden; border-radius: inherit; font-size: 17px; font-weight: 600;
+}
+#app-shell[data-mobile-page] .folder-toolbar .sidebar-account-avatar img { width: 100%; height: 100%; object-fit: cover; }
+#app-shell[data-mobile-page] .folder-toolbar :is(.sidebar-account-name, .sidebar-account-spinner) { display: none; }
+#app-shell[data-mobile-page] .folder-row .sidebar-icon svg { stroke-width: 1.55; }
+[data-editing-folders] .folder-count { display: none; }
+[data-editing-folders] .folder-row:disabled { opacity: .5; cursor: default; }
+[data-editing-folders] .folder-row:disabled::before { background: transparent; }
+.folder-edit-more { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--control-fill); }
+.folder-edit-more svg { width: 18px; height: 18px; }
 #app-shell[data-mobile-page] .folder-toolbar #sync-button { display: none; }
 #app-shell[data-mobile-page] .sidebar-services { padding: 20px 32px 96px; }
 #app-shell[data-mobile-page] .sidebar-services button { font-size: 16px; }
-#app-shell[data-mobile-page] .mobile-library-tools { position: absolute; z-index: 3; left: 16px; right: 16px; bottom: max(20px,env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px; }
-#app-shell[data-mobile-page] .mobile-library-tools #note-search { height: 48px; flex: 1; border: 0; background: var(--mobile-row); border-radius: 26px; padding-inline: 20px; font-size: 17px; box-shadow: 0 8px 24px var(--shadow); }
+#app-shell[data-mobile-page] .mobile-library-tools { position: absolute; z-index: 3; inset-inline: 26px; bottom: max(20px,env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px; }
+.mobile-library-search { display: flex; align-items: center; flex: 1; min-width: 0; height: 48px; gap: 8px; padding-inline: 18px 12px; color: var(--ink); background: var(--mobile-row); border-radius: 26px; box-shadow: 0 8px 24px var(--shadow); }
+label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; stroke-width: 1.8; pointer-events: none; }
+.mobile-library-search:focus-within { outline: 1px solid var(--brand); }
+#app-shell[data-mobile-page] .mobile-library-search #note-search { height: 100%; padding: 0; border: 0; font-size: 17px; box-shadow: none; }
 #app-shell[data-mobile-page] .mobile-library-tools .icon-button { width: 48px; height: 48px; padding: 12px; border-radius: 50%; background: var(--mobile-row); color: var(--ink); box-shadow: 0 8px 24px var(--shadow); font-weight: 700; font-size: 16px; }
 #app-shell[data-mobile-page] .mobile-library-tools .icon-button:disabled { opacity: .45; }
-#app-shell[data-mobile-page] .mobile-library-tools svg { width: 24px; height: 24px; }
+#app-shell[data-mobile-page] .mobile-library-tools .icon-button svg { width: 24px; height: 24px; }
+#app-shell[data-mobile-page] .mobile-library-tools #today-note-button svg > path { stroke-width: 2.7; }
 #app-shell[data-mobile-page] .notes-toolbar { padding-bottom: 8px; }
 #app-shell[data-mobile-page] .notes-navigation { padding-inline: 6px; height: 60px; }
 #app-shell[data-mobile-page] .notes-navigation .icon-button { background: var(--mobile-row); border-radius: 50%; box-shadow: 0 8px 24px var(--shadow); }
@@ -537,27 +588,26 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
 .glass-toolbar .icon-button[aria-expanded='true']:not([aria-pressed='true']) { color: var(--ink); }
 /* 灰圆画在按钮自己的伪元素上，不受各按钮内边距的影响；松开时快速淡出。 */
 .glass-toolbar .icon-button { position: relative; isolation: isolate; }
-.glass-toolbar .icon-button::before {
+/* 桌面标题栏的前进后退和 Pinto 一样不套胶囊，但图标颜色、按下的灰圆、禁用时的灰度和工具栏按钮一致。 */
+#app-shell:not([data-mobile-page]) .note-navigation .icon-button { position: relative; isolation: isolate; color: var(--ink); }
+#app-shell:not([data-mobile-page]) .note-navigation .icon-button:hover { background: transparent; }
+#app-shell:not([data-mobile-page]) .note-navigation .icon-button:disabled { color: var(--muted); opacity: .55; cursor: default; }
+.glass-toolbar .icon-button::before, #app-shell:not([data-mobile-page]) .note-navigation .icon-button::before {
   content: ''; position: absolute; inset: var(--glass-lens-inset); z-index: -1; border-radius: 50%;
   background: var(--glass-lens-fill); opacity: 0; transition: opacity .15s ease-out; pointer-events: none;
 }
-.glass-toolbar .icon-button:not(:disabled):is(:active, [data-pressed])::before { opacity: 1; transition-duration: .05s; }
-.glass-toolbar { --glass-lens-inset: 4px; --glass-lens-fill: color-mix(in srgb, var(--ink) 11.5%, transparent); }
-:root[data-theme=dark] .glass-toolbar { --glass-lens-fill: color-mix(in srgb, var(--mode-light) 16%, transparent); }
+.glass-toolbar .icon-button:not(:disabled):is(:active, [data-pressed])::before,
+#app-shell:not([data-mobile-page]) .note-navigation .icon-button:not(:disabled):active::before { opacity: 1; transition-duration: .05s; }
+.glass-toolbar, .note-navigation { --glass-lens-inset: 4px; --glass-lens-fill: color-mix(in srgb, var(--ink) 11.5%, transparent); }
+:root[data-theme=dark] .glass-toolbar, :root[data-theme=dark] .note-navigation { --glass-lens-fill: color-mix(in srgb, var(--mode-light) 16%, transparent); }
 .glass-toolbar-lens {
   position: absolute; inset: 0 auto auto 0; border-radius: 999px; pointer-events: none;
   background: var(--glass-lens-fill);
   transition: translate 230ms cubic-bezier(.2,.8,.3,1.12), width 180ms ease, height 180ms ease;
 }
-.glass-button.primary-button {
-  --gl-solid: var(--primary-fill);
-  --glass-control-fill: color-mix(in srgb, var(--primary-fill) 94%, transparent);
-  border-radius: 999px; background: transparent;
-  box-shadow: inset 0 0 0 1px var(--line), 0 3px 12px var(--shadow);
-}
-.glass-button.primary-button:hover { --glass-control-fill: color-mix(in srgb, var(--brand-hover) 94%, transparent); }
 #app-shell[data-mobile-page] .mobile-library-tools #new-note-button.glass-button {
-  background: transparent; box-shadow: inset 0 0 0 1px var(--line), 0 3px 12px var(--shadow);
+  --glass-control-fill: var(--mobile-row);
+  background: var(--mobile-row);
 }
 @media (prefers-reduced-motion: reduce) {
   .glass-toolbar-lens { transition: none; }
@@ -580,6 +630,8 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
     -webkit-backdrop-filter: none; backdrop-filter: none;
   }
   #app-shell:not([data-mobile-page]) .notes-navigation .icon-button { color: var(--ink); }
+  /* 空白新笔记开着时新建按钮变灰，和系统工具栏的禁用按钮一样。 */
+  #app-shell:not([data-mobile-page]) .notes-navigation .icon-button:disabled { color: var(--muted); opacity: .55; cursor: default; }
   #app-shell:not([data-mobile-page]) #document-column .titlebar { position: relative; z-index: 3; }
   #app-shell:not([data-mobile-page]) .actions .icon-button svg { stroke-width: 1.55; }
 
@@ -587,26 +639,68 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
   #app-shell:not([data-mobile-page]) #notes-pane { --notes-top: 52px; }
   #app-shell:not([data-mobile-page]) #notes-pane[data-searching] { --notes-top: 94px; }
   #app-shell:not([data-mobile-page]) .notes-toolbar { position: absolute; inset: 0 0 auto 0; z-index: 3; }
-  #app-shell:not([data-mobile-page]) .notes-scroll-edge {
-    position: absolute; inset: 0 0 auto 0; z-index: 2; height: var(--notes-top);
-    /* 组件的渐进模糊越往下越弱，再垫一层均匀的模糊和泛白，底边 6px 内淡出。 */
-    background: color-mix(in srgb, var(--list) 55%, transparent);
-    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-    -webkit-mask-image: linear-gradient(black calc(100% - 6px), transparent); mask-image: linear-gradient(black calc(100% - 6px), transparent);
+  /* 模糊全部交给组件。外层不能再加 backdrop-filter、mask 或透明度，
+     否则 WebKit 把它当成背景根，组件里的各层模糊就看不到下面的列表了。
+     分组标题吸顶时，模糊区延伸到标题细线下方（--notes-edge，由 sidebar.ts 计算）。 */
+  #app-shell:not([data-mobile-page]) :is(.notes-scroll-edge, .notes-scroll-wash) {
+    position: absolute; inset: 0 0 auto 0; z-index: 1; height: var(--notes-edge, var(--notes-top)); pointer-events: none;
+  }
+  /* 泛白单独一层：从顶部铺到分组标题细线，最后 14px 淡出，后面的内容只隐约可见。 */
+  #app-shell:not([data-mobile-page]) .notes-scroll-wash {
+    background: linear-gradient(color-mix(in srgb, var(--list) 82%, transparent) calc(100% - 14px), transparent);
   }
   #app-shell:not([data-mobile-page]) #notes-list { padding-top: calc(var(--notes-top) + 4px); scroll-padding-top: calc(var(--notes-top) + 44px); }
+  #app-shell:not([data-mobile-page]) #notes-list { scrollbar-width: auto; scrollbar-color: auto; }
+  #app-shell:not([data-mobile-page]) #notes-list::-webkit-scrollbar-track:vertical { margin-top: var(--notes-top); }
   html[data-platform=macos] #app-shell:not([data-mobile-page]) #notes-list { scroll-padding-top: calc(var(--notes-top) + 50px); }
   html[data-platform=macos] #app-shell #notes-list:has(.notes-year) { padding-top: calc(var(--notes-top) + 10px); }
   /* 分组标题不再是白色色块；吸顶后才有背景模糊和底部细线，细线横贯整列。 */
   /* 吸顶位置贴着标题栏底边（列表上内边距比标题栏多出的那段用负的 top 抵掉）。 */
   html #app-shell:not([data-mobile-page]) .notes-year { top: -4px; background: transparent; margin-inline: -10px; padding-inline: 16px; }
   html[data-platform=macos] #app-shell:not([data-mobile-page]) .notes-year { top: -10px; }
-  html #app-shell:not([data-mobile-page]) .notes-year[data-stuck] {
-    background: color-mix(in srgb, var(--list) 72%, transparent);
-    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
-    box-shadow: 0 1px 0 var(--line);
-  }
+  /* 对应 Pinto 的 NSTableView.floatsGroupRows：吸顶标题固定在一处，下一组到顶时直接换上，
+     不会被往上推。分组只在逻辑上保留（role=group），不再限制标题的吸顶范围。 */
+  #app-shell:not([data-mobile-page]) #notes-list > section { display: contents; }
+  /* 当前吸顶的标题浮在模糊和泛白上面、标题栏下面，只留横贯整列的细线；被换下的隐藏。 */
+  html #app-shell:not([data-mobile-page]) .notes-year[data-stuck] { z-index: 2; box-shadow: 0 1px 0 var(--line); }
+  html #app-shell:not([data-mobile-page]) .notes-year[data-covered] { visibility: hidden; }
   #app-shell:not([data-mobile-page]) .note-row[data-thumbnail] { padding-right: 83px; }
+}
+
+#app-shell:not([data-mobile-page]) {
+  --editor-scrollbar-mode: auto;
+  @media (max-width: 900px) {
+    &:not([data-note-window]) {
+      --editor-scroll-inset: 0px;
+      --editor-scroll-edge-display: none;
+      --editor-scrollbar-mode: initial;
+    }
+  }
+  & #document-column:has(#workspace:not([hidden])):not(:has(.cm-panels-top)) {
+    position: relative;
+    --editor-scroll-overlap: var(--editor-scroll-inset, calc(52px + env(safe-area-inset-top)));
+
+    & > #workspace { margin-top: calc(-1 * var(--editor-scroll-overlap)); }
+    & #rich-editor .cm-content { padding-top: calc(var(--editor-scroll-overlap) + 15px); }
+    & #rich-editor .cm-scroller {
+      scroll-padding-top: var(--editor-scroll-overlap);
+      scrollbar-width: var(--editor-scrollbar-mode, inherit); scrollbar-color: var(--editor-scrollbar-mode, inherit);
+    }
+    & #rich-editor .cm-scroller::-webkit-scrollbar-track:vertical { margin-top: var(--editor-scroll-overlap); }
+
+    & > :is(.editor-scroll-edge, .editor-scroll-wash) {
+      display: var(--editor-scroll-edge-display, block); position: absolute; inset: 0 0 auto;
+      height: calc(var(--editor-scroll-overlap) + 14px);
+      z-index: 1; pointer-events: none;
+    }
+    & > .editor-scroll-wash {
+      background: linear-gradient(color-mix(in srgb, var(--paper) 82%, transparent) calc(100% - 14px), transparent);
+    }
+    @media (prefers-reduced-transparency: reduce) {
+      --editor-scroll-inset: 0px;
+      & > :is(.editor-scroll-edge, .editor-scroll-wash) { display: none; }
+    }
+  }
 }
 
 /* 行尾缩略图：笔记里的第一张本地图片，与 Pinto 一样圆角取边长的 22%。 */

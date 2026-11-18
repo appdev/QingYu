@@ -15,7 +15,7 @@
     "toolbar-context-destructive": "#D3231D",
     "swatch-shadow": "#00000033",
     "avatar-fill": "#D96A06",
-    "avatar-ink": "#000000C7",
+    "avatar-ink": "#FFFFFFC7",
     "paper": "#FFFFFF",
     "ink": "#262626",
     "secondary": "#505050",
@@ -129,7 +129,14 @@
     "logout-danger": "#A31611",
     "logout-shadow": "#00000044",
     "settings-group": "#0000000A",
-    "toolbar-shadow": "#0000000C"
+    "toolbar-shadow": "#0000000C",
+    "button-pressed": "#D96A0633",
+    "button-primary-hover": "#0000001C",
+    "button-primary-pressed": "#00000024",
+    "button-disabled": "#00000014",
+    "button-disabled-ink": "#6A6A6A",
+    "button-destructive": "#C62828",
+    "alert-primary": "#D96A06"
   },
   "dark": {
     "mode-light": "#FFFFFF",
@@ -261,6 +268,13 @@
     "logout-danger": "#FFC0BB",
     "logout-shadow": "#00000088",
     "settings-group": "#FFFFFF16",
-    "toolbar-shadow": "#00000040"
+    "toolbar-shadow": "#00000040",
+    "button-pressed": "#FFFFFF24",
+    "button-primary-hover": "#0000001C",
+    "button-primary-pressed": "#00000024",
+    "button-disabled": "#FFFFFF1C",
+    "button-disabled-ink": "#999999",
+    "button-destructive": "#C62828",
+    "alert-primary": "#D96A06"
   }
 }

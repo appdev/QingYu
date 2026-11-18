@@ -1,5 +1,7 @@
 import { clamp, getSurface, glass, mix, Spring, type GlassSurface } from 'glassy-liquid';
 import { toolbarMenuGlass } from './toolbar-menu-glass';
+import { ChevronRight } from 'lucide';
+import { createLucideIcon } from './vendor/markra/shared/lucide';
 
 export type MenuItem = { text: string; icon?: SVGElement; enabled?: boolean; destructive?: boolean; checked?: boolean; shortcut?: string; nativeRole?: 'Cut' | 'Copy' | 'Paste'; needsUserActivation?: boolean; run?: () => void | Promise<void>; items?: MenuItem[] };
 
@@ -140,7 +142,10 @@ export function dismissPopupMenu() {
   anchor?.setAttribute('aria-expanded', 'false');
   if (closePreview) { closePreview(); return; }
   if (!menu) return;
-  const remove = () => { getSurface(menu)?.destroy(); menu.remove(); };
+  const remove = () => {
+    for (const submenu of menu.querySelectorAll<HTMLElement>('.note-context-menu')) getSurface(submenu)?.destroy();
+    getSurface(menu)?.destroy(); menu.remove();
+  };
   if (!closeToolbar) { remove(); return; }
   menu.inert = true;
   menu.style.pointerEvents = 'none';
@@ -215,7 +220,9 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
     };
     if (!trigger && quickActions) menu.style.setProperty('--quick-actions', String(quickActions));
     function closeSubmenu() {
-      menu.querySelector(':scope > .note-context-menu')?.remove();
+      const submenu = menu.querySelector<HTMLElement>(':scope > .note-context-menu');
+      if (submenu) getSurface(submenu)?.destroy();
+      submenu?.remove();
       menu.querySelector('[aria-expanded=true]')?.setAttribute('aria-expanded', 'false');
     }
     for (const [index, item] of entries.entries()) {
@@ -230,7 +237,8 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
         item.icon.classList.add('context-action-icon');
         button.append(item.icon);
       } else if ((preview || label === '表格操作' || label === '行选项' || label === '列选项') && icon) button.innerHTML = `<svg class="context-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="${icon}"/></svg>`;
-      const key = document.createElement('kbd'); key.textContent = item.items ? '›' : item.checked ? '✓' : anchor && document.documentElement.hasAttribute('data-mobile') ? '' : item.shortcut ?? '';
+      const key = document.createElement('kbd'); key.textContent = item.items ? '' : item.checked ? '✓' : anchor && document.documentElement.hasAttribute('data-mobile') ? '' : item.shortcut ?? '';
+      if (item.items) key.append(createLucideIcon(document, ChevronRight, 'context-submenu-chevron'));
       button.append(title, key); content.append(button);
       if (item.items) {
         button.setAttribute('aria-haspopup', 'menu');
@@ -240,6 +248,11 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
           closeSubmenu(); const box = menu.getBoundingClientRect();
           button.setAttribute('aria-expanded', 'true');
           const submenu = browserMenu(item.items!, box.right - 4, button.getBoundingClientRect().top, menu, button);
+          // 工具栏菜单的二级菜单也用同样的玻璃面板，否则半透明底色下会透出后面的正文。
+          if (anchor) {
+            const radius = Number.parseFloat(getComputedStyle(submenu).borderTopLeftRadius) || 0;
+            glass(submenu, { ...toolbarMenuGlass, radius, fill: 'var(--toolbar-menu-glass-fill)', shadow: false });
+          }
           if (!keepEditorFocus) submenu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
         };
         button.onclick = open;
@@ -257,7 +270,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
       if (event.key === 'Tab') { event.preventDefault(); buttons[event.shiftKey ? previous : next]?.focus(); }
       if (event.key === 'Escape' || event.key === 'ArrowLeft' && trigger) {
         event.preventDefault(); event.stopPropagation();
-        if (trigger) { menu.remove(); trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); }
+        if (trigger) { getSurface(menu)?.destroy(); menu.remove(); trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); }
         else close();
       }
     };

@@ -71,6 +71,13 @@ async fn storage_usage(State(state): State<Arc<Service>>) -> ApiResult<Json<Stor
         .map_err(|_| ApiError::internal())?
 }
 
+/// 和前端 validShare 一致：链接只接受 http(s)，长度不超过 2048。
+fn valid_share(share: &NoteShare) -> bool {
+    share.url.as_deref().is_none_or(|url| {
+        url.len() <= 2048 && (url.starts_with("https://") || url.starts_with("http://")) && !url.chars().any(char::is_whitespace)
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(
     tag = "kind",
@@ -93,6 +100,8 @@ enum Command {
         pinned: bool,
         trashed: bool,
         folder_id: String,
+        #[serde(default)]
+        share: Option<NoteShare>,
     },
     DuplicateNote {
         id: String,
@@ -179,6 +188,7 @@ async fn change(
                     path: String::new(),
                     read_only: false,
                     filename: None,
+                    share: None,
                 });
                 commit(store, next, "create")?;
             }
@@ -190,9 +200,13 @@ async fn change(
                 pinned,
                 trashed,
                 folder_id,
+                share,
             } => {
                 versioned_note(store, &id, &version)?;
                 validate_input(title.as_deref(), &source)?;
+                if share.as_ref().is_some_and(|share| !valid_share(share)) {
+                    return Err(ApiError::bad_request("Invalid share link"));
+                }
                 if !store.data.folders.iter().any(|f| f.id == folder_id) {
                     return Err(ApiError::not_found());
                 }
@@ -206,6 +220,7 @@ async fn change(
                 note.pinned = pinned;
                 note.trashed = trashed;
                 note.folder_id = folder_id;
+                note.share = share;
                 commit(store, next, "edit")?;
             }
             Command::DuplicateNote {
@@ -230,6 +245,7 @@ async fn change(
                     path: String::new(),
                     filename: None,
                     read_only: false,
+                    share: None,
                 });
                 commit(store, next, &format!("duplicate:{id}"))?;
             }

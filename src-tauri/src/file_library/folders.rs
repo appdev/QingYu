@@ -536,8 +536,21 @@ pub async fn library_folder_action(
     }
     #[cfg(mobile)]
     {
-        let _ = (window, state, action, folder_id, revision, value);
-        Err("请在桌面端管理文件夹".into())
+        if !matches!(action.as_str(), "create" | "rename") {
+            return Err("请在桌面端执行此文件夹操作".into());
+        }
+        let mut lock = state.0.lock().map_err(error)?;
+        let store = lock.as_mut().ok_or("请先打开笔记库")?;
+        if store.revision != revision {
+            return Err("笔记库已变化，请重试".into());
+        }
+        store.folder_change(
+            &action,
+            folder_id.as_deref().unwrap_or("default"),
+            value.as_deref().unwrap_or_default(),
+            None,
+        )?;
+        Ok(store.snapshot())
     }
 }
 

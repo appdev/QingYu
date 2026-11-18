@@ -7,16 +7,16 @@ import { settingsSelect } from './settings-select';
 import { glassToggle } from './glass-controls';
 import { mobile, native, noteTextSizes, preferences, syncIntervals, type Preferences } from './preferences';
 import type { SyncClient } from './sync-session';
-import { syncMode, type S3Settings, type SyncMode } from './sync-store';
+import { hasS3Connection, s3Defaults, syncMode, type S3Settings, type SyncMode } from './sync-store';
 import './settings.css';
 import { themeNames, themePalette, type Theme } from './themes';
 import { isServerLibrary } from './server-library';
-import { mountClientAccount, type CloudSyncAccess } from './client-account';
+import { guestAccountIcon, mountClientAccount, type CloudSyncAccess } from './client-account';
 import { version } from '../package.json';
 
 export type SettingsSection = 'account' | 'general' | 'appearance' | 'shortcuts' | 'ai' | 'today' | 'storage' | 'help' | 'personal' | 'signIn' | 'sync';
 const sections: [SettingsSection, string, string?][] = [
-  ['account', '账户', 'M20 21v-2a7 7 0 0 0-14 0v2M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8'],
+  ['account', '账户'],
   ['general', '通用', 'M3 6h7m4 0h7M3 12h11m4 0h3M3 18h3m4 0h11M10 4v4m4 2v4M6 16v4'],
   ['appearance', '外观', 'M3 20 9 4l6 16M5 15h8m3 5 4-11 4 11m-6-4h5'],
   ['shortcuts', '键盘快捷键', 'M9 7H6a3 3 0 1 1 3-3v16a3 3 0 1 1-3-3h12a3 3 0 1 1-3 3V4a3 3 0 1 1 3 3H9'],
@@ -38,8 +38,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   const visibleSections = sections.filter(([key]) => !mobile
     || !['ai', 'shortcuts', ...(clientAccount ? [] : ['personal', 'signIn'])].includes(key));
   const accountName = serverLibrary ? '服务器笔记库' : '本地账户';
-  const sectionTitle = (key: SettingsSection | undefined) => key === 'storage' && (serverLibrary || clientAccount)
-    ? '存储' : key === 'account' && clientAccount ? '个人资料'
+  const sectionTitle = (key: SettingsSection | undefined) => key === 'account' && clientAccount ? '个人资料'
       : mobile && key === 'help' ? '关于轻羽' : visibleSections.find(([section]) => section === key)?.[1] ?? '';
   root.classList.add('settings');
   root.classList.toggle('settings-mobile', mobile);
@@ -181,9 +180,12 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     if (mobile) tab.classList.add('settings-disclosure');
     tab.textContent = title; tab.dataset.section = key; tab.setAttribute('aria-controls', `settings-panel-${key}`);
     tab.onclick = () => navigateTo(key);
-    if (mobile && key === 'account') {
-      tab.ariaLabel = accountName;
-      tab.innerHTML = `<span class="settings-avatar" aria-hidden="true">Q</span><span><strong>${accountName}</strong><small>${sectionTitle('storage')}</small></span>`;
+    if (key === 'account') {
+      const avatar = `<span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span>`;
+      if (mobile) {
+        tab.ariaLabel = accountName;
+        tab.innerHTML = `${avatar}<span><strong>${accountName}</strong><small>${sectionTitle('storage')}</small></span>`;
+      } else tab.insertAdjacentHTML('afterbegin', avatar);
     } else if (icon) tab.insertAdjacentHTML('afterbegin', `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${icon}"/></svg>`);
     tabs.push(tab);
     if (categoryGroup && key === 'account') categoryGroup.before(tab);
@@ -339,7 +341,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   });
   else if (!mobile) {
     const identity = document.createElement('div'); identity.className = 'settings-identity';
-    identity.innerHTML = '<span class="settings-avatar" aria-hidden="true">Q</span><strong>本地账户</strong><span>账户服务尚未接入</span>';
+    identity.innerHTML = `<span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span><strong>本地账户</strong><span>账户服务尚未接入</span>`;
     pages.get('account')!.append(identity);
     referenceRow('account', '个人信息', '', '', 'personal');
     referenceRow('account', '登录与安全', '', '', 'signIn');
@@ -353,7 +355,10 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   else {
     referenceRow('general', '轻羽', '软件更新', '检查更新…');
     referenceRow('general', '更新内容', '', '↗');
-    heading('general', '此 Mac'); referenceSwitch('general', '在菜单栏显示', '关闭窗口后仍可新建或查找笔记。'); referenceSwitch('general', '登录时打开'); hint('general');
+    const mac = /Mac/.test(navigator.platform);
+    heading('general', mac ? '此 Mac' : '此电脑');
+    if (native) setting('general', 'menuBar', mac ? '在菜单栏显示' : '在系统托盘显示', '关闭窗口后仍可新建或查找笔记。', undefined, true);
+    referenceSwitch('general', '登录时打开'); hint('general');
   }
   heading('general', '任务清单'); setting('general', 'sortCheckedItems', '已完成的项目移到底部', '');
   heading('general', '编辑器');
@@ -560,6 +565,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     pages.get('shortcuts')!.append(note);
   }
   let disposed = false;
+  let switchConfirmation: HTMLDialogElement | undefined;
   let unsubscribeSync = () => {};
   let loaded = Promise.resolve();
   const storagePage = pages.get('storage')!;
@@ -591,6 +597,26 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       input.type = key.includes('Key') ? 'password' : key === 'endpoint' ? 'url' : 'text';
       const element = row('storage', title, detail, input); fields.append(element);
     }
+    for (const [key, title, detail, min, max] of [
+      ['timeout', 'Timeout (s)', '请求超时（1–300 秒）', 1, 300],
+      ['concurrency', 'Concurrent Reqs', '并发请求数（1–16）', 1, 16],
+    ] as const) {
+      const input = document.createElement('input'); input.name = key; input.type = 'number'; input.className = 'settings-control'; input.required = true;
+      input.min = String(min); input.max = String(max); input.step = '1';
+      fields.append(row('storage', title, detail, input));
+    }
+    for (const [key, title, detail, options] of [
+      ['forcePathStyle', 'Addressing', 'Bucket 的寻址方式', [['true', 'Path-style'], ['false', 'Virtual-hosted-style']]],
+      ['tlsVerify', 'TLS Verify', '默认校验证书；Skip 仅适用于你信任的自建服务', [['true', 'Verify'], ['false', 'Skip']]],
+      ['assetDownload', '附件下载', '按需下载时，小于 1 MB 的附件仍会自动下载', [['all', '全部下载'], ['on-demand', '按需下载']]],
+    ] as const) {
+      const select = document.createElement('select'); select.name = key;
+      for (const [value, label] of options) select.add(new Option(label, value));
+      const element = row('storage', title, detail, select); fields.append(element);
+      decorateSelect(element, select, title);
+    }
+    const test = document.createElement('button'); test.type = 'button'; test.className = 'settings-sync-test'; test.textContent = '测试连接';
+    form.append(row('storage', '连接测试', '检查读取、写入、条件写入和删除权限。', test));
     const syncGroup = document.createElement('div'); syncGroup.className = 'client-list';
     heading('storage', '同步');
     const auto = document.createElement('input'); auto.type = 'checkbox'; auto.name = 'automaticSync'; auto.role = 'switch';
@@ -599,12 +625,29 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     syncGroup.append(interval.closest('.settings-row')!);
     const hint = document.createElement('p'); hint.className = 'settings-hint'; hint.textContent = '同步笔记、文件夹和附件。发生冲突时保留双方副本。';
     const status = document.createElement('p'); status.className = 'settings-sync-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    const errorBlock = document.createElement('div'); errorBlock.className = 'settings-sync-error'; errorBlock.hidden = true;
+    const errorText = document.createElement('pre'); errorText.tabIndex = 0; errorText.setAttribute('aria-label', '连接错误详情');
+    const copyError = document.createElement('button'); copyError.type = 'button'; copyError.className = 'settings-sync-copy'; copyError.textContent = '复制错误信息';
+    errorBlock.append(errorText, copyError);
+    copyError.onclick = async () => {
+      try { await navigator.clipboard.writeText(errorText.textContent ?? ''); copyError.textContent = '已复制'; }
+      catch { copyError.textContent = '复制失败，请选择内容复制'; }
+    };
     const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'settings-sync-now'; submit.textContent = '立即同步';
     const summary = row('storage', '同步', '尚未同步', submit);
     const syncNote = summary.querySelector('small')!;
-    syncGroup.append(summary); storagePage.append(syncGroup, hint, status);
-    const inputs = [...form.querySelectorAll('input')];
-    function values() { return Object.fromEntries(inputs.map(input => [input.name, input.value])) as S3Settings; }
+    syncGroup.append(summary); storagePage.append(syncGroup, hint, status, errorBlock);
+    const inputs = [...form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')];
+    function values() {
+      return Object.fromEntries(inputs.map(input => [input.name,
+        ['forcePathStyle', 'tlsVerify'].includes(input.name) ? input.value === 'true' : ['timeout', 'concurrency'].includes(input.name) ? Number(input.value) : input.value])) as S3Settings;
+    }
+    function showStatus(message: string, failed = false) {
+      status.textContent = failed ? message.split('\n', 1)[0] : message; status.dataset.error = String(failed);
+      errorBlock.hidden = !failed || !message;
+      errorText.textContent = failed ? message : '';
+      copyError.textContent = '复制错误信息';
+    }
     let saving = Promise.resolve(), revision = 0, profileLoaded = false, syncing = false, submitting = false, switching = false;
     let activeMode: SyncMode = clientAccount ? 'cloud' : 's3';
     let lastSyncedAt: number | undefined;
@@ -613,9 +656,12 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     function updateSyncControls() {
       const disabled = !profileLoaded || syncing || switching;
       const cloud = activeMode === 'cloud';
-      auto.checked = cloud ? Boolean(syncAccount.accountId && preferences.value.autoSyncCloudAccount === syncAccount.accountId) : preferences.value.autoSyncS3;
-      auto.disabled = disabled || (cloud && !syncAccount.accountId);
+      const accountId = syncAccount.signedInAccountId ?? syncAccount.accountId;
+      const ready = cloud ? Boolean(syncAccount.accountId) : hasS3Connection(values());
+      auto.checked = cloud ? Boolean(accountId && preferences.value.autoSyncCloudAccount === accountId) : ready && preferences.value.autoSyncS3;
+      auto.disabled = disabled || !ready;
       for (const input of inputs) input.disabled = disabled || activeMode !== 's3';
+      test.disabled = disabled || submitting || cloud;
       submit.disabled = disabled || submitting || (cloud && !syncAccount.accountId);
       const lastSync = lastSyncedAccount === (cloud ? syncAccount.accountId : undefined) ? lastSyncedAt : undefined;
       syncNote.textContent = cloud && syncAccount.reason ? syncAccount.reason : syncing ? '正在同步…'
@@ -623,6 +669,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       mode.disabled = disabled || submitting;
       mode.value = activeMode;
       modeChoice?.update();
+      for (const choice of choices) choice.update();
       s3.hidden = activeMode !== 's3';
       cloudStorage.hidden = activeMode !== 'cloud';
     }
@@ -640,11 +687,25 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       const profile = { ...values(), mode: next };
       switching = true; updateSyncControls();
       try {
+        const confirmed = await new Promise<boolean>(resolve => {
+          const dialog = document.createElement('dialog'); switchConfirmation = dialog;
+          dialog.className = 'client-logout-confirmation settings-provider-confirmation'; dialog.role = 'alertdialog';
+          dialog.setAttribute('aria-labelledby', 'settings-provider-title'); dialog.setAttribute('aria-describedby', 'settings-provider-description');
+          dialog.innerHTML = '<h2 id="settings-provider-title">切换云存储提供商</h2><p id="settings-provider-description">切换同步提供商前，需要检查资源和历史快照的完整性，必要时会从当前云端下载缺失内容，可能需要较长时间。是否继续？</p><div class="client-logout-actions"><button type="button" data-cancel>取消</button><button type="button" data-continue>继续</button></div>';
+          dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick = () => dialog.close('cancel');
+          dialog.querySelector<HTMLButtonElement>('[data-continue]')!.onclick = () => dialog.close('continue');
+          dialog.onkeydown = event => { if (event.key === 'Escape') event.stopPropagation(); };
+          dialog.oncancel = event => { event.preventDefault(); event.stopPropagation(); dialog.close('cancel'); };
+          dialog.onclose = () => { resolve(dialog.returnValue === 'continue'); dialog.remove(); switchConfirmation = undefined; };
+          root.append(dialog); dialog.showModal(); dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.focus();
+        });
+        if (!confirmed || disposed) return;
+        await saving;
         await sync.save(profile);
         if (disposed) return;
         activeMode = next;
         lastSyncedAt = undefined;
-        modeStatus.textContent = ''; status.textContent = '';
+        modeStatus.textContent = ''; showStatus('');
         if (selected === 'storage' || selected === 'sync') accountPanel?.show(next === 'cloud' ? 'storage' : undefined);
       } catch (e) {
         if (!disposed) syncError(e, true);
@@ -656,17 +717,19 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       if (modeError) {
         modeStatus.textContent = text;
       } else {
-        status.textContent = text; status.dataset.error = 'true'; status.scrollIntoView?.({ block: 'nearest' });
+        showStatus(text, true); status.scrollIntoView?.({ block: 'nearest' });
       }
     }
-    form.addEventListener('input', () => {
+    function saveFields() {
       if (!profileLoaded || switching || activeMode !== 's3') return;
       const current = ++revision, next = values();
-      status.textContent = '正在保存…'; status.dataset.error = 'false';
+      showStatus('正在保存…'); updateSyncControls();
       saving = sync.save(next);
-      void saving.then(() => { if (!disposed && revision === current) status.textContent = ''; }).catch(error => { if (!disposed && revision === current) syncError(error); });
-    });
-    async function run() {
+      void saving.then(() => { if (!disposed && revision === current) showStatus(''); }).catch(error => { if (!disposed && revision === current) syncError(error); });
+    }
+    form.addEventListener('input', event => { if (event.target instanceof HTMLInputElement) saveFields(); });
+    form.addEventListener('change', event => { if (event.target instanceof HTMLSelectElement) saveFields(); });
+    async function run(testConnection = false) {
       const cloud = activeMode === 'cloud';
       const accountId = cloud ? syncAccount.accountId : undefined;
       if (!profileLoaded || submitting || syncing || switching || (cloud && !accountId)) return;
@@ -678,14 +741,15 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
         else {
           const missing = inputs.find(input => !input.value.trim());
           if (missing) { missing.focus(); throw new Error(`请填写${missing.labels?.[0]?.querySelector('span')?.textContent ?? '完整连接配置'}`); }
-          if (!form.checkValidity()) throw new Error('服务地址格式无效，请输入完整的 HTTPS 地址');
-          await sync.run(settings);
+          if (!form.checkValidity()) throw new Error('请检查服务地址、超时和并发请求数的格式与范围');
+          if (testConnection) await sync.test(settings); else await sync.run(settings);
         }
       }
       catch (e) { syncError(e); }
       finally { submitting = false; updateSyncControls(); }
     }
     submit.onclick = () => void run();
+    test.onclick = () => void run(true);
     form.onsubmit = event => { event.preventDefault(); void run(); };
     updateSyncControls();
     unsubscribeSync = sync.subscribe(value => {
@@ -693,7 +757,8 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       syncing = value.busy;
       lastSyncedAt = value.lastSyncedAt;
       lastSyncedAccount = value.lastSyncedAccount;
-      status.textContent = value.message; status.dataset.error = String(value.error); if (value.busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
+      if (value.mode) activeMode = value.mode;
+      showStatus(value.message, value.error); if (value.busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
       updateSyncControls();
       if (finished && !value.error && (selected === 'storage' || selected === 'sync')) void updateStorageUsage();
     });
@@ -703,12 +768,13 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       return pendingProfile ??= sync.load().then(config => {
         if (disposed) return;
         profileLoaded = true;
-        for (const input of inputs) input.value = config[input.name as keyof Omit<S3Settings, 'mode'>] ?? '';
+        for (const input of inputs) input.value = String(config[input.name as keyof S3Settings] ?? s3Defaults[input.name as keyof typeof s3Defaults]
+          ?? (input.name === 'assetDownload' ? (mobile ? 'on-demand' : 'all') : ''));
         if (clientAccount) activeMode = syncMode(config);
         modeStatus.textContent = '';
         updateSyncControls();
         if (activeMode === 's3' && (selected === 'storage' || selected === 'sync')) accountPanel?.show(undefined);
-        if (!syncing) { status.textContent = ''; status.dataset.error = 'false'; }
+        if (!syncing) showStatus('');
       }).catch(e => { if (!disposed) syncError(e, !!modeChoice); }).finally(() => { pendingProfile = undefined; });
     };
     loaded = refreshSyncProfile();
@@ -783,5 +849,5 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   window.addEventListener('settings-error', nativeError);
   updateControls(); if (preferences.error) error(preferences.error);
   if (!mobile) select('general');
-  return { select, loaded, destroy() { disposed = true; accountPanel?.destroy(); for (const choice of choices) choice.destroy(); recorder?.destroy(); if (locationListener) window.removeEventListener('focus', locationListener); unsubscribe(); unsubscribeSync(); window.removeEventListener('settings-error', nativeError); window.removeEventListener('focus', refreshOnFocus); root.removeEventListener('keydown', navigateHistory); root.replaceChildren(); } };
+  return { select, loaded, destroy() { disposed = true; switchConfirmation?.close('cancel'); accountPanel?.destroy(); for (const choice of choices) choice.destroy(); recorder?.destroy(); if (locationListener) window.removeEventListener('focus', locationListener); unsubscribe(); unsubscribeSync(); window.removeEventListener('settings-error', nativeError); window.removeEventListener('focus', refreshOnFocus); root.removeEventListener('keydown', navigateHistory); root.replaceChildren(); } };
 }

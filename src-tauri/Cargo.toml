@@ -29,7 +29,7 @@ server = ["dep:axum", "dep:tokio", "dep:subtle", "dep:tower-http", "dep:reqwest"
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [], optional = true }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"], optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-attachments = { path = "plugins/attachments", optional = true }
@@ -64,7 +64,7 @@ tauri-plugin-editor-menu = { path = "plugins/editor-menu", optional = true }
 objc2 = { version = "0.6", optional = true }
 block2 = { version = "0.6", optional = true }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSNotification", "NSOperation", "NSString", "NSGeometry", "NSProcessInfo", "NSFileManager", "NSPathUtilities", "NSURL"] }
-objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSMenu", "NSMenuItem", "NSImage", "NSPopover", "NSViewController", "NSView", "NSControl", "NSTextField", "NSFont", "NSFontDescriptor", "NSColor", "NSWindow", "NSResponder", "NSScrollView", "NSTextView", "NSText", "NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSSharingService", "block2", "objc2-quartz-core", "objc2-core-graphics"] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSMenu", "NSMenuItem", "NSImage", "NSPopover", "NSViewController", "NSView", "NSControl", "NSTextField", "NSFont", "NSFontDescriptor", "NSColor", "NSWindow", "NSResponder", "NSScrollView", "NSTextView", "NSText", "NSWorkspace", "NSRunningApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSPasteboard", "NSSharingService", "block2", "objc2-quartz-core", "objc2-core-graphics"] }
 objc2-quartz-core = { version = "0.3", optional = true, default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
 
 [target.'cfg(windows)'.dependencies]

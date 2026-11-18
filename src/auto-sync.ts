@@ -1,6 +1,31 @@
-import type { SyncClient, SyncStatus } from './sync-session';
-import { syncMode } from './sync-store';
+import { accountSyncNotices, type SyncClient, type SyncStatus } from './sync-session';
+import { hasS3Connection, syncMode } from './sync-store';
 import type { PreferenceStore } from './preferences';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+export async function connectCloudAutoSync(client: SyncClient, preferences: PreferenceStore, sync: () => Promise<void>, error: (message: string) => void) {
+  let pending = Promise.resolve();
+  const refresh = () => {
+    pending = pending.catch(() => {}).then(async () => {
+      const account = await invoke<{ profile: { id: string } } | null>('account_status');
+      const id = account?.profile.id ?? '';
+      if (id === preferences.value.cloudSyncAccount) return;
+      if (!id) { preferences.update({ cloudSyncAccount: '', autoSyncCloudAccount: '' }); return; }
+      let unsubscribe = () => {};
+      await new Promise<void>(resolve => { unsubscribe = client.subscribe(status => { if (!status.busy) resolve(); }); });
+      unsubscribe();
+      await client.save({ ...await client.load(), mode: 'cloud' });
+      preferences.update({ cloudSyncAccount: id, autoSyncCloudAccount: id });
+      await sync();
+    });
+    void pending.catch(reason => error(reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '无法启用云同步'));
+    return pending;
+  };
+  const stop = await listen('client-profile-changed', () => { void refresh(); });
+  await refresh().catch(() => {});
+  return stop;
+}
 
 export function startAutoSync(client: SyncClient, blocked: () => boolean, error: (message: string) => void, syncOnBackground = false,
   schedule?: Pick<PreferenceStore, 'subscribe' | 'value'>) {
@@ -29,13 +54,19 @@ export function startAutoSync(client: SyncClient, blocked: () => boolean, error:
         if (id) await client.run(settings, id);
         return;
       }
-      if (schedule?.value.autoSyncS3 === false ||
-        !settings.endpoint.trim() || !settings.bucket.trim() || !settings.prefix.trim() || !settings.accessKeyId.trim() || !settings.secretAccessKey) return;
+      if (schedule?.value.autoSyncS3 === false || !hasS3Connection(settings)) return;
       await client.run(settings);
     })().finally(() => { pending = undefined; lastAttempt = Date.now(); });
     return pending;
   }
-  const attempt = () => { if (!blocked()) void sync().catch(reason => error(reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '自动同步失败')); };
+  const attempt = () => {
+    if (blocked()) return;
+    void sync().catch(reason => {
+      const message = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '自动同步失败';
+      // 没登录或账号未就绪时后台静默跳过，手动同步时设置页里仍会显示原因。
+      if (!accountSyncNotices.has(message)) error(message);
+    });
+  };
   const intervalMs = () => (schedule?.value.syncInterval ?? 3) * 60 * 1000;
   let interval = intervalMs(), timer = setInterval(attempt, interval);
   const unsubscribeSchedule = schedule?.subscribe(() => {

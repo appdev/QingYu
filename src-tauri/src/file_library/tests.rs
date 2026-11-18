@@ -73,6 +73,7 @@ fn draft(title: Option<&str>, body: &str) -> Note {
         path: String::new(),
         read_only: false,
         filename: None,
+        share: None,
     }
 }
 fn create(store: &mut DiskLibrary, title: Option<&str>, body: &str) -> Note {
@@ -582,4 +583,31 @@ fn import_keeps_legacy_bytes_and_symlink_scan_is_loop_free() {
         fs::read(root.path().join("legacy.txt")).unwrap(),
         bytes.as_ref()
     );
+}
+
+#[test]
+fn share_state_round_trips_and_stays_out_of_untouched_notes() {
+    let mut note = draft(Some("分享"), "# 分享");
+    let plain = serde_json::to_value(&note).unwrap();
+    assert!(plain.get("share").is_none());
+    note.share = Some(NoteShare { status: ShareStatus::Shared, url: Some("https://share.example.com/n/a".into()) });
+    let value = serde_json::to_value(&note).unwrap();
+    assert_eq!(value["share"], serde_json::json!({ "status": "shared", "url": "https://share.example.com/n/a" }));
+    assert_eq!(serde_json::from_value::<Note>(value).unwrap(), note);
+    let legacy: Note = serde_json::from_value(plain).unwrap();
+    assert_eq!(legacy.share, None);
+}
+
+#[test]
+fn share_state_survives_a_disk_commit_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path());
+    let note = create(&mut store, Some("分享"), "# 分享");
+    let mut next = store.data.clone();
+    next.notes.iter_mut().find(|n| n.id == note.id).unwrap().share =
+        Some(NoteShare { status: ShareStatus::Shared, url: Some("https://share.example.com/n/a".into()) });
+    store.commit(next, "share").unwrap();
+    let reopened = open(dir.path());
+    let saved = reopened.data.notes.iter().find(|n| n.id == note.id).unwrap();
+    assert_eq!(saved.share.as_ref().map(|s| s.status), Some(ShareStatus::Shared));
 }

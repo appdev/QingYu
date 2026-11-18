@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [{
       "label": "main",
       "title": "轻羽 QingYu",
@@ -20,7 +21,8 @@
       "disableInputAccessoryView": true,
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
-      "trafficLightPosition": { "x": 18, "y": 30 }
+      "trafficLightPosition": { "x": 18, "y": 30 },
+      "visible": false
     }],
     "security": {
       "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: qingyu-asset: http://qingyu-asset.localhost https://qingyu-asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; frame-src 'self'; object-src 'none'; base-uri 'self'"

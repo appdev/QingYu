@@ -1,7 +1,7 @@
 export { compare, pushPaths } from '@/features/sync/engine';
 export { pullPathsOp } from '@/features/sync/operations/pull';
 export { autoMergeOp } from '@/features/sync/apply/auto-merge';
-export { loadRemoteText } from '@/features/sync/changes/content';
+export { loadRemoteBytes, loadRemoteText } from '@/features/sync/changes/content';
 export { advanceSessionAfterPush, advanceBaselineForPaths } from '@/features/sync/remote/baseline';
 export { VAULT_SPACE } from '@/features/sync/remote/space';
 export { ConcurrentPushError } from '@/features/sync/remote/manifest';

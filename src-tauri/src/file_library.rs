@@ -52,6 +52,22 @@ pub struct Folder {
     #[serde(default)]
     pub path: String,
 }
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShareStatus {
+    #[default]
+    Unshared,
+    Shared,
+}
+/// 分享状态只记在元数据里，不写进正文。服务端才是准的，这里是本机缓存。
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteShare {
+    #[serde(default)]
+    pub status: ShareStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -74,6 +90,8 @@ pub struct Note {
     pub read_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share: Option<NoteShare>,
 }
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +130,7 @@ enum Operation {
         after: Vec<u8>,
         modified: f64,
     },
+    Asset(assets::AssetOperation),
 }
 #[derive(Serialize, Deserialize)]
 struct Transaction {
@@ -580,6 +599,7 @@ impl Operation {
                     return Err("文件为只读状态，未覆盖".into());
                 }
             }
+            Self::Asset(asset) => asset.check(root)?,
         }
         Ok(())
     }
@@ -625,6 +645,7 @@ impl Operation {
                 atomic(&path, after, true)?;
                 modified(&path, *time)
             }
+            Self::Asset(asset) => asset.apply(root),
         }
     }
     fn undo(&self, root: &Path) -> Result<()> {
@@ -670,9 +691,13 @@ impl Operation {
                     Err("恢复时发现外部修改，已保留文件和事务日志".into())
                 }
             }
+            Self::Asset(asset) => asset.undo(root),
         }
     }
     fn cleanup(&self, root: &Path) -> Result<()> {
+        if let Self::Asset(asset) = self {
+            return asset.cleanup(root);
+        }
         if let Self::Create { staged, .. } = self {
             let path = checked(root, staged)?;
             if path.exists() {
@@ -725,7 +750,7 @@ impl DiskLibrary {
             for operation in &transaction.operations {
                 let note_path = |path: &str| -> Result<()> {
                     checked(&root, path)?;
-                    if transaction.asset_sync && (assets::valid_path(path) || assets::trash_path(path)) { return Ok(()); }
+                    if transaction.asset_sync && (assets::valid_path(path) || assets::trash_path(path) || path == assets::placeholders::INDEX_PATH) { return Ok(()); }
                     if !allowed(Path::new(path))
                         || Path::new(path)
                             .components()
@@ -751,6 +776,8 @@ impl DiskLibrary {
                         note_path(to)?;
                     }
                     Operation::Write { path, .. } => note_path(path)?,
+                    Operation::Asset(asset) if transaction.asset_sync => asset.validate(&root)?,
+                    Operation::Asset(_) => return Err("恢复日志中的附件事务无效".into()),
                 }
             }
             if index
@@ -766,6 +793,7 @@ impl DiskLibrary {
             }
             fs::remove_file(&journal).map_err(error)?;
         }
+        assets::reap_stages(&root)?;
         let empty = Library {
             version: 1,
             folders: vec![Folder {
@@ -1001,6 +1029,7 @@ impl DiskLibrary {
                 path: relative.clone(),
                 read_only: false,
                 filename: None,
+                share: None,
             });
             match fs::read(&path) {
                 Ok(bytes) => {
@@ -1117,7 +1146,8 @@ impl DiskLibrary {
                 }
             }
         }
-        let mut operations = match assets { Some(sync) if intent == "sync" => assets::operations(&self.root, sync)?, Some(_) => return Err("附件只能随同步事务提交".into()), None => vec![] };
+        let mut asset_stage = assets::StageFiles::new(&self.root);
+        let mut operations = match assets { Some(sync) if intent == "sync" => assets::operations(&self.root, sync, &mut asset_stage, &self.data, &mut next)?, Some(_) => return Err("附件只能随同步事务提交".into()), None => vec![] };
         let generation = self.revision + 1;
         let committed_at = now() as u64;
         let mut occupied: HashSet<String> = HashSet::new();
@@ -1395,7 +1425,7 @@ impl DiskLibrary {
                         self.bytes.insert(note.id.clone(), bytes.clone());
                     }
                 }
-                Operation::Move { .. } => {}
+                Operation::Move { .. } | Operation::Asset(_) => {}
             }
             operation.cleanup(&self.root)?;
         }
@@ -1463,6 +1493,7 @@ impl DiskLibrary {
                     .into(),
                 read_only,
                 filename: None,
+                share: None,
             });
             count += 1;
         }

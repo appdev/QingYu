@@ -248,6 +248,7 @@ fn rescan(store: &mut DiskLibrary) -> Result<()> {
             updated_at: millis(meta.modified().map_err(error)?), title: Some(display_title(&filename)),
             pinned: old.is_some_and(|note| note.pinned), trashed: false, conflict_of: None,
             path: filename.clone(), filename: Some(filename), read_only: bad || meta.permissions().readonly(),
+            share: old.and_then(|note| note.share.clone()),
         });
     }
     notes.sort_by(|a, b| a.path.cmp(&b.path));
@@ -272,6 +273,78 @@ fn directory_owner(documents: &HashMap<String, Document>, path: &Path) -> Option
 fn focus(app: &tauri::AppHandle, label: &str) -> Result<()> {
     let window = app.get_webview_window(label).ok_or("文档窗口不存在")?;
     window.unminimize().map_err(error)?; window.show().map_err(error)?; window.set_focus().map_err(error)
+}
+
+// 还在等第一次显示的窗口。显示过一次就移除：之后窗口隐藏是用户关掉的，
+// 兜底和页面的通知都不能再把它弹出来。
+#[cfg(desktop)]
+static FIRST_SHOW: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(desktop)]
+fn wait_first_show(label: &str) {
+    if let Ok(mut labels) = FIRST_SHOW.lock() {
+        if !labels.iter().any(|item| item == label) { labels.push(label.to_owned()); }
+    }
+}
+
+#[cfg(desktop)]
+fn take_first_show(label: &str) -> bool {
+    let Ok(mut labels) = FIRST_SHOW.lock() else { return false };
+    let before = labels.len();
+    labels.retain(|item| item != label);
+    labels.len() != before
+}
+
+// 主窗口、设置窗口和独立窗口都先隐藏，等页面排好版再由前端调用 workspace_window_ready 显示，
+// 否则会先闪一下没套样式的原始页面。页面脚本出错时兜底，2 秒后照常显示。
+#[cfg(desktop)]
+pub(crate) fn show_when_ready(app: &tauri::AppHandle, label: &str) {
+    wait_first_show(label);
+    let (app, label) = (app.clone(), label.to_owned());
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        if take_first_show(&label) { let _ = focus(&app, &label); }
+    });
+}
+
+// WebKit 在窗口隐藏时不更新画面，直接显示会先贴出隐藏前画的旧内容。
+// macOS 上第一次调用先以透明度 0 显示，让 WebKit 画出当前页面；
+// 前端等两帧后再调用一次，这时才变为不透明。前端没有回来时 1 秒后自动显示。
+#[cfg(target_os = "macos")]
+fn set_opacity(window: &tauri::WebviewWindow, alpha: f64) {
+    let target = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Ok(window) = target.ns_window() {
+            unsafe { &*window.cast::<objc2_app_kit::NSWindow>() }.setAlphaValue(alpha);
+        }
+    });
+}
+
+#[tauri::command]
+pub fn workspace_window_ready(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<()> {
+    #[cfg(mobile)]
+    { let _ = (app, window); Ok(()) }
+    #[cfg(desktop)]
+    {
+        let label = window.label();
+        if !(label == "main" || label == "settings" || label.starts_with("document-")) { return Ok(()); }
+        if window.is_visible().map_err(error)? {
+            #[cfg(target_os = "macos")]
+            set_opacity(&window, 1.);
+            return Ok(());
+        }
+        if !take_first_show(label) { return Ok(()); }
+        #[cfg(target_os = "macos")]
+        {
+            set_opacity(&window, 0.);
+            let later = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                set_opacity(&later, 1.);
+            });
+        }
+        focus(&app, label)
+    }
 }
 
 #[tauri::command]
@@ -301,7 +374,7 @@ pub async fn workspace_open_note(app: tauri::AppHandle, window: tauri::WebviewWi
         notes.insert(label.clone(), NoteWindow { root, initial_note: note_id });
         drop(notes);
         let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html".into()))
-            .title(title).inner_size(720., 620.).min_inner_size(480., 360.);
+            .title(title).inner_size(720., 620.).min_inner_size(480., 360.).visible(false);
         #[cfg(target_os = "macos")]
         let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true)
             .traffic_light_position(tauri::LogicalPosition::new(18., 30.));
@@ -309,7 +382,8 @@ pub async fn workspace_open_note(app: tauri::AppHandle, window: tauri::WebviewWi
             state.notes.lock().map_err(error)?.remove(&label);
             return Err(error(reason));
         }
-        focus(&app, &label)
+        show_when_ready(&app, &label);
+        Ok(())
     }).await.map_err(error)?
 }
 
@@ -383,7 +457,7 @@ pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow,
         })?;
         state.documents.lock().map_err(error)?.insert(label.clone(), Document { store, pending: vec![], _watch: watch });
         let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App("index.html?document=1".into()))
-            .title(title).inner_size(1120., 780.).min_inner_size(360., 420.);
+            .title(title).inner_size(1120., 780.).min_inner_size(360., 420.).visible(false);
         if let Some(main) = app.config().app.windows.first() {
             if let (Some(width), Some(height)) = (main.min_width, main.min_height) {
                 builder = builder.min_inner_size(width, height);
@@ -392,7 +466,7 @@ pub async fn workspace_open(app: tauri::AppHandle, window: tauri::WebviewWindow,
         #[cfg(target_os = "macos")]
         let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true).traffic_light_position(tauri::LogicalPosition::new(18., 30.));
         if let Err(reason) = builder.build() { state.documents.lock().map_err(error)?.remove(&label); return Err(error(reason)); }
-        focus(&app, &label)?;
+        show_when_ready(&app, &label);
         Ok(Some(label))
     }).await.map_err(error)?
 }
@@ -517,6 +591,20 @@ pub fn workspace_reconcile(app: tauri::AppHandle, window: tauri::WebviewWindow, 
 
 #[cfg(test)]
 mod tests {
+    #[cfg(desktop)]
+    #[test]
+    fn shows_a_window_only_once_on_its_own() {
+        // 设置窗口刚显示就被关掉（隐藏）后，2 秒兜底不能再把它弹出来。
+        super::wait_first_show("settings-test");
+        assert!(super::take_first_show("settings-test"));
+        assert!(!super::take_first_show("settings-test"));
+        // 重新创建的窗口（如关闭后销毁再打开）重新等待一次。
+        super::wait_first_show("settings-test");
+        super::wait_first_show("settings-test");
+        assert!(super::take_first_show("settings-test"));
+        assert!(!super::take_first_show("settings-test"));
+    }
+
     use super::*;
     #[cfg(desktop)]
     #[test]

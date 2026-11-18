@@ -101,22 +101,6 @@ pub struct Anchor {
 }
 
 #[tauri::command]
-pub async fn prompt_folder_name(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
-    if window.label() != "main" {
-        return Err("请在主窗口创建文件夹".into());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        folder_dialog::name(window).await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        Err("当前平台使用应用内创建窗口".into())
-    }
-}
-
-#[tauri::command]
 pub fn link_applications(
     window: tauri::WebviewWindow,
     target: String,
@@ -165,11 +149,9 @@ pub(crate) use folder_dialog::{
 
 #[cfg(target_os = "macos")]
 mod folder_dialog {
-    use objc2::{MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{
-        NSAlert, NSAlertFirstButtonReturn, NSModalResponseOK, NSOpenPanel, NSTextField, NSWindow,
-    };
-    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL};
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSModalResponseOK, NSOpenPanel, NSWindow};
+    use objc2_foundation::{NSString, NSURL};
     use std::sync::mpsc::SyncSender;
     type Reply<T> = SyncSender<Result<T, String>>;
 
@@ -200,29 +182,6 @@ mod folder_dialog {
         })
         .await
         .map_err(|reason| reason.to_string())?
-    }
-
-    pub async fn name(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
-        sheet(window, |main, parent, send| {
-            let alert = NSAlert::new(main);
-            alert.setMessageText(&NSString::from_str("新建文件夹"));
-            alert.addButtonWithTitle(&NSString::from_str("添加"));
-            alert.addButtonWithTitle(&NSString::from_str("取消"));
-            let field = NSTextField::initWithFrame(
-                NSTextField::alloc(main),
-                NSRect::new(NSPoint::new(0., 0.), NSSize::new(320., 26.)),
-            );
-            field.setPlaceholderString(Some(&NSString::from_str("文件夹名称")));
-            alert.setAccessoryView(Some(&field));
-            alert.window().setInitialFirstResponder(Some(&field));
-            let completion = block2::RcBlock::new(move |response| {
-                let _ = send
-                    .send(Ok((response == NSAlertFirstButtonReturn)
-                        .then(|| field.stringValue().to_string())));
-            });
-            alert.beginSheetModalForWindow_completionHandler(parent, Some(&completion));
-        })
-        .await
     }
 
     pub async fn confirm_trash(window: tauri::WebviewWindow, name: String) -> Result<bool, String> {

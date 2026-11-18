@@ -460,6 +460,7 @@ async fn create(
             path: String::new(),
             read_only: false,
             filename: None,
+            share: None,
         });
         commit(store, next, "create")?;
         let mut response = document(find_note(store, &id)?, StatusCode::CREATED)?;

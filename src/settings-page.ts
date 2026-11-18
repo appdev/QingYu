@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { connectPreferences, remoteSync } from './settings-bridge';
 import { connectEditorHistoryMenu } from './editor-history-menu';
 import { mountSettings, type SettingsSection } from './settings-view';
+import { showWindowWhenPainted } from './window-ready';
 
 const root = document.querySelector<HTMLElement>('#settings-root')!;
 root.style.height = '100%';
@@ -18,3 +19,4 @@ try {
     if (event.key === 'Escape' || event.key.toLowerCase() === 'w' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void getCurrentWindow().close(); }
   });
 } catch { root.textContent = '无法打开设置，请关闭窗口后重试。'; }
+showWindowWhenPainted();

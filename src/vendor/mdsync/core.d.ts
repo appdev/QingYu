@@ -3,8 +3,10 @@ export type Head = { version: number; vaultId: string; snapshotId: string; paren
   deviceId: string; createdAt: number; files: Record<string, Entry>; [key: string]: unknown };
 export type State = { deviceId: string; deviceName?: string; vaultId: string | null; baseline: Head | null;
   hashCache: Record<string, unknown>; [key: string]: unknown };
-export type Comparison = { remote: Head | null; snapshot: { files: Record<string, Entry>; emptyFolders: string[] };
+export type Comparison = { remote: Head | null; snapshot: { files: Record<string, Entry>; emptyFolders: string[]; skipped: { path: string; reason: string }[] };
+  updatedCache: State['hashCache'];
   diff: { localChanges: { path: string }[]; remoteChanges: { path: string }[];
+    moves: { from: string; to: string; side: 'local' | 'remote' }[];
     converged: string[]; conflicts: { path: string; baselineHash: string | null; localHash: string; remoteHash: string }[] }; [key: string]: unknown };
 export type Request = { url: string; method: string; headers?: Record<string, string>; body?: ArrayBuffer };
 export type Response = { status: number; headers: Record<string, string>; arrayBuffer: ArrayBuffer; text: string; json: unknown };
@@ -24,6 +26,7 @@ export type Scope = { includes(path: string): boolean; canDescend(path: string):
   classify(path: string): string; isIgnoredByPattern(path: string): boolean; getCategory(path: string): null;
   isSettingsJson(path: string): boolean; loadsOnStartup(path: string): boolean; pluginIdOf(path: string): null };
 export type Adapter = { list(path: string): Promise<{ files: string[]; folders: string[] }>;
+  verifiedAsset?(path: string): Pick<Entry, 'hash' | 'size' | 'mtime'> | undefined;
   stat(path: string): Promise<{ type: 'file' | 'folder'; ctime: number; mtime: number; size: number } | null>;
   exists(path: string): Promise<boolean>; readBinary(path: string): Promise<ArrayBuffer>;
   writeBinary(path: string, bytes: ArrayBuffer): Promise<void>; read(path: string): Promise<string>;
@@ -38,6 +41,7 @@ export function compare(deps: Dependencies, knownRemote?: Head | null): Promise<
 export function pushPaths(deps: Dependencies, result: Comparison, paths: readonly string[]): Promise<Head>;
 export function pullPathsOp(deps: Dependencies, result: Comparison, paths: readonly string[], context: Context): Promise<{ touchedPaths: Set<string> }>;
 export function autoMergeOp(deps: Dependencies, result: Comparison, context: Context): Promise<{ touchedPaths: Set<string> }>;
+export function loadRemoteBytes(deps: { storage: Storage; key: CryptoKey }, hash: string, size?: number): Promise<Uint8Array | null>;
 export function loadRemoteText(deps: { storage: Storage; key: CryptoKey }, hash: string): Promise<string | null>;
 export function advanceSessionAfterPush(state: State, result: Comparison, head: Head, scope: Scope): State;
 export function advanceBaselineForPaths(previous: Head | null, head: Head, paths: ReadonlySet<string>, folders: readonly string[], scope: Scope): Head;

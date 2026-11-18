@@ -2,9 +2,28 @@ import UIKit
 import Tauri
 
 private struct OpenArgs: Decodable { let path: String; let mime: String }
+private struct ShareArgs: Decodable { let title: String; let text: String }
 class AttachmentsPlugin: Plugin, UIDocumentInteractionControllerDelegate {
     private var document: UIDocumentInteractionController?
     private weak var presenter: UIViewController?
+    @objc func shareText(_ invoke: Invoke) {
+        do {
+            let args = try invoke.parseArgs(ShareArgs.self)
+            DispatchQueue.main.async {
+                var controller = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap { $0.windows }.first { $0.isKeyWindow }?.rootViewController
+                while let presented = controller?.presentedViewController { controller = presented }
+                guard let controller = controller else { invoke.reject("当前窗口不可用"); return }
+                let share = UIActivityViewController(activityItems: [args.text], applicationActivities: nil)
+                share.setValue(args.title, forKey: "subject")
+                if let popover = share.popoverPresentationController {
+                    popover.sourceView = controller.view
+                    popover.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.maxY, width: 0, height: 0)
+                }
+                controller.present(share, animated: true) { invoke.resolve() }
+            }
+        } catch { invoke.reject("分享参数无效") }
+    }
+
     @objc func openFile(_ invoke: Invoke) {
         do {
             let args = try invoke.parseArgs(OpenArgs.self)

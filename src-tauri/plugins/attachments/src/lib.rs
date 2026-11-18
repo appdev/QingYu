@@ -24,6 +24,22 @@ pub fn init() -> TauriPlugin<tauri::Wry> {
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn share_text(app: tauri::AppHandle, title: String, text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<AttachmentHandle>()
+            .0
+            .run_mobile_plugin::<serde_json::Value>(
+                "shareText",
+                serde_json::json!({ "title": title, "text": text }),
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "无法打开系统分享".to_string())?
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub async fn open(
     app: tauri::AppHandle,
     path: std::path::PathBuf,

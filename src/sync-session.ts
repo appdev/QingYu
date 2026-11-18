@@ -1,15 +1,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Notebook } from './notebook';
 import { syncNotebook } from './sync';
-import { normalizeSettings, syncMode, type S3Connection, type S3Settings } from './sync-store';
+import { createStore, normalizeSettings, s3Defaults, syncMode, testS3Connection, validateS3Options, type S3Connection, type S3Settings } from './sync-store';
 import { setRequestHandler } from './vendor/mdsync/core';
+import { createAssetFetcher } from './asset-fetch';
+import { mobile } from './preferences';
 
-export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string };
+export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string; mode?: 'cloud' | 's3' };
 export interface SyncClient {
   load(): Promise<S3Settings>;
   save(settings: S3Settings): Promise<void>;
   flush(): Promise<void>;
   run(settings: S3Settings, accountId?: string): Promise<void>;
+  test(settings: S3Settings): Promise<void>;
   subscribe(listener: (status: SyncStatus) => void): () => void;
 }
 const profileKey = 'miaoyan-editor.s3-profile.v1';
@@ -21,14 +24,21 @@ const cloudErrors: Record<string, string> = {
   response_lost: '未收到账号服务的响应，请重试', temporarily_unavailable: '轻羽存储暂不可用，请重试',
   invalid_response: '轻羽返回的存储配置无效，请重试', rate_limited: '请求过于频繁，请稍后重试',
 };
+/** 账号状态导致的失败：未登录、登录过期、账号切换、套餐或邮箱未就绪。自动同步遇到这些时不提示。 */
+export const accountSyncNotices: ReadonlySet<string> = new Set(['signed_out', 'account_changed', 'subscription_required', 'email_unverified'].map(code => cloudErrors[code]));
 function profile(value: S3Settings): S3Settings {
   if (!value || fields.some(key => typeof value[key] !== 'string' || value[key].length > 4096 || /[\x00-\x1f\x7f-\x9f]/.test(value[key]))) throw new Error('连接字段无效');
   if (value.mode !== undefined && value.mode !== 'cloud' && value.mode !== 's3') throw new Error('存储方式无效');
-  const config = Object.fromEntries(fields.map(key => [key, value[key]])) as S3Settings;
+  const config: S3Settings = { endpoint: value.endpoint, bucket: value.bucket, region: value.region, prefix: value.prefix,
+    accessKeyId: value.accessKeyId, secretAccessKey: value.secretAccessKey };
   if (value.mode) config.mode = value.mode;
+  validateS3Options(value);
+  for (const key of ['timeout', 'tlsVerify', 'forcePathStyle', 'concurrency', 'assetDownload'] as const) if (value[key] !== undefined) Object.assign(config, { [key]: value[key] });
   return config;
 }
-export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>): SyncClient {
+export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>): SyncClient & {
+  fetchAsset(path: string): Promise<string | undefined>;
+} {
   let config: S3Settings = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'miaoyan/v1', accessKeyId: '', secretAccessKey: '' };
   try {
     const saved = JSON.parse(localStorage.getItem(profileKey) ?? '{}');
@@ -55,7 +65,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
       const switched = syncMode(config) !== syncMode(next);
       await invoke('sync_save_profile', { profile: next });
       config = next; hasSaved = true;
-      if (switched) publish({ message: '', error: false, lastSyncedAt: undefined, lastSyncedAccount: undefined });
+      if (switched) publish({ mode: syncMode(next), message: '', error: false, lastSyncedAt: undefined, lastSyncedAccount: undefined });
       // Native storage atomically saves the complete profile in the app's private config directory.
       try { localStorage.removeItem(profileKey); } catch { /* Legacy fields contain no credentials. */ }
     });
@@ -64,16 +74,66 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
   let status: SyncStatus = { busy: false, message: '', error: false };
   const listeners = new Set<(status: SyncStatus) => void>();
   function publish(change: Partial<SyncStatus>) { status = { ...status, ...change }; for (const listener of listeners) listener(status); }
+  async function connect(connection: S3Connection) {
+    const next = normalizeSettings(connection);
+    await invoke('sync_set_target', { endpoint: next.endpoint, bucket: next.bucket, prefix: next.prefix, forcePathStyle: next.forcePathStyle,
+      timeout: connection.timeout ?? s3Defaults.timeout, tlsVerify: connection.tlsVerify ?? s3Defaults.tlsVerify });
+    setRequestHandler(async request => {
+      const reply = await invoke<{ status: number; headers: Record<string, string>; body: number[] }>('sync_request', {
+        request: { url: request.url, method: request.method, headers: request.headers ?? {}, body: request.body ? Array.from(new Uint8Array(request.body)) : null },
+      });
+      const bytes = new Uint8Array(reply.body);
+      return { status: reply.status, headers: reply.headers, arrayBuffer: bytes.buffer, text: new TextDecoder().decode(bytes), json: {} };
+    });
+    return next;
+  }
+  function redact(error: unknown, connection: S3Connection) {
+    let message = error instanceof Error ? error.message : typeof error === 'string' ? error : '同步失败，请检查连接后重试';
+    for (const secret of [connection.accessKeyId, connection.secretAccessKey]) if (secret) {
+      for (const value of new Set([secret, encodeURIComponent(secret)])) message = message.replaceAll(value, '[已隐藏]');
+    }
+    return message;
+  }
+  const assets = createAssetFetcher(book, async target => {
+    if (status.busy) throw new Error('同步正在进行，请稍后下载附件');
+    await writes;
+    await load();
+    if (status.busy) throw new Error('同步正在进行，请稍后下载附件');
+    const connection = config;
+    const storage = createStore(normalizeSettings(connection));
+    if (syncMode(connection) !== 's3' || storage.identity() !== target) throw new Error('请使用原 S3 连接下载附件');
+    await connect(connection);
+    return storage;
+  });
   return {
+    fetchAsset: assets.fetchAsset,
     load: async () => { await writes.catch(() => {}); await load(); return { ...config }; },
     save,
     flush: () => writes,
     subscribe(listener) { listeners.add(listener); listener(status); return () => { listeners.delete(listener); }; },
+    async test(settings) {
+      if (status.busy) throw new Error('同步正在进行，请稍候');
+      publish({ busy: true, error: false, message: '正在测试 S3 连接…' });
+      try {
+        await assets.drain();
+        await writes;
+        await load();
+        if (syncMode(config) !== 's3') throw new Error('请先切换至 S3 同步');
+        const connection = profile(settings);
+        await connect(connection);
+        await testS3Connection(connection);
+        publish({ message: '连接测试成功：读取、写入、条件写入和删除均正常' });
+      } catch (error) {
+        const message = redact(error, settings);
+        publish({ error: true, message }); throw new Error(message);
+      } finally { publish({ busy: false }); }
+    },
     async run(settings, accountId) {
       if (status.busy) throw new Error('同步正在进行，请稍候');
       publish({ busy: true, error: false });
       let connection: S3Connection = settings;
       try {
+        await assets.drain();
         await writes.catch(() => {});
         await load();
         if (syncMode(config) !== (accountId ? 'cloud' : 's3')) throw new Error(accountId ? '请先切换至轻羽云存储' : '请先切换至 S3 同步');
@@ -86,17 +146,10 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
         } else {
           connection = profile(settings);
           await save({ ...connection, mode: undefined });
+          connection = { ...connection, assetDownload: connection.assetDownload ?? (mobile ? 'on-demand' : 'all') };
         }
-        const next = normalizeSettings(connection);
+        const next = await connect(connection);
         publish({ message: '正在连接 S3…' });
-        await invoke('sync_set_target', { endpoint: next.endpoint, bucket: next.bucket, prefix: next.prefix, forcePathStyle: next.forcePathStyle });
-        setRequestHandler(async request => {
-          const reply = await invoke<{ status: number; headers: Record<string, string>; body: number[] }>('sync_request', {
-            request: { url: request.url, method: request.method, headers: request.headers ?? {}, body: request.body ? Array.from(new Uint8Array(request.body)) : null },
-          });
-          const bytes = new Uint8Array(reply.body);
-          return { status: reply.status, headers: reply.headers, arrayBuffer: bytes.buffer, text: new TextDecoder().decode(bytes), json: {} };
-        });
         const beforeCommit = accountId ? async () => {
           await invoke('account_check_sync', { accountId });
           return prepare();
@@ -104,9 +157,8 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
         const result = await syncNotebook(book, next, message => publish({ message }), beforeCommit);
         refresh(); publish({ lastSyncedAt: Date.now(), lastSyncedAccount: accountId, message: `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
       } catch (error) {
-        let message = error instanceof Error ? error.message : typeof error === 'string' ? error : '同步失败，请检查连接后重试';
+        let message = redact(error, connection);
         if (accountId && Object.hasOwn(cloudErrors, message)) message = cloudErrors[message];
-        for (const secret of [connection.accessKeyId, connection.secretAccessKey]) if (secret) message = message.replaceAll(secret, '[已隐藏]');
         publish({ error: true, message });
         throw new Error(message);
       } finally { publish({ busy: false }); }

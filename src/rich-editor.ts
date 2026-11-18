@@ -2,7 +2,7 @@ import { defaultKeymap, historyKeymap, isolateHistory } from '@codemirror/comman
 import { autocompletion, closeCompletion } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
 import { EditorSelection, EditorState, Transaction, type ChangeSet } from '@codemirror/state';
-import { EditorView, drawSelection, keymap, tooltips } from '@codemirror/view';
+import { EditorView, drawSelection, keymap, placeholder, tooltips } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import {
   blocksPlugin, calloutPreviewPlugin, codeBlockPreviewPlugin, footnotePreviewPlugin,
@@ -159,8 +159,13 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
     noteLinkExists ? wikiLinkAvailability.of(noteLinkExists) : [],
     EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly),
     EditorView.lineWrapping, drawSelection(),
+    // 对应 Pinto 的 titleHintText：空笔记里提示第一行就是标题，只在光标在里面时显示（样式见 rich-editor.css）。
+    readOnly ? [] : placeholder('标题'),
     EditorView.contentAttributes.of({ 'aria-label': readOnly ? 'Markdown 预览' : '所见即所得编辑区', spellcheck: 'false', autocapitalize: 'off' }),
     editorFind,
+    EditorView.scrollMargins.of(view => ({
+      top: parseFloat(getComputedStyle(view.scrollDOM).scrollPaddingTop) || 0,
+    })),
     !readOnly && suggestionsHost ? [
       tooltips({ parent: suggestionsHost, position: 'absolute' }),
       EditorState.phrases.of({ Completions: '链接候选' }),

@@ -1,10 +1,6 @@
 use reqwest::{redirect::Policy, Client, Method, Url};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 const MAX_BYTES: usize = 68 * 1024 * 1024;
 
@@ -88,8 +84,7 @@ impl Target {
 
 #[derive(Default)]
 pub struct SyncHttp {
-    target: Mutex<Option<Target>>,
-    client: OnceLock<Result<Client, reqwest::Error>>,
+    target: Mutex<Option<(Target, Client)>>,
 }
 
 #[tauri::command]
@@ -100,6 +95,8 @@ pub fn sync_set_target(
     bucket: String,
     prefix: String,
     force_path_style: Option<bool>,
+    timeout: Option<u64>,
+    tls_verify: Option<bool>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("不允许的同步窗口".into());
@@ -110,8 +107,22 @@ pub fn sync_set_target(
         &prefix,
         force_path_style.unwrap_or(true),
     )?;
-    *state.target.lock().map_err(|_| "同步网络状态不可用")? = Some(target);
+    let client = client(timeout.unwrap_or(45), tls_verify.unwrap_or(true))?;
+    *state.target.lock().map_err(|_| "同步网络状态不可用")? = Some((target, client));
     Ok(())
+}
+
+fn client(timeout: u64, tls_verify: bool) -> Result<Client, String> {
+    if !(1..=300).contains(&timeout) {
+        return Err("超时需要为 1–300 秒的整数".into());
+    }
+    Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(timeout.min(15)))
+        .timeout(Duration::from_secs(timeout))
+        .tls_danger_accept_invalid_certs(!tls_verify)
+        .build()
+        .map_err(|_| "无法初始化同步网络".into())
 }
 
 #[derive(Deserialize)]
@@ -138,24 +149,13 @@ pub async fn sync_request(
     if window.label() != "main" {
         return Err("不允许的同步窗口".into());
     }
-    let target = state
+    let (target, client) = state
         .target
         .lock()
         .map_err(|_| "同步网络状态不可用")?
         .clone()
         .ok_or("请先配置同步目标")?;
-    let client = state
-        .client
-        .get_or_init(|| {
-            Client::builder()
-                .redirect(Policy::none())
-                .connect_timeout(Duration::from_secs(15))
-                .timeout(Duration::from_secs(45))
-                .build()
-        })
-        .as_ref()
-        .map_err(|_| "无法初始化同步网络")?;
-    perform(&target, client, request).await
+    perform(&target, &client, request).await
 }
 
 async fn perform(target: &Target, client: &Client, request: Request) -> Result<Response, String> {
@@ -193,10 +193,7 @@ async fn perform(target: &Target, client: &Client, request: Request) -> Result<R
     if let Some(body) = request.body {
         outgoing = outgoing.body(body);
     }
-    let mut response = outgoing
-        .send()
-        .await
-        .map_err(|_| "S3 网络请求失败，请检查网络与地址")?;
+    let mut response = outgoing.send().await.map_err(network_error)?;
     if response
         .content_length()
         .is_some_and(|size| size > MAX_BYTES as u64)
@@ -228,9 +225,28 @@ async fn perform(target: &Target, client: &Client, request: Request) -> Result<R
     })
 }
 
+fn network_error(error: reqwest::Error) -> String {
+    use std::error::Error;
+    let error = error.without_url();
+    let mut message = format!("S3 网络请求失败：{error}");
+    let mut cause = error.source();
+    while let Some(source) = cause {
+        message.push_str(&format!("\n{source}"));
+        cause = source.source();
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn validates_transport_options() {
+        assert!(client(0, true).is_err());
+        assert!(client(301, true).is_err());
+        assert!(client(299, true).is_ok());
+        assert!(client(45, false).is_ok());
+    }
     #[test]
     fn limits_requests_to_the_configured_namespace() {
         let target = Target::new("https://s3.example.test", "test", "miaoyan/v1", true).unwrap();

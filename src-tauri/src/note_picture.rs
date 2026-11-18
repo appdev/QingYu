@@ -10,6 +10,49 @@ pub struct PictureAnchor {
 }
 
 #[tauri::command]
+pub async fn note_share_text(
+    window: tauri::WebviewWindow,
+    title: String,
+    text: String,
+    anchor: PictureAnchor,
+) -> Result<(), String> {
+    if window.label() != "main"
+        && !crate::file_library::workspace::is_document(window.app_handle(), window.label())
+    {
+        return Err("请在编辑器中分享笔记".into());
+    }
+    if title.len() > 4096 || text.len() > 16 << 20 {
+        return Err("笔记过长，无法发送副本".into());
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = anchor;
+        return tauri_plugin_attachments::share_text(window.app_handle().clone(), title, text)
+            .await;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let owner = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let _ = send.send(mac::share_text(&owner, &text, anchor));
+            })
+            .map_err(|e| e.to_string())?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            receive.recv().map_err(|_| "无法打开系统分享".to_string())?
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "android", target_os = "ios")))]
+    {
+        let _ = (text, anchor);
+        Err("当前平台不支持系统分享，请复制为纯文本".into())
+    }
+}
+
+#[tauri::command]
 pub async fn note_picture_action(
     window: tauri::WebviewWindow,
     action: String,
@@ -149,6 +192,27 @@ mod mac {
                 .then_some(true)
                 .ok_or_else(|| "无法复制图片".into());
         }
+        let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or("无法读取 PNG")?;
+        let item = Retained::into_super(Retained::into_super(image));
+        let items = NSArray::from_retained_slice(&[item]);
+        show_picker(window, &items, anchor)?;
+        Ok(true)
+    }
+
+    pub fn share_text(
+        window: &tauri::WebviewWindow,
+        text: &str,
+        anchor: PictureAnchor,
+    ) -> Result<(), String> {
+        let item = Retained::into_super(Retained::into_super(NSString::from_str(text)));
+        show_picker(window, &NSArray::from_retained_slice(&[item]), anchor)
+    }
+
+    fn show_picker(
+        window: &tauri::WebviewWindow,
+        items: &NSArray<objc2::runtime::AnyObject>,
+        anchor: PictureAnchor,
+    ) -> Result<(), String> {
         let view = window.ns_view().map_err(|_| "编辑窗口不可用")?;
         if MainThreadMarker::new().is_none()
             || [anchor.x, anchor.y, anchor.width, anchor.height]
@@ -159,12 +223,9 @@ mod mac {
         }
         // The window owns the view while this main-thread callback runs.
         let view = unsafe { &*view.cast::<NSView>() };
-        let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or("无法读取 PNG")?;
-        let item = Retained::into_super(Retained::into_super(image));
-        let items = NSArray::from_retained_slice(&[item]);
-        // NSImage implements NSPasteboardWriting, the input expected by AppKit.
+        // NSImage and NSString implement NSPasteboardWriting, as required by AppKit.
         let picker = unsafe {
-            NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &items)
+            NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), items)
         };
         let y = if view.isFlipped() {
             anchor.y
@@ -180,6 +241,6 @@ mod mac {
             NSRectEdge::MaxY,
         );
         PICKER.with_borrow_mut(|slot| *slot = Some(picker));
-        Ok(true)
+        Ok(())
     }
 }

@@ -8,24 +8,26 @@ import { firstLocalImage, markdownBody, plainMarkdownLine } from './document-tex
 import { editorItemMove, moveEditorItem, type Format } from './format';
 import { inlineFormatIcons, openEditorFormatPanel } from './editor-format-panel';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
-import { Calendar, FileDown, FolderInput, FolderPlus, Pin, PinOff, Settings, SquarePen } from 'lucide';
+import { Calendar, FileDown, FolderInput, FolderPlus, Link as LinkIcon, Pin, PinOff, Settings, SquarePen } from 'lucide';
 import { createRichEditor, type RichEditor } from './rich-editor';
 import { webLinkPreview, webLinkThumbnail } from './web-link-preview';
-import { Notebook, noteTitle, type Note } from './notebook';
+import { isBlankNote, isShared, Notebook, noteTitle, type Note, type NoteShare } from './notebook';
+import { copyShareLink } from './mock-web-share';
 import { createSidebar } from './sidebar';
 import { changeNoteTextSize, noteTextSizeShortcut, preferences, settingsShortcut, native, mobile } from './preferences';
 import { connectPreferences, hostSync } from './settings-bridge';
 import { connectEditorHistoryMenu, connectMobileEditorHistory, refreshEditorHistory } from './editor-history-menu';
-import { createSyncSession } from './sync-session';
+import { accountSyncNotices, createSyncSession } from './sync-session';
 import { openSettings } from './open-settings';
 import { sidebarAccount } from './client-account';
 import { dailyNoteChoices } from './daily-note';
 import type { SettingsSection } from './settings-view';
-import { startAutoSync } from './auto-sync';
+import { connectCloudAutoSync, startAutoSync } from './auto-sync';
 import { keepEditorFocusForTouchButtons, keepPanelTargetVisible, keepMobileViewportAtTop, revealCaret } from './editor-viewport';
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { showWindowWhenPainted } from './window-ready';
 import { assetBase, attachmentMarkdown, attachmentUrl, openAttachment } from './attachments';
 import { MAX_ASSET_BYTES, MAX_ASSETS_TOTAL } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
@@ -33,6 +35,7 @@ import { isServerLibrary, offerServerDrafts } from './server-library';
 import { popupMenu, popupMenuOpen } from './popup-menu';
 import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink } from './note-links';
 import { createNoteRelationsFooter } from './editor-note-relations';
+import { hostMenuBar } from './menu-bar-host';
 import { isLocalAsset } from './server-assets';
 import type { PictureRange, PictureRequest } from './note-picture';
 
@@ -40,10 +43,20 @@ await requireWebSession();
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const workspace = $('#workspace');
+// 对照 Pinto ShareLinkChrome：已分享的笔记在正文右上角显示「已分享」，点按复制链接。
+const shareMarker = document.createElement('button');
+shareMarker.type = 'button'; shareMarker.id = 'note-share-marker'; shareMarker.hidden = true;
+shareMarker.title = '获得链接的人都可查看这篇笔记。点按可复制链接。'; shareMarker.ariaLabel = '已分享，复制链接';
+shareMarker.append(createLucideIcon(document, LinkIcon, ''), '已分享');
+shareMarker.onclick = () => { const url = notebook.current?.share?.url; if (url) void copyShareLink(url); };
+$('.titlebar').append(shareMarker);
 document.documentElement.dataset.platform = native && /Mac/.test(navigator.platform) ? 'macos' : 'other';
 const saveStatus = $('#save-status');
+const accountStatus = document.querySelector<HTMLElement>('.sidebar-account-status');
 function setStatus(message: string, error = false) {
   saveStatus.textContent = message;
+  // 同步进度以一行小字显示在侧栏账户名下面，不再弹出遮挡内容的提示框。
+  if (accountStatus) accountStatus.textContent = message;
   document.body.dataset.statusError = String(error);
 }
 const windowLabel = native ? getCurrentWindow().label : 'main';
@@ -106,14 +119,37 @@ $('#sync-button').hidden = documentWindow || serverLibrary;
 syncSession.subscribe(status => {
   syncBusy = status.busy;
   const button = $('#sync-button');
-  button.dataset.state = status.busy ? 'syncing' : status.error ? 'error' : status.message ? 'synced' : 'idle';
+  // 未登录、账号未就绪不算同步出错，按钮不显示红点。
+  const failed = status.error && !accountSyncNotices.has(status.message);
+  button.dataset.state = status.busy ? 'syncing' : failed ? 'error' : status.message && !status.error ? 'synced' : 'idle';
   const label = status.busy ? '正在同步…' : status.message || '存储与同步';
   button.title = `${label}\n点击查看同步设置`;
   button.setAttribute('aria-label', label);
   $('#app-shell').inert = status.busy || document.body.dataset.libraryBusy === 'true';
   document.body.dataset.syncBusy = String(status.busy);
   if (status.busy) setStatus(status.message || '正在同步，请稍候…');
+  showSyncState(status, failed);
 });
+// 侧栏账户行右侧的同步状态：同步中转圈，出错留一个红点；鼠标悬停账户行可看到状态。
+// 同步进行时界面不可操作，悬停不生效，这时进度直接写在账户名下面。
+const syncTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
+const syncDay = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' });
+function showSyncState(status: { busy: boolean; message: string; lastSyncedAt?: number }, failed: boolean) {
+  const account = document.querySelector<HTMLElement>('#sidebar-account');
+  const indicator = account?.querySelector<HTMLElement>('.sidebar-account-spinner');
+  if (!account || !indicator) return;
+  indicator.dataset.state = status.busy ? 'syncing' : failed ? 'error' : 'idle';
+  let tip = '';
+  if (status.busy) tip = `正在同步：${status.message || '请稍候…'}`;
+  else if (failed) tip = `同步失败：${status.message}`;
+  else if (status.lastSyncedAt) {
+    const at = new Date(status.lastSyncedAt);
+    const today = at.toDateString() === new Date().toDateString();
+    tip = `上次同步：${today ? '今天' : syncDay.format(at)} ${syncTime.format(at)}`;
+  }
+  if (tip) account.title = tip;
+  else account.removeAttribute('title');
+}
 document.addEventListener('keydown', event => { if ((syncBusy || document.body.dataset.libraryBusy === 'true') && !(event.target instanceof Element && event.target.closest('.settings-inline')) && !settingsShortcut(event)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
 function showSettings(section?: SettingsSection) {
   return openSettings(syncSession, section, () => dailyNoteChoices(notebook.data));
@@ -180,6 +216,7 @@ const noteRelations = createNoteRelationsFooter({
 
 const richEditor = createRichEditor($('#rich-editor'), () => {
   refreshTitle();
+  updateCompose();
   try { notebook.stageDraft(sourceForSave()); }
   catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
   if (document.body.dataset.statusError !== 'true') setStatus('正在保留草稿…');
@@ -307,6 +344,24 @@ function showCurrentNote(selected: boolean, fromHistory?: number) {
   }
   updateHistoryButtons();
   refreshTitle();
+  updateShareMarker();
+  updateCompose();
+}
+function updateShareMarker() {
+  const note = showingNote && !notebook.loadError ? notebook.current : undefined;
+  shareMarker.hidden = !note || !isShared(note) || !note.share?.url;
+}
+
+function blankNote() {
+  return showingNote && !notebook.loadError && isBlankNote(notebook.current, sourceForSave());
+}
+// 对应 Pinto 的 ListCompose：空白新笔记开着时桌面上的新建按钮变灰，再建只会多一篇空白笔记。
+function updateCompose() {
+  if (mobile) return;
+  const compose = $<HTMLButtonElement>('#new-note-button'), off = blankNote();
+  if (compose.disabled === off) return;
+  compose.disabled = off;
+  compose.title = off ? '这篇新笔记还是空的' : '新建笔记（⌘N）';
 }
 
 async function selectNote(id: string | null, fromHistory?: number) {
@@ -414,7 +469,11 @@ function pictureRequest(note: Note, source: string, selection?: PictureRange): P
 function shareNote(anchor: HTMLElement, note: Note, source = note.source, selection?: PictureRange) {
   const text = markdownBody(source).body.split('\n').map(plainMarkdownLine).join('\n');
   const picture = pictureRequest(note, source, selection);
-  showShare(anchor, picture?.title ?? noteTitle({ ...note, source }), text, message => setStatus(message, true), picture);
+  // 发布或停止后的状态写进这篇笔记的元数据，列表随之刷新分享标记。
+  const book = notebook, id = note.id;
+  const shareStore = { get: () => book.data.notes.find(other => other.id === id)?.share,
+    set: (share: NoteShare) => book.setShare(id, share).then(() => { if (notebook === book) { sidebar?.refresh(); updateShareMarker(); } }) };
+  showShare(anchor, picture?.title ?? noteTitle({ ...note, source }), text, message => setStatus(message, true), picture, JSON.stringify([notebook.root, note.id]), shareStore);
 }
 $('#share-button').onclick = event => {
   shareNote(event.currentTarget as HTMLElement, notebook.current, sourceForSave(), richEditor.pictureSelection());
@@ -709,7 +768,6 @@ workspace.addEventListener('paste', event => { if (!event.clipboardData?.files.l
 // Toolbar presses must not dismiss the keyboard or move the editor selection.
 mountGlassToolbar($('.actions'));
 if (!mobile) mountGlassToolbar($('.notes-navigation'));
-mountGlassButton($<HTMLButtonElement>('#new-empty-note'));
 if (mobile) mountGlassButton($<HTMLButtonElement>('#new-note-button'));
 for (const bar of [$('.actions'), menu, mobileTools]) bar.addEventListener('pointerdown', event => {
   if ((event.target as HTMLElement).closest('button')) event.preventDefault();
@@ -749,7 +807,7 @@ function toggleQuickOpen() {
     library: notebook.data,
     commands() {
       const rows: QuickCommand[] = [
-        { title: '新建笔记', icon: SquarePen, shortcut: '⌘N', keywords: ['new note', 'create'], run: () => $('#new-note-button').click() },
+        { title: '新建笔记', icon: SquarePen, shortcut: '⌘N', keywords: ['new note', 'create'], run: () => { const compose = $<HTMLButtonElement>('#new-note-button'); if (compose.disabled) focusEditor(); else compose.click(); } },
         { title: '今日笔记', icon: Calendar, shortcut: '⌘T', keywords: ['today', 'daily'], run: () => { void openTodayNote(); } },
         { title: '新建文件夹', icon: FolderPlus, shortcut: '⇧⌘N', keywords: ['new folder'], run: () => $('#new-folder-button').click() },
       ];
@@ -911,16 +969,18 @@ if (mobile) {
 
 window.addEventListener('native-keyboard', event => { nativeKeyboard = Boolean((event as CustomEvent).detail); updateViewport(); });
 document.documentElement.toggleAttribute('data-web', !native);
-if (document.documentElement.dataset.platform === 'macos' && !mobile && !documentWindow) {
-  $('#app-shell').dataset.macSidebarFoot = '';
+if ((mobile || document.documentElement.dataset.platform === 'macos') && !documentWindow) {
+  if (!mobile) $('#app-shell').dataset.macSidebarFoot = '';
   const account = $<HTMLButtonElement>('#sidebar-account');
-  account.onclick = () => { void showSettings('account').catch(() => setStatus('无法打开账户设置', true)); };
-  const refreshAccount = sidebarAccount(account);
-  window.addEventListener('focus', refreshAccount);
-  void refreshAccount();
+  account.onclick = () => { void showSettings(mobile ? undefined : 'account').catch(() => setStatus('无法打开设置', true)); };
+  if (native) {
+    const refreshAccount = sidebarAccount(account);
+    window.addEventListener('focus', refreshAccount);
+    void refreshAccount();
+  }
 }
 sidebar = createSidebar(() => notebook, {
-  select: selectNote, create: createNote, openToday: openTodayNote, focusEditor, save: () => saveDraft(true),
+  select: selectNote, create: createNote, openToday: openTodayNote, focusEditor, blankNote, save: () => saveDraft(true),
   share: shareNote,
   quickOpen: toggleQuickOpen,
   thumbnail(note) {
@@ -929,7 +989,7 @@ sidebar = createSidebar(() => notebook, {
   },
   noteWindow,
   openNoteWindow: native && desktop && !documentWindow && !notebook.loadError ? id => invoke('workspace_open_note', { noteId: id }) : undefined,
-  libraryChanged: richEditor.refreshNoteLinks,
+  libraryChanged: () => { richEditor.refreshNoteLinks(); updateShareMarker(); },
   reload: () => showCurrentNote(Boolean(notebook.current)), status: setStatus, error: message => setStatus(message, true),
 }, mobile);
 showCurrentNote(showingNote);
@@ -939,6 +999,7 @@ if (!notebook.loadError) {
 }
 refreshTitle();
 updateViewport();
+if (native && desktop) showWindowWhenPainted();
 watchWebSession(async expired => {
   if (expired && notebook.server) {
     if (richEditor.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true') return false;
@@ -1027,7 +1088,10 @@ if ('__TAURI_INTERNALS__' in window) {
       error: message => setStatus(message, true),
     });
   }
-  if (!documentWindow) autoSync = startAutoSync(syncSession, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile, preferences);
+  if (!documentWindow) {
+    await connectCloudAutoSync(syncSession, preferences, async () => { await autoSync?.sync(); }, message => setStatus(message, true)).catch(() => setStatus('无法监听账号同步状态', true));
+    autoSync = startAutoSync(syncSession, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile, preferences);
+  }
 }
 window.addEventListener('preferences-applied', richEditor.requestMeasure);
 window.addEventListener('settings-error', event => setStatus((event as CustomEvent<string>).detail, true));
@@ -1055,3 +1119,24 @@ else void connectEditorHistoryMenu({
   },
 }).catch(console.warn);
 if (!documentWindow) void hostSync(syncSession).catch(() => setStatus('无法连接同步设置', true));
+// 菜单栏面板的新建和打开都在这里做，和侧栏、编辑器走同一套保存流程。
+if (native && desktop && !documentWindow) void hostMenuBar(() => notebook, {
+  blocked() {
+    if (notebook.loadError) return '笔记库还没打开';
+    if (notebook.external) return '请回到笔记库后再试';
+    if (syncBusy || document.body.dataset.libraryBusy === 'true') return '正在同步或整理笔记库，请稍后再试';
+  },
+  async create(title, source) {
+    if (!await saveDraft(true)) throw new Error('当前笔记还没保存好，请稍后再试');
+    await notebook.createNote(notebook.data.folders[0].id, title);
+    const id = notebook.data.activeId;
+    await notebook.save(source, id);
+    showCurrentNote(true);
+    sidebar?.revealCurrent();
+    return { id, title };
+  },
+  async open(id) {
+    if (!await selectNote(id)) throw new Error('无法打开这篇笔记');
+    sidebar?.revealCurrent();
+  },
+}).catch(console.warn);

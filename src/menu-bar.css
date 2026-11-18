@@ -1,0 +1,41 @@
+/* 菜单栏面板，尺寸照 Pinto 的 MenuBarPanel：宽 320，输入行 44，底栏 36，列表最高 440。 */
+.menu-bar-page { background: var(--paper); color: var(--ink); font: 13px var(--font); user-select: none; -webkit-user-select: none; }
+/* macOS 上窗口本身是 Popover 磨砂材质，html 和 body 都不铺底色（主题默认给 :root 铺了纸色）。 */
+:root[data-platform='macos'][data-menu-bar], :root[data-platform='macos'][data-menu-bar] body { background: transparent; }
+.menu-bar { flex: none; display: flex; flex-direction: column; width: 100%; }
+
+.menu-bar-field { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 14px; flex: none; }
+.menu-bar-field svg { width: 16px; height: 16px; flex: none; color: var(--muted); stroke-width: 1.7; }
+.menu-bar-field input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; color: var(--ink); caret-color: var(--brand); font: 14px var(--font); user-select: text; -webkit-user-select: text; }
+.menu-bar-field input::placeholder { color: var(--muted); }
+
+.menu-bar-divider { height: 1px; flex: none; background: var(--line); }
+
+.menu-bar-list { max-height: 440px; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; overscroll-behavior: contain; }
+.menu-bar-header { margin: 0; padding: 8px 8px 2px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.menu-bar-empty { margin: 0; padding: 24px 8px; color: var(--muted); text-align: center; }
+.menu-bar-error { margin: 0; padding: 8px; color: var(--error); }
+
+.menu-bar-row { display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; cursor: default; }
+.menu-bar-row:hover { background: var(--control-fill); }
+.menu-bar-row[aria-selected='true'] { background: var(--selection); }
+.menu-bar-row:focus-visible { outline: none; }
+.menu-bar-title { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 13px; font-weight: 600; }
+.menu-bar-title span, .menu-bar-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-bar-title svg { width: 10px; height: 10px; flex: none; color: var(--muted); fill: currentColor; }
+.menu-bar-summary { color: var(--muted); font-size: 12px; }
+
+/* 「新建笔记“…”」和「已保存“…”」：一行 32px，左边 16px 的圆形图标。 */
+.menu-bar-action { flex-direction: row; align-items: center; gap: 10px; height: 32px; padding: 0 8px; }
+.menu-bar-action > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-bar-action svg { width: 16px; height: 16px; flex: none; }
+.menu-bar-action .menu-bar-create-icon { color: var(--brand); }
+.menu-bar-action kbd { color: var(--muted); font: inherit; }
+.menu-bar-saved { cursor: default; }
+.menu-bar-saved:hover { background: transparent; }
+.menu-bar-saved svg { color: rgb(var(--alert-tip-rgb)); }
+
+.menu-bar-footer { display: flex; align-items: center; gap: 4px; height: 36px; padding: 0 10px; flex: none; }
+/* 底栏是 Pinto 的 quiet 文字按钮（style.css 的 .quiet-button），设置是只有图标的同款。 */
+.menu-bar-footer .menu-bar-settings { width: 28px; padding: 0; margin-left: auto; }
+.menu-bar-footer .menu-bar-settings svg { width: 15px; height: 15px; stroke-width: 1.7; }

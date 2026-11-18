@@ -10,7 +10,7 @@ import { groupNotes, noteListDate, type Note } from '../src/notebook';
 import type { SyncClient } from '../src/sync-session';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
-const sync: SyncClient = { load: async () => ({ endpoint: '', bucket: '', region: '', prefix: '', accessKeyId: '', secretAccessKey: '' }), save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
+const sync: SyncClient = { load: async () => ({ endpoint: '', bucket: '', region: '', prefix: '', accessKeyId: '', secretAccessKey: '' }), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
 beforeEach(() => { localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
 
 it('persists all six appearance themes, updates rendering tokens and restores the default palette', async () => {
@@ -164,20 +164,31 @@ it('shows the parent of the current desktop settings page independently of navig
   view.destroy();
 });
 
-it('shows sharing tabs and the lock panel with unavailable operations disabled and no publishing action', () => {
+it('shows sharing tabs with mock web publishing and keeps unavailable lock operations disabled', () => {
   Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value() {} });
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.open = true; } });
   const anchor = document.createElement('button'); document.body.append(anchor);
   showShare(anchor, '<unsafe>', '<script>not markup</script>', vi.fn());
   const panel = document.querySelector('.share-popover')!;
-  (panel.querySelectorAll<HTMLButtonElement>('[role=tab]')[0]).click();
-  expect(panel.querySelector<HTMLSelectElement>('select')!.disabled).toBe(true);
-  expect(panel.querySelector<HTMLButtonElement>('.primary-button')!.disabled).toBe(true);
-  (panel.querySelectorAll<HTMLButtonElement>('[role=tab]')[2]).click();
+  const tabs = [...panel.querySelectorAll<HTMLButtonElement>('[role=tab]')];
+  expect(tabs.map(tab => tab.textContent)).toEqual(['发送副本', '网页', '图片']);
+  expect(panel.textContent).not.toMatch(/协作|邀请成员|通过链接加入/);
+  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送副本');
+  expect(panel.querySelector<HTMLButtonElement>('.share-copy')!.disabled).toBe(false);
+  tabs[1].click();
   expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('网页');
   expect(panel.querySelector('strong')!.textContent).toBe('<unsafe>');
   expect(panel.querySelector('script')).toBeNull();
-  expect(panel.querySelector<HTMLButtonElement>('.primary-button')!.disabled).toBe(true);
+  expect(panel.querySelector<HTMLButtonElement>('.primary-button')!.disabled).toBe(false);
+  expect(panel.textContent).toContain('模拟测试');
+  tabs[2].click();
+  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('图片');
+  expect(panel.querySelector('[aria-label="图片背景"]')).not.toBeNull();
+  expect([...panel.querySelectorAll('.share-actions button')].map(button => button.textContent)).toEqual(['复制图片', '保存…', '分享…']);
+  tabs[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送副本');
+  tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('图片');
   showLockNotePanel();
   const lock = document.querySelector('.reference-lock')!;
   expect(lock.getAttribute('aria-label')).toBe('设置密码');

@@ -2,20 +2,48 @@ import { noteText, noteTitle } from './document-text';
 import { dailyFolderName, dailyNoteId, dailyTitle, findDailyNote, type DailyNoteSettings } from './daily-note';
 import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
-import type { Asset, AssetSync } from './sync-files';
+import type { AssetPlaceholders, AssetStat, AssetSync, StagedAsset } from './sync-files';
 import { ServerLibrary, type ServerSnapshot } from './server-library';
 
 export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
 export type Folder = { id: string; name: string; path?: string };
-export type Note = { id: string; folderId: string; source: string; createdAt: number; updatedAt: number; conflictOf?: string; title?: string; pinned?: boolean; trashed?: boolean; path?: string; filename?: string; readOnly?: boolean };
+// 分享状态只记在元数据里；没有 share 等同于未分享。
+export type NoteShare = { status: 'shared' | 'unshared'; url?: string };
+export type Note = { id: string; folderId: string; source: string; createdAt: number; updatedAt: number; conflictOf?: string; title?: string; pinned?: boolean; trashed?: boolean; path?: string; filename?: string; readOnly?: boolean; share?: NoteShare };
+
+/** 还没写过一个字的新笔记：正文完全为空、不在废纸篓、可以编辑。对应 Pinto 的 ListCompose.isOff。 */
+export function isBlankNote(note: Note | undefined, source = note?.source ?? '') {
+  return Boolean(note) && !note!.trashed && !note!.readOnly && source === '';
+}
+// 和 Pinto 一样，废纸篓里的笔记不显示分享标记。
+export const isShared = (note: Pick<Note, 'share' | 'trashed'>) => note.share?.status === 'shared' && !note.trashed;
+export function validShare(share: unknown): share is NoteShare {
+  if (!share || typeof share !== 'object') return false;
+  const { status, url } = share as NoteShare;
+  if (status !== 'shared' && status !== 'unshared') return false;
+  if (url === undefined) return true;
+  if (typeof url !== 'string' || url.length > 2048) return false;
+  try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
+}
 export { noteTitle } from './document-text';
-export type Checkpoint = { version: 1; target: string; state: State };
+export type Checkpoint = { target: string; state: State } & ({ version: 1 } | {
+  version: 2; placeholderCount: number; placeholderDigest?: string;
+});
 export type Library = { version: 1; folders: Folder[]; notes: Note[]; activeId: string; sync?: Checkpoint };
 export type EditorBuffer = { noteId: string; source: string };
 export type NoteVersion = { id: string; updatedAt: number };
 type FileSnapshot = { library: Library; root: string; revision: number };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
+
+function encodeAsset(bytes: Uint8Array) {
+  const encoded: string[] = [];
+  const chunkSize = 3 * 8192;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    encoded.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))));
+  }
+  return encoded.join('');
+}
 
 function initialLibrary(source: string): Library {
   const now = Date.now(), id = crypto.randomUUID();
@@ -36,12 +64,14 @@ export function validLibrary(value: unknown): value is Library {
         !Number.isFinite(note.createdAt) || !Number.isFinite(note.updatedAt) || !Number.isFinite(new Date(note.createdAt).getTime()) || !Number.isFinite(new Date(note.updatedAt).getTime()) ||
         (note.conflictOf !== undefined && (typeof note.conflictOf !== 'string' || !note.conflictOf)) ||
         (note.title !== undefined && (typeof note.title !== 'string' || !note.title.trim() || note.title.length > 500 || /[\r\n\0]/.test(note.title))) ||
-        (note.pinned !== undefined && typeof note.pinned !== 'boolean') || (note.trashed !== undefined && typeof note.trashed !== 'boolean')) return false;
+        (note.pinned !== undefined && typeof note.pinned !== 'boolean') || (note.trashed !== undefined && typeof note.trashed !== 'boolean') ||
+        (note.share !== undefined && !validShare(note.share))) return false;
     notes.add(note.id);
   }
   if (data.sync !== undefined) {
     const sync = data.sync, state = sync?.state, base = state?.baseline;
-    if (!sync || sync.version !== 1 || typeof sync.target !== 'string' || !sync.target || !state || typeof state.deviceId !== 'string' ||
+    if (!sync || (sync.version !== 1 && (sync.version !== 2 || !Number.isInteger(sync.placeholderCount) || sync.placeholderCount < 1 || sync.placeholderCount > 30_000)) ||
+        typeof sync.target !== 'string' || !sync.target || !state || typeof state.deviceId !== 'string' ||
         !state.deviceId || (state.vaultId !== null && typeof state.vaultId !== 'string') || !state.hashCache || typeof state.hashCache !== 'object' ||
         (base !== null && (!base || base.version !== 3 || typeof base.snapshotId !== 'string' || typeof base.vaultId !== 'string' || !base.files || typeof base.files !== 'object' ||
           Object.values(base.files).some(entry => !entry || !/^[a-f0-9]{64}$/.test(entry.hash) || !Number.isFinite(entry.size) || entry.size < 0 || !Number.isFinite(entry.mtime))))) return false;
@@ -256,7 +286,7 @@ export class Notebook {
     if (this.data.folders.some(other => other.id !== folderId && (other.path ?? other.name).toLocaleLowerCase() === to.toLocaleLowerCase())) throw new Error('已有同名文件夹');
     await this.commit({ ...this.data, folders: this.data.folders.map(other => other.id === folderId ? { ...other, name, path: to } : other.path?.startsWith(from + '/') ? { ...other, path: to + other.path.slice(from.length) } : other) });
   }); }
-  private async updateNote(id: string, patch: Partial<Pick<Note, 'title' | 'pinned' | 'trashed' | 'folderId'>>) {
+  private async updateNote(id: string, patch: Partial<Pick<Note, 'title' | 'pinned' | 'trashed' | 'folderId' | 'share'>>) {
     if (this.external && ('trashed' in patch || 'folderId' in patch)) throw new Error('临时文件模式不移动或删除文件，请在文件管理器中操作');
     if (!this.data.notes.some(note => note.id === id)) throw new Error('笔记不存在');
     await this.commit({ ...this.data, notes: this.data.notes.map(note => note.id === id ? { ...note, ...patch } : note) });
@@ -265,6 +295,10 @@ export class Notebook {
     title = title.trim();
     if (!title || title.length > 500 || /[\r\n\0]/.test(title)) throw new Error('文件名称无效，不能包含换行或为空');
     await this.updateNote(id, { title });
+  }); }
+  setShare(id: string, share: NoteShare) { return this.run(async () => {
+    if (!validShare(share)) throw new Error('分享链接无效');
+    await this.updateNote(id, { share });
   }); }
   togglePin(id: string) { return this.run(async () => {
     const note = this.data.notes.find(note => note.id === id);
@@ -287,16 +321,45 @@ export class Notebook {
     const now = Date.now(), copy: Note = { id: crypto.randomUUID(), folderId: note.folderId, title, source: note.source, createdAt: now, updatedAt: now };
     await this.commit({ ...this.data, notes: [copy, ...this.data.notes], activeId: copy.id }, this.disk || this.remote ? `duplicate:${id}` : 'duplicate');
   }); }
-  async readSyncAssets(): Promise<Asset[]> {
+  async readSyncAssets(): Promise<AssetStat[]> {
     if (this.external) throw new Error('外部文件不在 S3 同步范围内');
     if (this.remote) throw new Error('Web 使用服务器笔记库，S3 同步请在桌面端操作');
     if (!this.disk) return [];
     return invoke('library_sync_assets', { root: this.disk.root, revision: this.disk.revision });
   }
-  commitSync(library: Library, checkpoint: Checkpoint, expected: string, assets?: AssetSync) { return this.run(async () => {
+  async readAssetPlaceholders(): Promise<AssetPlaceholders> {
+    if (!this.disk) return {};
+    return invoke('library_asset_placeholders', { root: this.disk.root, revision: this.disk.revision });
+  }
+  async readAsset(asset: AssetStat, location: { root: string | undefined; revision: number }): Promise<Uint8Array> {
+    const bytes = await invoke<ArrayBuffer | number[]>('library_read_asset', { ...location, asset });
+    return new Uint8Array(bytes);
+  }
+  stageAsset(batch: string, bytes: Uint8Array, location: { root: string | undefined; revision: number }): Promise<StagedAsset> {
+    return invoke('library_stage_asset', { ...location, batch, encoded: encodeAsset(bytes) });
+  }
+  async readStagedAsset(batch: string, asset: StagedAsset): Promise<Uint8Array> {
+    const bytes = await invoke<ArrayBuffer | number[]>('library_read_staged_asset', { batch, asset });
+    return new Uint8Array(bytes);
+  }
+  releaseAssetStage(batch: string): Promise<void> {
+    return invoke('library_release_asset_stage', { batch });
+  }
+  materializeAsset(root: string, path: string, hash: string, bytes: Uint8Array) { return this.run(async () => {
+    if (!this.disk || this.external || this.disk.root !== root) throw new Error('笔记库已切换，请重新下载附件');
+    this.adopt(await invoke<FileSnapshot>('library_materialize_asset', {
+      root, revision: this.disk.revision, path, hash, encoded: encodeAsset(bytes),
+    }));
+  }); }
+  removeAssetPlaceholder(root: string, path: string, hash: string) { return this.run(async () => {
+    if (!this.disk || this.external || this.disk.root !== root) throw new Error('笔记库已切换');
+    this.adopt(await invoke<FileSnapshot>('library_delete_asset_placeholder', { root, revision: this.disk.revision, path, hash }));
+  }); }
+  commitSync(library: Library, checkpoint: Checkpoint, expected: string, assets?: AssetSync,
+    location = { root: this.root, revision: this.assetRevision }) { return this.run(async () => {
     if (this.external) throw new Error('外部文件不在 S3 同步范围内');
     if (this.remote) throw new Error('Web 使用服务器笔记库，S3 同步请在桌面端操作');
-    if (JSON.stringify(this.data) !== expected) throw new Error('同步期间本机笔记发生变化，已保留新内容，请再次同步');
+    if (this.root !== location.root || this.assetRevision !== location.revision || JSON.stringify(this.data) !== expected) throw new Error('同步期间本机笔记发生变化，已保留新内容，请再次同步');
     const next = { ...library, sync: checkpoint };
     if (!validLibrary(next)) throw new Error('同步结果格式无效，未覆盖本机笔记');
     await this.commit(next, 'sync', assets);

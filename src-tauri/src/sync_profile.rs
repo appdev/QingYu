@@ -14,6 +14,13 @@ enum Mode {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum AssetDownload {
+    All,
+    OnDemand,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Profile {
     endpoint: String,
@@ -24,6 +31,16 @@ pub struct Profile {
     secret_access_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<Mode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tls_verify: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    force_path_style: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    concurrency: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset_download: Option<AssetDownload>,
 }
 
 impl Profile {
@@ -41,6 +58,15 @@ impl Profile {
         .any(|value| value.len() > 4096 || value.chars().any(char::is_control))
         {
             return Err("连接字段过长或包含控制字符".into());
+        }
+        if self
+            .timeout
+            .is_some_and(|value| !(1..=300).contains(&value))
+            || self
+                .concurrency
+                .is_some_and(|value| !(1..=16).contains(&value))
+        {
+            return Err("超时或并发请求数超出范围".into());
         }
         Ok(())
     }
@@ -157,12 +183,26 @@ mod tests {
             access_key_id: "synthetic-id".into(),
             secret_access_key: "synthetic-secret".into(),
             mode: None,
+            timeout: Some(299),
+            tls_verify: Some(true),
+            force_path_style: Some(false),
+            concurrency: Some(16),
+            asset_download: Some(AssetDownload::OnDemand),
         };
         save(&path, &profile).unwrap();
         assert_eq!(
             load(&path).unwrap().unwrap().secret_access_key,
             profile.secret_access_key
         );
+        let restored = load(&path).unwrap().unwrap();
+        assert_eq!(restored.timeout, Some(299));
+        assert_eq!(restored.tls_verify, Some(true));
+        assert_eq!(restored.force_path_style, Some(false));
+        assert_eq!(restored.concurrency, Some(16));
+        assert!(matches!(
+            restored.asset_download,
+            Some(AssetDownload::OnDemand)
+        ));
         profile.secret_access_key = "new-synthetic-secret".into();
         profile.mode = Some(Mode::Cloud);
         save(&path, &profile).unwrap();
@@ -209,7 +249,19 @@ mod tests {
             access_key_id: "".into(),
             secret_access_key: "".into(),
             mode: None,
+            timeout: None,
+            tls_verify: None,
+            force_path_style: None,
+            concurrency: None,
+            asset_download: None,
         };
+        assert!(profile.validate().is_ok());
+        profile.timeout = Some(0);
+        assert!(profile.validate().is_err());
+        profile.timeout = Some(300);
+        profile.concurrency = Some(17);
+        assert!(profile.validate().is_err());
+        profile.concurrency = Some(16);
         assert!(profile.validate().is_ok());
         profile.secret_access_key = "synthetic\nsecret".into();
         assert!(profile.validate().is_err());

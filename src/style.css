@@ -7,8 +7,40 @@ body { display: flex; flex-direction: column; height: 100dvh; background: var(--
 button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
 button, [role='separator'] { touch-action: manipulation; }
 button:focus-visible, [role='separator']:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+
+/* 按钮，照 Pinto 的 DesignSystem：主要、次要、文字三种，紧凑 28 / 常规 40 / 大 50 三种尺寸。
+   不加描边和阴影；按下缩到 0.97（120ms）；键盘焦点是强调色 2px 描边，向外 2px。 */
+:is(.primary-button, .secondary-button, .quiet-button) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box;
+  height: 28px; min-width: 0; padding: 0 12px; border: 0; border-radius: 10px;
+  font: 600 13px/1 var(--font); white-space: nowrap; cursor: default;
+  transition: transform .12s ease-out, background-color .12s ease-out, color .12s ease-out;
+}
+:is(.primary-button, .secondary-button, .quiet-button):focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+:is(.primary-button, .secondary-button, .quiet-button):not(:disabled):active { transform: scale(.97); }
+.primary-button { background: var(--primary-fill); color: var(--primary-ink); }
+.primary-button:not(:disabled):hover { background-image: linear-gradient(var(--button-primary-hover), var(--button-primary-hover)); }
+.primary-button:not(:disabled):active { background-image: linear-gradient(var(--button-primary-pressed), var(--button-primary-pressed)); }
+.secondary-button { background: var(--sand); color: var(--ink); }
+.secondary-button:not(:disabled):hover { background-image: linear-gradient(var(--control-hover), var(--control-hover)); }
+.secondary-button:not(:disabled):active { background-image: linear-gradient(var(--button-pressed), var(--button-pressed)); }
+:is(.primary-button, .secondary-button):disabled { background: var(--button-disabled); color: var(--button-disabled-ink); }
+.primary-button.destructive-button { background: var(--button-destructive); color: var(--primary-ink); }
+/* 取消、返回这类：平时没有底色，灰字；指针移上去才有浅底，字变正文色。 */
+.quiet-button { padding: 0 9px; background: transparent; color: var(--muted); }
+.quiet-button:not(:disabled):is(:hover, :active) { background: var(--sand); color: var(--ink); }
+.quiet-button:disabled { opacity: .5; }
+.button-regular { height: 40px; padding: 0 18px; border-radius: 14px; font-size: 15px; }
+.button-big { height: 50px; padding: 0 24px; border-radius: 14px; font-size: 17px; }
+.button-wide { width: 100%; }
+@media (prefers-reduced-motion: reduce) { :is(.primary-button, .secondary-button, .quiet-button):active { transform: none; } }
+/* 系统提示框（macOS 的 NSAlert）：按钮 28px 高的胶囊，撑满宽度上下排列，常规字重；默认按钮用强调色。 */
+.alert-actions { display: flex; flex-direction: column; gap: 8px; }
+.alert-actions :is(.primary-button, .secondary-button) { width: 100%; border-radius: 999px; font-weight: 400; }
+.alert-actions .primary-button:not(:disabled) { background-color: var(--alert-primary); color: var(--primary-ink); }
+:root[data-mobile] .alert-actions :is(.primary-button, .secondary-button) { height: 44px; font-size: 17px; }
 [hidden] { display: none !important; }
-.titlebar { height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 24px 0 29px; display: flex; align-items: center; flex-shrink: 0; user-select: none; }
+.titlebar { position: relative; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 24px 0 29px; display: flex; align-items: center; flex-shrink: 0; user-select: none; }
 html[data-platform='macos'] .titlebar { padding-left: 94px; }
 h1#note-title { font-family: system-ui, sans-serif; font-size: 20px; font-weight: 600; letter-spacing: -.005em; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
 .actions { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 22px; background: var(--control-fill); }
@@ -28,8 +60,24 @@ h1#note-title:has(#rename-note) + #note-location { display: none; }
 #workspace { display: flex; min-height: 0; flex: 1; }
 #rich-pane { flex: 1; min-width: 0; height: 100%; }
 .statusbar { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-body[data-status-error='true'] .statusbar { position: fixed; z-index: 20; bottom: calc(12px + env(safe-area-inset-bottom)); left: 24px; width: auto; height: auto; margin: 0; padding: 8px 12px; clip-path: none; white-space: normal; background: var(--paper); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
-body[data-sync-busy='true'] .statusbar { position: fixed; z-index: 110; bottom: calc(12px + env(safe-area-inset-bottom)); left: 24px; width: auto; height: auto; margin: 0; padding: 8px 12px; clip-path: none; white-space: normal; background: var(--paper); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+/* 出错提示与同步进度同一种底部居中的轻量胶囊，红字，不带字数。 */
+body[data-status-error='true'] .statusbar {
+  position: fixed; z-index: 20; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); translate: -50% 0;
+  width: auto; max-width: min(560px, calc(100vw - 32px)); height: auto; margin: 0; padding: 5px 12px; clip-path: none;
+  border-radius: 999px; background: color-mix(in srgb, var(--paper) 86%, transparent); color: var(--error);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 4px 16px var(--toolbar-shadow);
+  font: 12px/16px var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body[data-status-error='true'] .statusbar #word-count { display: none; }
+/* 同步中：侧栏账户行可见时进度已写在账户名下，这里不再显示；否则在底部居中给一个轻量胶囊，不带字数。 */
+body[data-sync-busy='true']:not(:has(#app-shell[data-mac-sidebar-foot][data-sidebar=all]:not([data-mobile-page]))) .statusbar {
+  position: fixed; z-index: 110; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); translate: -50% 0;
+  width: auto; max-width: calc(100vw - 32px); height: auto; margin: 0; padding: 5px 12px; clip-path: none;
+  border-radius: 999px; background: color-mix(in srgb, var(--paper) 82%, transparent); color: var(--muted);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 4px 16px var(--toolbar-shadow);
+  font: 12px/16px var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+}
+body[data-sync-busy='true'] .statusbar #word-count { display: none; }
 .format-menu { position: fixed; z-index: 10; top: calc(57px + env(safe-area-inset-top)); right: 108px; width: 192px; max-height: calc(100dvh - 72px); overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 22px; background: var(--list); box-shadow: 0 8px 28px var(--shadow-raised); }
 .format-inline { display: flex; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 6px; margin-bottom: 4px; }
 .format-menu [data-format=title] { height: 32px; font-size: 20px; font-weight: 800; }
@@ -195,38 +243,74 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 .quick-open [role=option] .quick-open-lines { flex-direction: column; gap: 2px; }
 .quick-open-lines span { max-width: 100%; }
 .quick-open p { margin: 0; padding: 20px 18px; border-top: 1px solid var(--line); }
-.missing-note-link {
-  width: min(360px, calc(100vw - 32px)); padding: 20px;
-  border: 1px solid var(--line); border-radius: 16px; color: var(--ink);
-  background: var(--card); box-shadow: 0 12px 36px var(--shadow-raised);
+/* 系统提示框的外框（alert-dialog.ts）：照 macOS 26 的 NSAlert，宽 260、圆角 24，标题和正文都是 13px。 */
+.alert-dialog {
+  width: min(260px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 22px 16px 16px;
+  border: 1px solid var(--line); border-radius: 24px; background: var(--card); color: var(--ink);
+  box-shadow: 0 12px 40px var(--shadow-modal); font: 13px/1.35 var(--font);
 }
-.missing-note-link::backdrop { background: var(--overlay); }
-.missing-note-link h2 { font-size: 16px; margin: 0; overflow-wrap: anywhere; }
-.missing-note-link p { color: var(--muted); margin: 12px 0 16px; }
-.missing-note-link [data-cancel] { padding: 7px 14px; border: 1px solid var(--line); border-radius: 7px; background: transparent; }
-.share-popover { position: fixed; inset: auto; margin: 0; width: min(316px, calc(100vw - 16px)); padding: 12px 14px; max-height: calc(100dvh - 80px); overflow-y: auto; border: 1px solid var(--line); border-radius: 20px; color: var(--ink); background: var(--sidebar); box-shadow: 0 12px 36px var(--shadow-raised); font: 13px var(--font); }
-.share-tabs { display: flex; padding: 2px; border-radius: 8px; background: var(--control-fill); }
-.share-popover button { border: 0; color: inherit; background: transparent; font: inherit; padding: 6px 2px; text-align: left; }
-.share-tabs button { flex: 1; padding: 4px 2px; font-size: 12px; border-radius: 6px; text-align: center; color: var(--muted); }
-.share-tabs button[aria-selected=true] { background: var(--settings-selection); color: var(--ink); box-shadow: 0 1px 4px var(--shadow); }
+.alert-dialog::backdrop { background: var(--overlay); }
+.alert-dialog:focus-visible { outline: none; }
+.alert-dialog h2 { margin: 0 5px 8px; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
+.alert-dialog p { margin: 0 5px; }
+.alert-dialog .alert-actions { margin-top: 20px; }
+.share-popover {
+  position: fixed; inset: auto; margin: 0; width: min(316px, calc(100vw - 16px)); padding: 12px 15px 15px;
+  max-height: var(--share-available-height, calc(100dvh - 80px)); overflow: visible;
+  border: 1px solid var(--line); border-radius: 20px; color: var(--ink); background: var(--card);
+  box-shadow: 0 6px 20px var(--shadow-raised); font: 13px var(--font);
+}
+.share-popover:popover-open { display: flex; flex-direction: column; }
+.share-popover::before {
+  content: ''; position: absolute; top: -6px; left: var(--share-pointer-x); width: 12px; height: 12px;
+  background: inherit; border: solid var(--line); border-width: 1px 0 0 1px; border-top-left-radius: 3px;
+  transform: translateX(-50%) rotate(45deg); pointer-events: none;
+}
+.share-popover[data-placement=above]::before { top: auto; bottom: -6px; transform: translateX(-50%) rotate(225deg); }
+.share-popover [role=tabpanel] { min-height: 0; overflow: auto; margin: 0 -4px -4px; padding: 0 4px 4px; }
+.share-tabs { display: flex; flex-shrink: 0; padding: 2px; border-radius: 8px; background: var(--control-fill); }
+.share-popover :where([role=tabpanel]) button:not(.primary-button, .secondary-button, .quiet-button) { border: 0; color: inherit; background: transparent; font: inherit; padding: 6px 2px; text-align: left; }
+.share-tabs button {
+  flex: 1 1 0; min-width: 0; min-height: 24px; padding: 3px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; text-align: center;
+}
+.share-tabs button[aria-selected=true] {
+  background: light-dark(var(--card), color-mix(in srgb, var(--card), var(--ink) 23%));
+  color: var(--ink); box-shadow: 0 1px 3px var(--shadow);
+}
 .share-popover [role=tabpanel] > button { display: block; width: 100%; }
-.share-popover button:disabled { opacity: .45; }
+.share-popover button:not(.primary-button, .secondary-button, .quiet-button):disabled { opacity: .45; }
 .share-description, .share-unavailable { font-size: 12px; color: var(--muted); line-height: 1.3; }
 .share-unavailable { margin-bottom: 0; }
 .share-popover .share-copy { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
 .share-preview { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); overflow: hidden; height: 116px; margin-bottom: 8px; }
 .share-preview p { margin: 4px 0 0; color: var(--muted); white-space: pre-line; font-size: 11px; }
-.share-popover .primary-button { background: var(--primary-fill); color: var(--primary-ink); border-radius: 12px; text-align: center; }
 .share-access { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0; }
 .share-access select { border: 0; color: var(--muted); background: transparent; font: inherit; }
 .share-actions { display: flex; gap: 8px; }
-.share-actions .primary-button { flex: 1; }
+.share-actions > button { flex: 1; }
+.share-popover [role=tabpanel] > .primary-button, .share-web-controls > .primary-button { width: 100%; margin-top: 4px; }
+.share-web-controls > button:not(.primary-button) { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 2px; }
+.share-web-controls svg { width: 16px; height: 16px; flex-shrink: 0; }
+.share-web-link { display: flex; padding-top: 12px; border-top: 1px solid var(--line); white-space: nowrap; user-select: text; }
+.share-web-link span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.share-web-link span:last-child { flex-shrink: 0; }
+.share-web-controls .share-web-stop { color: var(--toolbar-context-destructive); border-top: 1px solid var(--line); }
+.share-web-notice { min-height: 32px; padding: 7px 12px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+.share-web-notice[data-state=success] svg { fill: var(--brand); color: var(--primary-ink); }
+.share-web-notice[data-state=error] svg { color: var(--error); }
+.share-web-notice[data-state=busy] svg { color: var(--muted); animation: share-web-spin 1s linear infinite; }
+@keyframes share-web-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .share-web-notice[data-state=busy] svg { animation: none; } }
+.share-web-preview { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 20px; border: 1px solid var(--line); border-radius: 20px; color: var(--ink); background: var(--paper); font: 13px var(--font); }
+.share-web-preview::backdrop { background: var(--overlay); }
+.share-web-preview h2, .share-web-body { overflow-wrap: anywhere; }
+.share-web-body { white-space: pre-wrap; line-height: 1.6; }
 .reference-panel { padding: 0; width: min(720px,calc(100% - 32px)); height: min(520px,calc(100% - 32px)); background: var(--settings-ground); color: var(--ink); border: 1px solid var(--line); border-radius: 22px; font: 13px var(--font); box-shadow: 0 20px 60px var(--shadow-modal); }
 .reference-panel::backdrop { background: var(--overlay); }
 .reference-panel header { display: flex; height: 56px; padding: 12px 20px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .reference-panel h2 { font-size: 15px; margin: 0; }
-.reference-panel button { padding: 6px 12px; border: 0; border-radius: 12px; background: var(--control-fill); }
-.reference-panel button:disabled, .reference-panel input:disabled { opacity: .45; }
+.reference-panel input:disabled { opacity: .45; }
 .reference-panel-content { display: flex; height: calc(100% - 56px); }
 .reference-panel-content main { display: grid; gap: 16px; align-content: center; justify-items: center; flex: 1; padding: 24px; }
 .note-history {
@@ -258,7 +342,7 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 .history-versions button:hover { background: var(--control-hover); }
 .history-versions button[aria-current=true] { background: var(--settings-selection); }
 .history-disclosure { display: none; }
-.history-close, .history-back, .history-state button {
+.history-close, .history-back {
   border: 0; background: var(--control-fill); border-radius: 100px;
 }
 .history-close {
@@ -267,11 +351,10 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 }
 .history-close span + span { display: none; }
 .history-back { display: none; }
-.history-close:hover, .history-back:hover, .history-state button:hover { background: var(--control-hover); }
+.history-close:hover, .history-back:hover { background: var(--control-hover); }
 .history-state { display: grid; place-content: center; justify-items: center; flex: 1; gap: 12px; padding: 24px; text-align: center; }
 .history-state h3 { margin: 0; font-size: 15px; }
 .history-state p { margin: 6px 0 0; color: var(--muted); overflow-wrap: anywhere; }
-.history-state button { padding: 6px 12px; }
 .history-detail {
   display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--paper);
 }
@@ -290,8 +373,6 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
   background: var(--control-fill); color: var(--ink); font: inherit;
 }
 .history-restore { flex: none; white-space: nowrap; }
-:root[data-theme=dark] .note-history .history-restore { background: var(--brand); }
-:root[data-theme=dark] .note-history .history-restore:hover:not(:disabled) { filter: brightness(1.1); }
 .note-history :is(button, select):disabled { opacity: .45; cursor: default; }
 .history-error { padding: 0 20px; color: var(--error); overflow-wrap: anywhere; }
 #note-history-editor { flex: 1; min-height: 0; }
@@ -353,3 +434,23 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 .reference-unavailable { color: var(--muted); line-height: 1.4; }
 .reference-lock label { display: grid; gap: 8px; width: 100%; }
 .reference-lock input { border: 1px solid var(--line); background: var(--control-fill); color: inherit; border-radius: 8px; height: 32px; }
+
+/* 已分享标记，对照 Pinto ShareLinkChrome.marker：标题栏下沿往下 10px、右侧 14px，
+   胶囊最小高 24px、左右内边距 9px，caption 字号加 medium 字重，次要文字色配三级填充。 */
+#note-share-marker {
+  position: absolute; top: calc(100% + 10px); right: 14px; z-index: 3;
+  display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 0 9px;
+  border: 0; border-radius: 999px; background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer;
+  transition: background-color .15s ease, opacity .2s ease;
+}
+#note-share-marker[hidden] { display: none; }
+#note-share-marker svg { flex: none; width: 11px; height: 11px; stroke-width: 2.25; }
+#note-share-marker:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+#note-share-marker:active { background: color-mix(in srgb, var(--ink) 14%, transparent); }
+#note-share-marker:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+/* 分享操作的提示出现时先让开，和 Pinto 有反馈时隐藏标记一致。 */
+body:has(.share-web-notice) #note-share-marker { opacity: 0; pointer-events: none; }
+/* 手机档对应 iOS 的 caption（12pt）。 */
+#app-shell[data-mobile-page] #note-share-marker { font-size: 12px; }
+#app-shell[data-mobile-page] #note-share-marker svg { width: 12px; height: 12px; }

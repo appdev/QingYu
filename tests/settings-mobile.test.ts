@@ -14,7 +14,7 @@ beforeEach(() => {
 });
 const client: SyncClient = {
   load: async () => ({ endpoint: '', bucket: '', region: 'us-east-1', prefix: 'test', accessKeyId: '', secretAccessKey: '' }),
-  save: vi.fn(), flush: vi.fn(), run: vi.fn(),
+  save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(),
   subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; },
 };
 

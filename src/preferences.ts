@@ -12,6 +12,8 @@ export type Preferences = DailyNoteSettings & {
   theme: Theme;
   buttonDisplay: 'always' | 'hover';
   alwaysOnTop: boolean;
+  /** 桌面上在菜单栏（Windows 通知区域、Linux 托盘）显示轻羽，和 Pinto 一样默认打开。 */
+  menuBar: boolean;
   sortCheckedItems: boolean;
   todayOpenOnLaunch: boolean;
   previewWidth: number;
@@ -19,26 +21,28 @@ export type Preferences = DailyNoteSettings & {
   syncInterval: typeof syncIntervals[number];
   autoSyncS3: boolean;
   autoSyncCloudAccount: string;
+  cloudSyncAccount: string;
 };
 export const defaults: Preferences = {
-  version: 1, appearance: 'system', theme: 'default', buttonDisplay: 'always', alwaysOnTop: false,
+  version: 1, appearance: 'system', theme: 'default', buttonDisplay: 'always', alwaysOnTop: false, menuBar: true,
   sortCheckedItems: true, previewWidth: 1000,
   todayFolder: '', todayTitle: 'long', todayOpenOnLaunch: false,
   previewFont: 'system', previewFontSize: mobile ? 17 : noteTextSizes[0],
-  syncInterval: 3, autoSyncS3: true, autoSyncCloudAccount: '',
+  syncInterval: 3, autoSyncS3: true, autoSyncCloudAccount: '', cloudSyncAccount: '',
 };
 export function parsePreferences(value: unknown): Preferences {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设置数据无效');
   const p = { ...defaults, ...value };
   if (p.version !== 1 || !['system', 'light', 'dark'].includes(p.appearance)
     || typeof p.theme !== 'string' || !Object.hasOwn(themeNames, p.theme)
-    || !['always', 'hover'].includes(p.buttonDisplay) || typeof p.alwaysOnTop !== 'boolean'
+    || !['always', 'hover'].includes(p.buttonDisplay) || typeof p.alwaysOnTop !== 'boolean' || typeof p.menuBar !== 'boolean'
     || typeof p.sortCheckedItems !== 'boolean'
     || !dailyTitleStyles.includes(p.todayTitle) || typeof p.todayOpenOnLaunch !== 'boolean'
     || typeof p.todayFolder !== 'string' || p.todayFolder.length > 500 || /[\x00-\x1f]/.test(p.todayFolder)
     || ![0, 600, 800, 1000, 1200, 1400].includes(p.previewWidth)
     || !syncIntervals.includes(p.syncInterval) || typeof p.autoSyncS3 !== 'boolean'
     || typeof p.autoSyncCloudAccount !== 'string' || p.autoSyncCloudAccount.length > 512 || /[\x00-\x1f]/.test(p.autoSyncCloudAccount)
+    || typeof p.cloudSyncAccount !== 'string' || p.cloudSyncAccount.length > 512 || /[\x00-\x1f]/.test(p.cloudSyncAccount)
     || !sizes.includes(p.previewFontSize as typeof sizes[number])
     || typeof p.previewFont !== 'string' || !p.previewFont.trim() || p.previewFont.length > 200 || /[\x00-\x1f]/.test(p.previewFont)) throw new Error('设置数据无效');
   if (!mobile) p.previewFontSize = noteTextSizes.find(size => size >= p.previewFontSize) ?? noteTextSizes.at(-1)!;
@@ -95,6 +99,17 @@ export function previewPreferences() {
   const p = preferences.value;
   return { dark: isDark(), theme: p.theme, font: fontCSS(p.previewFont), size: p.previewFontSize, width: p.previewWidth };
 }
+const appShell = document.querySelector<HTMLElement>('#app-shell');
+function updateNativeAppearance() {
+  if (!window.nativeAppearance) return;
+  const dark = isDark(), colors = themePalette(preferences.value.theme, dark);
+  const page = appShell?.hasAttribute('data-mobile-wide') ? undefined : appShell?.dataset.mobilePage;
+  const background = page === 'folders' ? colors['mobile-sidebar'] : page === 'notes' ? colors['mobile-list'] : colors.paper;
+  window.nativeAppearance.postMessage(`${dark ? 'dark' : 'light'}:${background}`);
+}
+if (window.nativeAppearance && appShell) {
+  new MutationObserver(updateNativeAppearance).observe(appShell, { attributes: true, attributeFilter: ['data-mobile-page', 'data-mobile-wide'] });
+}
 function apply() {
   const p = preferences.value, root = document.documentElement, preview = previewPreferences();
   const theme = preview.dark ? 'dark' : 'light';
@@ -111,7 +126,7 @@ function apply() {
   root.classList.toggle('darkmode', preview.dark); root.style.colorScheme = theme;
   for (const [key, value] of Object.entries({ '--preview-font': preview.font, '--preview-size': `${preview.size}px`, '--preview-width': p.previewWidth ? `${p.previewWidth}px` : '100%' })) root.style.setProperty(key, value);
   document.body?.classList.toggle('darkmode', preview.dark);
-  window.nativeAppearance?.postMessage(theme);
+  updateNativeAppearance();
   window.dispatchEvent(new Event('preferences-applied'));
 }
 preferences.subscribe(apply); appearance.addEventListener('change', apply); apply();

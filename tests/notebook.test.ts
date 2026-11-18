@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Notebook, groupNotes, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
+import { Notebook, groupNotes, isShared, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
 import { noteText } from '../src/document-text';
 
 function storage(initial: Record<string, string> = {}) {
@@ -140,6 +140,25 @@ describe('note context operations', () => {
     await book.trashNote(id, false); expect(visibleNotes(book.data, folder, '')[0].id).toBe(id);
     await book.togglePin(id); expect(book.current.pinned).toBe(false);
     await book.trashNote(id); await book.moveNote(id, 'default'); expect(book.current.trashed).toBe(false);
+  });
+  it('keeps share state in metadata, validates it and never copies it into a duplicate', async () => {
+    const store = storage(), book = new Notebook(store, '# 分享笔记');
+    const id = book.current.id, url = 'https://share.example.com/n/abc';
+    book.data.notes[0].share = { status: 'shared', url }; await book.save(book.current.source);
+    expect(new Notebook(store, '').current.share).toEqual({ status: 'shared', url });
+    expect(isShared(book.current)).toBe(true);
+    expect(isShared({ share: { status: 'unshared', url } })).toBe(false);
+    expect(isShared({ share: { status: 'shared', url }, trashed: true })).toBe(false);
+    expect(isShared({})).toBe(false);
+    await expect(book.setShare(id, { status: 'shared', url: 'ftp://share.example.com/n/abc' })).rejects.toThrow('分享链接无效');
+    await book.setShare(id, { status: 'unshared' }); expect(new Notebook(store, '').current.share).toEqual({ status: 'unshared' });
+    await book.setShare(id, { status: 'shared', url });
+    await book.duplicateNote(id);
+    expect(book.current.id).not.toBe(id); expect(book.current.share).toBeUndefined();
+    for (const share of [null, 'shared', { status: 'public' }, { status: 'shared', url: 1 }, { status: 'shared', url: 'javascript:alert(1)' }, { status: 'shared', url: 'not a url' }]) {
+      const invalid = structuredClone(book.data); (invalid.notes[0] as { share?: unknown }).share = share;
+      expect(new Notebook(storage({ [libraryKey]: JSON.stringify(invalid) }), '').loadError).toBe(true);
+    }
   });
   it('rejects invalid targets, names and metadata, and preserves all state on storage failure', async () => {
     const store = storage(), book = new Notebook(store, '# 内容'); await book.save(book.current.source);

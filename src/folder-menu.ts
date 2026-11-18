@@ -45,8 +45,10 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
       if (finishing) return completion ?? Promise.resolve(false); finishing = true;
       completion = (async () => {
         if (cancel || input.value.trim() === folder.name) { label.textContent = folder.name; row!.append(...editor.childNodes); editor.replaceWith(row!); row?.focus(); finishEdit = undefined; return true; }
+        // 提交时侧栏要按新名字重建，去掉「正在改名」的标记。
+        editor.dataset.committing = '';
         try { await actions.change(() => getBook().folderAction('rename', id, input.value)); finishEdit = undefined; return true; }
-        catch (reason) { finishing = false; input.ariaInvalid = 'true'; actions.error(reason instanceof Error ? reason.message : String(reason)); input.focus(); return false; }
+        catch (reason) { delete editor.dataset.committing; finishing = false; input.ariaInvalid = 'true'; actions.error(reason instanceof Error ? reason.message : String(reason)); input.focus(); return false; }
       })();
       return completion;
     };
@@ -56,13 +58,17 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
       if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); void finish(event.key === 'Escape'); }
     };
     input.onclick = event => event.stopPropagation();
-    input.onblur = () => { void finish(); };
+    // 文件监听核对笔记库时会把界面临时设为 inert，WebKit 因此让输入框失焦；
+    // 这不是用户点走了，核对完焦点会还回来，不能当成改名完成。
+    input.onblur = () => { if (!input.closest('[inert]')) void finish(); };
   }
-  const open = async (id: string | null, type: FolderType, clicked: boolean, x: number, y: number) => {
+  const open = async (id: string | null, type: FolderType, clicked: boolean, x: number, y: number, editing = false) => {
     const book = getBook();
-    const items = folderMenuItems(type, clicked).filter(item =>
-      !((book.server || actions.mobile) && ['在 Finder 中显示', '在终端中打开'].includes(item.text)) &&
-      !(book.server && item.text === '移到废纸篓') && !(actions.mobile && ['在新窗口打开', '上移', '下移'].includes(item.text)));
+    const items = folderMenuItems(type, clicked).filter(({ text }) => {
+      if (editing) return ['', '重命名文件夹', '上移', '下移'].includes(text);
+      return !((book.server || actions.mobile) && ['在 Finder 中显示', '在终端中打开'].includes(text)) &&
+        !(book.server && text === '移到废纸篓') && !(actions.mobile && ['在新窗口打开', '上移', '下移'].includes(text));
+    });
     const run = (action: 'move' | 'trash' | 'reveal' | 'terminal') => actions.change(() => getBook().folderAction(action, type === 'trash' ? 'trash' : id));
     for (const item of items) {
       if (id && (item.text === '上移' || item.text === '下移')) {
@@ -85,11 +91,10 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
         '在 Finder 中显示': () => run('reveal'), '在终端中打开': () => run('terminal'), '移到废纸篓': () => run('trash'),
       } as Record<string, () => void | Promise<void>>)[item.text];
       if ((!book.root || actions.mobile) && ['在 Finder 中显示', '在终端中打开', '移动到…', '移到废纸篓'].includes(item.text)) item.enabled = false;
-      if (actions.mobile && book.root && ['新建文件夹', '重命名文件夹'].includes(item.text)) item.enabled = false;
     }
     const menu = items.filter((item, index) => item.text || index > 0 && index < items.length - 1 && Boolean(items[index + 1].text));
     if (!menu.length) return;
-    const preview = actions.mobile && clicked ? document.createElement('article') : undefined;
+    const preview = actions.mobile && clicked && !editing ? document.createElement('article') : undefined;
     if (preview) {
       const notes = visibleNotes(book.data, id, '', type === 'trash'), cards = document.createElement('div');
       cards.className = 'context-folder-preview';

@@ -5,27 +5,28 @@ import { mountSettings } from '../src/settings-view';
 import { openSettings } from '../src/open-settings';
 import { libraryKey } from '../src/notebook';
 import type { SyncClient, SyncStatus } from '../src/sync-session';
+import { s3Defaults } from '../src/sync-store';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
 beforeEach(() => { document.querySelector('meta[name="qingyu-web-auth"]')?.remove(); localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
 it('server settings describe the mounted library and never load browser S3 credentials', async () => {
   const marker = document.createElement('meta'); marker.name = 'qingyu-web-auth'; marker.content = 'enabled'; document.head.append(marker);
   const root = document.createElement('div'); document.body.append(root);
-  const client: SyncClient = { load: vi.fn(), save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: vi.fn() };
+  const client: SyncClient = { load: vi.fn(), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: vi.fn() };
   const view = mountSettings(root, client, vi.fn()); await view.loaded;
   expect(root.textContent).toContain('服务器挂载的笔记目录');
   expect(root.querySelector('[data-section="sync"]')).toBeNull(); expect(root.querySelector('.settings-sync-form')).toBeNull();
   expect(client.load).not.toHaveBeenCalled(); expect(client.subscribe).not.toHaveBeenCalled();
   view.select('sync');
   expect(root.querySelector('#settings-panel-storage')?.hasAttribute('hidden')).toBe(false);
-  expect(root.querySelector('h1')?.textContent).toBe('存储');
+  expect(root.querySelector('h1')?.textContent).toBe('存储与同步');
   view.destroy(); marker.remove();
 });
 it('shows saved browser note sizes in the merged storage panel and refreshes them on focus', async () => {
   const root = document.body.appendChild(document.createElement('div'));
   const client: SyncClient = {
     load: async () => ({ endpoint: '', bucket: '', region: '', prefix: '', accessKeyId: '', secretAccessKey: '' }),
-    save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {},
+    save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {},
   };
   const save = (source: string) => localStorage.setItem(libraryKey, JSON.stringify({ notes: [{ source }, { source: '删', trashed: true }] }));
   save('中文');
@@ -47,7 +48,7 @@ it('shows saved browser note sizes in the merged storage panel and refreshes the
 describe('preferences persistence', () => {
   it('loads folder choices and persists the daily options', async () => {
     const root = document.createElement('div'); document.body.append(root);
-    const client: SyncClient = { load: vi.fn().mockResolvedValue({}), save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
+    const client: SyncClient = { load: vi.fn().mockResolvedValue({}), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
     const view = mountSettings(root, client, vi.fn(), undefined, () => ({ folders: [['project', '项目']] }));
     try {
       view.select('today');
@@ -106,7 +107,7 @@ it('keeps inline settings modal, contains editor shortcuts, and preserves a sync
   const show = vi.fn(function(this: HTMLDialogElement) { this.open = true; }); Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: show });
   const back = vi.spyOn(history, 'back').mockImplementation(() => {});
   const config = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'test', accessKeyId: '', secretAccessKey: '' };
-  const client: SyncClient = { load: async () => config, save: vi.fn().mockResolvedValue(undefined), flush: vi.fn().mockResolvedValue(undefined), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
+  const client: SyncClient = { load: async () => config, save: vi.fn().mockResolvedValue(undefined), test: vi.fn(), flush: vi.fn().mockResolvedValue(undefined), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
   await openSettings(client); const dialog = document.querySelector<HTMLDialogElement>('.settings-inline')!;
   expect(show).toHaveBeenCalledOnce(); expect(dialog.open).toBe(true);
   const shortcut = vi.fn(); document.addEventListener('keydown', shortcut);
@@ -138,7 +139,7 @@ it('switches tabs with arrows and saves controls without a settings footer', asy
   const config = { endpoint: 'https://unit.invalid', bucket: 'test', region: 'us-east-1', prefix: 'test', accessKeyId: '', secretAccessKey: '' };
   let publish!: (status: SyncStatus) => void;
   const run = vi.fn().mockResolvedValue(undefined);
-  const client: SyncClient = { load: async () => config, save: vi.fn().mockResolvedValue(undefined), flush: vi.fn().mockResolvedValue(undefined), run, subscribe: fn => { publish = fn; fn({ busy: false, message: '', error: false }); return () => {}; } };
+  const client: SyncClient = { load: async () => config, save: vi.fn().mockResolvedValue(undefined), test: vi.fn(), flush: vi.fn().mockResolvedValue(undefined), run, subscribe: fn => { publish = fn; fn({ busy: false, message: '', error: false }); return () => {}; } };
   const close = vi.fn(), view = mountSettings(root, client, close); await view.loaded;
   const sidebar = root.querySelector('.settings-sidebar [role="tablist"]')!;
   expect(sidebar.getAttribute('aria-orientation')).toBe('vertical');
@@ -186,12 +187,12 @@ it('autosaves S3 fields, removes the save button, and displays redacted sync err
   const root = document.createElement('div'); document.body.append(root);
   const config = { endpoint: 'https://unit.invalid', bucket: 'test', region: 'us-east-1', prefix: 'test', accessKeyId: 'fake-id', secretAccessKey: 'old-secret' };
   const save = vi.fn().mockResolvedValue(undefined), run = vi.fn().mockRejectedValue(new Error('认证失败 new-secret fake-id'));
-  const client: SyncClient = { load: async () => config, save, flush: vi.fn(), run, subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
+  const client: SyncClient = { load: async () => config, save, test: vi.fn(), flush: vi.fn(), run, subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
   const view = mountSettings(root, client, vi.fn()); await view.loaded; view.select('sync');
   expect([...root.querySelectorAll('button')].some(button => button.textContent === '保存连接')).toBe(false);
   expect(root.textContent).not.toContain('仅在本次运行'); expect(root.textContent).not.toContain('不会保存到磁盘');
   const secret = root.querySelector<HTMLInputElement>('[name="secretAccessKey"]')!; secret.value = 'new-secret'; secret.dispatchEvent(new Event('input', { bubbles: true }));
-  expect(save).toHaveBeenCalledWith({ ...config, secretAccessKey: 'new-secret' }); expect(run).not.toHaveBeenCalled();
+  expect(save).toHaveBeenCalledWith({ ...config, ...s3Defaults, secretAccessKey: 'new-secret' }); expect(run).not.toHaveBeenCalled();
   const button = root.querySelector<HTMLButtonElement>('.settings-sync-now')!; button.click();
   const status = root.querySelector<HTMLElement>('.settings-sync-status')!;
   await vi.waitFor(() => expect(status.textContent).toBe('认证失败 [已隐藏] [已隐藏]'));
@@ -206,10 +207,35 @@ it('autosaves S3 fields, removes the save button, and displays redacted sync err
 it('keeps S3 fields disabled until persisted credentials finish loading and surfaces load failures below the form', async () => {
   const root = document.createElement('div'); document.body.append(root);
   let reject!: (error: Error) => void;
-  const client: SyncClient = { load: () => new Promise((_, fail) => { reject = fail; }), save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
+  const client: SyncClient = { load: () => new Promise((_, fail) => { reject = fail; }), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
   const view = mountSettings(root, client, vi.fn());
   expect(root.querySelector<HTMLInputElement>('[name="secretAccessKey"]')!.disabled).toBe(true);
   reject(new Error('无法读取已保存的连接')); await view.loaded;
   expect(root.querySelector('.settings-sync-status')?.textContent).toContain('无法读取已保存的连接'); expect(client.save).not.toHaveBeenCalled();
   view.destroy();
+});
+
+it('starts unconfigured sync off and exposes advanced S3 fields and a copyable redacted test error', async () => {
+  const root = document.body.appendChild(document.createElement('div'));
+  const config = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'test', accessKeyId: '', secretAccessKey: '' };
+  const test = vi.fn().mockRejectedValue(new Error('HTTP 403\n<Code>AccessDenied</Code> synthetic-secret'));
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  const client: SyncClient = { load: async () => config, save: vi.fn().mockResolvedValue(undefined), test, flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
+  const view = mountSettings(root, client, vi.fn()); await view.loaded; view.select('storage');
+  try {
+    const auto = root.querySelector<HTMLInputElement>('[name=automaticSync]')!;
+    expect(auto.checked).toBe(false); expect(auto.disabled).toBe(true);
+    for (const [name, value] of Object.entries({ endpoint: 'https://unit.invalid', bucket: 'test', accessKeyId: 'synthetic-id', secretAccessKey: 'synthetic-secret', timeout: '299', concurrency: '16', forcePathStyle: 'false', tlsVerify: 'false' })) {
+      const field = root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name=${name}]`)!;
+      field.value = value; field.dispatchEvent(new Event(field instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
+    }
+    root.querySelector<HTMLButtonElement>('.settings-sync-test')!.click();
+    await vi.waitFor(() => expect(root.querySelector('.settings-sync-error')?.hasAttribute('hidden')).toBe(false));
+    expect(test).toHaveBeenCalledWith({ ...config, endpoint: 'https://unit.invalid', bucket: 'test', accessKeyId: 'synthetic-id', secretAccessKey: 'synthetic-secret', timeout: 299, concurrency: 16, forcePathStyle: false, tlsVerify: false });
+    expect(client.run).not.toHaveBeenCalled();
+    root.querySelector<HTMLButtonElement>('.settings-sync-copy')!.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('HTTP 403\n<Code>AccessDenied</Code> [已隐藏]'));
+    expect(root.querySelector('.settings-sync-error pre')?.querySelector('code')).toBeNull();
+  } finally { view.destroy(); root.remove(); Reflect.deleteProperty(navigator, 'clipboard'); }
 });

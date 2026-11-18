@@ -24,6 +24,30 @@ it('persists the complete profile through native app configuration and restores 
   const reopened = createSyncSession({} as Notebook, vi.fn(), () => true);
   expect(await reopened.load()).toEqual(config);
 });
+it('restores advanced S3 options and rejects invalid values without overwriting the profile', async () => {
+  const session = createSyncSession({} as Notebook, vi.fn(), () => true);
+  const settings = { ...config, timeout: 299, tlsVerify: false, forcePathStyle: false, concurrency: 16 };
+  await session.save(settings);
+  const reopened = createSyncSession({} as Notebook, vi.fn(), () => true);
+  expect(await reopened.load()).toEqual(settings);
+  await expect(reopened.save({ ...settings, timeout: 0 })).rejects.toThrow('超时');
+  expect(persisted).toEqual(settings);
+});
+it('redacts detailed connection errors and does not sync or mark the notebook as synced', async () => {
+  persisted = config;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === 'sync_load_profile') return persisted;
+    if (command === 'sync_request') throw 'TLS failed private-id private-secret';
+  });
+  const refresh = vi.fn(), prepare = vi.fn(), states: SyncStatus[] = [];
+  const session = createSyncSession({} as Notebook, refresh, prepare);
+  session.subscribe(status => states.push(status));
+  await expect(session.test({ ...config, timeout: 299, tlsVerify: false, forcePathStyle: false, concurrency: 16 })).rejects.toThrow('TLS failed [已隐藏] [已隐藏]');
+  expect(invoke).toHaveBeenCalledWith('sync_set_target', { endpoint: config.endpoint, bucket: config.bucket, prefix: config.prefix, forcePathStyle: false, timeout: 299, tlsVerify: false });
+  expect(states.at(-1)).toMatchObject({ busy: false, error: true });
+  expect(states.at(-1)?.lastSyncedAt).toBeUndefined();
+  expect(prepare).not.toHaveBeenCalled(); expect(refresh).not.toHaveBeenCalled(); expect(syncNotebook).not.toHaveBeenCalled();
+});
 it('saves incomplete drafts in order, waits on exit, and keeps legacy nonsecret fields', async () => {
   localStorage.setItem('miaoyan-editor.s3-profile.v1', JSON.stringify({ ...config, accessKeyId: 'ignored', secretAccessKey: 'ignored' }));
   const session = createSyncSession({} as Notebook, vi.fn(), () => true);
@@ -95,7 +119,7 @@ it('uses cloud credentials for the scoped target and never saves them as a custo
   await session.run(config, 'account-id');
   expect(invoke).toHaveBeenCalledWith('account_sync_config', { accountId: 'account-id' });
   expect(invoke).toHaveBeenCalledWith('account_check_sync', { accountId: 'account-id' });
-  expect(invoke).toHaveBeenCalledWith('sync_set_target', { endpoint: config.endpoint, bucket: config.bucket, prefix: 'repo/qingyu/v1', forcePathStyle: false });
+  expect(invoke).toHaveBeenCalledWith('sync_set_target', { endpoint: config.endpoint, bucket: config.bucket, prefix: 'repo/qingyu/v1', forcePathStyle: false, timeout: 45, tlsVerify: true });
   expect(invoke).not.toHaveBeenCalledWith('sync_save_profile', expect.anything());
   expect(await session.load()).toEqual(persisted);
 });

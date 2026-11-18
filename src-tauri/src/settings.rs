@@ -48,10 +48,11 @@ pub async fn open_settings(app: tauri::AppHandle, section: Option<String>) -> Re
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
-        .center();
+        .center()
+        // 页面画好后由 workspace_window_ready 显示，见 file_library::workspace。
+        .visible(false);
         #[cfg(target_os = "macos")]
         let builder = builder
-            .visible(false)
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
             .traffic_light_position(tauri::LogicalPosition::new(18., 28.));
@@ -71,11 +72,9 @@ pub async fn open_settings(app: tauri::AppHandle, section: Option<String>) -> Re
             });
         }
         #[cfg(target_os = "macos")]
-        {
-            place_settings_on_main_display(&window, true)?;
-            window.show().map_err(|e| e.to_string())?;
-        }
-        window.set_focus().map_err(|e| e.to_string())
+        place_settings_on_main_display(&window, true)?;
+        crate::file_library::workspace::show_when_ready(&app, "settings");
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -120,6 +119,7 @@ pub fn apply_preferences(
     appearance: String,
     always_on_top: bool,
     note_text_size: Option<u16>,
+    menu_bar: Option<bool>,
 ) -> Result<(), String> {
     let theme = match appearance.as_str() {
         "system" => None,
@@ -130,13 +130,22 @@ pub fn apply_preferences(
     #[cfg(desktop)]
     for window in app.webview_windows().into_values() {
         window.set_theme(theme).map_err(|e| e.to_string())?;
+        // 菜单栏面板始终浮在最上面，不跟「窗口置顶」走。
+        if window.label() == crate::menu_bar::PANEL { continue; }
         window
             .set_always_on_top(always_on_top)
             .map_err(|e| e.to_string())?;
     }
+    // 托盘不可用时（比如 Linux 桌面没有托盘）不影响其他设置生效。
+    #[cfg(desktop)]
+    if let Some(on) = menu_bar {
+        if let Err(reason) = crate::menu_bar::set_shown(&app, on) {
+            eprintln!("菜单栏图标未能更新：{reason}");
+        }
+    }
     #[cfg(mobile)]
     {
-        let _ = (app, theme, always_on_top);
+        let _ = (app, theme, always_on_top, menu_bar);
     }
     #[cfg(target_os = "macos")]
     if let (Some(size), Some(menu)) = (note_text_size, app.menu()) {

@@ -33,7 +33,7 @@ it('commits only the changed note with its version and keeps newer pending draft
   notebook.stageDraft('# B');const saving=notebook.save('# B');await Promise.resolve();
   notebook.stageDraft('# C');acknowledge(ok(snapshot('# B','v2')));await saving;
   const body=JSON.parse(fetchMock.mock.calls[1][1].body);
-  expect(body).toMatchObject({kind:'updateNote',id:'one',version:'v1',source:'# B'});expect(body).not.toHaveProperty('notes');
+  expect(body).toMatchObject({kind:'updateNote',id:'one',version:'v1',source:'# B',share:null});expect(body).not.toHaveProperty('notes');
   expect(drafts().map(draft => draft.source)).toEqual(['# C']);
   fetchMock.mockResolvedValueOnce(ok(snapshot('# C','v3')));await notebook.save('# C');
   expect(drafts()).toEqual([]);

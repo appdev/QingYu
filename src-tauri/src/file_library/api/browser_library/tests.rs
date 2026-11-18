@@ -284,6 +284,23 @@ async fn editor_operations_use_real_files_and_reject_stale_note_and_folder_versi
 }
 
 #[tokio::test]
+async fn update_note_keeps_share_state_and_rejects_non_web_links() {
+    let (_dir, _state, app) = fixture();
+    let cookie = login(&app).await;
+    let id = Uuid::new_v4().to_string();
+    let created = json_call(&app, &cookie, json!({"kind":"createNote","id":id,"folderId":"default","title":"分享","source":"# 分享"})).await;
+    let update = |version: &serde_json::Value, share: serde_json::Value| json!({"kind":"updateNote","id":id,"version":version,"source":"# 分享","title":"分享","pinned":false,"trashed":false,"folderId":"default","share":share});
+    let bad = call(&app, "POST", "/api/web/commands", &cookie, update(&created["versions"][&id], json!({"status":"shared","url":"javascript:alert(1)"}))).await;
+    assert_eq!(bad.0, StatusCode::BAD_REQUEST);
+    let shared = json_call(&app, &cookie, update(&created["versions"][&id], json!({"status":"shared","url":"https://share.example.com/n/a"}))).await;
+    let note = |snapshot: &serde_json::Value| snapshot["notes"].as_array().unwrap().iter().find(|n| n["id"] == id.as_str()).unwrap().clone();
+    assert_eq!(note(&shared)["share"], json!({"status":"shared","url":"https://share.example.com/n/a"}));
+    assert_eq!(note(&load(&app, &cookie).await)["share"]["status"], "shared");
+    let stopped = json_call(&app, &cookie, update(&shared["versions"][&id], json!({"status":"unshared"}))).await;
+    assert_eq!(note(&stopped)["share"], json!({"status":"unshared"}));
+}
+
+#[tokio::test]
 async fn attachment_paths_are_relative_to_notes_and_cannot_expose_metadata_or_symlinks() {
     let (dir, _state, app) = fixture();
     let cookie = login(&app).await;

@@ -10,13 +10,13 @@ export async function connectPreferences() {
   await listen<Preferences>('preferences-changed', ({ payload }) => {
     try { receiving = true; preferences.receive(payload); } catch { showNativeError(); } finally { receiving = false; }
   });
-  const apply = () => invoke('apply_preferences', { appearance: preferences.value.appearance, alwaysOnTop: preferences.value.alwaysOnTop, noteTextSize: preferences.value.previewFontSize });
+  const apply = () => invoke('apply_preferences', { appearance: preferences.value.appearance, alwaysOnTop: preferences.value.alwaysOnTop, menuBar: preferences.value.menuBar, noteTextSize: preferences.value.previewFontSize });
   preferences.subscribe(() => { void apply().catch(showNativeError); if (!receiving) void emit('preferences-changed', preferences.value).catch(showNativeError); });
   await apply();
 }
 function showNativeError() { window.dispatchEvent(new CustomEvent('settings-error', { detail: '设置已保存，但系统窗口未能更新，请重新打开应用' })); }
 
-type Request = { id: string; action: 'load' | 'save' | 'flush' | 'sync'; config?: S3Settings; accountId?: string };
+type Request = { id: string; action: 'load' | 'save' | 'flush' | 'sync' | 'test'; config?: S3Settings; accountId?: string };
 type Reply = { id: string; config?: S3Settings; error?: string };
 
 export function retrySettingsRead(send: () => void) {
@@ -30,7 +30,7 @@ export async function hostSync(client: SyncClient) {
   if (!native || mobile) return;
   await listen<Request>('settings-sync-request', async ({ payload }) => {
     const { id, action, config, accountId } = payload;
-    if (typeof id !== 'string' || !['load', 'save', 'flush', 'sync'].includes(action)) return;
+    if (typeof id !== 'string' || !['load', 'save', 'flush', 'sync', 'test'].includes(action)) return;
     const reply: Reply = { id };
     try {
       if (action === 'load') {
@@ -40,7 +40,7 @@ export async function hostSync(client: SyncClient) {
       else if (action === 'flush') await client.flush();
       else {
         if (!config || typeof config !== 'object' || (accountId !== undefined && typeof accountId !== 'string')) throw new Error('连接设置无效');
-        if (action === 'save') await client.save(config); else await client.run(config, accountId);
+        if (action === 'save') await client.save(config); else if (action === 'test') await client.test(config); else await client.run(config, accountId);
       }
     } catch (error) { reply.error = error instanceof Error ? error.message : '同步未完成'; }
     await emitTo('settings', 'settings-sync-reply', reply);
@@ -61,7 +61,8 @@ export async function remoteSync(): Promise<SyncClient> {
     let stopRetry: (() => void) | undefined;
     return new Promise<S3Settings | undefined>((resolve, reject) => {
       const id = crypto.randomUUID();
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('主窗口未响应；请保留当前内容，打开主窗口后重试')); }, action === 'load' ? 10000 : 300000);
+      const timeout = action === 'load' ? 10000 : action === 'test' ? (config?.timeout ?? 45) * 6000 + 10000 : 300000;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('主窗口未响应；请保留当前内容，打开主窗口后重试')); }, timeout);
       pending.set(id, { resolve, reject, timer });
       const send = () => { void emitTo('main', 'settings-sync-request', { id, action, config, accountId }).catch(() => {
         clearTimeout(timer); pending.delete(id); reject(new Error('无法连接主窗口'));
@@ -75,6 +76,7 @@ export async function remoteSync(): Promise<SyncClient> {
     save: async config => { await request('save', config); },
     flush: async () => { await request('flush'); },
     run: async (config, accountId) => { await request('sync', config, accountId); },
+    test: async config => { await request('test', config); },
     subscribe(listener) { listeners.add(listener); listener(status); return () => { listeners.delete(listener); }; },
   };
 }

@@ -16,12 +16,14 @@ import androidx.webkit.WebViewFeature
 class MainActivity : TauriActivity() {
   private var editorWebView: WebView? = null
   private var appDark: Boolean? = null
+  private var appBackground: Int? = null
+  private val appearanceMessage = Regex("(light|dark)(?::(#[0-9a-fA-F]{6}))?")
 
   private fun applyAppearance() {
     val dark = appDark ?: (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES)
     val bars = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark }
     enableEdgeToEdge(bars, bars)
-    window.decorView.setBackgroundColor(if (dark) Color.BLACK else Color.WHITE)
+    window.decorView.setBackgroundColor(appBackground ?: if (dark) Color.BLACK else Color.WHITE)
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,10 +50,14 @@ class MainActivity : TauriActivity() {
     editorWebView = webView
     if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
       WebViewCompat.addWebMessageListener(webView, "nativeAppearance", setOf("http://tauri.localhost")) { _, message, _, isMainFrame, _ ->
-        if (isMainFrame && message.data in listOf("light", "dark")) {
-          appDark = message.data == "dark"
-          applyAppearance()
-        }
+        if (!isMainFrame) return@addWebMessageListener
+        val (theme, color) = message.data?.let(appearanceMessage::matchEntire)?.destructured ?: return@addWebMessageListener
+        val dark = theme == "dark"
+        val background = color.takeIf { it.isNotEmpty() }?.let(Color::parseColor)
+        if (dark == appDark && background == appBackground) return@addWebMessageListener
+        appDark = dark
+        appBackground = background
+        applyAppearance()
       }
     }
     ViewCompat.requestApplyInsets(findViewById(android.R.id.content))

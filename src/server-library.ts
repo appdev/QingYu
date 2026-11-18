@@ -51,7 +51,7 @@ export class ServerLibrary {
         : { kind: 'createNote', id: note.id, folderId: note.folderId, title: note.title ?? '', source: note.source };
     } else {
       body = { kind: 'updateNote', id: note.id, version: this.versions[note.id], source: note.source,
-        title: note.title ?? null, pinned: Boolean(note.pinned), trashed: Boolean(note.trashed), folderId: note.folderId };
+        title: note.title ?? null, pinned: Boolean(note.pinned), trashed: Boolean(note.trashed), folderId: note.folderId, share: note.share ?? null };
     }
     const snapshot = await request('/commands', body);
     this.clearDraft(note.id, note.source);

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { mountSettings } from '../src/settings-view';
 import { libraryLocation } from '../src/library-settings';
 import { preferences } from '../src/preferences';
 import { invoke } from '@tauri-apps/api/core';
 import type { SyncClient } from '../src/sync-session';
+import { s3Defaults } from '../src/sync-store';
 vi.hoisted(() => { Object.assign(window, { __TAURI_INTERNALS__: {} }); vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
 vi.mock('../src/library-settings', async importOriginal => ({
   ...await importOriginal<typeof import('../src/library-settings')>(),
@@ -17,6 +18,12 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async (command: string) =
   return { shortcut: 'Alt+Super+KeyM', active: true, recording: false, error: null, defaultShortcut: 'Alt+Super+KeyM' };
 }) }));
 const config = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'test', accessKeyId: '', secretAccessKey: '' };
+beforeEach(() => {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value(this: HTMLDialogElement, result = '') { this.returnValue = result; this.open = false; this.dispatchEvent(new Event('close')); } },
+  });
+});
 
 it('starts and stops the desktop API and copies a self-contained authenticated MCP config', async () => {
   const connection = { url: 'http://127.0.0.1:8787/mcp', token: 'synthetic-token' };
@@ -31,7 +38,7 @@ it('starts and stops the desktop API and copies a self-contained authenticated M
   });
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-  const client: SyncClient = { load: async () => config, save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
+  const client: SyncClient = { load: async () => config, save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
   const root = document.body.appendChild(document.createElement('div'));
   const view = mountSettings(root, client, vi.fn());
   try {
@@ -61,7 +68,7 @@ it('starts and stops the desktop API and copies a self-contained authenticated M
 
 it('shows the current notes directory, changes it immediately and keeps it on cancellation or error', async () => {
   vi.mocked(libraryLocation).mockResolvedValue('/Users/test/Documents/Notes');
-  const client: SyncClient = { load: async () => config, save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
+  const client: SyncClient = { load: async () => config, save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
   const root = document.createElement('div'); document.body.append(root); const view = mountSettings(root, client, vi.fn());
   const general = root.querySelector('#settings-panel-general')!;
   expect([...general.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[name=buttonDisplay], [name=alwaysOnTop], [name=previewWidth]')].map(control => control.name))
@@ -82,7 +89,7 @@ it('recovers storage settings after an initial timeout without keeping an error 
   const timeout = new Error('主窗口未响应');
   vi.mocked(libraryLocation).mockRejectedValueOnce(timeout).mockResolvedValue('/Users/test/Documents/Ready');
   const load = vi.fn().mockRejectedValueOnce(timeout).mockResolvedValue({ ...config, mode: 's3' });
-  const client: SyncClient = { load, save: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
+  const client: SyncClient = { load, save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
   const root = document.body.appendChild(document.createElement('div'));
   const view = mountSettings(root, client, vi.fn());
   try {
@@ -107,7 +114,7 @@ it('switches between cloud plan and S3 only after saving the active mode', async
   vi.mocked(libraryLocation).mockResolvedValue('/Users/test/Documents/Notes');
   const profile = { ...config, endpoint: 'https://unit.invalid', accessKeyId: 'test-id', secretAccessKey: 'test-secret' };
   const save = vi.fn().mockResolvedValue(undefined);
-  const client: SyncClient = { load: async () => profile, save, flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
+  const client: SyncClient = { load: async () => profile, save, test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
   const root = document.body.appendChild(document.createElement('div'));
   const view = mountSettings(root, client, vi.fn());
   try {
@@ -118,14 +125,25 @@ it('switches between cloud plan and S3 only after saving the active mode', async
     const field = s3.querySelector<HTMLInputElement>('[name=secretAccessKey]')!;
     expect(mode.value).toBe('s3');
     expect(cloud.hidden).toBe(true);
-    function select(value: string) { mode.value = value; mode.dispatchEvent(new Event('change')); }
+    function select(value: string) {
+      mode.value = value; mode.dispatchEvent(new Event('change'));
+      root.querySelector<HTMLButtonElement>('.settings-provider-confirmation [data-continue]')!.click();
+    }
+    mode.value = 'cloud'; mode.dispatchEvent(new Event('change'));
+    const dialog = root.querySelector<HTMLDialogElement>('.settings-provider-confirmation')!;
+    expect(dialog.open).toBe(true); expect(dialog.querySelector('h2')?.textContent).toBe('切换云存储提供商');
+    expect(dialog.querySelector('p')?.textContent).toBe('切换同步提供商前，需要检查资源和历史快照的完整性，必要时会从当前云端下载缺失内容，可能需要较长时间。是否继续？');
+    expect(save).not.toHaveBeenCalled();
+    dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.click();
+    await vi.waitFor(() => expect(mode.disabled).toBe(false));
+    expect(mode.value).toBe('s3'); expect(save).not.toHaveBeenCalled();
     save.mockRejectedValueOnce(new Error('保存失败'));
     select('cloud');
     await vi.waitFor(() => expect(mode.disabled).toBe(false));
     expect(mode.value).toBe('s3'); expect(cloud.hidden).toBe(true);
     select('cloud');
     await vi.waitFor(() => expect(cloud.hidden).toBe(false));
-    expect(save).toHaveBeenLastCalledWith({ ...profile, mode: 'cloud' });
+    expect(save).toHaveBeenLastCalledWith({ ...profile, ...s3Defaults, mode: 'cloud' });
     expect(s3.closest('[hidden]')).not.toBeNull(); expect(field.disabled).toBe(true);
     s3.dispatchEvent(new Event('submit', { cancelable: true }));
     expect(client.run).not.toHaveBeenCalled();
@@ -145,7 +163,7 @@ it('can sync now with automatic cloud sync off and saves the toggle for the sign
     return implementation(command, args);
   });
   const run = vi.fn().mockResolvedValue(undefined);
-  const client: SyncClient = { load: async () => ({ ...config, mode: 'cloud' }), save: vi.fn(), flush: vi.fn(), run, subscribe: () => () => {} };
+  const client: SyncClient = { load: async () => ({ ...config, mode: 'cloud' }), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run, subscribe: () => () => {} };
   const root = document.body.appendChild(document.createElement('div'));
   const view = mountSettings(root, client, vi.fn());
   try {
@@ -156,7 +174,7 @@ it('can sync now with automatic cloud sync off and saves the toggle for the sign
     expect(auto.checked).toBe(false); expect(interval.value).toBe('3');
     await vi.waitFor(() => expect(manual.disabled).toBe(false));
     manual.click();
-    await vi.waitFor(() => expect(run).toHaveBeenCalledWith(config, 'fixture-account'));
+    await vi.waitFor(() => expect(run).toHaveBeenCalledWith({ ...config, ...s3Defaults }, 'fixture-account'));
     auto.click();
     expect(preferences.value.autoSyncCloudAccount).toBe('fixture-account');
     interval.value = '5'; interval.dispatchEvent(new Event('change'));

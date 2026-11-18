@@ -5,7 +5,8 @@ import { Notebook, libraryKey, type Library } from '../src/notebook';
 import { syncNotebook } from '../src/sync';
 import { createStore, normalizeSettings, type S3Settings } from '../src/sync-store';
 import * as core from '../src/vendor/mdsync/core';
-import type { Asset, AssetSync } from '../src/sync-files';
+import { mockAssetDisk } from './fixtures/sync-assets';
+import type { Asset } from '../src/sync-files';
 
 vi.hoisted(() => {
   Object.assign(globalThis, { window: globalThis });
@@ -20,13 +21,7 @@ function device(library = fixture) {
   const storage = { getItem: (key: string) => key === libraryKey ? value : null,
     setItem: (_key: string, next: string) => { if (fail) throw new Error('test quota'); value = next; } };
   const book = new Notebook(storage, '');
-  let assets: Asset[] = [];
-  vi.spyOn(book, 'readSyncAssets').mockImplementation(async () => structuredClone(assets));
-  const commit = book.commitSync.bind(book);
-  vi.spyOn(book, 'commitSync').mockImplementation(async (library, checkpoint, expected, sync?: AssetSync) => {
-    await commit(library, checkpoint, expected, sync); assets = structuredClone(sync?.after ?? []);
-  });
-  return { book, storage, setFail: (next: boolean) => { fail = next; }, assets: () => assets, setAssets(next: Asset[]) { assets = structuredClone(next); } };
+  return { ...mockAssetDisk(book), storage, setFail: (next: boolean) => { fail = next; } };
 }
 
 describe.skipIf(!process.env.MIAOYAN_S3_CONFIG)('real S3 integration (explicit private config only)', () => {

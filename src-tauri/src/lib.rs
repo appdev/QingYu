@@ -19,6 +19,7 @@ pub fn run() {
         .manage(sync_http::SyncHttp::default())
         .manage(client_account::ClientAccount::default())
         .manage(file_library::FileLibrary::default())
+        .manage(file_library::assets::AssetStage::default())
         .manage(file_library::workspace::Workspace::default())
         .manage(ExitPermit(std::sync::atomic::AtomicBool::new(false)));
     #[cfg(target_os = "ios")]
@@ -26,6 +27,7 @@ pub fn run() {
     #[cfg(desktop)]
     let builder = builder
         .manage(activation_shortcut::ActivationShortcut::default())
+        .manage(menu_bar::MenuBar::default())
         .manage(file_library::api::desktop::LocalMcp::default());
     builder.setup(|app| {
             #[cfg(desktop)]
@@ -38,8 +40,19 @@ pub fn run() {
             settings::install_menu(app)?;
             #[cfg(desktop)]
             file_library::install_menu(app)?;
+            // 主窗口在配置里是隐藏的，页面排好版后再显示；手机上没有这一步，直接显示。
             #[cfg(desktop)]
-            file_library::workspace::request(app.handle(), std::env::args_os().skip(1).filter(|arg| !arg.to_string_lossy().starts_with('-')).map(std::path::PathBuf::from));
+            file_library::workspace::show_when_ready(app.handle(), "main");
+            #[cfg(mobile)]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+            }
+            // 没有带文件启动时不走 request：它会立即显示主窗口，抢在页面排好版之前。
+            #[cfg(desktop)]
+            {
+                let paths: Vec<_> = std::env::args_os().skip(1).filter(|arg| !arg.to_string_lossy().starts_with('-')).map(std::path::PathBuf::from).collect();
+                if !paths.is_empty() { file_library::workspace::request(app.handle(), paths); }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -56,10 +69,10 @@ pub fn run() {
             sync_profile::sync_load_profile,
             sync_profile::sync_save_profile,
             note_picture::note_picture_action,
+            note_picture::note_share_text,
             create_calendar_event,
             note_ui::show_note_info,
             note_ui::close_note_info,
-            note_ui::prompt_folder_name,
             note_ui::link_applications,
             note_ui::open_external_link,
             link_preview::fetch_link_preview,
@@ -75,6 +88,7 @@ pub fn run() {
             file_library::workspace::workspace_requests,
             file_library::workspace::workspace_open,
             file_library::workspace::workspace_open_note,
+            file_library::workspace::workspace_window_ready,
             file_library::workspace::workspace_note_snapshot,
             file_library::workspace::workspace_snapshot,
             file_library::workspace::workspace_paths,
@@ -97,6 +111,13 @@ pub fn run() {
             file_library::history::library_note_version,
             file_library::history::library_restore_note_version,
             file_library::assets::library_sync_assets,
+            file_library::assets::library_asset_placeholders,
+            file_library::assets::library_materialize_asset,
+            file_library::assets::library_delete_asset_placeholder,
+            file_library::assets::library_read_asset,
+            file_library::assets::library_stage_asset,
+            file_library::assets::library_read_staged_asset,
+            file_library::assets::library_release_asset_stage,
             file_library::storage_usage::library_storage_usage,
             file_library::attachments::attachment_import,
             file_library::attachments::attachment_open,
@@ -112,14 +133,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             settings::editor_menu_state,
             library_finish_exit,
-            activation_shortcut_command
+            activation_shortcut_command,
+            #[cfg(desktop)]
+            menu_bar::menu_bar_hide,
+            #[cfg(desktop)]
+            menu_bar::menu_bar_fit,
+            #[cfg(desktop)]
+            menu_bar::menu_bar_open_main,
+            #[cfg(desktop)]
+            menu_bar::menu_bar_quit
         ])
         .on_window_event(|window, event| {
             #[cfg(desktop)]
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let event = if file_library::workspace::has_documents(window.app_handle()) { "library-close-main" } else { "library-before-exit" };
+                    // 还有文档窗口、或菜单栏里有轻羽时，关掉主窗口只是把它藏起来，不退出。
+                    let keep = file_library::workspace::has_documents(window.app_handle()) || menu_bar::shown(window.app_handle());
+                    let event = if keep { "library-close-main" } else { "library-before-exit" };
                     let _ = window.emit_to(window.label(), event, ());
                 }
             } else if file_library::workspace::is_document(window.app_handle(), window.label()) {
@@ -181,6 +212,8 @@ async fn create_calendar_event(app: tauri::AppHandle, window: tauri::WebviewWind
 }
 #[cfg(all(feature = "app", desktop))]
 mod activation_shortcut;
+#[cfg(all(feature = "app", desktop))]
+mod menu_bar;
 
 #[cfg(feature = "app")]
 #[tauri::command]

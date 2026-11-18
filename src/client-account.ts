@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { formatStorageBytes } from './library-settings';
 
+export const guestAccountIcon = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="4.4" r="2.8"/><path d="M1.9 13.5c0-2.7 2.7-4.6 6.1-4.6s6.1 1.9 6.1 4.6c0 .7-.5 1.1-1.2 1.1H3.1c-.7 0-1.2-.4-1.2-1.1Z"/></svg>';
+
 type AccountInfo = {
   profile: { id: string; name: string | null; displayName: string | null; email: string | null; emailVerified: boolean; avatar: string | null };
   subscription: { active: boolean; expiresAt: number | string | null; quotaBytes: number; emailVerified: boolean; emailVerificationRequired: boolean } | null;
@@ -11,7 +13,7 @@ type AccountInfo = {
 type Redemption = { years: number; redeemedTime: number | string };
 type AccountPage = 'account' | 'personal' | 'signIn' | 'storage';
 const profileChanged = 'client-profile-changed';
-export type CloudSyncAccess = { accountId?: string; reason: string };
+export type CloudSyncAccess = { accountId?: string; signedInAccountId?: string; reason: string };
 const dateTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 function accountDate(timestamp: number | string | null | undefined) {
   if (!timestamp) return '—';
@@ -94,7 +96,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   }
 
   const panel = mount('account', `
-    <div class="settings-identity"><span class="settings-avatar" aria-hidden="true">Q</span><strong data-account-name>本地账户</strong></div>
+    <div class="settings-identity"><span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span><strong data-account-name>本地账户</strong></div>
     <h2>轻羽账号</h2>
     <div class="client-list">
       <button type="button" class="settings-row settings-disclosure client-sign-in-entry" aria-haspopup="dialog" hidden>
@@ -109,7 +111,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       <button type="button" class="settings-row" data-retry hidden>重新读取账户</button>
     </div>
     <div class="client-list client-storage-link">
-      <button type="button" class="settings-row settings-disclosure" data-settings-target="storage"><span class="settings-label"><span>存储</span><small data-account-usage hidden></small></span></button>
+      <button type="button" class="settings-row settings-disclosure" data-settings-target="storage"><span class="settings-label"><span>存储与同步</span><small data-account-usage hidden></small></span></button>
     </div>
     <dialog class="client-sign-in" aria-label="登录轻羽">
       <button type="button" class="client-text-button client-sign-in-close" aria-label="关闭登录">×</button>
@@ -134,7 +136,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     </dialog>`);
   const personal = mount('personal', `
     <div class="client-list" data-account-details hidden>
-      <div class="settings-row"><span class="settings-label"><span>头像</span></span><span class="settings-avatar" aria-hidden="true">Q</span></div>
+      <div class="settings-row"><span class="settings-label"><span>头像</span></span><span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span></div>
       <div class="settings-row"><span class="settings-label"><span>显示名</span></span><span data-display-name></span></div>
       <button type="button" class="settings-row" data-portal="account"><span class="settings-label"><span>在轻羽门户管理个人信息</span></span><span aria-hidden="true">↗</span></button>
     </div>
@@ -212,7 +214,6 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     if (icon) tabAvatar.append(icon);
     tab.prepend(tabAvatar);
   }
-  const tabIcon = tabAvatar.firstElementChild;
   const redeem = storage.querySelector<HTMLButtonElement>('[data-open-redeem]')!;
   const redeemForm = storage.querySelector<HTMLFormElement>('.client-redeem')!;
   const code = redeemForm.querySelector('input')!;
@@ -313,8 +314,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     const tabName = tab.querySelector('strong');
     if (tabName) { tabName.textContent = name; tab.ariaLabel = name; }
     for (const avatar of [tab, panel, personal].flatMap(container => [...container.querySelectorAll('.settings-avatar')])) {
-      const initials = data ? Array.from(name).slice(0, 2).join('') : 'Q';
-      avatar.replaceChildren(accountPhoto(data) ?? (avatar === tabAvatar && !data ? tabIcon ?? initials : initials));
+      if (data) avatar.replaceChildren(accountPhoto(data) ?? Array.from(name).slice(0, 2).join(''));
+      else avatar.innerHTML = guestAccountIcon;
     }
     panel.querySelector('[data-account-name]')!.textContent = name;
     openSignIn.hidden = info !== null;
@@ -334,6 +335,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     const needsVerification = Boolean(plan && plan.emailVerificationRequired !== false && !verified);
     cloudSync?.({
       accountId: plan?.active && !needsVerification ? data?.id : undefined,
+      signedInAccountId: data?.id,
       reason: !data ? '请登录轻羽' : !plan ? '请刷新套餐与用量'
         : !plan.active ? '套餐未开通或已到期' : needsVerification ? '请先验证邮箱' : '',
     });

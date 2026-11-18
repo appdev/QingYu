@@ -38,9 +38,7 @@
 .note-picture .picture-swatch { width: 22px; height: 22px; padding: 0; flex-shrink: 0; border-radius: 50%; border: 1px solid var(--line); background-position: center; background-size: cover; cursor: pointer; }
 .note-picture .picture-swatch[aria-pressed=true] { outline: 2px solid var(--brand); outline-offset: 1px; }
 .note-picture-actions { display: flex; gap: 6px; justify-content: end; }
-.note-picture-actions button, .note-picture-mode button, .note-picture-done { border: 0; padding: 6px 10px; border-radius: 8px; background: var(--control-fill); color: var(--ink); cursor: pointer; text-align: center; white-space: nowrap; font: inherit; }
-.note-picture-actions button:disabled { opacity: .5; cursor: default; }
-.note-picture-actions .primary-button { background: var(--primary-fill); color: var(--primary-ink); }
+.note-picture-mode button { border: 0; padding: 6px 10px; border-radius: 8px; background: var(--control-fill); color: var(--ink); cursor: pointer; text-align: center; white-space: nowrap; font: inherit; }
 .share-popover .note-picture-actions .primary-button { flex: 1; }
 .note-picture-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 42px); overflow: auto; margin: auto; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--sidebar); color: var(--ink); font: 13px var(--font); }
 .note-picture-dialog::backdrop { background: var(--overlay); }
