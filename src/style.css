@@ -162,6 +162,7 @@ body:has(.format-panel[open], .table-panel[open]) #mobile-tools { display: none;
   display: flex; gap: 4px; margin-inline: -20px; padding-inline: 14px;
   overflow-x: auto; scrollbar-width: none; margin-bottom: 14px;
 }
+html[data-mobile] .format-panel-styles::-webkit-scrollbar { display: none; }
 .format-panel-styles button { padding-inline: 14px; min-height: 44px; color: inherit; flex-shrink: 0; white-space: nowrap; font: inherit; }
 .format-panel-styles [data-format=title] { font-size: 28px; font-weight: 750; }
 .format-panel-styles [data-format=heading] { font-size: 20px; font-weight: 700; }

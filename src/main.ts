@@ -8,7 +8,7 @@ import { firstLocalImage, markdownBody, plainMarkdownLine } from './document-tex
 import { editorItemMove, moveEditorItem, type Format } from './format';
 import { inlineFormatIcons, openEditorFormatPanel } from './editor-format-panel';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
-import { Calendar, FileDown, FolderInput, FolderPlus, Link as LinkIcon, Pin, PinOff, Settings, SquarePen } from 'lucide';
+import { Calendar, FileDown, FileText, FolderInput, FolderPlus, Image, Link as LinkIcon, Notebook as NotebookIcon, Pin, PinOff, Settings, SquarePen } from 'lucide';
 import { createRichEditor, type RichEditor } from './rich-editor';
 import { webLinkPreview, webLinkThumbnail } from './web-link-preview';
 import { isBlankNote, isShared, Notebook, noteTitle, type Note, type NoteShare } from './notebook';
@@ -32,7 +32,7 @@ import { assetBase, attachmentMarkdown, attachmentUrl, openAttachment } from './
 import { MAX_ASSET_BYTES, MAX_ASSETS_TOTAL } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
-import { popupMenu, popupMenuOpen } from './popup-menu';
+import { dismissPopupMenu, popupMenu, popupMenuOpen } from './popup-menu';
 import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink } from './note-links';
 import { createNoteRelationsFooter } from './editor-note-relations';
 import { hostMenuBar } from './menu-bar-host';
@@ -689,10 +689,13 @@ mobileTools.append(mobileToolsGroup);
 const attachmentInput = document.createElement('input');
 attachmentInput.type = 'file'; attachmentInput.multiple = true; attachmentInput.hidden = true;
 document.body.append(attachmentInput);
-const attachButton = $('#attach-button');
+const attachButton = $<HTMLButtonElement>('#attach-button');
 attachButton.setAttribute('aria-haspopup', 'menu');
-function openAttachmentMenu(anchor: HTMLElement) {
+function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
   const box = anchor.getBoundingClientRect();
+  const accessory = anchor.closest('#mobile-tools');
+  if (accessory && anchor.getAttribute('aria-expanded') === 'true') { dismissPopupMenu(); return; }
+  const icon = (node: Parameters<typeof createLucideIcon>[1]) => accessory ? createLucideIcon(document, node, '') : undefined;
   const insertInTable = richEditor.captureTableInsertion();
   const choose = (accept: string) => {
     richEditor.captureSelection();
@@ -712,12 +715,12 @@ function openAttachmentMenu(anchor: HTMLElement) {
     }, focusEditor);
   };
   void popupMenu([
-    { text: '选择照片或视频…', enabled: native || notebook.server, needsUserActivation: true, run: () => choose('image/*,video/*') },
-    { text: '添加文件…', enabled: native || notebook.server, needsUserActivation: true, run: () => choose('') },
+    { text: '选择照片或视频…', icon: icon(Image), enabled: native || notebook.server, needsUserActivation: true, run: () => choose('image/*,video/*') },
+    { text: '添加文件…', icon: icon(FileText), enabled: native || notebook.server, needsUserActivation: true, run: () => choose('') },
     { text: '' },
-    { text: '链接到笔记…', run: linkNote },
-    { text: '添加链接', run: () => applyFormat('link') },
-  ], box.left - 90, box.bottom + 6, message => setStatus(message, true), focusEditor, '添加附件');
+    { text: '链接到笔记…', icon: icon(NotebookIcon), run: linkNote },
+    { text: '添加链接', icon: icon(LinkIcon), run: () => applyFormat('link') },
+  ], box.left - 90, box.bottom + 6, message => setStatus(message, true), focusEditor, '添加附件', undefined, 0, accessory ? { anchor, keyboard, above: true } : undefined);
 }
 function attachFromKeyboard() {
   if (!currentWritingEditor()) return;
@@ -726,10 +729,10 @@ function attachFromKeyboard() {
   attachmentInput.accept = '';
   attachmentInput.click();
 }
-attachButton.onclick = () => openAttachmentMenu(attachButton);
+attachButton.onclick = event => openAttachmentMenu(attachButton, event.detail === 0);
 const quickAttach = attachButton.cloneNode(true) as HTMLButtonElement;
 quickAttach.removeAttribute('id');
-quickAttach.onclick = () => openAttachmentMenu(quickAttach);
+quickAttach.onclick = event => openAttachmentMenu(quickAttach, event.detail === 0);
 mobileToolsGroup.append(quickAttach);
 const dismissKeyboard = document.createElement('button');
 dismissKeyboard.type = 'button';

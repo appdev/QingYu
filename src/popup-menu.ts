@@ -169,7 +169,7 @@ document.addEventListener('keydown', event => {
 }, true);
 window.addEventListener('resize', dismissPopupMenu);
 
-export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y: number, error: (message: string) => void, restoreFocus: () => void, label = '操作菜单', preview?: HTMLElement, quickActions = 0, toolbar?: { anchor: HTMLButtonElement; keyboard: boolean }) {
+export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y: number, error: (message: string) => void, restoreFocus: () => void, label = '操作菜单', preview?: HTMLElement, quickActions = 0, toolbar?: { anchor: HTMLButtonElement; keyboard: boolean; above?: boolean }) {
   dismissPopupMenu(); const request = generation;
   const anchor = toolbar?.anchor;
   const root = document.documentElement;
@@ -188,7 +188,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
     document.body.append(backdrop);
     toolbarBackdrop = backdrop;
   }
-  if (anchor && glassyToolbarPreview) {
+  if (anchor && glassyToolbarPreview && !toolbar?.above) {
     const { createGlassyMenu } = await import('./glassy-menu-preview');
     if (request !== generation || !anchor.isConnected) return;
     const preview = createGlassyMenu(anchor, items, label, Boolean(keepEditorFocus), run, () => {
@@ -277,7 +277,13 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
     container.append(menu);
     const bottom = anchor ? window.visualViewport?.height ?? innerHeight : innerHeight;
     if (anchor && !trigger) {
-      if (desktopToolbar) {
+      if (toolbar?.above) {
+        const box = anchor.getBoundingClientRect();
+        const edge = Math.min(box.top, bottom);
+        menu.style.maxHeight = `${Math.max(0, edge - 16)}px`;
+        left = box.left + (box.width - menu.offsetWidth) / 2;
+        top = edge - menu.offsetHeight - 8;
+      } else if (desktopToolbar) {
         const box = anchor.getBoundingClientRect();
         left = Math.min(box.left - 8, innerWidth - menu.offsetWidth - 8);
         top = box.bottom + 4;
@@ -287,7 +293,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
         top = Math.max(4, box.top - parseFloat(getComputedStyle(content).paddingTop));
       }
     }
-    if (anchor) menu.style.maxHeight = `${Math.max(0, bottom - top - 8)}px`;
+    if (anchor && (!toolbar?.above || trigger)) menu.style.maxHeight = `${Math.max(0, bottom - top - 8)}px`;
     if (trigger && left + menu.offsetWidth > innerWidth - 4) left = container.getBoundingClientRect().left - menu.offsetWidth + 4;
     menu.style.left = `${Math.max(4, Math.min(left, innerWidth - menu.offsetWidth - 4))}px`;
     menu.style.top = `${Math.max(4, Math.min(top, bottom - menu.offsetHeight - 4))}px`;

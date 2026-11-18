@@ -1,7 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
+import { CircleX, Clipboard, Globe, Image, Link, Share2 } from 'lucide';
 import { native } from './preferences';
-import { mountMockWebShare, type ShareStore } from './mock-web-share';
+import { copyShareLink, mockWebShareActions, mountMockWebShare, type ShareStore } from './mock-web-share';
 import { alertActions, showAlert } from './alert-dialog';
+import { dismissPopupMenu, popupMenu, type MenuItem } from './popup-menu';
+import { createLucideIcon } from './vendor/markra/shared/lucide';
 
 type PickerChoice = { title: string; target: string; detail: string };
 type PickerChoices = (query: string) => PickerChoice[];
@@ -122,6 +125,50 @@ export function showLockNotePanel() {
 
 export function showShare(anchor: HTMLElement, title: string, text: string, report: (message: string) => void, picture?: import('./note-picture').PictureRequest, noteKey: string = crypto.randomUUID(), shareStore?: ShareStore) {
   document.querySelector<HTMLElement>('.share-popover')?.hidePopover?.();
+  const root = document.documentElement;
+  const nativeShare = native && (root.dataset.platform === 'macos' || root.hasAttribute('data-mobile'));
+  async function sendCopy() {
+    try {
+      if (nativeShare) {
+        const { x, y, width, height } = anchor.getBoundingClientRect();
+        await invoke('note_share_text', { title, text, anchor: { x, y, width, height } });
+      } else await navigator.share({ title, text });
+      return true;
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === 'AbortError')) report('无法打开系统分享，请重试或复制为纯文本');
+      return false;
+    }
+  }
+  async function copyText() {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch { report('无法复制，请检查剪贴板权限'); return false; }
+  }
+
+  if (native && root.hasAttribute('data-mobile') && anchor instanceof HTMLButtonElement && anchor.id === 'share-button' && !anchor.closest('[data-mobile-wide]')) {
+    if (anchor.getAttribute('aria-expanded') === 'true') { dismissPopupMenu(); return; }
+    const web = mockWebShareActions(noteKey, title, text, anchor, shareStore);
+    const url = web.url, enabled = !web.pending;
+    const restore = () => anchor.focus({ preventScroll: true });
+    const icon = (node: Parameters<typeof createLucideIcon>[1]) => createLucideIcon(document, node, '');
+    const items: MenuItem[] = url ? [
+      { text: '复制链接', icon: icon(Link), enabled, run: () => copyShareLink(url) },
+      { text: '打开网页', icon: icon(Globe), enabled, run: web.preview },
+      { text: '停止发布', icon: icon(CircleX), enabled, destructive: true, run: web.stop },
+      { text: '' },
+    ] : [{ text: '分享链接…', icon: icon(Link), enabled, run: web.publish }];
+    items.push(
+      { text: '发送副本…', icon: icon(Share2), run: async () => { await sendCopy(); } },
+      { text: '复制为纯文本', icon: icon(Clipboard), run: async () => { await copyText(); } },
+    );
+    if (picture) items.push({ text: '分享为图片…', icon: icon(Image), async run() {
+      const { showNotePicture } = await import('./note-picture');
+      showNotePicture(picture, restore);
+    } });
+    anchor.setAttribute('aria-haspopup', 'menu');
+    void popupMenu(items, 0, 0, report, restore, '分享', undefined, 0, { anchor, keyboard: anchor.matches(':focus-visible') });
+    return;
+  }
+
   const panel = document.createElement('div'); panel.className = 'share-popover'; panel.setAttribute('popover', 'auto'); panel.role = 'dialog'; panel.ariaLabel = '分享';
   panel.addEventListener('keydown', event => event.stopPropagation());
   const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = '分享方式';
@@ -137,20 +184,12 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     const detail = document.createElement('p'); detail.className = 'share-description';
     detail.textContent = ['发送笔记的当前副本，之后的修改不会同步给收件人。', '获得链接的人都可查看。网页会随笔记更新，直到停止发布。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
     if (index === 0) {
-      const nativeShare = native && (document.documentElement.dataset.platform === 'macos' || document.documentElement.hasAttribute('data-mobile'));
       if (nativeShare || typeof navigator.share === 'function') {
         const send = document.createElement('button'); send.textContent = '分享…'; send.className = 'primary-button share-send';
         send.onclick = async () => {
           send.disabled = true;
-          try {
-            if (nativeShare) {
-              const { x, y, width, height } = anchor.getBoundingClientRect();
-              await invoke('note_share_text', { title, text, anchor: { x, y, width, height } });
-            } else await navigator.share({ title, text });
-            panel.hidePopover();
-          } catch (err) {
-            if (!(err instanceof DOMException && err.name === 'AbortError')) report('无法打开系统分享，请重试或复制为纯文本');
-          } finally { send.disabled = false; }
+          try { if (await sendCopy()) panel.hidePopover(); }
+          finally { send.disabled = false; }
         };
         content.append(send);
       } else {
@@ -158,7 +197,7 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
         unavailable.textContent = '当前环境不支持系统分享，可复制为纯文本后发送。'; content.append(unavailable);
       }
       const copy = document.createElement('button'); copy.textContent = '复制为纯文本'; copy.className = 'share-copy';
-      copy.onclick = async () => { try { await navigator.clipboard.writeText(text); panel.hidePopover(); } catch { report('无法复制，请检查剪贴板权限'); } }; content.append(copy);
+      copy.onclick = async () => { if (await copyText()) panel.hidePopover(); }; content.append(copy);
       return;
     } else if (index === 1) {
       mountMockWebShare(content, noteKey, title, text, anchor, shareStore);

@@ -5,6 +5,7 @@ import { syncNotebook } from '../src/sync';
 import { createStore, normalizeSettings, openKey, testS3Connection } from '../src/sync-store';
 import * as core from '../src/vendor/mdsync/core';
 import { mockAssetDisk } from './fixtures/sync-assets';
+import { createAssetFetcher, downloadAsset } from '../src/asset-fetch';
 
 vi.hoisted(() => {
   Object.assign(globalThis, { window: globalThis });
@@ -172,6 +173,31 @@ describe('MDSync application synchronization', () => {
     expect(b.assets()).toEqual(a.assets());
     expect(b.placeholders()).toEqual({});
     expect(b.book.data.sync?.version).toBe(1);
+  });
+  it('coalesces downloads, verifies bytes and propagates only an explicit placeholder deletion', async () => {
+    const large = Array<number>(1_000_000).fill(7);
+    const a = assetsBook([{ path: 'a.pdf', bytes: large, modified: 1 }, { path: 'b.pdf', bytes: large, modified: 2 }]);
+    const b = assetsBook([]);
+    await sync(a.book);
+    const demand = () => syncNotebook(b.book, { ...config, assetDownload: 'on-demand' });
+    await demand();
+    vi.spyOn(b.book, 'root', 'get').mockReturnValue('/test/library');
+    const entry = b.placeholders()['a.pdf']!;
+    const storage = createStore(normalizeSettings(config));
+    await expect(downloadAsset(storage, entry.hash, entry.size, async () => new Uint8Array(entry.size))).rejects.toThrow('附件内容校验失败');
+    expect(b.assets()).toEqual([]);
+    const connect = vi.fn(async () => storage);
+    const { fetchAsset } = createAssetFetcher(b.book, connect);
+    const first = fetchAsset('a.pdf');
+    expect(fetchAsset('a.pdf')).toBe(first);
+    await expect(first).resolves.toBe(entry.hash);
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(b.assets()[0]).toEqual(a.assets()[0]);
+    expect(Object.keys(b.placeholders())).toEqual(['b.pdf']);
+    await b.book.removeAssetPlaceholder('/test/library', 'b.pdf', b.placeholders()['b.pdf']!.hash);
+    await demand(); await sync(a.book);
+    expect(a.assets().map(asset => asset.path)).toEqual(['a.pdf']);
+    expect(b.assets()).toEqual(a.assets());
   });
   it('persists the scan cache after a pull and reads only changed disk attachments', async () => {
     const a = assetsBook([{ path: 'a.pdf', bytes: [0, 255], modified: 1 }, { path: 'b.pdf', bytes: [255], modified: 2 }]);

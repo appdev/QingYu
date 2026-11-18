@@ -154,7 +154,8 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
           await invoke('account_check_sync', { accountId });
           return prepare();
         } : prepare;
-        const result = await syncNotebook(book, next, message => publish({ message }), beforeCommit);
+        const result = await syncNotebook(book, { ...next, ...(connection.assetDownload ? { assetDownload: connection.assetDownload } : {}) },
+          message => publish({ message }), beforeCommit);
         refresh(); publish({ lastSyncedAt: Date.now(), lastSyncedAccount: accountId, message: `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
       } catch (error) {
         let message = redact(error, connection);

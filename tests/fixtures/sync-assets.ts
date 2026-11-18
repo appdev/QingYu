@@ -28,6 +28,19 @@ export function mockAssetDisk(book: Notebook, initial: Asset[] = []) {
   vi.spyOn(book, 'releaseAssetStage').mockImplementation(async batch => {
     for (const key of stages.keys()) if (key.startsWith(`${batch}/`)) stages.delete(key);
   });
+  function removePlaceholder(path: string, hash: string) {
+    if (placeholders[path]?.hash !== hash || assets.some(asset => asset.path === path)) throw new Error('附件占位已变化');
+    delete placeholders[path];
+    const { target, state } = book.data.sync!;
+    const placeholderCount = Object.keys(placeholders).length;
+    book.data.sync = placeholderCount ? { target, state, version: 2, placeholderCount } : { target, state, version: 1 };
+  }
+  vi.spyOn(book, 'materializeAsset').mockImplementation(async (_root, path, hash, bytes) => {
+    const entry = placeholders[path]!;
+    removePlaceholder(path, hash);
+    assets.push({ path, modified: entry.mtime, bytes: Array.from(bytes) });
+  });
+  vi.spyOn(book, 'removeAssetPlaceholder').mockImplementation(async (_root, path, hash) => { removePlaceholder(path, hash); });
   const commit = book.commitSync.bind(book);
   vi.spyOn(book, 'commitSync').mockImplementation(async (library, checkpoint, expected, sync, location) => {
     expect(sync?.before).toEqual(metadata());
