@@ -1150,6 +1150,11 @@ impl DiskLibrary {
         let mut operations = match assets { Some(sync) if intent == "sync" => assets::operations(&self.root, sync, &mut asset_stage, &self.data, &mut next)?, Some(_) => return Err("附件只能随同步事务提交".into()), None => vec![] };
         let generation = self.revision + 1;
         let committed_at = now() as u64;
+        // A sync result carries logical names. Native attachment-only commits keep the existing aliases.
+        let sync_names = intent == "sync" && next.sync.as_ref().is_some_and(|sync| {
+            sync.is_object() && sync.get("localNoteNames").is_none()
+        });
+        let mut local_note_names = serde_json::Map::new();
         let mut occupied: HashSet<String> = HashSet::new();
         for folder in &mut next.folders {
             if let Some(old) = self.data.folders.iter().find(|f| f.id == folder.id) {
@@ -1172,6 +1177,7 @@ impl DiskLibrary {
         }
         let mut ids = HashSet::new();
         for note in &mut next.notes {
+            let requested_name = sync_names.then(|| (note.title.clone(), note.filename.clone()));
             if !ids.insert(note.id.clone()) {
                 return Err("笔记 ID 重复".into());
             }
@@ -1191,7 +1197,16 @@ impl DiskLibrary {
                     return Err("文件内容损坏或不可读，已阻止保存".into());
                 }
                 let moving = note.folder_id != old.folder_id || note.trashed != old.trashed;
-                let renaming = note.title != old.title && !moving;
+                let alias = sync_names
+                    .then(|| self.data.sync.as_ref()?.get("localNoteNames")?.get(&note.id))
+                    .flatten();
+                let keeping_alias = alias.is_some_and(|alias| {
+                    alias["localTitle"].as_str() == old.title.as_deref()
+                        && alias["localFilename"].as_str() == old.filename.as_deref()
+                        && alias["title"].as_str() == note.title.as_deref()
+                        && alias["filename"].as_str() == note.filename.as_deref()
+                });
+                let renaming = note.title != old.title && !moving && !keeping_alias;
                 if (changed || moving || renaming) && !self.bytes.contains_key(&old.id) {
                     return Err("文件不可读，未覆盖原文件".into());
                 }
@@ -1230,11 +1245,21 @@ impl DiskLibrary {
                     );
                     let destination = checked(&self.root, &path)?;
                     if path != old.path
-                        && destination.exists()
-                        && !(path.to_lowercase() == old.path.to_lowercase()
-                            && same_file(&checked(&self.root, &old.path)?, &destination))
+                        && (occupied.contains(&path.to_lowercase())
+                            || destination.exists()
+                                && !(path.to_lowercase() == old.path.to_lowercase()
+                                    && same_file(&checked(&self.root, &old.path)?, &destination)))
                     {
-                        return Err("该文件夹中已有同名笔记，未覆盖".into());
+                        if !sync_names {
+                            return Err("该文件夹中已有同名笔记，未覆盖".into());
+                        }
+                        let ext = Path::new(&old.path).extension().unwrap().to_string_lossy();
+                        path = unique(
+                            &self.root, target_folder, note.title.as_deref().unwrap_or(""),
+                            &ext, &mut occupied, intent,
+                        )?;
+                    } else if sync_names {
+                        occupied.insert(path.to_lowercase());
                     }
                 }
                 if path != old.path {
@@ -1327,6 +1352,17 @@ impl DiskLibrary {
             note.filename = Path::new(&note.path)
                 .file_name()
                 .map(|n| n.to_string_lossy().into());
+            if let Some((title, filename)) = requested_name {
+                if title != note.title || filename != note.filename {
+                    local_note_names.insert(note.id.clone(), serde_json::json!({
+                        "title": title, "filename": filename,
+                        "localTitle": note.title, "localFilename": note.filename,
+                    }));
+                }
+            }
+        }
+        if !local_note_names.is_empty() {
+            next.sync.as_mut().unwrap()["localNoteNames"] = local_note_names.into();
         }
         let mut destinations = HashSet::new();
         if next

@@ -438,6 +438,33 @@ fn combined_rename_and_body_save_is_one_transaction_and_file_extension_survives(
     assert!(!temp.path().join("before.md").exists());
     assert_eq!(fs::read(temp.path().join("after.md")).unwrap(), b"new");
 }
+
+#[test]
+fn sync_preserves_distinct_notes_with_the_same_logical_filename() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = open(temp.path());
+    let local = create(&mut store, Some("轻羽 Markdown 语法指南"), "local welcome");
+    let mut peer = local.clone();
+    peer.id = "peer-welcome".into();
+    peer.source = "peer welcome".into();
+    let checkpoint = serde_json::json!({ "version": 1, "target": "test", "state": {} });
+    for text in ["peer welcome", "peer edited"] {
+        let mut next = store.data.clone();
+        peer.source = text.into();
+        next.notes.retain(|n| n.id != peer.id);
+        next.notes.push(peer.clone());
+        next.sync = Some(checkpoint.clone());
+        store.commit(next, "sync").unwrap();
+        assert_eq!(fs::read_to_string(temp.path().join(&local.path)).unwrap(), "local welcome");
+        let imported = store.data.notes.iter().find(|n| n.id == peer.id).unwrap();
+        assert_eq!(imported.path, "轻羽 Markdown 语法指南 1.md");
+        assert_eq!(fs::read_to_string(temp.path().join(&imported.path)).unwrap(), text);
+        let alias = &store.data.sync.as_ref().unwrap()["localNoteNames"][&peer.id];
+        assert_eq!(alias["filename"], "轻羽 Markdown 语法指南.md");
+        assert_eq!(alias["localFilename"], "轻羽 Markdown 语法指南 1.md");
+        store = open(temp.path());
+    }
+}
 #[test]
 fn import_keeps_utf16_and_big5_bytes_and_modified_existing_file_is_not_recreated() {
     let root = tempfile::tempdir().unwrap();

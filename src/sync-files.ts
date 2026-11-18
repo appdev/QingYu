@@ -50,7 +50,11 @@ export class SyncFiles implements Adapter {
   constructor(library: Library, private assets: AssetStat[] = [], private assetIO?: AssetIO) {
     for (const folder of library.folders) this.put(folderPath(folder.id), JSON.stringify(folder), 1);
     for (const note of library.notes) {
-      this.put(metaPath(note.id), JSON.stringify(noteMeta(note)), note.createdAt);
+      const names = library.sync?.localNoteNames;
+      const alias = names && Object.hasOwn(names, note.id) ? names[note.id] : undefined;
+      const meta = alias && alias.localTitle === note.title && alias.localFilename === note.filename
+        ? { ...note, title: alias.title ?? undefined, filename: alias.filename ?? undefined } : note;
+      this.put(metaPath(note.id), JSON.stringify(noteMeta(meta)), note.createdAt);
       this.put(notePath(note.id), note.source, note.updatedAt);
     }
     for (const asset of assets) this.add(assetPath(asset.path), { original: asset, size: asset.size, mtime: asset.modified });

@@ -27,7 +27,8 @@ export function validShare(share: unknown): share is NoteShare {
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
 }
 export { noteTitle } from './document-text';
-export type Checkpoint = { target: string; state: State } & ({ version: 1 } | {
+type LocalNoteName = { title: string | null; filename: string | null; localTitle: string; localFilename: string };
+export type Checkpoint = { target: string; state: State; localNoteNames?: Record<string, LocalNoteName> } & ({ version: 1 } | {
   version: 2; placeholderCount: number; placeholderDigest?: string;
 });
 export type Library = { version: 1; folders: Folder[]; notes: Note[]; activeId: string; sync?: Checkpoint };

@@ -26,6 +26,23 @@ class Memory {
 }
 const newBook = (library?: Library) => { const memory = new Memory(library); return { memory, book: new Notebook(memory, '') }; };
 
+it('excludes a local name suffix from sync metadata but sends a real rename', async () => {
+  const library = structuredClone(original);
+  const note = library.notes[0]!;
+  note.title = '欢迎 1';
+  note.filename = '欢迎 1.md';
+  library.sync = { version: 1, target: 'test', state: {
+    deviceId: 'test', vaultId: null, baseline: null, hashCache: {},
+  }, localNoteNames: { [note.id]: {
+    title: '欢迎', filename: '欢迎.md', localTitle: '欢迎 1', localFilename: '欢迎 1.md',
+  } } };
+  const metadata = async () => JSON.parse(await new SyncFiles(library).read(metaPath(note.id)));
+  expect(await metadata()).toMatchObject({ title: '欢迎', filename: '欢迎.md' });
+  note.title = '我改的名称';
+  note.filename = '我改的名称.md';
+  expect(await metadata()).toMatchObject({ title: '我改的名称', filename: '我改的名称.md' });
+});
+
 class S3 {
   objects = new Map<string, { bytes: Uint8Array; etag: string }>();
   sequence = 0;
