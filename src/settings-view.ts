@@ -12,7 +12,14 @@ import './settings.css';
 import { themeNames, themePalette, type Theme } from './themes';
 import { isServerLibrary } from './server-library';
 import { guestAccountIcon, mountClientAccount, type CloudSyncAccess } from './client-account';
+import { settingsList, settingsListButton } from './settings-list';
+import { accountAvailable } from './account-client';
+import { createServerSyncClient } from './server-sync-client';
+import { alertActions, showAlert } from './alert-dialog';
 import { version } from '../package.json';
+
+const githubRepo = 'appdev/QingYu';
+const stableReleaseTag = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 export type SettingsSection = 'account' | 'general' | 'appearance' | 'shortcuts' | 'ai' | 'today' | 'storage' | 'help' | 'personal' | 'signIn' | 'sync';
 const sections: [SettingsSection, string, string?][] = [
@@ -31,20 +38,24 @@ const settingsParents: Partial<Record<SettingsSection, SettingsSection>> = {
 };
 const nestedSections = Object.keys(settingsParents) as SettingsSection[];
 const backButton = (label: string, forward = false) => `<button type="button" class="settings-${forward ? 'forward' : 'back'}" aria-label="${label}"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${forward ? 'm9 5 7 7-7 7' : 'm15 5-7 7 7 7'}"/></svg></button>`;
-export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, close: () => void, openSection?: (section: SettingsSection) => void,
+export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefined, close: () => void, openSection?: (section: SettingsSection) => void,
   loadDaily: () => DailyNoteChoices | Promise<DailyNoteChoices> = native && !mobile ? libraryDailyChoices : () => ({ folders: [] })) {
   const serverLibrary = isServerLibrary();
+  // 网页客户端的同步配置保存在部署端的配置目录，由它运行同步；后面的同步界面和 App 是同一段代码
+  const sync = serverLibrary ? createServerSyncClient() : syncSource;
   const clientAccount = native && !serverLibrary;
+  // 轻羽账号 App 和网页客户端都有，同一个账户页；账号请求经 account-client 交给 Rust
+  const signInAccount = accountAvailable();
   const visibleSections = sections.filter(([key]) => {
-    if (key === 'account') return clientAccount || (mobile && sync && !serverLibrary);
-    if (key === 'personal' || key === 'signIn') return clientAccount;
+    if (key === 'account') return signInAccount || (mobile && sync && !serverLibrary);
+    if (key === 'personal' || key === 'signIn') return signInAccount;
     if (key === 'ai') return !mobile && (native || serverLibrary);
     return key !== 'shortcuts' || !mobile;
   });
-  const accountName = serverLibrary ? '服务器笔记库' : '本地账户';
-  const sectionTitle = (key: SettingsSection | undefined) => key === 'account' && clientAccount ? '个人资料'
+  const accountName = '本地账户';
+  const sectionTitle = (key: SettingsSection | undefined) => key === 'account' && signInAccount ? '个人资料'
       : mobile && key === 'help' ? '关于轻羽'
-      : key === 'storage' && (!sync || serverLibrary) ? '存储' : visibleSections.find(([section]) => section === key)?.[1] ?? '';
+      : key === 'storage' && !sync && !serverLibrary ? '存储' : visibleSections.find(([section]) => section === key)?.[1] ?? '';
   root.classList.add('settings');
   root.classList.toggle('settings-mobile', mobile);
   root.removeAttribute('data-settings-detail');
@@ -332,56 +343,150 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
   }
   function referenceSwitch(section: SettingsSection, title: string, detail = '') {
     const control = document.createElement('input'); control.type = 'checkbox'; control.role = 'switch'; control.className = 'settings-control'; control.disabled = true;
-    row(section, title, detail, control).classList.add('settings-reference-row');
+    return row(section, title, detail, control);
   }
   function versionRow(section: SettingsSection, title: string) {
     const value = document.createElement('span'); value.className = 'settings-usage-value'; value.textContent = version;
-    row(section, title, '', value).classList.add('settings-reference-row');
+    const element = row(section, title, '', value);
+    element.classList.add('settings-reference-row');
+    return element;
   }
-  if (clientAccount) accountPanel = mountClientAccount({
+  if (signInAccount) accountPanel = mountClientAccount({
     account: pages.get('account')!, personal: pages.get('personal')!, signIn: pages.get('signIn')!, storage: cloudStorage,
   }, root.querySelector<HTMLButtonElement>('#settings-tab-account')!, navigateTo, access => {
     syncAccount = access;
     refreshSyncControls?.();
   });
   else if (pages.has('account')) referenceRow('account', sectionTitle('storage'), '本机笔记库与 S3 同步', '', 'sync');
-  if (mobile || !native) versionRow('general', '轻羽');
+  const generalPage = pages.get('general')!;
+  if (mobile) generalPage.append(settingsList(versionRow('general', '轻羽')));
   else {
     referenceRow('general', '轻羽', '软件更新', '检查更新…');
     referenceRow('general', '更新内容', '', '↗');
+  }
+  // 菜单栏和登录时打开依赖桌面系统，网页客户端没有
+  if (!mobile && native) {
     const mac = /Mac/.test(navigator.platform);
     heading('general', mac ? '此 Mac' : '此电脑');
-    setting('general', 'menuBar', mac ? '在菜单栏显示' : '在系统托盘显示', '关闭窗口后仍可新建或查找笔记。', undefined, true);
-    referenceSwitch('general', '登录时打开'); hint('general');
+    const menuBar = setting('general', 'menuBar', mac ? '在菜单栏显示' : '在系统托盘显示', '关闭窗口后仍可新建或查找笔记。');
+    generalPage.append(settingsList(menuBar.closest('.settings-row')!, referenceSwitch('general', '登录时打开')));
+    hint('general');
   }
-  heading('general', '任务清单'); setting('general', 'sortCheckedItems', '已完成的项目移到底部', '');
+  heading('general', '任务清单');
+  const sortCheckedItems = setting('general', 'sortCheckedItems', '已完成的项目移到底部', '');
+  generalPage.append(settingsList(sortCheckedItems.closest('.settings-row')!));
   heading('general', '编辑器');
-  if (!mobile) setting('general', 'buttonDisplay', '按钮显示', '控制编辑区顶部工具按钮的显示方式', [['always', '始终显示'], ['hover', '悬停时显示']]);
-  if (!mobile && native) setting('general', 'alwaysOnTop', '窗口置顶', '让轻羽窗口保持在其他窗口上方', undefined, true);
-  setting('general', 'previewWidth', '正文宽度', '笔记编辑区的正文宽度', [600, 800, 1000, 1200, 1400, 0].map(width => [width, width ? `${width} px` : '铺满窗口']));
+  const editorGroup = settingsList();
+  if (!mobile) {
+    const buttonDisplay = setting('general', 'buttonDisplay', '按钮显示', '控制编辑区顶部工具按钮的显示方式', [['always', '始终显示'], ['hover', '悬停时显示']]);
+    editorGroup.append(buttonDisplay.closest('.settings-row')!);
+  }
+  if (!mobile && native) {
+    const alwaysOnTop = setting('general', 'alwaysOnTop', '窗口置顶', '让轻羽窗口保持在其他窗口上方');
+    editorGroup.append(alwaysOnTop.closest('.settings-row')!);
+  }
+  const previewWidth = setting('general', 'previewWidth', '正文宽度', '笔记编辑区的正文宽度', [600, 800, 1000, 1200, 1400, 0].map(width => [width, width ? `${width} px` : '铺满窗口']));
+  editorGroup.append(previewWidth.closest('.settings-row')!);
+  generalPage.append(editorGroup);
   const mcpPage = pages.get('ai');
-  if (mcpPage && clientAccount) {
+  // MCP 页各端共用：客户端在本机启停服务、令牌由本机生成；服务器笔记库的服务常驻在服务器上，令牌由部署方提供
+  type McpConnection = { url: string; token: string };
+  const mcpHost = clientAccount ? {
+    toggle: true, initial: undefined as McpConnection | undefined,
+    hint: '本机 AI 工具可读取和编辑当前笔记库。服务地址变化后，请重新复制配置。',
+    place: '在运行轻羽的这台电脑上，', aiHint: '复制的内容包含访问令牌，请只交给信任的工具。',
+    read: (enabled?: boolean) => invoke<McpConnection | null>('local_mcp', { enabled }),
+  } : serverLibrary ? (() => {
+    const server = { url: new URL('/mcp', location.href).href, token: '' };
+    return {
+      toggle: false, initial: server as McpConnection | undefined,
+      hint: 'MCP 服务由服务器部署方管理。客户端通过 Authorization 请求头发送 Bearer 令牌，复制后请把令牌占位换成部署方提供的令牌。',
+      place: '', aiHint: '令牌需要向部署方获取。',
+      read: async (_enabled?: boolean) => server as McpConnection | null,
+    };
+  })() : undefined;
+  if (mcpPage && mcpHost) {
+    const host = mcpHost;
+    const clients = [
+      { name: 'Codex', path: '~/.codex/config.toml', format: 'TOML' },
+      { name: 'Claude Code', path: '~/.claude.json', format: 'JSON' },
+      { name: 'Cursor', path: '~/.cursor/mcp.json', format: 'JSON' },
+    ];
     const toggle = document.createElement('button');
-    toggle.type = 'button'; toggle.className = 'settings-control';
+    toggle.type = 'button'; toggle.className = 'button secondary-button';
     toggle.disabled = true; toggle.textContent = '启动服务';
-    const state = row('ai', 'API 服务', '正在读取状态…', toggle).querySelector('small')!;
-    hint('ai', '启动后，本机 AI 工具可读取和编辑当前笔记库。复制的配置包含令牌，请只发给信任的工具。');
+    const state = row('ai', 'MCP 服务', '正在读取状态…', host.toggle ? toggle : document.createElement('span')).querySelector('small')!;
+    state.classList.add('settings-mcp-address');
+    hint('ai', host.hint);
     mcpPage.insertAdjacentHTML('beforeend', `
-      <button type="button" class="settings-control" id="settings-mcp-copy" disabled>复制 MCP 配置</button>
-      <textarea id="settings-mcp-config" rows="4" aria-label="MCP 配置" readonly hidden></textarea>
-      <p class="settings-hint" role="status"></p>`);
+      <section class="settings-mcp-panel" aria-labelledby="settings-mcp-heading">
+        <h2 id="settings-mcp-heading">客户端配置</h2>
+        <div class="settings-mcp-toolbar">
+          <label for="settings-mcp-client">客户端</label>
+          <select id="settings-mcp-client">${clients.map(({ name }) => `<option>${name}</option>`).join('')}</select>
+          <span class="settings-mcp-transport">Streamable HTTP</span>
+          <button type="button" class="button quiet-button" id="settings-mcp-reveal" aria-controls="settings-mcp-preview" disabled>显示令牌</button>
+          <button type="button" class="button secondary-button" id="settings-mcp-copy" disabled>复制配置</button>
+        </div>
+        <textarea class="settings-mcp-preview" id="settings-mcp-preview" rows="3" wrap="off" aria-label="配置预览" placeholder="启动 MCP 服务后显示配置" readonly></textarea>
+        <p class="settings-hint" id="settings-mcp-target"></p>
+      </section>
+      <div class="settings-mcp-ai">
+        <div>
+          <h2>让 AI 配置 MCP</h2>
+          <p class="settings-hint">复制带配置的提示词，让 AI 合并并验证连接。${host.aiHint}</p>
+        </div>
+        <button type="button" class="button secondary-button" id="settings-mcp-copy-ai" disabled>复制给 AI</button>
+      </div>
+      <textarea class="settings-mcp-preview" id="settings-mcp-fallback" aria-label="手动复制内容" readonly hidden></textarea>
+      <p class="settings-hint settings-mcp-status" role="status"></p>`);
+    const client = mcpPage.querySelector<HTMLSelectElement>('#settings-mcp-client')!;
+    const choice = settingsSelect(client, '客户端', false);
+    mcpPage.querySelector('.settings-mcp-toolbar label')!.after(choice.element);
+    const reveal = mcpPage.querySelector<HTMLButtonElement>('#settings-mcp-reveal')!;
     const copy = mcpPage.querySelector<HTMLButtonElement>('#settings-mcp-copy')!;
-    const config = mcpPage.querySelector<HTMLTextAreaElement>('#settings-mcp-config')!;
+    const copyAi = mcpPage.querySelector<HTMLButtonElement>('#settings-mcp-copy-ai')!;
+    const preview = mcpPage.querySelector<HTMLTextAreaElement>('#settings-mcp-preview')!;
+    const target = mcpPage.querySelector('#settings-mcp-target')!;
+    const fallback = mcpPage.querySelector<HTMLTextAreaElement>('#settings-mcp-fallback')!;
     const message = mcpPage.querySelector('[role=status]')!;
-    let connection: { url: string; token: string } | null = null;
+    let connection: McpConnection | null = host.initial ?? null;
+    if (connection) state.textContent = `运行中 · ${connection.url}`;
+    // 服务器的令牌不在浏览器里，不提供显示令牌
+    if (!host.toggle) reveal.remove();
     let busy = false;
+    let showToken = false;
+    let copyRevision = 0;
+    function formatConfig(url: string, token: string) {
+      const authorization = `Bearer ${token || '<服务器令牌>'}`;
+      if (client.value === 'Codex') {
+        return `[mcp_servers.qingyu]\nurl = ${JSON.stringify(url)}\nhttp_headers = { Authorization = ${JSON.stringify(authorization)} }`;
+      }
+      const headers = { Authorization: authorization };
+      const qingyu = client.value === 'Claude Code' ? { type: 'http', url, headers } : { url, headers };
+      return JSON.stringify({ mcpServers: { qingyu } }, null, 2);
+    }
+    function clearCopy() {
+      copyRevision++;
+      fallback.hidden = true; fallback.value = '';
+      message.textContent = '';
+    }
+    function renderConfig() {
+      const { path, format } = clients[client.selectedIndex];
+      reveal.disabled = copy.disabled = copyAi.disabled = busy || !connection;
+      reveal.textContent = showToken ? '隐藏令牌' : '显示令牌';
+      preview.value = connection && !busy ? formatConfig(connection.url, showToken || !host.toggle ? connection.token : '<令牌已隐藏>') : '';
+      preview.rows = Math.max(3, preview.value.split('\n').length);
+      target.textContent = host.toggle ? `点击「复制配置」获取含完整令牌的 ${format} 配置，并合并到 ${path}。`
+        : `点击「复制配置」获取 ${format} 配置，填入令牌后合并到 ${path}。`;
+    }
     async function updateMcp(enabled?: boolean) {
       if (busy) return;
-      busy = toggle.disabled = copy.disabled = true;
-      config.hidden = true; config.value = '';
-      message.textContent = '';
+      busy = toggle.disabled = true;
+      showToken = false;
+      clearCopy(); renderConfig();
       try {
-        connection = await invoke<typeof connection>('local_mcp', { enabled });
+        connection = await host.read(enabled);
         state.textContent = connection ? `运行中 · ${connection.url}` : '已停止';
       } catch (error) {
         message.textContent = String(error);
@@ -389,33 +494,33 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
       } finally {
         busy = toggle.disabled = false;
         toggle.textContent = connection ? '停止服务' : '启动服务';
-        copy.disabled = !connection;
+        renderConfig();
+      }
+    }
+    async function copyConfig(forAi: boolean) {
+      if (busy || !connection) return;
+      clearCopy();
+      const revision = copyRevision;
+      const { name, path, format } = clients[client.selectedIndex];
+      const config = formatConfig(connection.url, connection.token);
+      const text = forAi ? `请${host.place}为 ${name} 配置轻羽 MCP（Streamable HTTP）。\n将下面的 qingyu 条目合并到用户配置 ${path}，保留其余设置。请勿输出、上传或提交访问令牌。重新加载配置后，仅通过列出 MCP 工具验证连接，请勿读取或修改笔记。\n\n\`\`\`${format.toLowerCase()}\n${config}\n\`\`\`` : config;
+      try {
+        await navigator.clipboard.writeText(text);
+        if (revision === copyRevision) message.textContent = forAi ? '已复制提示词。' : '已复制配置。';
+      } catch {
+        if (revision !== copyRevision || selected !== 'ai' || disposed) return;
+        fallback.value = text; fallback.hidden = false; fallback.focus(); fallback.select();
+        message.textContent = '已选中复制内容，请使用系统复制快捷键。';
       }
     }
     refreshMcp = updateMcp;
     toggle.onclick = () => { void updateMcp(!connection); };
-    copy.onclick = async () => {
-      if (!connection) return;
-      const { url, token } = connection;
-      const text = `[mcp_servers.qingyu]\nurl = ${JSON.stringify(url)}\nhttp_headers = { Authorization = ${JSON.stringify(`Bearer ${token}`)} }`;
-      try {
-        await navigator.clipboard.writeText(text);
-        message.textContent = '已复制，可以粘贴给 AI 工具。';
-      } catch {
-        if (connection?.token !== token || copy.disabled) return;
-        config.value = text; config.hidden = false; config.focus(); config.select();
-        message.textContent = '已选中配置，请使用系统复制快捷键。';
-      }
-    };
-  } else if (mcpPage) {
-    if (serverLibrary) {
-      heading('ai', 'MCP 地址');
-      hint('ai', new URL('/mcp', location.href).href);
-      hint('ai', '由服务器部署方管理 API 服务和令牌。MCP 客户端使用 Streamable HTTP，并通过 Authorization 请求头发送 Bearer 令牌。');
-    } else {
-      hint('ai', '请在轻羽桌面应用中启动本地 MCP 服务。');
-    }
-  }
+    client.onchange = () => { showToken = false; clearCopy(); renderConfig(); };
+    reveal.onclick = () => { showToken = !showToken; clearCopy(); renderConfig(); };
+    copy.onclick = () => { void copyConfig(false); };
+    copyAi.onclick = () => { void copyConfig(true); };
+    renderConfig();
+  } else if (mcpPage) hint('ai', '请在轻羽桌面应用中启动本地 MCP 服务。');
   const todayFolder = setting('today', 'todayFolder', '文件夹', '', [['', dailyFolderName]]) as HTMLSelectElement;
   const todayTitle = setting('today', 'todayTitle', '标题', '', dailyTitleStyles.map(style => [style, dailyTitle(new Date(), style)])) as HTMLSelectElement;
   hint('today', '每天用一篇笔记记录当天的内容。');
@@ -434,24 +539,84 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
       if (!disposed && selected === 'today') error(reason instanceof Error ? reason.message : '无法读取今日笔记设置');
     }
   }
-  pages.get('help')!.insertAdjacentHTML('beforeend', '<div class="settings-help-intro"><span class="settings-avatar" aria-hidden="true">Q</span><div><strong>轻羽</strong><p>用轻羽记录和整理笔记。</p></div></div>');
-  if (mobile) versionRow('help', '版本');
-  else {
+  const help = pages.get('help')!;
+  help.insertAdjacentHTML('beforeend', '<div class="settings-help-intro"><img src="/brand/qingyu-app.png" width="52" height="52" alt=""><p><strong>QingYu</strong> — The lightweight WYSIWYG Markdown editor.</p></div>');
+  function openGithub(path: string) {
+    const url = `https://github.com/${githubRepo}/${path}`;
+    if (native) void invoke('plugin:opener|open_url', { url }).catch(() => error('无法打开 GitHub 链接。'));
+    else window.open(url, '_blank', 'noopener,noreferrer');
+  }
+  function helpRow(title: string, value: string, onSelect: () => void) {
+    const button = settingsListButton({ title, onSelect });
+    const text = document.createElement('span');
+    text.textContent = value;
+    if (value === '↗') text.setAttribute('aria-hidden', 'true');
+    button.append(text);
+    return button;
+  }
+  const checkVersion = helpRow('版本', version, async () => {
+    if (checkVersion.disabled) return;
+    checkVersion.disabled = true;
+    const value = checkVersion.lastElementChild!;
+    value.textContent = '正在检查…';
+    let title = '暂时无法检查更新';
+    let update: string | undefined;
+    const request = new AbortController();
+    const timeout = window.setTimeout(() => request.abort(), 10_000);
+    try {
+      const response = await fetch(`https://api.github.com/repos/${githubRepo}/releases/latest`, {
+        cache: 'no-cache', signal: request.signal,
+      });
+      if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+      const { tag_name: tag } = await response.json();
+      const latest = typeof tag === 'string' ? stableReleaseTag.exec(tag) : null;
+      const current = stableReleaseTag.exec(version);
+      if (!latest || !current) throw new Error('Invalid release version');
+      const difference = latest.slice(1).map((part, index) => BigInt(part) - BigInt(current[index + 1])).find(part => part !== 0n);
+      if (difference !== undefined && difference > 0n) update = latest[0].replace(/^v/, '');
+      title = update ? `发现新版本 ${update}` : '已是最新版本';
+    } catch {
+      // A failed request, including a private repository's 404, gives no version information.
+    } finally {
+      window.clearTimeout(timeout);
+      checkVersion.disabled = false;
+      value.textContent = version;
+    }
+    if (disposed || selected !== 'help') return;
+    const dialog = document.createElement('dialog');
+    const heading = document.createElement('h2');
+    heading.id = 'settings-update-title';
+    heading.textContent = title;
+    dialog.setAttribute('aria-labelledby', heading.id);
+    const closeButton = document.createElement('button');
+    closeButton.textContent = update ? '取消' : '确定';
+    closeButton.onclick = () => dialog.close();
+    const download = document.createElement('button');
+    download.textContent = '前往下载';
+    download.onclick = () => { dialog.close(); openGithub('releases/latest'); };
+    const primary = update ? download : closeButton;
+    dialog.append(heading, update ? alertActions(download, closeButton) : alertActions(closeButton));
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
+    dialog.addEventListener('close', () => { dialog.remove(); checkVersion.focus(); }, { once: true });
+    root.append(dialog);
+    showAlert(dialog, primary);
+  });
+  help.append(settingsList(
+    checkVersion,
+    helpRow('问题反馈', '↗', () => openGithub('issues/new')),
+    helpRow('常见问题', '↗', () => openGithub('issues')),
+  ));
+  if (!mobile) {
     heading('shortcuts', '笔记');
-    for (const [title, key] of [['新建笔记', '⌘N'], ['新建文件夹', '⇧⌘N'], ['搜索笔记', '⇧⌘F'], ['重命名', '⌘R'], ['制作副本', '⌘D'], ['移到废纸篓', '⌘⌫']]) {
+    for (const [title, key] of [['新建笔记', '⌘N'], ['新建文件夹', '⇧⌘N'], ['搜索笔记', '⇧⌘F'], ['重命名', '⌘R'], ['复制笔记', '⌘D'], ['移到废纸篓', '⌘⌫']]) {
       const value = document.createElement('kbd'); value.textContent = key; row('shortcuts', title, '', value).classList.add('settings-reference-row');
     }
     heading('shortcuts', '格式');
     for (const [title, key] of [['粗体', '⌘B'], ['斜体', '⌘I'], ['二级标题', '⇧⌘H'], ['任务清单', '⇧⌘L'], ['插入日期', '⇧⌘D'], ['跳转到笔记／插入链接', '⌘K'], ['上移项目', '⌃⌘↑'], ['下移项目', '⌃⌘↓']]) {
       const value = document.createElement('kbd'); value.textContent = key; row('shortcuts', title, '', value).classList.add('settings-reference-row');
     }
-    if (native) {
-      referenceRow('help', '联系我们', '', '↗'); referenceRow('help', '常见问题', '', '↗');
-      hint('help', '帮助页面尚未接入。');
-    }
     referenceRow('help', '键盘快捷键', '', '', 'shortcuts');
   }
-  if (serverLibrary) row('storage', '笔记位置', '服务器挂载的笔记目录；当前浏览器只保留界面设置和未提交草稿', document.createElement('span'));
   if (native && !mobile) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'settings-control'; button.textContent = '更改'; button.setAttribute('aria-label', '更改笔记位置'); button.disabled = true;
     const element = row('storage', '笔记位置', '正在读取…', button);
@@ -566,26 +731,25 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
   let loaded = Promise.resolve();
   const storagePage = pages.get('storage')!;
   let syncPanel: HTMLElement | undefined;
-  if (sync && !serverLibrary) {
+  if (sync) {
     const client = sync;
     storagePage.classList.add('settings-storage-page');
     const mode = document.createElement('select'); mode.name = 'storageMode';
     const modeStatus = document.createElement('p'); modeStatus.className = 'settings-sync-status';
     modeStatus.role = 'status'; modeStatus.dataset.error = 'true';
     let modeChoice: ReturnType<typeof settingsSelect> | undefined;
-    if (clientAccount) {
+    if (signInAccount) {
       mode.add(new Option('轻羽云存储', 'cloud'));
       mode.add(new Option('自定义 S3', 's3'));
-      const group = document.createElement('div'); group.className = 'client-list';
       const entry = row('storage', '存储方式', '', mode);
       modeChoice = decorateSelect(entry, mode, '存储方式');
-      group.append(entry); storagePage.append(group, modeStatus, cloudStorage);
+      storagePage.append(settingsList(entry), modeStatus, cloudStorage);
     }
     syncHeading = heading('storage', 'S3 同步'); syncHeading.id = 'settings-sync-heading';
     syncPanel = document.createElement('section'); storagePage.append(syncPanel);
     const form = document.createElement('form'); form.className = 'settings-sync-form'; form.noValidate = true; form.setAttribute('aria-labelledby', syncHeading.id);
     syncPanel.append(syncHeading, form);
-    const fields = form.appendChild(document.createElement('div')); fields.className = 'client-list';
+    const fields = form.appendChild(settingsList());
     for (const [key, title, detail] of [
       ['endpoint', '服务地址', '支持 S3 协议的 HTTPS 地址'], ['bucket', 'Bucket', '存储桶名称'], ['region', '区域', '默认 us-east-1'],
       ['prefix', '同步前缀', '不同笔记库请使用不同前缀'], ['accessKeyId', 'Access Key ID', 'S3 访问标识'], ['secretAccessKey', 'Secret Access Key', 'S3 访问密钥'],
@@ -614,13 +778,13 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
     }
     const test = document.createElement('button'); test.type = 'button'; test.className = 'settings-sync-test'; test.textContent = '测试连接';
     form.append(row('storage', '连接测试', '检查读取、写入、条件写入和删除权限。', test));
-    const syncGroup = document.createElement('div'); syncGroup.className = 'client-list';
+    const syncGroup = settingsList();
     heading('storage', '同步');
     const auto = document.createElement('input'); auto.type = 'checkbox'; auto.name = 'automaticSync'; auto.role = 'switch';
     syncGroup.append(row('storage', '自动同步', '开启后会在打开、退出应用时，以及按下方间隔同步。', auto));
     const interval = setting('storage', 'syncInterval', '同步间隔', '', syncIntervals.map(minutes => [minutes, `${minutes} 分钟`]));
     syncGroup.append(interval.closest('.settings-row')!);
-    const hint = document.createElement('p'); hint.className = 'settings-hint'; hint.textContent = '同步笔记、文件夹和附件。发生冲突时保留双方副本。';
+    const hint = document.createElement('p'); hint.className = 'settings-hint'; hint.textContent = '同步笔记、文件夹和附件。发生冲突时两边的版本都会保留。';
     const status = document.createElement('p'); status.className = 'settings-sync-status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
     const errorBlock = document.createElement('div'); errorBlock.className = 'settings-sync-error'; errorBlock.hidden = true;
     const errorText = document.createElement('pre'); errorText.tabIndex = 0; errorText.setAttribute('aria-label', '连接错误详情');
@@ -674,22 +838,23 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
       }).catch(() => {});
     }
     let saving = Promise.resolve(), revision = 0, profileLoaded = false, syncing = false, submitting = false, switching = false;
-    let activeMode: SyncMode = clientAccount ? 'cloud' : 's3';
+    let activeMode: SyncMode = signInAccount ? 'cloud' : 's3';
     let lastSyncedAt: number | undefined;
     let lastSyncedAccount: string | undefined;
+    let unavailable: string | undefined;
     const s3 = syncPanel;
     function updateSyncControls() {
       const disabled = !profileLoaded || syncing || switching;
       const cloud = activeMode === 'cloud';
       const accountId = syncAccount.signedInAccountId ?? syncAccount.accountId;
-      const ready = cloud ? Boolean(syncAccount.accountId) : hasS3Connection(values());
+      const ready = !unavailable && (cloud ? Boolean(syncAccount.accountId) : hasS3Connection(values()));
       auto.checked = cloud ? Boolean(accountId && preferences.value.autoSyncCloudAccount === accountId) : ready && preferences.value.autoSyncS3;
       auto.disabled = disabled || !ready;
       for (const input of inputs) input.disabled = disabled || activeMode !== 's3';
       test.disabled = disabled || submitting || cloud;
-      submit.disabled = disabled || submitting || (cloud && !syncAccount.accountId);
+      submit.disabled = disabled || submitting || (cloud && !syncAccount.accountId) || Boolean(unavailable);
       const lastSync = lastSyncedAccount === (cloud ? syncAccount.accountId : undefined) ? lastSyncedAt : undefined;
-      syncNote.textContent = cloud && syncAccount.reason ? syncAccount.reason : syncing ? '正在同步…'
+      syncNote.textContent = unavailable ? unavailable : cloud && syncAccount.reason ? syncAccount.reason : syncing ? '正在同步…'
         : lastSync ? `上次同步 ${new Date(lastSync).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })}` : '尚未同步';
       mode.disabled = disabled || submitting;
       mode.value = activeMode;
@@ -782,6 +947,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
       syncing = value.busy;
       lastSyncedAt = value.lastSyncedAt;
       lastSyncedAccount = value.lastSyncedAccount;
+      unavailable = value.unavailable;
       if (value.mode) activeMode = value.mode;
       showStatus(value.message, value.error); if (value.busy) form.setAttribute('aria-busy', 'true'); else form.removeAttribute('aria-busy');
       updateSyncControls();
@@ -795,7 +961,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
         profileLoaded = true;
         for (const input of inputs) input.value = String(config[input.name as keyof S3Settings]
           ?? (input.name === 'assetDownload' ? defaultAssetDownload(mobile) : s3Defaults[input.name as keyof typeof s3Defaults]) ?? '');
-        if (clientAccount) activeMode = syncMode(config);
+        if (signInAccount) activeMode = syncMode(config);
         modeStatus.textContent = '';
         updateSyncControls();
         if (activeMode === 's3' && (selected === 'storage' || selected === 'sync')) accountPanel?.show(undefined);
@@ -823,9 +989,16 @@ export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, c
     usageGroup.append(entry);
     return { key, value, bar };
   });
-  storagePage.insertBefore(usageGroup, clientAccount ? null : syncPanel ?? null);
-  if (clientAccount) {
-    storagePage.insertBefore(heading('storage', '本机笔记库'), usageGroup);
+  // 笔记库这一段各端共用：标题 + 用量卡片，笔记位置放在卡片最后一行
+  const libraryTitle = signInAccount ? '本机笔记库' : '';
+  if (serverLibrary) {
+    // 网页客户端的笔记目录在部署时绑定，不能在这里更换
+    storageLocation = row('storage', '笔记位置', '部署时绑定的笔记目录', document.createElement('span'));
+    storageLocation.classList.add('settings-reference-row');
+  }
+  storagePage.insertBefore(usageGroup, libraryTitle || !syncPanel?.isConnected ? null : syncPanel);
+  if (libraryTitle) {
+    storagePage.insertBefore(heading('storage', libraryTitle), usageGroup);
     if (storageLocation) usageGroup.append(storageLocation);
   }
   let usageRevision = 0;

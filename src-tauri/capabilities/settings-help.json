@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-help",
+  "description": "Open QingYu releases and issues from settings",
+  "windows": ["main", "settings"],
+  "permissions": [
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/appdev/QingYu/releases/latest" },
+        { "url": "https://github.com/appdev/QingYu/issues" },
+        { "url": "https://github.com/appdev/QingYu/issues/new" }
+      ]
+    }
+  ]
+}

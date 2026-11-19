@@ -118,7 +118,7 @@ pub(super) fn forbidden() -> ApiError {
     ApiError(
         StatusCode::FORBIDDEN,
         "invalid_origin",
-        "A same-origin browser request is required",
+        "A same-origin browser request is required".into(),
     )
 }
 
@@ -146,7 +146,7 @@ async fn login(
         let mut response = ApiError(
             StatusCode::TOO_MANY_REQUESTS,
             "login_rate_limit",
-            "Too many failed login attempts; retry in one minute",
+            "Too many failed login attempts; retry in one minute".into(),
         )
         .into_response();
         response
@@ -160,7 +160,7 @@ async fn login(
         return Err(ApiError(
             StatusCode::UNAUTHORIZED,
             "invalid_password",
-            "The access password is incorrect",
+            "The access password is incorrect".into(),
         ));
     }
     sessions.active.retain(|_, expiry| *expiry > now);
@@ -168,7 +168,7 @@ async fn login(
         return Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
             "session_limit",
-            "Too many active sessions",
+            "Too many active sessions".into(),
         ));
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -212,7 +212,7 @@ async fn session(State(state): State<Arc<Service>>, headers: HeaderMap) -> ApiRe
         Err(ApiError(
             StatusCode::UNAUTHORIZED,
             "session_expired",
-            "Sign in to continue",
+            "Sign in to continue".into(),
         ))
     }
 }

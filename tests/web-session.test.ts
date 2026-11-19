@@ -5,7 +5,7 @@ import { requireWebSession, watchWebSession } from '../src/web-session';
 const fetchMock = vi.fn();
 beforeEach(() => {
   vi.useFakeTimers(); fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock);
-  document.head.innerHTML = ''; document.body.innerHTML = '<button id="logout-button" hidden>退出登录</button>';
+  document.head.innerHTML = ''; document.body.innerHTML = '<button id="logout-button" hidden>锁定</button>';
   vi.spyOn(window, 'addEventListener').mockImplementation(() => {});
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -41,6 +41,6 @@ it('saves before logout and keeps the page when revocation fails', async () => {
   document.querySelector<HTMLButtonElement>('button')!.click();
   await vi.advanceTimersByTimeAsync(0);
   expect(order).toEqual(['save', 'logout']);
-  expect(error).toHaveBeenCalledWith('退出登录失败，请稍后重试');
+  expect(error).toHaveBeenCalledWith('锁定失败，请稍后重试');
   expect(fetchMock).toHaveBeenCalledWith('/auth/logout', { method: 'POST', credentials: 'same-origin' });
 });

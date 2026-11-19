@@ -16,3 +16,10 @@ services:
         target: /data
         bind:
           create_host_path: false
+      # 客户端配置目录：轻羽账号会话、S3 连接和自动同步设置
+      - type: volume
+        source: qingyu-config
+        target: /config
+
+volumes:
+  qingyu-config:

@@ -22,6 +22,43 @@ fn valid_version(version: &str) -> bool {
             || sequence.len() == 20 && sequence.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+pub(super) fn version_path(path: &str) -> bool {
+    path.strip_prefix(".miaoyan/versions/")
+        .and_then(|path| path.split_once('/'))
+        .is_some_and(|(digest, version)| {
+            digest.len() == 64
+                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && valid_version(version)
+        })
+}
+
+pub(super) fn purge_operations(root: &Path, note_id: &str) -> Result<Vec<Operation>> {
+    let folder = directory(note_id);
+    let entries = match fs::read_dir(checked(root, &folder)?) {
+        Ok(entries) => entries,
+        Err(reason) if reason.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(reason) => return Err(error(reason)),
+    };
+    let mut operations = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(error)?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().filter(|name| valid_version(name)) else {
+            continue;
+        };
+        if !entry.file_type().map_err(error)?.is_file() {
+            return Err("版本历史包含不可删除的文件，请重新检查笔记库".into());
+        }
+        let from = relative(&folder, name);
+        operations.push(Operation::Purge {
+            bytes: fs::read(checked(root, &from)?).map_err(error)?,
+            from,
+            staged: format!("{META}/staged-{}", id()),
+        });
+    }
+    Ok(operations)
+}
+
 pub(super) fn capture(
     root: &Path,
     note: &Note,
@@ -49,7 +86,6 @@ pub(super) fn capture(
     }))
 }
 
-#[cfg(any(feature = "app", test))]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteVersion {
@@ -85,7 +121,6 @@ pub(super) fn archived_bytes(root: &Path) -> Result<u64> {
     Ok(bytes)
 }
 
-#[cfg(any(feature = "app", test))]
 impl DiskLibrary {
     fn history_note(&self, note_id: &str) -> Result<&Note> {
         self.data
@@ -95,7 +130,7 @@ impl DiskLibrary {
             .ok_or("笔记不存在或已移到废纸篓".into())
     }
 
-    fn note_versions(&self, note_id: &str) -> Result<Vec<NoteVersion>> {
+    pub(super) fn note_versions(&self, note_id: &str) -> Result<Vec<NoteVersion>> {
         self.history_note(note_id)?;
         let dir = checked(&self.root, &directory(note_id))?;
         let entries = match fs::read_dir(dir) {
@@ -127,7 +162,7 @@ impl DiskLibrary {
         Ok(versions)
     }
 
-    fn note_version_source(&self, note_id: &str, version: &str) -> Result<String> {
+    pub(super) fn note_version_source(&self, note_id: &str, version: &str) -> Result<String> {
         self.history_note(note_id)?;
         if !valid_version(version) {
             return Err("历史版本无效".into());
@@ -137,6 +172,17 @@ impl DiskLibrary {
             &relative(&directory(note_id), version),
         )?)
         .map_err(error)
+    }
+
+    pub(super) fn restore_note_version(
+        &mut self,
+        root: &str,
+        note_id: &str,
+        version: &str,
+        expected_source: &str,
+    ) -> Result<()> {
+        let source = self.note_version_source(note_id, version)?;
+        self.save_note_body(root, note_id, expected_source, source, RESTORE)
     }
 }
 
@@ -180,8 +226,7 @@ pub async fn library_restore_note_version(
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("请先打开笔记库")?;
     workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
-    let source = store.note_version_source(&note_id, &version)?;
-    store.save_note_body(&root, &note_id, &expected_source, source, RESTORE)?;
+    store.restore_note_version(&root, &note_id, &version, &expected_source)?;
     let snapshot = store.snapshot();
     drop(lock);
     workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));

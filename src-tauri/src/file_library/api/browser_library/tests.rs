@@ -78,6 +78,72 @@ async fn load(app: &Router, cookie: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn browser_history_restores_the_saved_source_and_rejects_stale_writes() {
+    let (dir, _, app) = fixture();
+    let cookie = login(&app).await;
+    let id = Uuid::new_v4().to_string();
+    let created = json_call(
+        &app,
+        &cookie,
+        json!({"kind":"createNote","id":id,"folderId":"default","title":"历史","source":"# 原文"}),
+    )
+    .await;
+    let updated = json_call(
+        &app,
+        &cookie,
+        json!({
+            "kind":"updateNote","id":id,"version":created["versions"][&id],"source":"# 修改后",
+            "title":"历史","pinned":true,"trashed":false,"folderId":"default"
+        }),
+    )
+    .await;
+    let path = format!("/api/web/notes/{id}/versions");
+    assert_eq!(
+        call(&app, "GET", &path, "", json!(null)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, _, bytes) = call(&app, "GET", &path, &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let revision = entries[0]["id"].as_str().unwrap();
+    let (status, _, bytes) = call(
+        &app,
+        "GET",
+        &format!("{path}/{revision}"),
+        &cookie,
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_slice::<String>(&bytes).unwrap(), "# 原文");
+
+    let restore = |version: &serde_json::Value| json!({"kind":"restoreNoteVersion","id":id,"version":version,"revision":revision});
+    let stale = call(
+        &app,
+        "POST",
+        "/api/web/commands",
+        &cookie,
+        restore(&created["versions"][&id]),
+    )
+    .await;
+    assert_eq!(stale.0, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("notes/历史.md")).unwrap(),
+        "# 修改后"
+    );
+    let restored = json_call(&app, &cookie, restore(&updated["versions"][&id])).await;
+    assert_eq!(restored["notes"][0]["source"], "# 原文");
+    assert_eq!(restored["notes"][0]["pinned"], true);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("notes/历史.md")).unwrap(),
+        "# 原文"
+    );
+    let (_, _, bytes) = call(&app, "GET", &path, &cookie, json!(null)).await;
+    let entries: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(entries.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn storage_usage_reports_counts_from_the_mounted_library_to_the_editor_session() {
     let (dir, _, app) = fixture();
     let root = dir.path().join("notes");
@@ -137,6 +203,7 @@ async fn browser_routes_require_sessions_and_keep_public_token_scope_and_csrf_ch
         "/api/web/library",
         "/api/web/commands",
         "/api/web/assets/id?path=image.svg",
+        "/api/web/sync",
     ] {
         assert_eq!(
             call(
@@ -156,6 +223,12 @@ async fn browser_routes_require_sessions_and_keep_public_token_scope_and_csrf_ch
         );
     }
     let cookie = login(&app).await;
+    let (status, _, bytes) = call(&app, "GET", "/api/web/sync", &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+        json!({"busy":false,"error":false,"message":"","lastSyncedAt":null,"lastSyncedAccount":null,"unavailable":"同步不可用"})
+    );
     let request = axum::http::Request::builder()
         .uri("/api/web/library")
         .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
@@ -166,19 +239,21 @@ async fn browser_routes_require_sessions_and_keep_public_token_scope_and_csrf_ch
         app.clone().oneshot(request).await.unwrap().status(),
         StatusCode::UNAUTHORIZED
     );
-    let request = axum::http::Request::builder()
-        .method("POST")
-        .uri("/api/web/commands")
-        .header(header::HOST, "notes.test")
-        .header(header::ORIGIN, "http://other.test")
-        .header(header::COOKIE, &cookie)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from("{}"))
-        .unwrap();
-    assert_eq!(
-        app.oneshot(request).await.unwrap().status(),
-        StatusCode::FORBIDDEN
-    );
+    for path in ["/api/web/commands", "/api/web/sync"] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::HOST, "notes.test")
+            .header(header::ORIGIN, "http://other.test")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 }
 
 #[tokio::test]
@@ -478,4 +553,143 @@ async fn attachment_upload_uses_note_version_and_preserves_named_binary_resource
         call(&app, "POST", &endpoint, &cookie, large).await.0,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn account_routes_require_the_unlocked_browser_and_a_private_config_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let public = dir.path().join("web");
+    fs::create_dir(&public).unwrap();
+    fs::write(public.join("index.html"), "<html><head></head></html>").unwrap();
+    fs::write(public.join("login.html"), "login").unwrap();
+    let web = web::Web::open(public, PASSWORD, false).unwrap();
+    let root = dir.path().join("notes");
+    let mut state = Service::open(root.clone(), None, None, Some(web)).unwrap();
+    let app = super::super::router(state.clone());
+    let (status, _, _) = call(&app, "GET", "/api/web/account", "", json!(null)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let cookie = login(&app).await;
+    let (status, _, body) = call(&app, "GET", "/api/web/account", &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), json!({"error":"config_required"}));
+
+    assert!(super::super::config_dir(root.join("config"), &root).is_err());
+    let config = super::super::config_dir(dir.path().join("config"), &root).unwrap();
+    drop(app);
+    Arc::get_mut(&mut state).unwrap().config = Some(config);
+    let app = super::super::router(state.clone());
+    let cookie = login(&app).await;
+    let (status, _, body) = call(&app, "GET", "/api/web/account", &cookie, json!(null)).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, b"null".as_slice()));
+    let (status, headers, _) = call(&app, "GET", "/api/web/account/portal?page=purchase", &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "https://qynotes.com/purchase");
+    let (status, _, _) = call(&app, "GET", "/api/web/account/portal?page=elsewhere", &cookie, json!(null)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, body) = call(&app, "POST", "/api/web/account/login", &cookie, json!({"username":"bad","password":"x"})).await;
+    assert_eq!((status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()), (StatusCode::BAD_REQUEST, json!({"error":"invalid_input"})));
+}
+
+#[tokio::test]
+async fn sync_settings_live_in_the_private_config_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let public = dir.path().join("web");
+    fs::create_dir(&public).unwrap();
+    fs::write(public.join("index.html"), "<html><head></head></html>").unwrap();
+    fs::write(public.join("login.html"), "login").unwrap();
+    let web = web::Web::open(public, PASSWORD, false).unwrap();
+    let root = dir.path().join("notes");
+    let mut state = Service::open(root.clone(), None, None, Some(web)).unwrap();
+    let config = super::super::config_dir(dir.path().join("config"), &root).unwrap();
+    Arc::get_mut(&mut state).unwrap().sync =
+        Some(server_sync::ServerSync::open(Some(config.clone()), &root).unwrap());
+    let app = super::super::router(state.clone());
+    let cookie = login(&app).await;
+
+    let (status, _, body) = call(&app, "GET", "/api/web/sync/profile", &cookie, json!(null)).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, b"null".as_slice()));
+    let profile = json!({"endpoint":"https://s3.example.test","bucket":"notes","region":"us-east-1","prefix":"qingyu",
+        "accessKeyId":"key","secretAccessKey":"secret","mode":"s3","timeout":30});
+    let (status, _, _) = call(&app, "PUT", "/api/web/sync/profile", &cookie, profile.clone()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, body) = call(&app, "GET", "/api/web/sync/profile", &cookie, json!(null)).await;
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), profile);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(config.join("s3-connection.json")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    let (_, _, body) = call(&app, "GET", "/api/web/sync/schedule", &cookie, json!(null)).await;
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), json!({"s3":true,"cloudAccount":"","interval":3}));
+    let (status, _, _) = call(&app, "PUT", "/api/web/sync/schedule", &cookie, json!({"s3":false,"cloudAccount":"","interval":7})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = call(&app, "PUT", "/api/web/sync/schedule", &cookie, json!({"s3":false,"cloudAccount":"account","interval":10})).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, body) = call(&app, "GET", "/api/web/sync/schedule", &cookie, json!(null)).await;
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["interval"], 10);
+
+    // 没有同步程序时说明原因，而不是悄悄失败
+    let (status, _, body) = call(&app, "POST", "/api/web/sync", &cookie, json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(String::from_utf8(body).unwrap().contains("QINGYU_SYNC_WORKER"));
+}
+
+#[tokio::test]
+async fn browser_folder_actions_and_purge_match_the_mobile_library_operations() {
+    let (_dir, _, app) = fixture();
+    let cookie = login(&app).await;
+    let folder_of = |library: &serde_json::Value, path: &str| {
+        library["folders"].as_array().unwrap().iter()
+            .find(|folder| folder["path"] == path).map(|folder| folder["id"].as_str().unwrap().to_owned())
+    };
+    let library = json_call(&app, &cookie, json!({"kind":"createFolder","parentId":"default","name":"项目"})).await;
+    let project = folder_of(&library, "项目").unwrap();
+    let library = json_call(&app, &cookie, json!({"kind":"createFolder","parentId":"default","name":"归档"})).await;
+    let archive = folder_of(&library, "归档").unwrap();
+    let note = Uuid::new_v4().to_string();
+    let library = json_call(&app, &cookie, json!({"kind":"createNote","id":note,"folderId":project,"title":"草稿","source":"# 原文"})).await;
+
+    // 复制文件夹
+    let library = json_call(&app, &cookie, json!({"kind":"folderAction","action":"duplicate","id":project,"version":library["version"]})).await;
+    let copy = folder_of(&library, "项目 副本").unwrap();
+    // 移到指定文件夹
+    let library = json_call(&app, &cookie, json!({"kind":"folderAction","action":"move-to-folder","id":copy,"version":library["version"],"value":archive})).await;
+    assert!(folder_of(&library, "归档/项目 副本").is_some());
+    // 移到笔记库废纸篓，再恢复
+    let library = json_call(&app, &cookie, json!({"kind":"folderAction","action":"trash-local","id":project,"version":library["version"]})).await;
+    assert_eq!(library["trashedFolders"], json!(["项目"]));
+    assert!(folder_of(&library, "项目").is_none());
+    let library = json_call(&app, &cookie, json!({"kind":"folderAction","action":"restore-folder","id":null,"version":library["version"],"value":"项目"})).await;
+    assert_eq!(library["trashedFolders"], json!([]));
+    assert!(folder_of(&library, "项目").is_some());
+    // 只能永久删除废纸篓里的笔记，原因和 App 相同
+    let (status, _, body) = call(&app, "POST", "/api/web/commands", &cookie, json!({"kind":"purgeNotes","ids":[note],"version":library["version"]})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(String::from_utf8(body).unwrap().contains("只能永久删除仍在废纸篓里的笔记"));
+    let (status, _, _) = call(&app, "POST", "/api/web/commands", &cookie, json!({"kind":"folderAction","action":"reveal","id":project,"version":library["version"]})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn browser_import_copies_markdown_files_into_the_library_like_the_desktop_import() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let (_dir, _, app) = fixture();
+    let cookie = login(&app).await;
+    let file = |path: &str, text: &str| json!({"path": path, "data": STANDARD.encode(text)});
+    let (status, _, body) = call(&app, "POST", "/api/web/import", &cookie,
+        json!([file("清单.md", "# 清单"), file("旅行/京都.md", "# 京都"), file("旅行/封面.png", "png")])).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let library: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let sources: Vec<_> = library["notes"].as_array().unwrap().iter().map(|note| note["source"].as_str().unwrap()).collect();
+    assert!(sources.contains(&"# 清单") && sources.contains(&"# 京都"));
+    assert_eq!(sources.len(), 2);
+    for path in ["../逃逸.md", "旅行/../../逃逸.md", ".隐藏.md", "a\\b.md"] {
+        let (status, _, _) = call(&app, "POST", "/api/web/import", &cookie, json!([file(path, "x")])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+    }
+    let (status, _, body) = call(&app, "POST", "/api/web/import", &cookie, json!([file("图片.png", "png")])).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(String::from_utf8(body).unwrap().contains("没有可导入的 Markdown 文件"));
 }

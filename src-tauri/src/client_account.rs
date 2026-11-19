@@ -8,8 +8,6 @@ use std::{
     sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::Manager;
-use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 
 const API_ORIGIN: &str = "https://api.qynotes.com";
@@ -770,49 +768,142 @@ impl Service<'_> {
     }
 }
 
+// 下面是各端共用的账号操作。会话文件的位置由调用方决定：
+// App 放在自己的私有数据目录，网页客户端放在部署时指定的配置目录。
 impl ClientAccount {
-    fn service(&self, window: &tauri::WebviewWindow) -> Result<Service<'_>> {
-        authorize(window)?;
+    pub fn session_path(dir: &Path) -> PathBuf {
+        dir.join(".account").join("session.json")
+    }
+
+    fn service(&self, session: PathBuf) -> Result<Service<'_>> {
         let client = self
             .client
             .get_or_init(client)
             .as_ref()
             .map_err(Clone::clone)?;
-        let session = window
-            .path()
-            .app_local_data_dir()
-            .map_err(|_| STORAGE_ERROR)?
-            .join(".account")
-            .join("session.json");
         Ok(Service {
             origin: API_ORIGIN,
             client,
             session,
         })
     }
-}
 
-fn authorize(window: &tauri::WebviewWindow) -> Result<()> {
-    if matches!(window.label(), "main" | "settings") {
-        Ok(())
-    } else {
-        Err("not_allowed".into())
+    pub async fn status(&self, session: PathBuf, force: bool) -> Result<Option<AccountInfo>> {
+        let mut state = self.session.lock().await;
+        self.service(session)?.status(&mut state, force).await
+    }
+
+    pub async fn login(&self, session: PathBuf, username: &str, password: &str) -> Result<AccountInfo> {
+        let username = username.trim();
+        if username.len() > 320
+            || !username.contains('@')
+            || username.chars().any(char::is_whitespace)
+            || password.is_empty()
+            || password.len() > 4096
+        {
+            return Err("invalid_input".into());
+        }
+        let mut state = self.session.lock().await;
+        let service = self.service(session)?;
+        let info = service.login(&mut state.access, username, password).await?;
+        state.cache = Some(AccountCache {
+            account_id: info.profile.id.clone(),
+            info: Some(Cached {
+                checked_at: now(),
+                value: Some(info.clone()),
+            }),
+            redemptions: None,
+        });
+        service.save_cache(&state);
+        state.storage = None;
+        Ok(info)
+    }
+
+    pub async fn logout(&self, session: PathBuf, account_id: &str, everywhere: bool) -> Result<bool> {
+        let mut state = self.session.lock().await;
+        let service = self.service(session)?;
+        service.require_account(&state.access, account_id)?;
+        let revoked = service.logout(&mut state.access, everywhere).await?;
+        *state = AccountState::default();
+        Ok(revoked)
+    }
+
+    pub async fn redeem(&self, session: PathBuf, account_id: &str, activation_code: &str) -> Result<u64> {
+        let code = activation_code.trim();
+        if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
+            return Err("invalid_input".into());
+        }
+        let mut state = self.session.lock().await;
+        let service = self.service(session)?;
+        service.require_account(&state.access, account_id)?;
+        let years = service.redeem(&mut state.access, code).await?;
+        let cache = service.cache(&mut state, account_id);
+        cache.info = None;
+        cache.redemptions = None;
+        service.save_cache(&state);
+        state.storage = None;
+        Ok(years)
+    }
+
+    pub async fn redemptions(&self, session: PathBuf, account_id: &str, force: bool) -> Result<Vec<Redemption>> {
+        let mut state = self.session.lock().await;
+        self.service(session)?
+            .redemptions(&mut state, account_id, force)
+            .await
+    }
+
+    pub async fn sync_config(&self, session: PathBuf, account_id: &str) -> Result<StorageConfig> {
+        let mut state = self.session.lock().await;
+        self.service(session)?
+            .storage_config(&mut state, account_id)
+            .await
+    }
+
+    // App 在提交同步结果前用它确认账号没变；网页客户端在同步开始时取凭据就已校验账号
+    #[cfg_attr(not(feature = "app"), allow(dead_code))]
+    pub async fn check_sync(&self, session: PathBuf, account_id: &str) -> Result<()> {
+        let state = self.session.lock().await;
+        self.service(session)?
+            .require_account(&state.access, account_id)
     }
 }
 
+pub fn portal_url(page: &str) -> Result<String> {
+    let path = match page {
+        "register" => "/signup/app-customers",
+        "reset" => "/forget/app-customers",
+        "purchase" => "/purchase",
+        "verify" | "account" => "/",
+        _ => return Err("invalid_input".into()),
+    };
+    Ok(format!("{PORTAL}{path}"))
+}
+
+// App 的 Tauri 命令：只检查调用窗口、取 App 的私有目录，然后交给上面的共用方法。
+#[cfg(feature = "app")]
+fn app_session(window: &tauri::WebviewWindow) -> Result<PathBuf> {
+    use tauri::Manager;
+    if !matches!(window.label(), "main" | "settings") {
+        return Err("not_allowed".into());
+    }
+    let dir = window
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| STORAGE_ERROR)?;
+    Ok(ClientAccount::session_path(&dir))
+}
+
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_status(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, ClientAccount>,
     force: Option<bool>,
 ) -> Result<Option<AccountInfo>> {
-    let mut session = state.session.lock().await;
-    state
-        .service(&window)?
-        .status(&mut session, force.unwrap_or(false))
-        .await
+    state.status(app_session(&window)?, force.unwrap_or(false)).await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_login(
     window: tauri::WebviewWindow,
@@ -820,33 +911,10 @@ pub async fn account_login(
     username: String,
     password: String,
 ) -> Result<AccountInfo> {
-    let username = username.trim();
-    if username.len() > 320
-        || !username.contains('@')
-        || username.chars().any(char::is_whitespace)
-        || password.is_empty()
-        || password.len() > 4096
-    {
-        return Err("invalid_input".into());
-    }
-    let mut session = state.session.lock().await;
-    let service = state.service(&window)?;
-    let info = service
-        .login(&mut session.access, username, &password)
-        .await?;
-    session.cache = Some(AccountCache {
-        account_id: info.profile.id.clone(),
-        info: Some(Cached {
-            checked_at: now(),
-            value: Some(info.clone()),
-        }),
-        redemptions: None,
-    });
-    service.save_cache(&session);
-    session.storage = None;
-    Ok(info)
+    state.login(app_session(&window)?, &username, &password).await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_logout(
     window: tauri::WebviewWindow,
@@ -854,14 +922,10 @@ pub async fn account_logout(
     account_id: String,
     everywhere: bool,
 ) -> Result<bool> {
-    let mut session = state.session.lock().await;
-    let service = state.service(&window)?;
-    service.require_account(&session.access, &account_id)?;
-    let revoked = service.logout(&mut session.access, everywhere).await?;
-    *session = AccountState::default();
-    Ok(revoked)
+    state.logout(app_session(&window)?, &account_id, everywhere).await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_redeem(
     window: tauri::WebviewWindow,
@@ -869,22 +933,10 @@ pub async fn account_redeem(
     account_id: String,
     activation_code: String,
 ) -> Result<u64> {
-    let code = activation_code.trim();
-    if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
-        return Err("invalid_input".into());
-    }
-    let mut session = state.session.lock().await;
-    let service = state.service(&window)?;
-    service.require_account(&session.access, &account_id)?;
-    let years = service.redeem(&mut session.access, code).await?;
-    let cache = service.cache(&mut session, &account_id);
-    cache.info = None;
-    cache.redemptions = None;
-    service.save_cache(&session);
-    session.storage = None;
-    Ok(years)
+    state.redeem(app_session(&window)?, &account_id, &activation_code).await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_redemptions(
     window: tauri::WebviewWindow,
@@ -892,13 +944,12 @@ pub async fn account_redemptions(
     account_id: String,
     force: Option<bool>,
 ) -> Result<Vec<Redemption>> {
-    let mut session = state.session.lock().await;
     state
-        .service(&window)?
-        .redemptions(&mut session, &account_id, force.unwrap_or(false))
+        .redemptions(app_session(&window)?, &account_id, force.unwrap_or(false))
         .await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_sync_config(
     window: tauri::WebviewWindow,
@@ -908,13 +959,10 @@ pub async fn account_sync_config(
     if window.label() != "main" {
         return Err("not_allowed".into());
     }
-    let mut session = state.session.lock().await;
-    state
-        .service(&window)?
-        .storage_config(&mut session, &account_id)
-        .await
+    state.sync_config(app_session(&window)?, &account_id).await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_check_sync(
     window: tauri::WebviewWindow,
@@ -924,25 +972,17 @@ pub async fn account_check_sync(
     if window.label() != "main" {
         return Err("not_allowed".into());
     }
-    let session = state.session.lock().await;
-    state
-        .service(&window)?
-        .require_account(&session.access, &account_id)
+    state.check_sync(app_session(&window)?, &account_id).await
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn account_open_portal(window: tauri::WebviewWindow, page: &str) -> Result<()> {
-    authorize(&window)?;
-    let path = match page {
-        "register" => "/signup/app-customers",
-        "reset" => "/forget/app-customers",
-        "purchase" => "/purchase",
-        "verify" | "account" => "/",
-        _ => return Err("invalid_input".into()),
-    };
+    use tauri_plugin_opener::OpenerExt;
+    app_session(&window)?;
     window
         .opener()
-        .open_url(format!("{PORTAL}{path}"), None::<&str>)
+        .open_url(portal_url(page)?, None::<&str>)
         .map_err(|_| "open_failed".into())
 }
 

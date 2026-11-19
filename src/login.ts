@@ -32,7 +32,11 @@ form.onsubmit = async event => {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: password.value }),
     });
-    if (response.status === 204) { password.value = ''; location.replace('/'); return; }
+    if (response.status === 204) {
+      password.value = '';
+      location.replace(location.hash.startsWith('#note=') ? '/' + location.hash : '/');
+      return;
+    }
     message.dataset.kind = 'error';
     if (response.status === 401) {
       password.setAttribute('aria-invalid', 'true'); message.textContent = '访问密码不正确，请检查后重试。'; password.focus();

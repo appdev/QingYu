@@ -48,7 +48,7 @@ it.each([false, true])('shows the toolbar actions with icons and a divider befor
   expect(document.activeElement).toBe(document.querySelector('.toolbar-context-menu'));
   const items = [...document.querySelectorAll<HTMLButtonElement>('.toolbar-context-menu [role=menuitem]')];
   expect(items.map(item => item.ariaLabel)).toEqual([
-    ...(!mobile ? ['在新窗口打开笔记'] : []), '置顶', '制作副本', '移到废纸篓',
+    ...(!mobile ? ['在新窗口打开笔记'] : []), '置顶', '复制笔记', '移到废纸篓',
   ]);
   expect(items.every(item => item.firstElementChild?.tagName === 'svg')).toBe(true);
   const separators = [...document.querySelectorAll('.toolbar-menu-items > hr')];
@@ -117,9 +117,11 @@ it.each([false, true])('opens a mobile folder sheet with working cancel and move
     const save = vi.fn(async () => true), error = vi.fn();
     const menu = createNoteMenu(() => book, { save, change: async run => { await run(); }, error, mobile: true });
     const open = async () => {
-      await menu(note.id, 0, 0);
-      expect(document.querySelector('.context-sheet [aria-label$="中显示"], .context-sheet [aria-label="导出"]')).toBeNull();
-      document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="移动"]')!.click();
+      await menu(note.id, 0, 0, trashed ? 'move' : undefined);
+      if (!trashed) {
+        expect(document.querySelector('.context-sheet [aria-label$="中显示"], .context-sheet [aria-label="导出"]')).toBeNull();
+        document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="移动"]')!.click();
+      }
       return vi.waitFor(() => {
         const dialog = document.querySelector<HTMLDialogElement>('.note-move-sheet[open]');
         expect(dialog).not.toBeNull();
@@ -140,6 +142,37 @@ it.each([false, true])('opens a mobile folder sheet with working cancel and move
     await vi.waitFor(() => expect(book.data.notes.find(item => item.id === note.id)).toMatchObject({ folderId: child, source: note.source, trashed: false }));
     expect(save).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
+  } finally { Object.assign(HTMLDialogElement.prototype, { showModal, close }); }
+});
+
+it('requires confirmation before permanently deleting a note in Trash', async () => {
+  vi.stubGlobal('CSS', { escape: (text: string) => text });
+  const { showModal, close } = HTMLDialogElement.prototype;
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new Event('close')); };
+  try {
+    const book = new Notebook({ getItem: () => null, setItem() {} }, '# 测试笔记');
+    const { id } = book.current;
+    await book.trashNote(id);
+    vi.spyOn(book, 'root', 'get').mockReturnValue('/test/notes');
+    const purge = vi.spyOn(book, 'purgeNotes').mockResolvedValue();
+    const menu = createNoteMenu(() => book, { save: async () => true, change: async run => { await run(); }, error: vi.fn(), mobile: true });
+    const open = async () => {
+      await menu(id, 0, 0);
+      const rows = [...document.querySelectorAll<HTMLButtonElement>('.context-sheet [role=menuitem]')];
+      expect(rows.map(row => row.ariaLabel)).toEqual(['恢复笔记', '永久删除']);
+      expect(rows.every(row => row.querySelector('svg'))).toBe(true);
+      rows[1]!.click();
+      return vi.waitFor(() => {
+        const dialog = document.querySelector('dialog[aria-labelledby=purge-note-title][open]');
+        expect(dialog).not.toBeNull();
+        return dialog!;
+      });
+    };
+    (await open()).querySelector<HTMLButtonElement>('.secondary-button')!.click();
+    expect(purge).not.toHaveBeenCalled();
+    (await open()).querySelector<HTMLButtonElement>('.destructive-button')!.click();
+    await vi.waitFor(() => expect(purge).toHaveBeenCalledExactlyOnceWith([id]));
   } finally { Object.assign(HTMLDialogElement.prototype, { showModal, close }); }
 });
 

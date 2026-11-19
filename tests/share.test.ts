@@ -77,7 +77,7 @@ it.each(['macos', 'android', 'ios'])('uses the native share bridge on %s', async
 it('keeps copying available without system sharing support', async () => {
   const panel = open();
   expect(panel.querySelector('.share-send')).toBeNull();
-  expect([...panel.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual(['发送副本']);
+  expect([...panel.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual(['发送', '网页']);
   expect(panel.textContent).toContain('当前环境不支持系统分享');
   panel.querySelector<HTMLButtonElement>('.share-copy')!.click();
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith('测试标题\n\n当前副本');
@@ -147,7 +147,7 @@ it('runs the mock publish flow and opens system sharing from the mobile toolbar 
     const menu = openMenu();
     expect(menu.textContent).toContain('分享链接…');
     expect(menu.textContent).toContain('复制为纯文本');
-    click(menu, '发送副本…');
+    click(menu, '发送笔记…');
     await vi.advanceTimersByTimeAsync(0);
     expect(invoke).toHaveBeenCalledWith('note_share_text', expect.objectContaining({ title: '移动端笔记', text: '完整正文' }));
   } finally {
@@ -199,11 +199,12 @@ function openNative(...args: Parameters<typeof open>) {
   return open(...args);
 }
 
-it('confirms before publishing, closes the panel and automatically copies the created link', async () => {
+it.each([false, true])('confirms and copies a simulated link (native=%s)', async native => {
+  platform.native = native;
   vi.useFakeTimers();
   vi.stubGlobal('fetch', vi.fn());
   const key = crypto.randomUUID();
-  let panel = web(openNative(key));
+  let panel = web(open(key));
   expect(panel.textContent).toContain('模拟测试');
   click(panel, '发布网页…');
   const confirm = document.querySelector<HTMLDialogElement>('.share-web-confirm')!;
@@ -229,6 +230,51 @@ it('confirms before publishing, closes the panel and automatically copies the cr
   await vi.advanceTimersByTimeAsync(3200);
   expect(document.querySelector('.share-web-notice')).toBeNull();
   expect(fetch).not.toHaveBeenCalled(); expect(invoke).not.toHaveBeenCalled(); expect(report).not.toHaveBeenCalled();
+});
+
+it('keeps desktop App picture controls inside the share popover', async () => {
+  platform.native = true;
+  document.documentElement.dataset.platform = 'macos';
+  const revoke = vi.fn();
+  vi.stubGlobal('URL', class extends URL {
+    static createObjectURL() { return 'blob:desktop-note-preview'; }
+    static revokeObjectURL = revoke;
+  });
+  vi.mocked(invoke).mockResolvedValue(true);
+  const anchor = document.body.appendChild(document.createElement('button'));
+  showShare(anchor, '桌面笔记', '正文', report, { title: '桌面笔记', source: '正文' });
+  const panel = document.querySelector<HTMLElement>('.share-popover')!;
+  click(panel, '图片');
+  await vi.waitFor(() => expect(panel.querySelector('.note-picture-preview:not([hidden])')).not.toBeNull());
+  expect(panel.querySelectorAll('.picture-swatch')).toHaveLength(6);
+  const actions = [...panel.querySelectorAll<HTMLButtonElement>('[data-picture-action]')];
+  expect(actions.map(button => button.dataset.pictureAction)).toEqual(['copy', 'save', 'share']);
+  expect(actions.every(button => !button.disabled && !button.hidden)).toBe(true);
+  expect(document.querySelector('dialog[open]')).toBeNull();
+  actions[0]!.click();
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('note_picture_action', expect.objectContaining({ action: 'copy' })));
+  click(panel, '发送');
+  expect(panel.querySelector('.note-picture')).toBeNull();
+  expect(revoke).toHaveBeenCalledWith('blob:desktop-note-preview');
+});
+
+it('opens the full picture panel from the browser share menu', async () => {
+  vi.stubGlobal('URL', class extends URL {
+    static createObjectURL() { return 'blob:note-preview'; }
+    static revokeObjectURL() {}
+  });
+  const anchor = document.body.appendChild(document.createElement('button'));
+  showShare(anchor, '浏览器笔记', '正文', report, { title: '浏览器笔记', source: '正文' });
+  const popover = document.querySelector<HTMLElement>('.share-popover')!;
+  click(popover, '图片');
+  expect(popover.querySelector('.note-picture-preview')).toBeNull();
+  click(popover, '分享为图片…');
+  await vi.waitFor(() => expect(document.querySelector('dialog[open] .note-picture-mode')).not.toBeNull());
+  const picture = document.querySelector<HTMLDialogElement>('dialog[open]')!;
+  expect(picture.querySelector('input[role="switch"]')).not.toBeNull();
+  expect(picture.querySelector('[data-picture-action="save"]')).not.toBeNull();
+  click(picture, '完成');
+  expect(picture.isConnected).toBe(false);
 });
 
 it('cancels the publishing confirmation without creating or copying a link', () => {
@@ -268,7 +314,7 @@ it('retains mock publication across tabs and popovers without mixing notes or li
   let panel = web(openNative(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   panel.remove(); panel = open(key);
   const url = panel.querySelector('.share-web-link')!.textContent;
-  click(panel, '发送副本'); web(panel);
+  click(panel, '发送'); web(panel);
   expect(panel.querySelector('.share-web-link')!.textContent).toBe(url);
   panel.remove(); panel = web(open(key));
   expect(panel.querySelector('.share-web-link')!.textContent).toBe(url);

@@ -101,3 +101,35 @@ it('preserves legacy recovery records and records undo to the old baseline while
   notebook.stageDraft('# Server'); acknowledge(ok(snapshot('# B', 'v2'))); await saving;
   expect(drafts().map(draft => draft.source).sort()).toEqual(['# Server', 'Legacy recovery draft']);
 });
+
+it('retries folder and trash operations once on the latest library after a deployment sync changed it', async () => {
+  fetchMock.mockResolvedValueOnce(ok(snapshot()));const notebook=book();await notebook.openServer();
+  const synced={...snapshot('# Server','v2'),trashedFolders:['归档']};
+  fetchMock.mockResolvedValueOnce({ok:false,status:412,json:async()=>({})});
+  fetchMock.mockResolvedValueOnce(ok(synced));
+  fetchMock.mockResolvedValueOnce(ok({...snapshot('# Server','v2'),version:'library-v3',trashedFolders:[]}));
+  await notebook.folderAction('restore-folder',null,'归档');
+  const restore=JSON.parse(fetchMock.mock.calls[3][1].body);
+  expect(restore).toMatchObject({kind:'folderAction',action:'restore-folder',value:'归档',version:'library-v2'});
+  expect(notebook.trashedFolders).toEqual([]);
+  fetchMock.mockResolvedValueOnce({ok:false,status:409,json:async()=>({error:{code:'library_conflict',message:'笔记已变化，只能永久删除仍在废纸篓里的笔记'}})});
+  await expect(notebook.purgeNotes(['one'])).rejects.toThrow('只能永久删除仍在废纸篓里的笔记');
+});
+
+it('imports picked markdown files through the deployment and syncs afterwards', async () => {
+  fetchMock.mockResolvedValueOnce(ok(snapshot()));const notebook=book();await notebook.openServer();
+  const changed=vi.fn();notebook.onLocalChange=changed;
+  const imported=snapshot();imported.notes.push({...note,id:'two',source:'# 京都'});imported.versions.two='v1';
+  fetchMock.mockResolvedValueOnce(ok(imported));
+  // jsdom 的 File 没有 arrayBuffer()，浏览器都有；这里按浏览器行为补上
+  const withBytes=(file:File)=>Object.assign(file,{arrayBuffer:()=>new Promise<ArrayBuffer>(resolve=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result as ArrayBuffer);reader.readAsArrayBuffer(file);})});
+  const kyoto=withBytes(new File(['# 京都'],'京都.md'));Object.defineProperty(kyoto,'webkitRelativePath',{value:'旅行/京都.md'});
+  await notebook.importUploads([kyoto,new File(['png'],'封面.png')]);
+  const [path,init]=fetchMock.mock.calls[1];
+  expect(path).toBe('/api/web/import');
+  expect(JSON.parse(init.body)).toEqual([{path:'旅行/京都.md',data:btoa(unescape(encodeURIComponent('# 京都')))}]);
+  expect(notebook.data.notes.map(item=>item.source)).toContain('# 京都');
+  expect(notebook.current.source).toBe('# 京都');
+  expect(changed).toHaveBeenCalledOnce();
+  await expect(notebook.importUploads([new File(['png'],'封面.png')])).rejects.toThrow('没有可导入的 Markdown 文件');
+});

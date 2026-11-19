@@ -19,7 +19,7 @@ export function plainMarkdownLine(line: string) {
     .replace(/[*_`~]/g, '').trim();
 }
 
-export function noteText(source: string) {
+export function noteText(source: string, untitled = '未命名') {
   let title = '', summary = '';
   // Metadata only needs the first two meaningful lines, even for a large document.
   for (const [line] of markdownBody(source).body.matchAll(/[^\r\n]+/g)) {
@@ -29,7 +29,7 @@ export function noteText(source: string) {
     if (!title) title = text.slice(0, 160);
     else { summary = text.slice(0, 180); break; }
   }
-  return { title: title || '未命名', summary: summary || '无更多文本' };
+  return { title: title || untitled, summary: summary || '无更多文本' };
 }
 
 /** 笔记里第一张本地图片的路径，列表行尾的缩略图用它。代码块里的不算，网络图片不算。 */
@@ -50,6 +50,8 @@ export function firstLocalImage(source: string) {
   }
 }
 
-export function noteTitle(note: { source: string; title?: string }) {
-  return note.title ?? noteText(note.source).title;
+export function noteTitle(note: { source: string; title?: string; filename?: string }) {
+  // The file library labels UUID-backed files “无标题” until they are explicitly named.
+  const unnamedFile = note.title === '无标题' && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\.(?:md|markdown|txt)$/i.test(note.filename ?? '');
+  return note.title === undefined || unnamedFile ? noteText(note.source, note.title).title : note.title;
 }

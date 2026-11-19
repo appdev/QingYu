@@ -33,7 +33,7 @@ async fn authenticate(
         ApiError(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "A valid Bearer token is required",
+            "A valid Bearer token is required".into(),
         )
         .into_response()
     } else {
@@ -134,7 +134,7 @@ async fn exchange(
                 Ok(value) => {
                     json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value})
                 }
-                Err(ApiError(_, "unknown_tool", message)) => return fault(id, -32602, message),
+                Err(ApiError(_, "unknown_tool", message)) => return fault(id, -32602, &message),
                 Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, _, _)) => {
                     return fault(id, -32603, "The operation could not be completed");
                 }
@@ -247,14 +247,14 @@ async fn call(state: Arc<Service>, write: bool, tool: &str, args: Value) -> ApiR
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
                 "read_only_token",
-                "This token only permits reading",
+                "This token only permits reading".into(),
             ))
         }
         _ => {
             return Err(ApiError(
                 StatusCode::BAD_REQUEST,
                 "unknown_tool",
-                "Unknown tool",
+                "Unknown tool".into(),
             ))
         }
     };

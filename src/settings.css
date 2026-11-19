@@ -102,6 +102,23 @@
   background: var(--control-fill); color: var(--ink); user-select: text;
   font: 12px/1.5 ui-monospace, monospace;
 }
+.settings-mcp-panel { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.settings-mcp-panel h2, .settings-mcp-ai h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.settings-mcp-toolbar, .settings-mcp-ai { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.settings-mcp-toolbar { margin-block: 10px; }
+.settings-mcp-toolbar .quiet-button { margin-inline-start: auto; }
+.settings-mcp-transport { color: var(--muted); }
+.settings-mcp-preview {
+  box-sizing: border-box; width: 100%; min-height: 70px; padding: 9px 10px; border: 0; border-radius: 8px;
+  background: var(--control-fill); color: var(--ink); font: 12px/1.5 ui-monospace, monospace;
+  user-select: text; -webkit-user-select: text; resize: vertical;
+}
+.settings-mcp-ai { justify-content: space-between; margin-block: 12px; padding: 12px 14px; border-radius: 12px; background: var(--settings-group); }
+.settings-mcp-ai > div { flex: 1 1 240px; }
+.settings-mcp-panel .settings-hint, .settings-mcp-ai .settings-hint { margin: 6px 0 0; }
+.settings-mcp-status { margin-top: 8px; }
+.settings-mcp-status:empty { display: none; }
+.settings .settings-mcp-toolbar select:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .settings-sync-form input { width: 240px; max-width: 50%; border-radius: 6px; color: var(--ink); user-select: text; }
 .settings-sync-form .client-list { margin-bottom: 0; }
 .settings-sync-status { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -169,7 +186,7 @@
   overscroll-behavior: contain;
 }
 .settings-categories { display: grid; gap: 28px; }
-.settings-mobile :is(.settings-category-group, :where(.settings-storage-page) .settings-storage-usage, .settings-page:where(:not(.settings-storage-page))),
+.settings-mobile :is(.settings-category-group, :where(.settings-storage-page) .settings-storage-usage, .settings-page:where(:not(.settings-storage-page, #settings-panel-general, #settings-panel-help))),
 .settings .settings-categories > button {
   background: var(--settings-card); border-radius: 24px; overflow: hidden;
 }
@@ -334,10 +351,11 @@
 .settings-storage-usage [data-usage=files] { --usage-color: var(--alert-note-hue); }
 .settings-storage-usage [data-usage=trash] { --usage-color: var(--muted); }
 .settings-help-intro { display: flex; align-items: center; gap: 16px; margin: 14px 10px 20px; }
-.settings-help-intro .settings-avatar { width: 52px; height: 52px; }
-.settings-help-intro p { color: var(--muted); margin: 6px 0 0; }
+.settings-help-intro img { flex-shrink: 0; }
+.settings-help-intro p { color: var(--muted); margin: 0; }
+.settings-help-intro strong { color: var(--ink); }
 .settings-mobile .settings-reference-row { min-height: 52px; padding: 12px 0; background: transparent; }
-.settings-mobile .settings-storage-usage { padding-inline: 16px; }
+.settings-mobile .settings-storage-meter { margin-inline: 16px; }
 .settings-mobile .settings-reference-row .settings-label > span { font-size: 17px; }
 .settings-mobile .settings-reference-row .settings-label small { font-size: 14px; }
 .settings-mobile .settings-page { padding-block: 4px; }
@@ -350,21 +368,37 @@
 .settings-client-account > .settings-identity { padding: 8px 0 28px; }
 .settings-client-account > .settings-identity strong { font-size: 22px; overflow-wrap: anywhere; }
 .settings-mobile .settings-client-account > .settings-identity .settings-avatar { width: 72px; height: 72px; }
-.client-list { margin: 0 0 24px; padding: 0; border-radius: 11px; background: var(--settings-group-fill); overflow: hidden; }
-.settings-mobile .client-list { margin-bottom: 34px; border-radius: 26px; background: var(--settings-card); }
-.settings .client-list .settings-row { min-height: 42px; padding: 10px; gap: 10px; }
-.settings .client-list button.settings-row {
-  width: 100%; border: 0; background: transparent; color: var(--ink); text-align: start;
+/* 分组列表（settings-list.ts）：PC、iPad、手机共用一套结构，平台差异只在下面的变量里。
+   行的点击高亮铺满整行，文字靠内边距缩进，分隔线用伪元素单独缩进。 */
+.client-list {
+  --list-inset: 10px; --list-row-height: 42px; --list-row-padding: 10px; --list-divider-inset: 0px;
+  margin: 0 0 24px; padding: 0; border-radius: 11px; background: var(--settings-group-fill); overflow: hidden;
 }
-.settings .client-list button.settings-row:not(:disabled):hover { background: var(--settings-selection); }
+.settings-mobile .client-list {
+  --list-inset: 16px; --list-row-height: 53px; --list-row-padding: 12px; --list-divider-inset: 16px;
+  margin-bottom: 34px; border-radius: 26px; background: var(--settings-card);
+}
+.settings .client-list .settings-row {
+  position: relative; box-sizing: border-box; width: 100%; min-height: var(--list-row-height); margin: 0;
+  padding: var(--list-row-padding) var(--list-inset); gap: 10px; border-bottom: 0;
+}
+.settings .client-list button.settings-row { border: 0; background: transparent; color: var(--ink); text-align: start; }
+/* 整行可点的行右侧最多只有 ›，说明文字不受窄屏 180px 的限制 */
+.client-list button.settings-row .settings-label { flex: 1; }
+.client-list button.settings-row .settings-label small { max-width: none; }
 .settings .client-list button.settings-row:disabled { opacity: .6; }
-.settings .client-list .settings-row:not(:last-child):not(.client-sign-in-entry) { border-bottom: 1px solid var(--row-line); }
+.settings .client-list .settings-row:not(:last-child):not(.client-sign-in-entry)::before {
+  content: ''; position: absolute; inset: auto var(--list-divider-inset) 0; border-bottom: 1px solid var(--row-line); pointer-events: none;
+}
+/* 触屏点完不会触发 mouseleave，悬停高亮只给有指针的设备，按下高亮所有设备都有 */
+@media (hover: hover) {
+  .settings .client-list button.settings-row:not(:disabled):hover { background: var(--settings-selection); }
+}
+.settings .client-list button.settings-row:not(:disabled):active { background: var(--settings-selection); }
 .client-list .settings-label > span { font-size: 13px; font-weight: 400; }
 .client-list .settings-label small { white-space: normal; overflow-wrap: anywhere; }
 .client-list .settings-row > span:nth-child(2):not(.settings-avatar) { color: var(--muted); text-align: end; overflow-wrap: anywhere; }
 .client-list .settings-row > .settings-avatar { width: 44px; height: 44px; margin: 0; }
-.settings-mobile .client-list .settings-row { min-height: 53px; padding: 12px 0; }
-.settings-mobile .client-list button.settings-row { width: calc(100% - 32px); }
 .settings-mobile .client-list .settings-label > span { font-size: 17px; }
 .settings-mobile .client-list .settings-row > span:nth-child(2):not(.settings-avatar) { font-size: 14px; }
 .client-usage { display: grid; gap: 8px; padding: 14px 10px; border-bottom: 1px solid var(--row-line); }
@@ -460,3 +494,4 @@
   .settings-label small { max-width: 180px; }
   .settings-control { max-width: 155px; }
 }
+.settings-label .settings-mcp-address { white-space: normal; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }

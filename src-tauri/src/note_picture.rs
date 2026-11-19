@@ -22,7 +22,7 @@ pub async fn note_share_text(
         return Err("请在编辑器中分享笔记".into());
     }
     if title.len() > 4096 || text.len() > 16 << 20 {
-        return Err("笔记过长，无法发送副本".into());
+        return Err("笔记过长，无法发送".into());
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {

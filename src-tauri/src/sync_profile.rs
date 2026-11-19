@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
-use tauri::Manager;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,7 +43,36 @@ pub struct Profile {
 }
 
 impl Profile {
-    fn validate(&self) -> Result<(), String> {
+    /// 当前选择的是轻羽云存储。规则和前端 syncMode 相同：没写明方式时，没填任何 S3 信息就算云存储。
+    pub fn cloud(&self) -> bool {
+        match self.mode {
+            Some(Mode::Cloud) => true,
+            Some(Mode::S3) => false,
+            None => [
+                &self.endpoint,
+                &self.bucket,
+                &self.access_key_id,
+                &self.secret_access_key,
+            ]
+            .iter()
+            .all(|value| value.trim().is_empty()),
+        }
+    }
+
+    /// 连接信息已填全，和前端 hasS3Connection 的判断一致；没填全时不自动同步。
+    pub fn complete(&self) -> bool {
+        [
+            &self.endpoint,
+            &self.bucket,
+            &self.prefix,
+            &self.access_key_id,
+            &self.secret_access_key,
+        ]
+        .iter()
+        .all(|value| !value.trim().is_empty())
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
         // Incomplete inputs must also survive closing settings and restarting.
         if [
             &self.endpoint,
@@ -72,7 +100,12 @@ impl Profile {
     }
 }
 
-fn load(path: &Path) -> Result<Option<Profile>, String> {
+/// S3 连接配置在客户端配置目录里的位置，App 和网页客户端相同。
+pub fn profile_path(dir: &Path) -> PathBuf {
+    dir.join("s3-connection.json")
+}
+
+pub fn load(path: &Path) -> Result<Option<Profile>, String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -96,7 +129,7 @@ fn load(path: &Path) -> Result<Option<Profile>, String> {
     Ok(Some(profile))
 }
 
-fn save(path: &Path, profile: &Profile) -> Result<(), String> {
+pub fn save(path: &Path, profile: &Profile) -> Result<(), String> {
     profile.validate()?;
     let value = serde_json::to_vec(profile).map_err(|_| "连接配置无效")?;
     let directory = path.parent().ok_or("应用配置目录无效")?;
@@ -126,6 +159,7 @@ fn save(path: &Path, profile: &Profile) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "app")]
 fn authorize(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != "main" {
         return Err("连接配置仅由主窗口管理".into());
@@ -133,22 +167,25 @@ fn authorize(window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn sync_load_profile(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<Option<Profile>, String> {
     authorize(&window)?;
-    let path = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "无法打开应用配置目录")?
-        .join("s3-connection.json");
+    use tauri::Manager;
+    let path = profile_path(
+        &app.path()
+            .app_config_dir()
+            .map_err(|_| "无法打开应用配置目录")?,
+    );
     tauri::async_runtime::spawn_blocking(move || load(&path))
         .await
         .map_err(|_| "读取连接配置未完成".to_string())?
 }
 
+#[cfg(feature = "app")]
 #[tauri::command]
 pub async fn sync_save_profile(
     app: tauri::AppHandle,
@@ -156,11 +193,12 @@ pub async fn sync_save_profile(
     profile: Profile,
 ) -> Result<(), String> {
     authorize(&window)?;
-    let path = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "无法打开应用配置目录")?
-        .join("s3-connection.json");
+    use tauri::Manager;
+    let path = profile_path(
+        &app.path()
+            .app_config_dir()
+            .map_err(|_| "无法打开应用配置目录")?,
+    );
     tauri::async_runtime::spawn_blocking(move || save(&path, &profile))
         .await
         .map_err(|_| "保存连接配置未完成".to_string())?

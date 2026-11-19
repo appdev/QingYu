@@ -23,6 +23,7 @@ import { sidebarAccount } from './client-account';
 import { dailyNoteChoices } from './daily-note';
 import type { SettingsSection } from './settings-view';
 import { connectCloudAutoSync, startAutoSync } from './auto-sync';
+import { createServerSyncClient } from './server-sync-client';
 import { keepEditorFocusForTouchButtons, keepPanelTargetVisible, keepMobileViewportAtTop, revealCaret } from './editor-viewport';
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
@@ -34,7 +35,7 @@ import { mountPendingImage } from './asset-download-view';
 import { MAX_ASSET_BYTES } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
-import { dismissPopupMenu, popupMenu, popupMenuOpen } from './popup-menu';
+import { dismissPopupMenu, popupMenuOpen, showMenu } from './popup-menu';
 import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink } from './note-links';
 import { createNoteRelationsFooter } from './editor-note-relations';
 import { hostMenuBar } from './menu-bar-host';
@@ -48,7 +49,7 @@ const workspace = $('#workspace');
 // 对照 Pinto ShareLinkChrome：已分享的笔记在正文右上角显示「已分享」，点按复制链接。
 const shareMarker = document.createElement('button');
 shareMarker.type = 'button'; shareMarker.id = 'note-share-marker'; shareMarker.hidden = true;
-shareMarker.title = '获得链接的人都可查看这篇笔记。点按可复制链接。'; shareMarker.ariaLabel = '已分享，复制链接';
+shareMarker.title = '点按复制此笔记的分享链接。'; shareMarker.ariaLabel = '已分享，复制链接';
 shareMarker.append(createLucideIcon(document, LinkIcon, ''), '已分享');
 shareMarker.onclick = () => { const url = notebook.current?.share?.url; if (url) void copyShareLink(url); };
 $('.titlebar').append(shareMarker);
@@ -59,14 +60,15 @@ function setStatus(message: string, error = false) {
   document.body.dataset.statusError = String(error);
 }
 const windowLabel = native ? getCurrentWindow().label : 'main';
-const documentWindow = !mobile && windowLabel.startsWith('document-');
-const noteWindow = documentWindow && windowLabel.startsWith('document-note-');
+const serverLibrary = isServerLibrary();
+let browserNoteId = serverLibrary && !mobile ? new URLSearchParams(location.hash.slice(1)).get('note') : null;
+const documentWindow = !mobile && (windowLabel.startsWith('document-') || Boolean(browserNoteId));
+const noteWindow = documentWindow && (windowLabel.startsWith('document-note-') || Boolean(browserNoteId));
 if (noteWindow) {
   $('#app-shell').dataset.noteWindow = '';
   $('#library-sidebar').hidden = $('#sidebar-button').hidden = $('#new-empty-note').hidden = true;
   $('#empty-note p').textContent = '找不到这篇笔记';
 }
-const serverLibrary = isServerLibrary();
 const canAddAttachments = native || serverLibrary;
 const notebook = new Notebook({ getItem: key => documentWindow || serverLibrary ? null : localStorage.getItem(key), setItem: (key, value) => {
   if (documentWindow || serverLibrary) throw new Error('当前笔记不能转存到浏览器笔记库');
@@ -83,7 +85,10 @@ if ('__TAURI_INTERNALS__' in window) {
 }
 else if (serverLibrary) {
   setStatus('正在打开服务器笔记库…');
-  try { await notebook.openServer(); }
+  try {
+    await notebook.openServer();
+    if (browserNoteId) await notebook.select(browserNoteId);
+  }
   catch (error) { notebook.loadError = true; setStatus(error instanceof Error ? error.message : String(error), true); }
 }
 let sidebar: ReturnType<typeof createSidebar> | undefined;
@@ -320,6 +325,18 @@ function saveDraft(includeTitle = false) {
   draftWrites = write.catch(() => false);
   return write;
 }
+async function openBrowserNote(id: string) {
+  const tab = window.open('about:blank', '_blank');
+  if (!tab) throw new Error('浏览器阻止了新标签页，请允许打开后重试');
+  tab.opener = null;
+  try {
+    if (await saveDraft(true)) {
+      tab.location.replace(new URL(`/#note=${encodeURIComponent(id)}`, location.origin).href);
+      return;
+    }
+  } catch (error) { tab.close(); throw error; }
+  tab.close();
+}
 
 async function persistDraft(includeTitle: boolean): Promise<boolean> {
   if (syncApply) await syncApply;
@@ -407,6 +424,10 @@ function showCurrentNote(selected: boolean, fromHistory?: number) {
   for (const kind of ['format', 'checklist', 'table', 'attach', 'note-more', 'share']) $<HTMLButtonElement>(`#${kind}-button`).disabled = !selected || Boolean(notebook.current?.readOnly && ['format', 'checklist', 'table', 'attach'].includes(kind)) || notebook.loadError;
   if (selected) {
     const note = notebook.current;
+    if (browserNoteId && browserNoteId !== note.id) {
+      browserNoteId = note.id;
+      history.replaceState(history.state, '', `#note=${encodeURIComponent(note.id)}`);
+    }
     if (fromHistory !== undefined) visitIndex = fromHistory;
     else if (!note.trashed && visitHistory[visitIndex] !== note.id) {
       visitHistory.splice(visitIndex + 1, visitHistory.length, note.id);
@@ -423,7 +444,7 @@ function showCurrentNote(selected: boolean, fromHistory?: number) {
 }
 function updateShareMarker() {
   const note = showingNote && !notebook.loadError ? notebook.current : undefined;
-  shareMarker.hidden = !native || !note || !isShared(note) || !note.share?.url;
+  shareMarker.hidden = !note || !isShared(note) || !note.share?.url;
 }
 
 function blankNote() {
@@ -674,8 +695,8 @@ formatButton.onclick = event => {
   untickButton.hidden = Boolean(formatCell) || !richEditor.canUntickChecklist;
   const editor = currentWritingEditor();
   moveItemButtons.forEach((button, index) => {
-    button.hidden = document.documentElement.dataset.platform === 'macos';
     button.disabled = Boolean(formatCell) || !editor || !editorItemMove(editor, index === 0);
+    button.hidden = document.documentElement.dataset.platform === 'macos' || (!native && button.disabled);
   });
   menu.hidden = false;
   const bounds = formatButton.getBoundingClientRect();
@@ -779,10 +800,7 @@ if (!canAddAttachments) {
   attachButton.replaceChildren(createLucideIcon(document, LinkIcon, ''));
 }
 function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
-  const box = anchor.getBoundingClientRect();
-  const accessory = anchor.closest('#mobile-tools');
-  if (accessory && anchor.getAttribute('aria-expanded') === 'true') { dismissPopupMenu(); return; }
-  const icon = (node: Parameters<typeof createLucideIcon>[1]) => accessory ? createLucideIcon(document, node, '') : undefined;
+  const icon = (node: Parameters<typeof createLucideIcon>[1]) => createLucideIcon(document, node, '');
   const insertInTable = richEditor.captureTableInsertion();
   const choose = (accept: string) => {
     richEditor.captureSelection();
@@ -801,7 +819,7 @@ function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
       } else richEditor.insert(selected => noteLinkMarkdown(target, selected));
     }, focusEditor);
   };
-  void popupMenu([
+  void showMenu([
     ...(canAddAttachments ? [
       { text: '选择照片或视频…', icon: icon(Image), needsUserActivation: true, run: () => choose('image/*,video/*') },
       { text: '添加文件…', icon: icon(FileText), needsUserActivation: true, run: () => choose('') },
@@ -809,7 +827,7 @@ function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
     ] : []),
     { text: '链接到笔记…', icon: icon(NotebookIcon), run: linkNote },
     { text: '添加链接', icon: icon(LinkIcon), run: () => applyFormat('link') },
-  ], box.left - 90, box.bottom + 6, message => setStatus(message, true), focusEditor, attachMenuLabel, undefined, 0, accessory ? { anchor, keyboard, above: true } : undefined);
+  ], { anchor, keyboard, label: attachMenuLabel, onError: message => setStatus(message, true), restoreFocus: focusEditor });
 }
 function attachFromKeyboard() {
   if (!currentWritingEditor()) return;
@@ -933,6 +951,10 @@ function toggleQuickOpen() {
         { title: '导入文件…', icon: FileDown, keywords: ['import files'], run: () => { void emitTo('main', 'library-command', 'library-import'); } },
         { title: '导入文件夹…', icon: FileDown, keywords: ['import folder'], run: () => { void emitTo('main', 'library-command', 'library-import-folder'); } },
       );
+      else if (serverLibrary) rows.push(
+        { title: '导入文件…', icon: FileDown, keywords: ['import files'], run: () => chooseImport(false) },
+        { title: '导入文件夹…', icon: FileDown, keywords: ['import folder'], run: () => chooseImport(true) },
+      );
       return rows.concat({ title: '设置…', icon: Settings, shortcut: '⌘,', keywords: ['settings', 'preferences'], run: () => $('#settings-button').click() });
     },
     async openNote(note) {
@@ -948,6 +970,21 @@ function toggleQuickOpen() {
     closed() { quickOpen = undefined; },
   });
   return true;
+}
+
+/** 网页客户端的导入：浏览器只能在点击时打开选择窗口，选好后交给笔记库导入，之后和 App 一样显示当前笔记。 */
+function chooseImport(directory: boolean) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.multiple = true;
+  if (directory) input.webkitdirectory = true; else input.accept = '.md,.markdown,.txt';
+  input.onchange = () => {
+    const files = [...input.files ?? []];
+    if (!files.length) return;
+    void notebook.importUploads(files).then(() => {
+      showCurrentNote(Boolean(notebook.current)); sidebar?.revealCurrent(); setStatus('已导入笔记');
+    }).catch(error => setStatus(error instanceof Error ? error.message : String(error), true));
+  };
+  input.click();
 }
 
 function commandK() {
@@ -987,8 +1024,8 @@ document.addEventListener('keydown', event => {
       && event.key.toLowerCase() === 'f' && findInNote()) {
     event.preventDefault(); event.stopPropagation(); return;
   }
-  if (desktop && document.documentElement.dataset.platform === 'macos' && !event.isComposing
-    && event.metaKey && event.altKey && event.shiftKey && !event.ctrlKey
+  if (desktop && !event.isComposing && event.altKey && event.shiftKey
+    && (/Mac/.test(navigator.platform) ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)
     && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && foldSections(event.key === 'ArrowRight')) {
     event.preventDefault(); event.stopPropagation(); return;
   }
@@ -1078,12 +1115,12 @@ if (mobile) {
 
 window.addEventListener('native-keyboard', event => { nativeKeyboard = Boolean((event as CustomEvent).detail); updateViewport(); });
 document.documentElement.toggleAttribute('data-web', !native);
-if ((mobile || document.documentElement.dataset.platform === 'macos') && !documentWindow) {
-  if (!mobile) $('#app-shell').dataset.macSidebarFoot = '';
+if ((mobile || !native || document.documentElement.dataset.platform === 'macos') && !documentWindow) {
+  if (native && !mobile) $('#app-shell').dataset.macSidebarFoot = '';
   const account = $<HTMLButtonElement>('#sidebar-account');
-  if (!native) account.title = account.ariaLabel = '设置';
-  account.onclick = () => { void showSettings(mobile ? undefined : 'account').catch(() => setStatus('无法打开设置', true)); };
-  if (native) {
+  if (!native && mobile) account.title = account.ariaLabel = '设置';
+  account.onclick = () => { void showSettings(!mobile && (native || serverLibrary) ? 'account' : undefined).catch(() => setStatus('无法打开设置', true)); };
+  if (native || serverLibrary) {
     const refreshAccount = sidebarAccount(account);
     window.addEventListener('focus', refreshAccount);
     void refreshAccount();
@@ -1103,7 +1140,9 @@ sidebar = createSidebar(() => notebook, {
     if (source) return mountNoteAssetImage(note.id, image, row, url, source, true);
   },
   noteWindow,
-  openNoteWindow: native && desktop && !documentWindow && !notebook.loadError ? id => invoke('workspace_open_note', { noteId: id }) : undefined,
+  openNoteWindow: desktop && !documentWindow && !notebook.loadError
+    ? native ? id => invoke('workspace_open_note', { noteId: id }) : serverLibrary ? openBrowserNote : undefined
+    : undefined,
   libraryChanged: () => { richEditor.refreshNoteLinks(); updateShareMarker(); },
   reload: () => showCurrentNote(Boolean(notebook.current)), status: setStatus, error: message => setStatus(message, true),
 }, mobile);
@@ -1135,9 +1174,11 @@ if (serverLibrary && !notebook.loadError) {
       && (!notebook.current || source.replace(/\r\n?/g, '\n') === notebook.current.source.replace(/\r\n?/g, '\n'));
     };
     try {
-      if (await notebook.refreshServer(ready)) {
+      if (await notebook.refreshServer(ready, browserNoteId ?? undefined)) {
         const next = notebook.current;
-        if (showingNote && (current?.id !== next?.id || current?.source !== next?.source || current?.readOnly !== next?.readOnly)) showCurrentNote(Boolean(next));
+        if (browserNoteId && next?.id !== browserNoteId) {
+          if (showingNote) showCurrentNote(false);
+        } else if (browserNoteId && !showingNote || showingNote && (current?.id !== next?.id || current?.source !== next?.source || current?.readOnly !== next?.readOnly)) showCurrentNote(Boolean(next));
         else refreshTitle();
         sidebar?.refresh();
       }
@@ -1146,6 +1187,18 @@ if (serverLibrary && !notebook.loadError) {
   };
   window.addEventListener('focus', refresh);
   setInterval(() => { if (!document.hidden) void refresh(); }, 15_000);
+  // 部署端同步完成后立即读回笔记；和 App 同步后一样，没在显示笔记时打开当前笔记
+  window.addEventListener('web-sync-finished', async () => {
+    await refresh();
+    if (!showingNote && !browserNoteId && notebook.current) { showCurrentNote(true); sidebar?.revealCurrent(); }
+  });
+  // 和 App 一样，删除、移动、编辑等本地改动后同步一次；定时同步在部署端
+  const webSyncClient = createServerSyncClient();
+  const webSync = startAutoSync(webSyncClient, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true',
+    message => setStatus(message, true), mobile, preferences, false);
+  notebook.onLocalChange = webSync.changed;
+  // 和 App 一样，登录轻羽账号后为这个账号开启云存储自动同步
+  void connectCloudAutoSync(webSyncClient, preferences, () => webSync.sync(), message => setStatus(message, true)).catch(() => setStatus('无法读取账号同步状态', true));
   window.addEventListener('beforeunload', event => {
     if (showingNote && notebook.current && (richEditor.composing || saveTimer || sourceForSave().replace(/\r\n?/g, '\n') !== notebook.current.source.replace(/\r\n?/g, '\n'))) { event.preventDefault(); event.returnValue = ''; }
   });

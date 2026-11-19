@@ -2,6 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { Notebook, groupNotes, isShared, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
 import { noteText } from '../src/document-text';
 
+it('uses the first line for UUID-backed notes without overriding explicit file names', () => {
+  const note = { filename: 'B72FA25E-A0C0-48C8-8B25-175B4C44D8E1.md', title: '无标题', source: '1\n\n正文' };
+  expect(noteTitle(note)).toBe('1');
+  expect(noteTitle({ ...note, source: '# 更新后的标题\n\n正文' })).toBe('更新后的标题');
+  expect(noteTitle({ ...note, source: '' })).toBe('无标题');
+  expect(noteTitle({ ...note, filename: '自定义名称.md', title: '自定义名称' })).toBe('自定义名称');
+  expect(noteTitle({ ...note, filename: '无标题.md' })).toBe('无标题');
+});
+
 function storage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { values.set(key, value); }) };

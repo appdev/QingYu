@@ -16,6 +16,7 @@ vi.mock('../src/preferences', async importOriginal => ({
   get native() { return platform.native; },
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(null) }));
+vi.mock('html2canvas', () => ({ default: async () => ({ toBlob: (done: BlobCallback) => done(new Blob()) }) }));
 const sync: SyncClient = { load: async () => ({ endpoint: '', bucket: '', region: '', prefix: '', accessKeyId: '', secretAccessKey: '' }), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
 beforeEach(() => { platform.native = false; localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
 
@@ -106,7 +107,10 @@ it('shows the hosted MCP address and keeps local API controls in the desktop app
     const page = root.querySelector<HTMLElement>('#settings-panel-ai')!;
     expect(page.textContent).toContain(`${location.origin}/mcp`);
     expect(page.textContent).toContain('Authorization');
-    expect(page.querySelector('button')).toBeNull();
+    const buttons = [...page.querySelectorAll('button')].map(button => button.textContent);
+    expect(buttons).toEqual(expect.arrayContaining(['复制配置', '复制给 AI']));
+    expect(buttons).not.toEqual(expect.arrayContaining(['启动服务']));
+    expect(buttons).not.toEqual(expect.arrayContaining(['显示令牌']));
   } finally {
     view.destroy();
     meta.remove();
@@ -169,17 +173,17 @@ it('shows the parent of the current desktop settings page independently of navig
   view.destroy();
 });
 
-it('shows sharing tabs with mock web publishing and keeps unavailable lock operations disabled', () => {
+it('shows sharing tabs with mock web publishing and keeps unavailable lock operations disabled', async () => {
   platform.native = true;
   Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value() {} });
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.open = true; } });
   const anchor = document.createElement('button'); document.body.append(anchor);
-  showShare(anchor, '<unsafe>', '<script>not markup</script>', vi.fn());
+  showShare(anchor, '<unsafe>', '<script>not markup</script>', vi.fn(), { title: '<unsafe>', source: '测试图片' });
   const panel = document.querySelector('.share-popover')!;
   const tabs = [...panel.querySelectorAll<HTMLButtonElement>('[role=tab]')];
-  expect(tabs.map(tab => tab.textContent)).toEqual(['发送副本', '网页', '图片']);
+  expect(tabs.map(tab => tab.textContent)).toEqual(['发送', '网页', '图片']);
   expect(panel.textContent).not.toMatch(/协作|邀请成员|通过链接加入/);
-  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送副本');
+  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送');
   expect(panel.querySelector<HTMLButtonElement>('.share-copy')!.disabled).toBe(false);
   tabs[1].click();
   expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('网页');
@@ -189,10 +193,9 @@ it('shows sharing tabs with mock web publishing and keeps unavailable lock opera
   expect(panel.textContent).toContain('模拟测试');
   tabs[2].click();
   expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('图片');
-  expect(panel.querySelector('[aria-label="图片背景"]')).not.toBeNull();
-  expect([...panel.querySelectorAll('.share-actions button')].map(button => button.textContent)).toEqual(['复制图片', '保存…', '分享…']);
+  await vi.waitFor(() => expect(panel.querySelector('[data-picture-action="copy"]')?.textContent).toBe('复制图片'));
   tabs[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送副本');
+  expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送');
   tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
   expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('图片');
   showLockNotePanel();

@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { keepEditorFocusForTouchButtons } from './editor-viewport';
 import { editorItemMove, moveEditorItem, taskMarker, toggleTask, untickChecklist, type Format } from './format';
-import { popupMenu } from './popup-menu';
+import { showMenu } from './popup-menu';
 
 type HistoryAction = 'undo' | 'redo';
 type FormatAction = Format | 'move-up' | 'move-down' | 'tick' | 'untick';
@@ -108,9 +108,8 @@ export function connectMobileEditorHistory(button: HTMLButtonElement, currentEdi
     const restore = () => {
       if (currentEditor() === view && view.state.doc === doc && focused instanceof HTMLElement && view.contentDOM.contains(focused)) focused.focus({ preventScroll: true });
     };
-    const bounds = button.getBoundingClientRect();
     const run = () => { if (currentEditor() === view && view.state.doc === doc) runEditorHistory(view, 'redo'); };
-    void popupMenu([{ text: '重做', run }], bounds.left, bounds.bottom + 6, console.warn, restore, '撤销与重做');
+    void showMenu([{ text: '重做', run }], { anchor: button, label: '撤销与重做', restoreFocus: restore });
   };
   button.onpointerdown = event => {
     if (!event.isPrimary || event.button !== 0) return;

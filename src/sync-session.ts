@@ -24,7 +24,8 @@ export async function nativeRequest(request: Request): Promise<Response> {
   return { status, headers, arrayBuffer: bytes.buffer, get text() { return text ??= textDecoder.decode(bytes); }, json: {} };
 }
 
-export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string; mode?: 'cloud' | 's3' };
+/** unavailable：当前不能同步的原因，例如网页客户端部署时没有设置配置目录。 */
+export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string; mode?: 'cloud' | 's3'; unavailable?: string };
 export interface SyncClient {
   load(): Promise<S3Settings>;
   save(settings: S3Settings): Promise<void>;
@@ -35,7 +36,7 @@ export interface SyncClient {
 }
 const profileKey = 'miaoyan-editor.s3-profile.v1';
 const fields = ['endpoint', 'bucket', 'region', 'prefix', 'accessKeyId', 'secretAccessKey'] as const;
-const cloudErrors: Record<string, string> = {
+export const cloudErrors: Record<string, string> = {
   signed_out: '请重新登录轻羽后同步', account_changed: '登录账号已切换，请重新设置云同步',
   subscription_required: '轻羽套餐未开通或已到期', email_unverified: '请先在轻羽门户验证邮箱',
   storage_credentials_expiring: '存储凭据即将到期，请重试', network: '无法连接账号服务，请检查网络',

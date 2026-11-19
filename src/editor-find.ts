@@ -1,7 +1,7 @@
 import { CharCategory, findClusterBreak, type EditorState } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { closeSearchPanel, findNext, findPrevious, getSearchQuery, openSearchPanel, replaceAll, replaceNext, search, searchKeymap, SearchQuery, setSearchQuery } from '@codemirror/search';
-import { popupMenu } from './popup-menu';
+import { showMenu } from './popup-menu';
 import './editor-find.css';
 
 const noWrap = new WeakSet<EditorView>();
@@ -118,9 +118,8 @@ function createFindPanel(view: EditorView) {
   replaceButtons[0].onclick = () => { if (!composing) replaceNext(view); };
   replaceButtons[1].onclick = () => { if (!composing) replaceAll(view); };
   options.onclick = () => {
-    const bounds = options.getBoundingClientRect();
     const restore = () => { if (input.isConnected) input.focus(); };
-    void popupMenu([
+    void showMenu([
       { text: '忽略大小写', checked: !query.caseSensitive, run: () => commit({ caseSensitive: !query.caseSensitive }, true) },
       { text: '循环查找', checked: !noWrap.has(view), run: () => { if (!noWrap.delete(view)) noWrap.add(view); updateButtons(); } },
       { text: '' },
@@ -129,7 +128,7 @@ function createFindPanel(view: EditorView) {
       { text: '全词匹配', checked: query.wholeWord, run: () => commit({ wholeWord: true, test: undefined }, true) },
       { text: '' },
       { text: '正则表达式', checked: query.regexp, run: () => commit({ regexp: !query.regexp }, true) },
-    ], bounds.left, bounds.bottom + 4, console.warn, restore, '查找条件');
+    ], { anchor: options, label: '查找条件', restoreFocus: restore });
   };
   dom.onkeydown = event => {
     if (composing || event.isComposing) { event.stopPropagation(); return; }

@@ -16,31 +16,34 @@ use std::{net::SocketAddr, sync::Arc};
 use subtle::ConstantTimeEq;
 
 const MAX_BODY: usize = 4 * 1024 * 1024;
+mod account;
 mod browser_library;
 #[cfg(all(feature = "app", desktop))]
 pub(crate) mod desktop;
 mod mcp;
+mod server_sync;
 mod web;
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
-struct ApiError(StatusCode, &'static str, &'static str);
+/// 第三项是给人看的说明；网页编辑器的笔记库操作会带上 DiskLibrary 的中文原因。
+struct ApiError(StatusCode, &'static str, std::borrow::Cow<'static, str>);
 
 impl ApiError {
     fn bad_request(message: &'static str) -> Self {
-        Self(StatusCode::BAD_REQUEST, "invalid_request", message)
+        Self(StatusCode::BAD_REQUEST, "invalid_request", message.into())
     }
     fn not_found() -> Self {
         Self(
             StatusCode::NOT_FOUND,
             "not_found",
-            "Document or folder not found",
+            "Document or folder not found".into(),
         )
     }
     fn internal() -> Self {
         Self(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
-            "The operation could not be completed",
+            "The operation could not be completed".into(),
         )
     }
 }
@@ -66,6 +69,10 @@ struct Service {
     token: Option<[u8; 32]>,
     read_token: Option<[u8; 32]>,
     web: Option<web::Web>,
+    sync: Option<Arc<server_sync::ServerSync>>,
+    /// 当前客户端的配置目录：轻羽账号会话、同步设置。和笔记所在的数据目录分开。
+    config: Option<PathBuf>,
+    account: crate::client_account::ClientAccount,
 }
 
 fn token_hash(token: &str) -> std::result::Result<[u8; 32], &'static str> {
@@ -98,6 +105,9 @@ impl Service {
             token,
             read_token,
             web,
+            sync: None,
+            config: None,
+            account: Default::default(),
         }))
     }
 }
@@ -134,7 +144,7 @@ async fn authorize(State(state): State<Arc<Service>>, request: Request, next: Ne
         ApiError(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "A valid Bearer token is required",
+            "A valid Bearer token is required".into(),
         )
         .into_response()
     } else if session
@@ -146,7 +156,7 @@ async fn authorize(State(state): State<Arc<Service>>, request: Request, next: Ne
         ApiError(
             StatusCode::FORBIDDEN,
             "read_only_token",
-            "This token only permits reading",
+            "This token only permits reading".into(),
         )
         .into_response()
     } else {
@@ -193,7 +203,7 @@ async fn with_store<T: Send + 'static>(
             ApiError(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "library_unavailable",
-                "The library is unavailable; retry later",
+                "The library is unavailable; retry later".into(),
             )
         })?;
         action(&mut store)
@@ -409,7 +419,7 @@ fn commit(store: &mut DiskLibrary, next: Library, intent: &str) -> ApiResult<()>
         ApiError(
             StatusCode::CONFLICT,
             "storage_conflict",
-            "The library changed or cannot be written; read it again before retrying",
+            "The library changed or cannot be written; read it again before retrying".into(),
         )
     })
 }
@@ -419,7 +429,7 @@ fn payload<T>(value: std::result::Result<Json<T>, JsonRejection>) -> ApiResult<T
         ApiError(
             error.status(),
             "invalid_json",
-            "Expected a valid JSON document within the 4 MiB request limit",
+            "Expected a valid JSON document within the 4 MiB request limit".into(),
         )
     })
 }
@@ -481,7 +491,7 @@ async fn update(
         .ok_or(ApiError(
             StatusCode::PRECONDITION_REQUIRED,
             "version_required",
-            "Send the document ETag in If-Match",
+            "Send the document ETag in If-Match".into(),
         ))?
         .to_str()
         .map_err(|_| ApiError::bad_request("Invalid If-Match"))?
@@ -506,14 +516,14 @@ async fn update(
             return Err(ApiError(
                 StatusCode::PRECONDITION_FAILED,
                 "version_conflict",
-                "The document changed; read it again before updating",
+                "The document changed; read it again before updating".into(),
             ));
         }
         if old.read_only {
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
                 "read_only_document",
-                "This document cannot be modified",
+                "This document cannot be modified".into(),
             ));
         }
         let mut next = store.data.clone();
@@ -545,6 +555,33 @@ async fn update(
 fn environment(name: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(format!("QINGYU_{name}"))
         .or_else(|| std::env::var_os(format!("MIAOYAN_{name}")))
+}
+
+/// 配置目录只允许所有者访问，并且不能和笔记目录互相包含。
+fn config_dir(dir: PathBuf, library: &Path) -> std::result::Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(&dir)
+        .map_err(|_| "Cannot create QINGYU_CONFIG_DIR")?;
+    let dir = fs::canonicalize(dir)?;
+    let library = fs::canonicalize(library)?;
+    if dir.starts_with(&library) || library.starts_with(&dir) {
+        return Err("QINGYU_CONFIG_DIR must be outside QINGYU_LIBRARY_DIR".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if fs::metadata(&dir)?.permissions().mode() & 0o077 != 0 {
+            return Err("QINGYU_CONFIG_DIR must only be accessible by its owner".into());
+        }
+    }
+    Ok(dir)
 }
 
 /// Run without the `app` feature to avoid all Tauri and WebView dependencies.
@@ -598,14 +635,30 @@ pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )
         })
         .transpose()?;
-    let state = Service::open(
+    let mut state = Service::open(
         PathBuf::from(root),
         token.as_deref(),
         read_token.as_deref(),
         web,
     )?;
+    let library = state.store.lock().map_err(error)?.root.clone();
+    let config = environment("CONFIG_DIR")
+        .map(|dir| config_dir(PathBuf::from(dir), &library))
+        .transpose()?;
+    // 网页客户端才有同步设置；纯 API 服务不启动同步
+    let sync = state
+        .web
+        .is_some()
+        .then(|| server_sync::ServerSync::open(config.clone(), &library))
+        .transpose()?;
+    let service = Arc::get_mut(&mut state).expect("new service is not shared");
+    service.sync = sync.clone();
+    service.config = config;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     eprintln!("QingYu API listening on {}", listener.local_addr()?);
+    if let Some(sync) = sync {
+        sync.start(state.clone());
+    }
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown())
         .await?;

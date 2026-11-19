@@ -1,3 +1,4 @@
+import { showContextSheet } from './context-sheet';
 import { clamp, getSurface, glass, mix, Spring, type GlassSurface } from 'glassy-liquid';
 import { toolbarMenuGlass } from './toolbar-menu-glass';
 import { ChevronDown, ChevronRight } from 'lucide';
@@ -12,7 +13,7 @@ const actionIcons: Record<string, string> = {
   置顶: 'M8 3h8l-1 6 3 4v2H6v-2l3-4zm4 12v7',
   取消置顶: 'M4 4l16 16M9 3h7l-1 6 3 4M6 13v2h7m-1 0v7',
   '锁定笔记…': 'M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5z',
-  制作副本: 'M8 16H3V3h13v5M8 8h13v13H8zM15 11v7m-4-3h7',
+  复制笔记: 'M8 16H3V3h13v5M8 8h13v13H8zM15 11v7m-4-3h7',
   新建笔记: 'M12 4H4v16h16v-8m-10 2 1-4 8-8 3 3-8 8z',
   新建文件夹: 'M3 6h7l2 2h9v12H3zm9 4v7m-4-3h8',
   重命名文件夹: 'm4 20 1-5L17 3l4 4L9 19z',
@@ -169,7 +170,40 @@ document.addEventListener('keydown', event => {
 }, true);
 window.addEventListener('resize', dismissPopupMenu);
 
-export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y: number, error: (message: string) => void, restoreFocus: () => void, label = '操作菜单', preview?: HTMLElement, quickActions = 0, toolbar?: { anchor: HTMLButtonElement; keyboard: boolean; above?: boolean }) {
+export type MenuOptions = {
+  label?: string;
+  /** 从按钮弹出：统一用玻璃面板、从按钮展开的动画，桌面和手机的位置由这里决定。 */
+  anchor?: HTMLButtonElement;
+  /** 不传时按按钮是否带键盘焦点判断；键盘打开时焦点落在首个可用项。 */
+  keyboard?: boolean;
+  /** 右键之类没有按钮的菜单在这里弹出，桌面 App 用系统菜单。 */
+  at?: { x: number; y: number };
+  /** 手机长按时菜单上方的预览卡片。 */
+  preview?: HTMLElement;
+  previewAnchor?: HTMLElement;
+  quickActions?: number;
+  onError?: (message: string) => void;
+  restoreFocus?: () => void;
+};
+
+// 所有弹出菜单的入口。调用方只给菜单项和触发位置，样式、定位、开合和焦点都在这里处理。
+export function showMenu(entries: MenuItem[] | Promise<MenuItem[]>, options: MenuOptions = {}) {
+  const { anchor, at, label = '操作菜单' } = options;
+  // 菜单开着时再点一次按钮就收起。
+  if (anchor?.getAttribute('aria-expanded') === 'true') { dismissPopupMenu(); return Promise.resolve(); }
+  anchor?.setAttribute('aria-haspopup', 'menu');
+  const box = anchor?.getBoundingClientRect();
+  const x = at?.x ?? box?.left ?? 0, y = at?.y ?? box?.bottom ?? 0;
+  const restoreFocus = options.restoreFocus ?? (() => anchor?.focus({ preventScroll: true }));
+  const toolbar = anchor && {
+    anchor, keyboard: options.keyboard ?? anchor.matches(':focus-visible'),
+    // 键盘上方的快捷栏贴着屏幕底边，菜单只能往上开。
+    above: Boolean(anchor.closest('#mobile-tools')),
+  };
+  return openMenu(entries, x, y, options.onError ?? console.warn, restoreFocus, label, options.preview, options.quickActions, toolbar, options.previewAnchor);
+}
+
+async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y: number, error: (message: string) => void, restoreFocus: () => void, label = '操作菜单', preview?: HTMLElement, quickActions = 0, toolbar?: { anchor: HTMLButtonElement; keyboard: boolean; above?: boolean }, previewAnchor?: HTMLElement) {
   dismissPopupMenu(); const request = generation;
   const anchor = toolbar?.anchor;
   const root = document.documentElement;
@@ -321,8 +355,10 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
         left = Math.min(box.left - 8, innerWidth - menu.offsetWidth - 8);
         top = box.bottom + 4;
       } else {
-        const box = (anchor.closest('.actions') ?? anchor).getBoundingClientRect();
-        left = innerWidth - menu.offsetWidth - 8;
+        // 手机和平板：首行顶边对齐按钮所在工具栏的顶边。右半边的按钮贴右边缘 8 px，左半边的从按钮左边展开。
+        const bar = anchor.closest('.actions') ?? anchor;
+        const box = bar.getBoundingClientRect(), button = anchor.getBoundingClientRect();
+        left = button.left + button.width / 2 > innerWidth / 2 ? innerWidth - menu.offsetWidth - 8 : button.left;
         top = Math.max(4, box.top - parseFloat(getComputedStyle(content).paddingTop));
       }
     }
@@ -347,14 +383,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
     } catch { if (request !== generation) return; }
   }
   if (preview) {
-    const dialog = document.createElement('dialog'); dialog.className = 'context-sheet'; dialog.ariaLabel = label;
-    preview.className = 'context-preview';
-    dialog.append(preview); document.body.append(dialog);
-    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
-    dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
-    fallback = dialog;
-    browserMenu(items, x, y, dialog);
-    dialog.showModal();
+    fallback = showContextSheet(preview, { label, anchor: previewAnchor, close, mountMenu: dialog => { browserMenu(items, x, y, dialog); } });
   } else fallback = browserMenu(items, x, y, document.body);
   fallbackAnchor = anchor;
   addToolbarBackdrop();

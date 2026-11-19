@@ -1,5 +1,7 @@
 # 轻羽 QingYu · 第一版
 
+给文字，一处安静的地方。
+
 中文品牌为“轻羽”，英文为 `QingYu`，包与命令使用 `qingyu` / `qingyu-api`。侧边栏与登录页共用 `public/brand/qingyu-mark.svg`，应用 ICNS 使用用户提供的原文件。为继续访问已有笔记、设置与同步库，系统应用标识、原生 JNI 库名、旧存储键、`.miaoyan` 元数据和云端格式保持兼容；原版妙言的第三方资源与版权说明保留。
 
 Docker 中设置 `QINGYU_WEB_PASSWORD` 即可启用只有访问密码的 Web 登录，不需要账号。Web 编辑器通过同一服务读写服务器挂载目录，与桌面端共用磁盘存储核心；部署、HTTPS 代理和草稿边界见 [部署说明](docs/api-service.md#web-登录与-docker-密码)。

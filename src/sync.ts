@@ -105,7 +105,9 @@ async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, resu
   return result.diff.conflicts.length;
 }
 
-export async function syncNotebook(book: Notebook, settings: S3Connection, progress: (message: string) => void = () => undefined, beforeCommit: () => boolean | Promise<boolean> = () => true) {
+type SyncBook = Pick<Notebook, 'data' | 'loadError' | 'root' | 'assetRevision' | 'readSyncAssets' | 'readAssetPlaceholders' | 'readAsset' | 'stageAsset' | 'readStagedAsset' | 'releaseAssetStage' | 'commitSync'>;
+
+export async function syncNotebook(book: SyncBook, settings: S3Connection, progress: (message: string) => void = () => undefined, beforeCommit: () => boolean | Promise<boolean> = () => true) {
   if (book.loadError) throw new Error('本机笔记库读取失败，已停止同步');
   const library = structuredClone(book.data);
   if (library.notes.some(note => note.readOnly)) throw new Error('笔记库含不可读或损坏的文件，已停止同步，避免上传不完整正文');

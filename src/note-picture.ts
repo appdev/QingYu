@@ -195,8 +195,8 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
   const nativeImageShare = native && isMobile;
   const filename = pictureFilename(request.title);
   let result: Awaited<ReturnType<typeof renderPicture>>, imageURL = '', generation = 0;
-  // 手机和 Pinto 的 iOS 一样只有分享和复制，想存到相册走系统分享；保存…只留给桌面。
-  const actionOrder = detailed ? (isMobile ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const) : ['copy', 'save', 'share'] as const;
+  // 原生手机通过系统分享存图；浏览器可直接下载。
+  const actionOrder = detailed ? (nativeImageShare ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const) : ['copy', 'save', 'share'] as const;
   const actions = actionOrder.map(action => {
     const button = document.createElement('button'); button.type = 'button'; button.disabled = true;
     const title = { copy: '复制图片', save: '保存…', share: detailed ? '分享' : '分享…' }[action];

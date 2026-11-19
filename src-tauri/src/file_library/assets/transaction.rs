@@ -23,7 +23,7 @@ impl StagedAsset {
         Ok(())
     }
 
-    pub(super) fn read(&self, root: &Path) -> Result<Vec<u8>> {
+    pub(in crate::file_library) fn read(&self, root: &Path) -> Result<Vec<u8>> {
         self.validate(root)?;
         let mut bytes = Vec::new();
         fs::File::open(checked(root, &self.path)?)
@@ -51,7 +51,7 @@ impl StageFiles {
         }
     }
 
-    pub(super) fn write(&mut self, bytes: &[u8]) -> Result<StagedAsset> {
+    pub(in crate::file_library) fn write(&mut self, bytes: &[u8]) -> Result<StagedAsset> {
         let path = format!("{STAGE_PREFIX}{}", id());
         let file = checked(&self.root, &path)?;
         atomic(&file, bytes, false)?;
@@ -116,7 +116,7 @@ fn copy_staged(root: &Path, staged: &StagedAsset, to: &Path, time: f64) -> Resul
     modified(to, time)
 }
 
-pub(super) fn stage_lock(root: &Path) -> Result<fs::File> {
+pub(in crate::file_library) fn stage_lock(root: &Path) -> Result<fs::File> {
     fs::OpenOptions::new()
         .read(true)
         .write(true)

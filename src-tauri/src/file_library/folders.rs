@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const FOLDER_JOURNAL: &str = ".miaoyan/folder-transaction.json";
+pub(super) const FOLDER_TRASH: &str = "Trash/.folders";
 
 #[derive(Serialize, Deserialize)]
 struct FolderTransaction {
@@ -10,6 +11,12 @@ struct FolderTransaction {
     identity: [u64; 2],
     creating: bool,
     trash: bool,
+    #[serde(default)]
+    copying: bool,
+    #[serde(default)]
+    local_trash: bool,
+    #[serde(default)]
+    restoring: bool,
 }
 
 fn directory_identity(path: &Path) -> Result<[u64; 2]> {
@@ -57,7 +64,7 @@ fn visible_path(root: &Path, path: &str) -> Result<PathBuf> {
 }
 
 fn move_directory(from: &Path, to: &Path) -> Result<()> {
-    #[cfg(target_vendor = "apple")]
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
     {
         move_exclusive(from, to)
     }
@@ -81,16 +88,55 @@ fn move_directory(from: &Path, to: &Path) -> Result<()> {
             Err(error(io::Error::last_os_error()))
         }
     }
-    #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "linux", target_os = "android")))]
     {
         let _ = (from, to);
         Err("当前平台尚未接入可恢复的文件夹移动".into())
     }
 }
 
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    for entry in fs::read_dir(from).map_err(error)? {
+        let entry = entry.map_err(error)?;
+        let name = entry.file_name();
+        if [
+            ".miaoyan",
+            ".miaoyan-conflicts",
+            ".git",
+            "s3-connection.json",
+        ]
+        .iter()
+        .any(|reserved| name.to_string_lossy().eq_ignore_ascii_case(reserved))
+        {
+            continue;
+        }
+        let kind = entry.file_type().map_err(error)?;
+        let target = to.join(name);
+        if kind.is_dir() {
+            fs::create_dir(&target).map_err(error)?;
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), &target).map_err(error)?;
+            fs::File::open(&target)
+                .and_then(|file| file.sync_all())
+                .map_err(error)?;
+        } else {
+            return Err("文件夹包含符号链接或特殊文件，未复制".into());
+        }
+    }
+    Ok(())
+}
+
 impl FolderTransaction {
     fn paths(&self, root: &Path, trash_root: Option<&Path>) -> Result<(PathBuf, PathBuf)> {
-        let from = if self.creating {
+        let from = if self.restoring {
+            let name = self
+                .from
+                .strip_prefix("Trash/.folders/")
+                .ok_or("废纸篓事务路径无效")?;
+            folder_name(name)?;
+            checked(root, &self.from)?
+        } else if self.creating {
             let token = self
                 .from
                 .strip_prefix(".miaoyan/folder-")
@@ -104,7 +150,14 @@ impl FolderTransaction {
             if self.creating || Path::new(&self.to).components().count() != 1 {
                 return Err("废纸篓事务路径无效".into());
             }
-            checked(trash_root.ok_or("系统废纸篓不可用，未移动文件")?, &self.to)?
+            let local;
+            let trash_root = if self.local_trash {
+                local = checked(root, FOLDER_TRASH)?;
+                &local
+            } else {
+                trash_root.ok_or("系统废纸篓不可用，未移动文件")?
+            };
+            checked(trash_root, &self.to)?
         } else {
             visible_path(root, &self.to)?
         };
@@ -123,11 +176,31 @@ impl FolderTransaction {
         } else if directory_identity(&from).ok() != Some(self.identity) {
             return Err("恢复时目录身份发生变化，已保留文件和事务日志".into());
         }
-        if self.creating {
+        if self.copying {
+            fs::remove_dir_all(from).map_err(error)?;
+        } else if self.creating {
             fs::remove_dir(from).map_err(error)?;
         }
         Ok(())
     }
+}
+
+pub(super) fn trashed_folders(root: &Path) -> Vec<String> {
+    let Ok(archive) =
+        checked(root, FOLDER_TRASH).and_then(|path| fs::read_dir(path).map_err(error))
+    else {
+        return Vec::new();
+    };
+    let mut names: Vec<_> = archive
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            (entry.file_type().ok()?.is_dir() && folder_name(&name).ok() == Some(name.as_str()))
+                .then_some(name)
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 pub(super) fn recover(root: &Path) -> Result<()> {
@@ -145,7 +218,7 @@ pub(super) fn recover(root: &Path) -> Result<()> {
     {
         return Err("文件夹事务版本不匹配，未修改目录".into());
     }
-    let trash = if transaction.trash {
+    let trash = if transaction.trash && !transaction.local_trash {
         Some(system_trash(root)?)
     } else {
         None
@@ -197,8 +270,73 @@ impl DiskLibrary {
             return Err("笔记库已变化或有未恢复事务，请重新读取笔记文件夹".into());
         }
         let mut next = self.data.clone();
-        let folder = self.folder(folder_id, action != "create")?.clone();
+        let restoring = action == "restore-folder";
+        let folder = self
+            .folder(folder_id, action != "create" && !restoring)?
+            .clone();
+        let copying = action == "duplicate";
+        let local_trash = action == "trash-local";
+        let mut copied_bytes = HashMap::new();
         let (from, to, creating, trash) = match action {
+            "restore-folder" => {
+                let name = folder_name(value)?;
+                let from = relative(FOLDER_TRASH, name);
+                let source = checked(&self.root, &from)?;
+                directory_identity(&source)?;
+                self.require_folder_assets(&from)?;
+                let destination = visible_path(&self.root, name)?;
+                if destination.exists()
+                    || next
+                        .folders
+                        .iter()
+                        .any(|folder| folder.path.to_lowercase() == name.to_lowercase())
+                {
+                    return Err("笔记库顶层已有同名文件夹或文件。请先重命名现有项目，再恢复".into());
+                }
+                let mut directories = vec![source.clone()];
+                collect_directories(&source, &mut directories)?;
+                let mut restored_ids = HashMap::new();
+                for directory in directories {
+                    let suffix = directory
+                        .strip_prefix(&source)
+                        .map_err(error)?
+                        .to_str()
+                        .ok_or("目录名称无效")?;
+                    let path = if suffix.is_empty() {
+                        name.to_owned()
+                    } else {
+                        relative(name, suffix)
+                    };
+                    visible_path(&self.root, &path)?;
+                    let folder_id = id();
+                    restored_ids.insert(path.clone(), folder_id.clone());
+                    next.folders.push(Folder {
+                        id: folder_id,
+                        name: path.rsplit('/').next().unwrap().into(),
+                        path,
+                    });
+                }
+                let prefix = format!("{from}/");
+                for note in &mut next.notes {
+                    let Some(suffix) = note.path.strip_prefix(&prefix) else {
+                        continue;
+                    };
+                    let archived_note = checked(&source, suffix)?;
+                    if !fs::symlink_metadata(archived_note).is_ok_and(|metadata| metadata.is_file())
+                    {
+                        return Err("废纸篓里的笔记已变化，请重新打开笔记库后再试".into());
+                    }
+                    let path = relative(name, suffix);
+                    let parent = path.rsplit_once('/').unwrap().0;
+                    note.folder_id = restored_ids
+                        .get(parent)
+                        .ok_or("废纸篓里的笔记目录已变化，请重新打开笔记库后再试")?
+                        .clone();
+                    note.path = path;
+                    note.trashed = false;
+                }
+                (from, name.to_owned(), false, false)
+            }
             "create" => {
                 let to = relative(&folder.path, folder_name(value)?);
                 if checked(&self.root, &to)?.exists() {
@@ -213,7 +351,90 @@ impl DiskLibrary {
                 });
                 (from, to, true, false)
             }
-            "rename" | "move" => {
+            "duplicate" => {
+                self.require_folder_assets(&folder.path)?;
+                let parent = folder
+                    .path
+                    .rsplit_once('/')
+                    .map_or("", |(parent, _)| parent);
+                let mut suffix = 1;
+                let (name, to) = loop {
+                    let name = if suffix == 1 {
+                        format!("{} 副本", folder.name)
+                    } else {
+                        format!("{} 副本 {suffix}", folder.name)
+                    };
+                    let to = relative(parent, folder_name(&name)?);
+                    if !visible_path(&self.root, &to)?.exists()
+                        && !next
+                            .folders
+                            .iter()
+                            .any(|f| f.path.eq_ignore_ascii_case(&to))
+                    {
+                        break (name, to);
+                    }
+                    suffix += 1;
+                };
+                let prefix = format!("{}/", folder.path);
+                let mut folder_ids = HashMap::new();
+                for original in &self.data.folders {
+                    let (path, name) = if original.id == folder.id {
+                        (to.clone(), name.clone())
+                    } else if let Some(suffix) = original.path.strip_prefix(&prefix) {
+                        (relative(&to, suffix), original.name.clone())
+                    } else {
+                        continue;
+                    };
+                    let duplicate = id();
+                    folder_ids.insert(original.id.clone(), duplicate.clone());
+                    next.folders.push(Folder {
+                        id: duplicate,
+                        name,
+                        path,
+                    });
+                }
+                let from = format!(".miaoyan/folder-{}", id());
+                let staging = visible_path(&self.root, &folder.path)?;
+                let target = checked(&self.root, &from)?;
+                fs::create_dir(&target).map_err(error)?;
+                let copied = (|| {
+                    copy_tree(&staging, &target)?;
+                    for original in self.data.notes.iter().filter(|note| !note.trashed) {
+                        let Some(path) = original.path.strip_prefix(&prefix) else {
+                            continue;
+                        };
+                        let file = checked(&target, path)?;
+                        let bytes = fs::read(&file).map_err(error)?;
+                        let (source, read_only) = decode(&bytes);
+                        let mut note = original.clone();
+                        note.id = id();
+                        note.folder_id = folder_ids
+                            .get(&original.folder_id)
+                            .ok_or("笔记不属于此目录")?
+                            .clone();
+                        note.path = relative(&to, path);
+                        note.source = source;
+                        note.read_only = read_only;
+                        note.share = None;
+                        note.conflict_of = None;
+                        note.created_at = now();
+                        note.updated_at = millis(
+                            fs::metadata(&file)
+                                .and_then(|meta| meta.modified())
+                                .map_err(error)?,
+                        );
+                        copied_bytes.insert(note.id.clone(), bytes);
+                        next.notes.push(note);
+                    }
+                    Ok::<(), String>(())
+                })();
+                if let Err(reason) = copied {
+                    fs::remove_dir_all(target).map_err(error)?;
+                    return Err(reason);
+                }
+                (from, to, true, false)
+            }
+            "rename" | "move" | "move-to-folder" => {
                 let to = if action == "rename" {
                     relative(
                         Path::new(&folder.path)
@@ -223,6 +444,10 @@ impl DiskLibrary {
                             .ok_or("目录名称无效")?,
                         folder_name(value)?,
                     )
+                } else if action == "move-to-folder" {
+                    let destination = self.folder(value, false)?;
+                    let name = folder.path.rsplit('/').next().ok_or("目录名称无效")?;
+                    relative(&destination.path, name)
                 } else {
                     let chosen = Path::new(value);
                     if let Ok(inside) = chosen.strip_prefix(&self.root) {
@@ -254,17 +479,7 @@ impl DiskLibrary {
                 if to == folder.path {
                     return Ok(());
                 }
-                // 占位附件只在索引里，目录搬走后它们仍指向旧路径，笔记里的引用就断了。
-                let prefix = format!("{}/", folder.path.to_lowercase());
-                let pending = assets::placeholders::load(self)?
-                    .keys()
-                    .filter(|path| path.to_lowercase().starts_with(&prefix))
-                    .count();
-                if pending > 0 {
-                    return Err(format!(
-                        "文件夹里有 {pending} 个附件尚未下载。请在 S3 设置中将附件下载改为「全部下载」并同步，再重命名或移动"
-                    ));
-                }
+                self.require_folder_assets(&folder.path)?;
                 let target = visible_path(&self.root, &to)?;
                 let source = visible_path(&self.root, &folder.path)?;
                 if target.starts_with(&source)
@@ -295,7 +510,16 @@ impl DiskLibrary {
                 }
                 (folder.path, to, false, false)
             }
-            "trash" => {
+            "trash" | "trash-local" => {
+                let local;
+                let trash_root = if local_trash {
+                    self.require_folder_assets(&folder.path)?;
+                    local = checked(&self.root, FOLDER_TRASH)?;
+                    fs::create_dir_all(&local).map_err(error)?;
+                    Some(local.as_path())
+                } else {
+                    trash_root
+                };
                 let root = trash_root.ok_or("系统废纸篓不可用，未移动目录")?;
                 directory_identity(root)?;
                 let base = Path::new(&folder.path)
@@ -317,14 +541,27 @@ impl DiskLibrary {
                     .map(|f| f.id.clone())
                     .collect();
                 next.folders.retain(|f| !removed.contains(&f.id));
-                next.notes
-                    .retain(|n| !n.path.starts_with(&(folder.path.clone() + "/")));
+                let prefix = format!("{}/", folder.path);
+                if local_trash {
+                    for note in &mut next.notes {
+                        if let Some(suffix) = note.path.strip_prefix(&prefix) {
+                            note.path = relative(&relative(FOLDER_TRASH, &to), suffix);
+                            note.trashed = true;
+                        }
+                    }
+                } else {
+                    next.notes.retain(|note| !note.path.starts_with(&prefix));
+                }
                 for note in &mut next.notes {
                     if removed.contains(&note.folder_id) {
                         note.folder_id = "default".into();
                     }
                 }
-                if !next.notes.iter().any(|n| n.id == next.active_id) {
+                if !next
+                    .notes
+                    .iter()
+                    .any(|n| n.id == next.active_id && !n.trashed)
+                {
                     next.active_id = next
                         .notes
                         .iter()
@@ -343,6 +580,9 @@ impl DiskLibrary {
             to,
             creating,
             trash,
+            copying,
+            local_trash,
+            restoring,
         };
         let journal = checked(&self.root, FOLDER_JOURNAL)?;
         let (source, destination) = transaction.paths(&self.root, trash_root)?;
@@ -351,7 +591,9 @@ impl DiskLibrary {
             &serde_json::to_vec(&transaction).map_err(error)?,
             false,
         ) {
-            if creating {
+            if copying {
+                fs::remove_dir_all(source).map_err(error)?;
+            } else if creating {
                 fs::remove_dir(source).map_err(error)?;
             }
             return Err(reason);
@@ -375,7 +617,20 @@ impl DiskLibrary {
         self.remember_folder_identities();
         self.bytes
             .retain(|id, _| self.data.notes.iter().any(|note| note.id == *id));
+        self.bytes.extend(copied_bytes);
         fs::remove_file(journal).map_err(error)
+    }
+
+    fn require_folder_assets(&self, path: &str) -> Result<()> {
+        let prefix = format!("{}/", path.to_lowercase());
+        let pending = assets::placeholders::load(self)?
+            .keys()
+            .filter(|path| path.to_lowercase().starts_with(&prefix))
+            .count();
+        if pending > 0 {
+            return Err(format!("文件夹里有 {pending} 个附件尚未下载。请在 S3 设置中将附件下载改为「全部下载」并同步后再试"));
+        }
+        Ok(())
     }
 }
 
@@ -547,7 +802,10 @@ pub async fn library_folder_action(
     }
     #[cfg(mobile)]
     {
-        if !matches!(action.as_str(), "create" | "rename") {
+        if !matches!(
+            action.as_str(),
+            "create" | "rename" | "duplicate" | "move-to-folder" | "trash-local" | "restore-folder"
+        ) {
             return Err("请在桌面端执行此文件夹操作".into());
         }
         let mut lock = state.0.lock().map_err(error)?;
@@ -605,6 +863,99 @@ fn open_folder(_path: &Path, _terminal: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_contract_copies_subtrees_with_new_ids_and_moves_them_to_local_trash() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("A/nested/i")).unwrap();
+        fs::create_dir_all(root.join("A/empty")).unwrap();
+        fs::create_dir(root.join("B")).unwrap();
+        fs::write(root.join("A/nested/note.md"), "![image](i/image.png)").unwrap();
+        fs::write(root.join("A/nested/i/image.png"), [10, 20, 30]).unwrap();
+        let mut store = DiskLibrary::open(root.into(), None).unwrap();
+        let source = folder_id(&store, "A");
+        let source_note = store.data.notes[0].id.clone();
+        store.folder_change("duplicate", &source, "", None).unwrap();
+        store.folder_change("duplicate", &source, "", None).unwrap();
+        let copy = folder_id(&store, "A 副本");
+        assert_ne!(copy, source);
+        assert!(root.join("A 副本 2/empty").is_dir());
+        let duplicated = store
+            .data
+            .notes
+            .iter()
+            .find(|note| note.path == "A 副本/nested/note.md")
+            .unwrap()
+            .id
+            .clone();
+        assert_ne!(duplicated, source_note);
+        let child = folder_id(&store, "A 副本/nested");
+        assert!(store
+            .folder_change("move-to-folder", &copy, &child, None)
+            .is_err());
+        let destination = folder_id(&store, "B");
+        store
+            .folder_change("move-to-folder", &copy, &destination, None)
+            .unwrap();
+        assert_eq!(folder_id(&store, "B/A 副本"), copy);
+        assert_eq!(
+            fs::read(root.join("B/A 副本/nested/i/image.png")).unwrap(),
+            [10, 20, 30]
+        );
+        store.folder_change("trash-local", &copy, "", None).unwrap();
+        assert!(!root.join("B/A 副本").exists());
+        drop(store);
+        let mut store = DiskLibrary::open(root.into(), None).unwrap();
+        let note = store
+            .data
+            .notes
+            .iter()
+            .find(|note| note.id == duplicated)
+            .unwrap();
+        assert!(note.trashed);
+        assert_eq!(note.source, "![image](i/image.png)");
+        let attachment = attachments::resolve(&store, &duplicated, "i/image.png").unwrap();
+        assert_eq!(fs::read(attachment).unwrap(), [10, 20, 30]);
+        assert!(attachments::resolve(
+            &store,
+            &source_note,
+            "../../Trash/.folders/A 副本/nested/i/image.png"
+        )
+        .is_err());
+        assert!(store
+            .data
+            .notes
+            .iter()
+            .any(|note| note.id == source_note && !note.trashed));
+        assert_eq!(store.snapshot().trashed_folders, ["A 副本"]);
+        fs::create_dir(root.join("A 副本")).unwrap();
+        assert!(store
+            .folder_change("restore-folder", "default", "A 副本", None)
+            .is_err());
+        assert!(root.join("Trash/.folders/A 副本/nested/note.md").is_file());
+        fs::remove_dir(root.join("A 副本")).unwrap();
+        store
+            .folder_change("restore-folder", "default", "A 副本", None)
+            .unwrap();
+        assert!(root.join("A 副本/empty").is_dir());
+        assert!(store.snapshot().trashed_folders.is_empty());
+        drop(store);
+        let reopened = DiskLibrary::open(root.into(), None).unwrap();
+        let recovered = reopened
+            .data
+            .notes
+            .iter()
+            .find(|note| note.id == duplicated)
+            .unwrap();
+        assert!(!recovered.trashed);
+        assert_eq!(recovered.path, "A 副本/nested/note.md");
+        assert_eq!(recovered.folder_id, folder_id(&reopened, "A 副本/nested"));
+        assert_eq!(
+            fs::read(attachments::resolve(&reopened, &duplicated, "i/image.png").unwrap()).unwrap(),
+            [10, 20, 30]
+        );
+    }
     fn folder_id(store: &DiskLibrary, path: &str) -> String {
         store
             .data
@@ -784,6 +1135,9 @@ mod tests {
             identity: directory_identity(&temp.path().join("A")).unwrap(),
             creating: false,
             trash: false,
+            copying: false,
+            local_trash: false,
+            restoring: false,
         };
         fs::write(
             temp.path().join(FOLDER_JOURNAL),

@@ -25,7 +25,7 @@ class AttachmentsPlugin(private val activity: Activity) : Plugin(activity) {
             val args = invoke.parseArgs(ShareArgs::class.java)
             val intent = Intent(Intent.ACTION_SEND).setType("text/plain")
                 .putExtra(Intent.EXTRA_SUBJECT, args.title).putExtra(Intent.EXTRA_TEXT, args.text)
-            activity.startActivity(Intent.createChooser(intent, "发送副本"))
+            activity.startActivity(Intent.createChooser(intent, "发送笔记"))
             invoke.resolve()
         } catch (error: Exception) { invoke.reject("无法打开系统分享") }
     }

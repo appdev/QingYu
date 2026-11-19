@@ -144,6 +144,7 @@ pub fn run() {
             file_library::workspace::library_hide_main,
             file_library::library_commit,
             file_library::library_save_note,
+            file_library::library_purge_notes,
             #[cfg(desktop)]
             file_library::library_reveal_note,
             file_library::history::library_note_versions,
@@ -241,8 +242,8 @@ pub fn run() {
 mod file_library;
 #[cfg(any(feature = "server", all(feature = "app", desktop)))]
 pub use file_library::api;
-#[cfg(feature = "app")]
-mod client_account;
+#[cfg(any(feature = "app", feature = "server"))]
+pub(crate) mod client_account;
 #[cfg(feature = "app")]
 mod feature_window;
 #[cfg(feature = "app")]
@@ -253,8 +254,8 @@ mod note_ui;
 mod settings;
 #[cfg(feature = "app")]
 mod sync_http;
-#[cfg(feature = "app")]
-mod sync_profile;
+#[cfg(any(feature = "app", feature = "server"))]
+pub(crate) mod sync_profile;
 
 #[cfg(feature = "app")]
 #[tauri::command]

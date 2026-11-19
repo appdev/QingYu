@@ -1,6 +1,6 @@
 [package]
 name = "qingyu"
-version = "0.1.1"
+version = "0.1.2"
 description = "QingYu (轻羽), a focused Markdown editor"
 edition = "2021"
 default-run = "qingyu"
@@ -36,7 +36,7 @@ tauri-plugin-attachments = { path = "plugins/attachments", optional = true }
 tauri-plugin-calendar = { path = "plugins/calendar", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"], optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"], optional = true }
 base64 = { version = "0.23", optional = true }
 sha2 = "0.10"
 subtle = { version = "2", optional = true }

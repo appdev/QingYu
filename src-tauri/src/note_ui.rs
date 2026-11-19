@@ -406,7 +406,7 @@ mod mac {
                 "分享为图片…" => "photo",
                 "制作成应用…" => "app",
                 "版本历史…" => "clock.arrow.circlepath",
-                "制作副本" => "plus.square.on.square",
+                "复制笔记" | "复制文件夹" => "plus.square.on.square",
                 "重命名" | "重命名文件夹" => "pencil",
                 "新建文件夹" | "新建子文件夹" => "folder.badge.plus",
                 "新建笔记" => "square.and.pencil",

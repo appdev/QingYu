@@ -1,4 +1,5 @@
 const enabled = () => document.querySelector('meta[name="qingyu-web-auth"][content="enabled"]') !== null;
+const expiredLogin = () => '/login.html?expired=1' + (location.hash.startsWith('#note=') ? location.hash : '');
 
 async function validSession() {
   const response = await fetch('/auth/session', { credentials: 'same-origin', cache: 'no-store' });
@@ -11,7 +12,7 @@ export async function requireWebSession() {
   if (!enabled()) return;
   try {
     if (await validSession()) return;
-    location.replace('/login.html?expired=1');
+    location.replace(expiredLogin());
     // Stop initialization while navigating, before browser drafts are displayed.
     await new Promise<never>(() => {});
   } catch (reason) {
@@ -22,6 +23,7 @@ export async function requireWebSession() {
 
 export function watchWebSession(beforeLeave: (expired: boolean) => Promise<boolean>, error: (message: string) => void) {
   if (!enabled()) return;
+  // 锁定只结束这个浏览器的访问会话，回到访问密码页；轻羽账号和同步状态不受影响
   const logout = document.querySelector<HTMLButtonElement>('#logout-button')!;
   logout.hidden = false;
   let leaving = false;
@@ -32,9 +34,9 @@ export function watchWebSession(beforeLeave: (expired: boolean) => Promise<boole
       if (!await beforeLeave(expired)) return;
       if (!expired) {
         const response = await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
-        if (response.status !== 204) throw new Error('退出登录失败，请稍后重试');
+        if (response.status !== 204) throw new Error('锁定失败，请稍后重试');
       }
-      location.replace(expired ? '/login.html?expired=1' : '/login.html');
+      location.replace(expired ? expiredLogin() : '/login.html');
     } catch (reason) { error(reason instanceof Error ? reason.message : '无法连接服务，请稍后重试'); }
     finally { leaving = false; }
   }

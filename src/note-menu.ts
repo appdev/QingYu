@@ -2,11 +2,12 @@ import { CopyPlus, Folder as FolderIcon, Pin, PinOff, Trash2, Undo2 } from 'luci
 import { noteTitle, type Notebook, type Library, type Note } from './notebook';
 import { markdownBody, plainMarkdownLine } from './document-text';
 import { showLockNotePanel } from './reference-panels';
-import { popupMenu, dismissPopupMenu as dismiss, popupMenuOpen, type MenuItem as Item } from './popup-menu';
+import { showMenu, dismissPopupMenu as dismiss, popupMenuOpen, type MenuItem as Item } from './popup-menu';
 import { noteLinkTargets, resolveNoteLink } from './note-links';
 import { folderRows } from './folder-tree';
 import folderIcon from '../public/miaoyan/icons/folder.svg?raw';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { alertActions, showAlert } from './alert-dialog';
 
 const newWindowIcon: typeof Pin = [
   ['path', { d: 'M11 19H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5M2 8h20M6 5.5h.01M9 5.5h.01' }],
@@ -16,8 +17,8 @@ const newWindowIcon: typeof Pin = [
 
 // Web equivalents for Pinto's system symbols.
 const toolbarIcons: Record<string, typeof Pin> = {
-  在新窗口打开笔记: newWindowIcon, 置顶: Pin, 取消置顶: PinOff,
-  制作副本: CopyPlus, 移到废纸篓: Trash2, 恢复笔记: Undo2,
+  在新窗口打开笔记: newWindowIcon, 在新标签页打开笔记: newWindowIcon, 置顶: Pin, 取消置顶: PinOff,
+  复制笔记: CopyPlus, 移到废纸篓: Trash2, 恢复笔记: Undo2,
 };
 
 export function noteInformation(library: Library, id: string) {
@@ -39,7 +40,7 @@ export function noteInformation(library: Library, id: string) {
   return { words, modified: date.format(note.updatedAt), created: date.format(note.createdAt), backlinks };
 }
 
-function showMoveFolderSheet(rows: { name: string; depth: number; current: boolean; run: () => void }[], restoreFocus: () => void) {
+export function showMoveFolderSheet(rows: { name: string; depth: number; current: boolean; disabled?: boolean; run: () => void }[], restoreFocus: () => void) {
   const dialog = document.createElement('dialog');
   dialog.className = 'note-move-sheet';
   dialog.setAttribute('aria-labelledby', 'note-move-title');
@@ -101,9 +102,9 @@ function showMoveFolderSheet(rows: { name: string; depth: number; current: boole
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dismiss();
   });
   const list = dialog.querySelector('ul')!;
-  for (const { name, depth, current, run } of rows) {
+  for (const { name, depth, current, disabled, run } of rows) {
     const item = document.createElement('li'), button = document.createElement('button');
-    button.type = 'button'; button.disabled = current;
+    button.type = 'button'; button.disabled = current || Boolean(disabled);
     button.style.setProperty('--folder-depth', String(depth));
     button.innerHTML = `<span class="sidebar-icon" aria-hidden="true">${folderIcon}</span><span></span>`;
     button.lastElementChild!.textContent = name;
@@ -271,6 +272,32 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     const compact = actions.mobile && !toolbar && !multiple;
     const trash: Item = { text: multiple ? `删除 ${notes.length} 篇笔记` : compact ? '删除' : '移到废纸篓', destructive: true, run: () => changeNotes(notes, note => getBook().trashNote(note.id)) };
     const recover: Item = { text: multiple ? `恢复 ${notes.length} 篇笔记` : '恢复笔记', run: () => changeNotes(notes, note => getBook().trashNote(note.id, false)) };
+    if (compact || multiple) recover.icon = createLucideIcon(document, Undo2, '');
+    const book = getBook(), root = book.root;
+    const purge: Item[] = (root || book.server) && !book.external && !book.noteWindow && notes.every(note => note.trashed) ? [{
+      text: '永久删除', destructive: true, icon: createLucideIcon(document, Trash2, ''),
+      run() {
+        const dialog = document.createElement('dialog'), title = document.createElement('h2'), message = document.createElement('p');
+        const confirm = document.createElement('button'), cancel = document.createElement('button');
+        title.id = 'purge-note-title';
+        title.textContent = multiple ? `永久删除 ${notes.length} 篇笔记？` : `永久删除「${noteTitle(note)}」？`;
+        message.textContent = '这项操作无法撤销。';
+        dialog.setAttribute('aria-labelledby', title.id);
+        confirm.type = cancel.type = 'button';
+        confirm.textContent = '永久删除'; confirm.className = 'destructive-button'; cancel.textContent = '取消';
+        cancel.onclick = () => dialog.close();
+        confirm.onclick = () => {
+          dialog.close();
+          void change(() => {
+            if (getBook() !== book || book.root !== root) throw new Error('笔记库已切换，请重新选择笔记');
+            return book.purgeNotes(notes.map(note => note.id));
+          }, true).catch(reason => actions.error(reason instanceof Error ? reason.message : String(reason)));
+        };
+        dialog.addEventListener('close', () => { dialog.remove(); restoreFocus(); }, { once: true });
+        dialog.append(title, message, alertActions(confirm, cancel));
+        showAlert(dialog, cancel);
+      },
+    }] : [];
     const lock: Item[] = '__TAURI_INTERNALS__' in window ? [{ text: '锁定笔记…', run: showLockNotePanel }] : [];
     const versions: Item = { text: '版本历史…', enabled: getBook().hasNoteHistory, async run() {
       if (!await actions.save()) return;
@@ -285,7 +312,7 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       });
     } };
     const pin: Item = { text: note.pinned ? '取消置顶' : '置顶', shortcut: '⇧⌘P', enabled: !getBook().external, run: () => change(() => getBook().togglePin(id)) };
-    const duplicate: Item = { text: '制作副本', shortcut: '⌘D', enabled: !note.readOnly, run: () => change(() => getBook().duplicateNote(id), true) };
+    const duplicate: Item = { text: '复制笔记', shortcut: '⌘D', enabled: !note.readOnly, run: () => change(() => getBook().duplicateNote(id), true) };
     const { folders } = getBook().data;
     const canMoveTo = (folderId: string) => notes.some(note => note.trashed || folderId !== note.folderId);
     const moveTo = (folderId: string) => changeNotes(notes.filter(note => note.trashed || folderId !== note.folderId), note => getBook().moveNote(note.id, folderId));
@@ -302,7 +329,6 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     if (multiple) {
       move.icon = createLucideIcon(document, FolderIcon, '');
       trash.icon = createLucideIcon(document, Trash2, '');
-      recover.icon = createLucideIcon(document, Undo2, '');
     }
     if (compact || surface === 'move') {
       move.run = () => showMoveFolderSheet(orderedFolders().map(({ folder, depth }) => ({
@@ -328,9 +354,11 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       const latest = getBook().data.notes.find(item => item.id === id), anchor = row();
       if (latest && !latest.trashed && !latest.readOnly && anchor) actions.share?.(anchor, latest);
     } };
+    const browser = getBook().server;
     const opening: Item[] = actions.openNoteWindow && !actions.mobile && !actions.noteWindow && !getBook().external ? [{
-      text: '在新窗口打开笔记',
-      async run() { if (await actions.save()) await actions.openNoteWindow?.(id); },
+      text: browser ? '在新标签页打开笔记' : '在新窗口打开笔记',
+      needsUserActivation: browser,
+      async run() { if (browser || await actions.save()) await actions.openNoteWindow?.(id); },
     }] : [];
     const details: Item[] = [
       { text: '显示简介', shortcut: '⌥⌘I', run: () => showInfo(id, toolbar) },
@@ -347,8 +375,8 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     }
     const moving = toolbar || getBook().external ? [] : [move];
     const deleting = getBook().external ? [] : [trash];
-    const groups = multiple ? note.trashed ? [[recover], moving] : [moving, deleting]
-      : note.trashed ? [[recover], moving]
+    const groups = note.trashed ? (purge.length && (compact || multiple || toolbar) ? [[recover, ...purge]] : [[recover], moving, purge])
+      : multiple ? [moving, deleting]
       : toolbar ? [[...opening, pin, duplicate], deleting]
         .map(group => group.filter(item => item.enabled !== false))
       : compact ? [[share, ...moving, ...deleting], [pin, ...lock, duplicate]]
@@ -380,7 +408,9 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       }
       preview.append(title, body);
     }
-    await popupMenu(items, x, y, actions.error, restoreFocus, '笔记操作', preview, compact && !note.trashed ? groups[0].length : 0,
-      anchor && toolbar ? { anchor, keyboard: surface.keyboard } : undefined);
+    await showMenu(items, {
+      label: '笔记操作', at: { x, y }, preview, quickActions: compact && !note.trashed ? groups[0].length : 0,
+      anchor: toolbar ? anchor : undefined, keyboard: toolbar ? surface.keyboard : undefined, onError: actions.error, restoreFocus,
+    });
   };
 }

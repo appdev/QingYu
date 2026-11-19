@@ -124,6 +124,11 @@ enum Operation {
         to: String,
         bytes: Vec<u8>,
     },
+    Purge {
+        from: String,
+        staged: String,
+        bytes: Vec<u8>,
+    },
     Write {
         path: String,
         before: Vec<u8>,
@@ -144,6 +149,7 @@ pub struct Snapshot {
     pub library: Library,
     pub root: String,
     pub revision: u64,
+    pub trashed_folders: Vec<String>,
 }
 #[derive(Clone)]
 pub struct DiskLibrary {
@@ -211,6 +217,21 @@ fn allowed(path: &Path) -> bool {
     path.extension()
         .and_then(|x| x.to_str())
         .is_some_and(|x| ["md", "markdown", "txt"].contains(&x.to_lowercase().as_str()))
+}
+fn trash_note_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("Trash/") else {
+        return false;
+    };
+    let allowed_names = |path: &str| {
+        path.split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.'))
+    };
+    allowed(Path::new(path))
+        && if let Some(nested) = rest.strip_prefix(".folders/") {
+            nested.contains('/') && allowed_names(nested)
+        } else {
+            !rest.contains('/') && allowed_names(rest)
+        }
 }
 fn name(title: &str) -> Result<String> {
     let value = title
@@ -597,6 +618,11 @@ impl Operation {
                 from: path,
                 bytes: expected,
                 ..
+            }
+            | Self::Purge {
+                from: path,
+                bytes: expected,
+                ..
             } => {
                 if fs::read(checked(root, path)?).map_err(error)? != *expected {
                     return Err("磁盘文件已被外部修改，未覆盖，请重新读取笔记文件夹".into());
@@ -635,7 +661,12 @@ impl Operation {
                 fs::hard_link(stage, &path).map_err(error)?;
                 modified(&path, *time)
             }
-            Self::Move { from, to, bytes } => {
+            Self::Move { from, to, bytes }
+            | Self::Purge {
+                from,
+                staged: to,
+                bytes,
+            } => {
                 let from = checked(root, from)?;
                 let to = checked(root, to)?;
                 if fs::read(&from).map_err(error)? != *bytes {
@@ -676,7 +707,12 @@ impl Operation {
                 }
                 Ok(())
             }
-            Self::Move { from, to, bytes } => {
+            Self::Move { from, to, bytes }
+            | Self::Purge {
+                from,
+                staged: to,
+                bytes,
+            } => {
                 let from = checked(root, from)?;
                 let to = checked(root, to)?;
                 if same_file(&from, &to) {
@@ -717,6 +753,15 @@ impl Operation {
         if let Self::Create { staged, .. } = self {
             let path = checked(root, staged)?;
             if path.exists() {
+                fs::remove_file(path).map_err(error)?;
+            }
+        }
+        if let Self::Purge { staged, bytes, .. } = self {
+            let path = checked(root, staged)?;
+            if path.exists() {
+                if fs::read(&path).map_err(error)? != *bytes {
+                    return Err("待清理文件已变化，已保留文件和事务日志".into());
+                }
                 fs::remove_file(path).map_err(error)?;
             }
         }
@@ -795,6 +840,17 @@ impl DiskLibrary {
                     Operation::Move { from, to, .. } => {
                         note_path(from)?;
                         note_path(to)?;
+                    }
+                    Operation::Purge { from, staged, .. } => {
+                        if !trash_note_path(from) && !history::version_path(from) {
+                            return Err("永久删除事务的来源路径无效".into());
+                        }
+                        checked(&root, from)?;
+                        let token = staged
+                            .strip_prefix(".miaoyan/staged-")
+                            .ok_or("永久删除暂存路径无效")?;
+                        Uuid::parse_str(token).map_err(error)?;
+                        checked(&root, staged)?;
                     }
                     Operation::Write { path, .. } => note_path(path)?,
                     Operation::Asset(asset) if transaction.asset_sync => asset.validate(&root)?,
@@ -897,6 +953,7 @@ impl DiskLibrary {
             library: self.data.clone(),
             root: self.root.to_string_lossy().into(),
             revision: self.revision,
+            trashed_folders: folders::trashed_folders(&self.root),
         }
     }
     fn persist_index(&self, library: &Library, generation: u64) -> Result<()> {
@@ -1012,7 +1069,7 @@ impl DiskLibrary {
                 .unwrap_or(Path::new(""))
                 .to_string_lossy()
                 .into_owned();
-            let trashed = parent == "Trash";
+            let trashed = parent == "Trash" || relative.starts_with("Trash/.folders/");
             let folder_id = if trashed {
                 old.get(&relative)
                     .map(|n| n.folder_id.clone())
@@ -1095,7 +1152,6 @@ impl DiskLibrary {
         self.commit_bytes(next, intent, &HashMap::new(), None)
     }
 
-    #[cfg(any(feature = "app", test))]
     fn save_note_body(
         &mut self,
         root: &str,
@@ -1376,7 +1432,7 @@ impl DiskLibrary {
                         .notes
                         .iter()
                         .find(|n| n.id == source_id)
-                        .ok_or("副本来源笔记不存在")?;
+                        .ok_or("要复制的笔记不存在")?;
                     let source = Path::new(&original.path);
                     title = duplicate_name(
                         &self.root,
@@ -1439,7 +1495,28 @@ impl DiskLibrary {
         {
             return Err("同一文件夹中有笔记名称冲突，未覆盖文件".into());
         }
-        if self
+        if intent == "purge" {
+            for old in self
+                .data
+                .notes
+                .iter()
+                .filter(|old| !next.notes.iter().any(|note| note.id == old.id))
+            {
+                if !old.trashed || !trash_note_path(&old.path) {
+                    return Err("只能永久删除废纸篓里的笔记".into());
+                }
+                let bytes = self
+                    .bytes
+                    .get(&old.id)
+                    .ok_or("笔记文件不可读，请重新打开笔记库后再试")?;
+                operations.push(Operation::Purge {
+                    from: old.path.clone(),
+                    staged: format!(".miaoyan/staged-{}", id()),
+                    bytes: bytes.clone(),
+                });
+                operations.extend(history::purge_operations(&self.root, &old.id)?);
+            }
+        } else if self
             .data
             .notes
             .iter()
@@ -1528,12 +1605,43 @@ impl DiskLibrary {
                         self.bytes.insert(note.id.clone(), bytes.clone());
                     }
                 }
-                Operation::Move { .. } | Operation::Asset(_) => {}
+                Operation::Move { .. } | Operation::Purge { .. } | Operation::Asset(_) => {}
             }
             operation.cleanup(&self.root)?;
         }
         fs::remove_file(journal).map_err(error)?;
+        if intent == "purge" {
+            self.bytes
+                .retain(|id, _| self.data.notes.iter().any(|note| &note.id == id));
+        }
         Ok(())
+    }
+    // App 和网页客户端的废纸篓都用它永久删除笔记
+    pub(crate) fn purge_notes(&mut self, note_ids: &[String]) -> Result<()> {
+        if note_ids.is_empty()
+            || note_ids.iter().any(|id| {
+                !self
+                    .data
+                    .notes
+                    .iter()
+                    .any(|note| note.id == *id && note.trashed)
+            })
+        {
+            return Err("笔记已变化，只能永久删除仍在废纸篓里的笔记".into());
+        }
+        let mut next = self.data.clone();
+        next.notes.retain(|note| !note_ids.contains(&note.id));
+        if let Some(names) = next
+            .sync
+            .as_mut()
+            .and_then(|sync| sync.get_mut("localNoteNames"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for id in note_ids {
+                names.remove(id);
+            }
+        }
+        self.commit(next, "purge")
     }
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<usize> {
         let mut working = self.clone();
@@ -1653,8 +1761,11 @@ fn scan(directory: &Path, files: &mut Vec<PathBuf>, importing: bool) -> Result<(
             if !importing && filename == "Trash" {
                 for child in fs::read_dir(entry.path()).map_err(error)? {
                     let child = child.map_err(error)?;
-                    if child.file_type().map_err(error)?.is_file() && allowed(&child.path()) {
+                    let kind = child.file_type().map_err(error)?;
+                    if kind.is_file() && allowed(&child.path()) {
                         files.push(child.path());
+                    } else if kind.is_dir() && child.file_name() == ".folders" {
+                        scan(&child.path(), files, false)?;
                     }
                 }
             } else {
@@ -1712,13 +1823,10 @@ pub async fn library_open(
     if let Some(store) = state.0.lock().map_err(error)?.as_ref() {
         return Ok(store.snapshot());
     }
-    let config = app
-        .path()
-        .app_config_dir()
-        .map_err(error)?
-        .join("library-location.json");
-    let root = if config.exists() {
-        serde_json::from_slice::<PathBuf>(&fs::read(config).map_err(error)?).map_err(error)?
+    let config = app.path().app_config_dir().map_err(error)?;
+    let location = config.join("library-location.json");
+    let root = if location.exists() {
+        serde_json::from_slice::<PathBuf>(&fs::read(location).map_err(error)?).map_err(error)?
     } else {
         #[cfg(desktop)]
         {
@@ -1730,9 +1838,22 @@ pub async fn library_open(
         }
     };
     let opened = open_accessible_library(root, seed).await?;
-    let mut lock = state.0.lock().map_err(error)?;
-    *lock = Some(opened);
-    Ok(lock.as_ref().unwrap().snapshot())
+    #[cfg(desktop)]
+    let mcp = app.state::<api::desktop::LocalMcp>();
+    #[cfg(desktop)]
+    let mut listener = mcp.0.lock().await;
+    if let Some(store) = state.0.lock().map_err(error)?.as_ref() {
+        return Ok(store.snapshot());
+    }
+    #[cfg(desktop)]
+    if let Err(reason) =
+        api::desktop::restore(&mut listener, &opened, config, api::desktop::MCP_PORT).await
+    {
+        eprintln!("无法恢复 MCP 服务：{reason}");
+    }
+    let snapshot = opened.snapshot();
+    *state.0.lock().map_err(error)? = Some(opened);
+    Ok(snapshot)
 }
 
 // Probe before taking the library lock or touching its index: OS permission
@@ -1795,6 +1916,9 @@ pub async fn library_commit(
     intent: String,
     assets: Option<assets::AssetSync>,
 ) -> Result<Snapshot> {
+    if intent == "purge" {
+        return Err("请从废纸篓永久删除笔记".into());
+    }
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
     let note_window =
@@ -1813,6 +1937,30 @@ pub async fn library_commit(
         next.active_id.clone_from(&store.data.active_id);
     }
     store.commit_bytes(next, &intent, &HashMap::new(), assets.as_ref())?;
+    let snapshot = store.snapshot();
+    drop(lock);
+    workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));
+    Ok(snapshot)
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub async fn library_purge_notes(
+    window: tauri::WebviewWindow,
+    state: State<'_, FileLibrary>,
+    revision: u64,
+    root: String,
+    note_ids: Vec<String>,
+) -> Result<Snapshot> {
+    if window.label() != "main" {
+        return Err("请在主窗口管理废纸篓".into());
+    }
+    let mut lock = state.0.lock().map_err(error)?;
+    let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
+    if store.revision != revision || store.root.to_str() != Some(root.as_str()) {
+        return Err("笔记库已发生变化，请重新选择笔记".into());
+    }
+    store.purge_notes(&note_ids)?;
     let snapshot = store.snapshot();
     drop(lock);
     workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));

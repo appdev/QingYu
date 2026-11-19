@@ -3,7 +3,7 @@ import { CircleX, Clipboard, Globe, Image, Link, Share2 } from 'lucide';
 import { native } from './preferences';
 import { copyShareLink, mockWebShareActions, mountMockWebShare, type ShareStore } from './mock-web-share';
 import { alertActions, showAlert } from './alert-dialog';
-import { dismissPopupMenu, popupMenu, type MenuItem } from './popup-menu';
+import { dismissPopupMenu, showMenu, type MenuItem } from './popup-menu';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 
 type PickerChoice = { title: string; target: string; detail: string };
@@ -157,15 +157,14 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
       { text: '' },
     ] : [{ text: '分享链接…', icon: icon(Link), enabled, run: web.publish }];
     items.push(
-      { text: '发送副本…', icon: icon(Share2), run: async () => { await sendCopy(); } },
+      { text: '发送笔记…', icon: icon(Share2), run: async () => { await sendCopy(); } },
       { text: '复制为纯文本', icon: icon(Clipboard), run: async () => { await copyText(); } },
     );
     if (picture) items.push({ text: '分享为图片…', icon: icon(Image), async run() {
       const { showNotePicture } = await import('./note-picture');
       await showNotePicture(picture, restore);
     } });
-    anchor.setAttribute('aria-haspopup', 'menu');
-    void popupMenu(items, 0, 0, report, restore, '分享', undefined, 0, { anchor, keyboard: anchor.matches(':focus-visible') });
+    void showMenu(items, { anchor, label: '分享', onError: report, restoreFocus: restore });
     return;
   }
 
@@ -174,21 +173,22 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
   const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = '分享方式';
   const content = document.createElement('div'); content.role = 'tabpanel'; content.id = 'share-content';
   const modes = [
-    { index: 0, title: '发送副本' },
-    ...(native ? [{ index: 1, title: '网页' }] : []),
-    ...(native || picture ? [{ index: 2, title: '图片' }] : []),
+    { index: 0, title: '发送' },
+    { index: 1, title: '网页' },
+    ...(picture ? [{ index: 2, title: '图片' }] : []),
   ];
   const buttons: HTMLButtonElement[] = [];
-  let removePicture: (() => void) | undefined, revision = 0;
+  let disposePicture: (() => void) | undefined;
+  let tabRevision = 0;
   function select(position: number) {
     const { index } = modes[position];
+    const revision = ++tabRevision;
+    disposePicture?.(); disposePicture = undefined;
     lastShareTabs.set(noteKey, index);
-    const selected = ++revision;
-    removePicture?.(); removePicture = undefined;
     for (const [i, button] of buttons.entries()) { button.setAttribute('aria-selected', String(i === position)); button.tabIndex = i === position ? 0 : -1; }
     content.replaceChildren();
     const detail = document.createElement('p'); detail.className = 'share-description';
-    detail.textContent = ['发送笔记的当前副本，之后的修改不会同步给收件人。', '获得链接的人都可查看。网页会随笔记更新，直到停止发布。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
+    detail.textContent = ['发送笔记此刻的内容，之后的修改不会同步给收件人。', '模拟创建网页链接。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
     if (index === 0) {
       if (nativeShare || typeof navigator.share === 'function') {
         const send = document.createElement('button'); send.textContent = '分享…'; send.className = 'button primary-button share-send';
@@ -209,39 +209,25 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
       mountMockWebShare(content, noteKey, title, text, anchor, shareStore);
       return;
     } else if (index === 2 && picture) {
-      if (native) {
-        const open = document.createElement('button');
-        open.type = 'button'; open.className = 'button primary-button button-wide'; open.textContent = '分享为图片…';
-        open.onclick = async () => {
-          panel.hidePopover();
-          try {
-            const { showNotePicture } = await import('./note-picture');
-            await showNotePicture(picture, () => anchor.focus({ preventScroll: true }));
-          } catch { report('无法打开图片预览'); }
-        };
-        content.append(open);
+      if (native && !root.hasAttribute('data-mobile')) {
+        void import('./note-picture').then(({ mountNotePicture }) => {
+          if (panel.isConnected && revision === tabRevision) disposePicture = mountNotePicture(content, picture);
+        }).catch(() => {
+          if (panel.isConnected && revision === tabRevision) report('无法打开图片预览');
+        });
         return;
       }
-      void import('./note-picture').then(({ mountNotePicture }) => {
-        if (panel.isConnected && selected === revision) removePicture = mountNotePicture(content, picture);
-      }).catch(() => report('无法打开图片预览'));
-      return;
-    } else {
-      const preview = document.createElement('div'); preview.className = 'share-preview';
-      const heading = document.createElement('strong'), body = document.createElement('p'); heading.textContent = title; body.textContent = text.slice(0, 240); preview.append(heading, body); content.append(preview);
-      if (index === 2) {
-        const backgrounds = document.createElement('label'); backgrounds.className = 'share-access'; backgrounds.append(document.createTextNode('背景'));
-        const select = document.createElement('select'); select.disabled = true; select.ariaLabel = '图片背景';
-        for (const name of ['纯色', '纸张', '渐变']) { const option = document.createElement('option'); option.textContent = name; select.append(option); }
-        backgrounds.append(select); content.append(backgrounds);
-      }
-      const actions = document.createElement('div'); actions.className = 'share-actions';
-      for (const [i, label] of ['复制图片', '保存…', '分享…'].entries()) {
-        const action = document.createElement('button'); action.className = i ? 'button secondary-button' : 'button primary-button'; action.disabled = true; action.textContent = label; actions.append(action);
-      }
-      content.append(actions);
+      const open = document.createElement('button');
+      open.type = 'button'; open.className = 'button primary-button button-wide'; open.textContent = '分享为图片…';
+      open.onclick = async () => {
+        panel.hidePopover();
+        try {
+          const { showNotePicture } = await import('./note-picture');
+          await showNotePicture(picture, () => anchor.focus({ preventScroll: true }));
+        } catch { report('无法打开图片预览'); }
+      };
+      content.append(open);
     }
-    const unavailable = document.createElement('p'); unavailable.className = 'share-unavailable'; unavailable.textContent = '灰色操作尚未接入。'; content.append(unavailable);
   }
   for (const [position, { title }] of modes.entries()) {
     const button = document.createElement('button'); button.role = 'tab'; button.textContent = title; button.setAttribute('aria-controls', content.id);
@@ -266,5 +252,10 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     panel.style.top = `${box.bottom + 12}px`;
   }
   panel.style.setProperty('--share-available-height', `${panel.dataset.placement === 'above' ? above : below}px`);
-  panel.addEventListener('toggle', event => { if ((event as ToggleEvent).newState === 'closed') { removePicture?.(); panel.remove(); anchor.focus(); } });
+  panel.addEventListener('toggle', event => {
+    if ((event as ToggleEvent).newState !== 'closed') return;
+    tabRevision++;
+    disposePicture?.();
+    panel.remove(); anchor.focus();
+  });
 }

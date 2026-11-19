@@ -8,6 +8,27 @@ vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEvent
 
 afterEach(() => vi.unstubAllGlobals());
 
+it('restores an archived directory from the mobile Trash list', async () => {
+  document.body.innerHTML = readFileSync('index.html', 'utf8').match(/<body[^>]*>([\s\S]*)<\/body>/)![1];
+  vi.stubGlobal('matchMedia', () => Object.assign(new EventTarget(), { matches: false }));
+  const book = new Notebook({ getItem: () => null, setItem() {} }, '# 笔记');
+  book.trashedFolders = ['旧文件夹'];
+  const restore = vi.spyOn(book, 'folderAction').mockImplementation(async () => { book.trashedFolders = []; });
+  createSidebar(() => book, {
+    select: async () => true, create: async () => true, save: async () => true, reload() {}, error: vi.fn(),
+  }, true);
+  document.querySelector<HTMLButtonElement>('.folder-row[data-trash=true]')!.click();
+  const restoreButton = await vi.waitFor(() => {
+    const button = document.querySelector<HTMLButtonElement>('[aria-label="恢复文件夹 旧文件夹"]');
+    expect(button).not.toBeNull();
+    return button!;
+  });
+  restoreButton.click();
+  await vi.waitFor(() => expect(document.querySelector('.trash-folder-row')).toBeNull());
+  expect(restore).toHaveBeenCalledWith('restore-folder', null, '旧文件夹');
+  document.body.replaceChildren();
+});
+
 it('keeps the list and note when returning or changing tablet width', async () => {
   document.body.innerHTML = readFileSync('index.html', 'utf8').match(/<body[^>]*>([\s\S]*)<\/body>/)![1];
   history.replaceState(null, '');

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 1420
+    },
+    {
+      "name": "server-library",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd \"$HOME/.qingyu-server\" && QINGYU_WEB_PASSWORD=\"$(cat web-password)\" QINGYU_WEB_SECURE_COOKIE=false QINGYU_WEB_DIR=\"$PWD/web\" QINGYU_LIBRARY_DIR=\"$PWD/notes\" QINGYU_CONFIG_DIR=\"$PWD/config\" QINGYU_SYNC_WORKER=\"$PWD/sync/server-sync-worker.mjs\" PATH=\"/opt/homebrew/opt/node@24/bin:$PATH\" QINGYU_API_ADDR=127.0.0.1:8797 exec bin/qingyu-api"],
+      "port": 8797
+    }
+  ]
+}

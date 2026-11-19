@@ -1,6 +1,92 @@
 use super::*;
 
 #[test]
+fn permanently_deletes_only_selected_trashed_notes_and_their_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join("Trash")).unwrap();
+    fs::write(root.join("purge.md"), "before editing").unwrap();
+    fs::write(root.join("keep.md"), "live note").unwrap();
+    fs::write(root.join("Trash/keep.md"), "different trashed note").unwrap();
+    let mut store = DiskLibrary::open(root.into(), None).unwrap();
+    let id = store
+        .data
+        .notes
+        .iter()
+        .find(|note| note.path == "purge.md")
+        .unwrap()
+        .id
+        .clone();
+    let live_id = store
+        .data
+        .notes
+        .iter()
+        .find(|note| note.path == "keep.md")
+        .unwrap()
+        .id
+        .clone();
+    let mut next = store.data.clone();
+    next.notes
+        .iter_mut()
+        .find(|note| note.id == id)
+        .unwrap()
+        .source = "after editing".into();
+    store.commit(next, "edit").unwrap();
+    assert_eq!(history::purge_operations(root, &id).unwrap().len(), 1);
+    let mut next = store.data.clone();
+    next.notes
+        .iter_mut()
+        .find(|note| note.id == id)
+        .unwrap()
+        .trashed = true;
+    store.commit(next, "edit").unwrap();
+    assert!(store.purge_notes(&[id.clone(), live_id]).is_err());
+    assert!(root.join("Trash/purge.md").exists());
+    store.purge_notes(&[id.clone()]).unwrap();
+    assert!(history::purge_operations(root, &id).unwrap().is_empty());
+    assert!(!root.join("Trash/purge.md").exists());
+    assert!(!root.join(JOURNAL).exists());
+    let reopened = DiskLibrary::open(root.into(), None).unwrap();
+    assert!(reopened.data.notes.iter().all(|note| note.id != id));
+    assert_eq!(reopened.data.notes.len(), 2);
+}
+
+#[test]
+fn interrupted_permanent_delete_restores_the_uncommitted_trash_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("Trash/.folders/Archive")).unwrap();
+    let from = "Trash/.folders/Archive/note.md";
+    let bytes = b"keep until deletion commits".to_vec();
+    fs::write(root.join(from), &bytes).unwrap();
+    let store = DiskLibrary::open(root.into(), None).unwrap();
+    let note_id = store.data.notes[0].id.clone();
+    let stage = format!(".miaoyan/staged-{}", id());
+    let operation = Operation::Purge {
+        from: from.into(),
+        staged: stage.clone(),
+        bytes,
+    };
+    let txn = Transaction {
+        generation: store.revision + 1,
+        operations: vec![operation],
+        asset_sync: false,
+    };
+    fs::write(root.join(JOURNAL), serde_json::to_vec(&txn).unwrap()).unwrap();
+    txn.operations[0].apply(root).unwrap();
+    drop(store);
+    let reopened = DiskLibrary::open(root.into(), None).unwrap();
+    assert!(reopened
+        .data
+        .notes
+        .iter()
+        .any(|note| note.id == note_id && note.trashed));
+    assert!(root.join(from).is_file());
+    assert!(!root.join(stage).exists());
+    assert!(!root.join(JOURNAL).exists());
+}
+
+#[test]
 fn blocked_directory_access_times_out_without_writing_files() {
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("keep.md"), "original").unwrap();

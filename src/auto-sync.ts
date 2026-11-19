@@ -2,14 +2,15 @@ import { accountSyncNotices, type SyncClient, type SyncStatus } from './sync-ses
 import { SyncSnapshotChanged } from './notebook';
 import { hasS3Connection, syncMode } from './sync-store';
 import type { PreferenceStore } from './preferences';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { callAccount } from './account-client';
+import { isServerLibrary } from './server-library';
 
 export async function connectCloudAutoSync(client: SyncClient, preferences: PreferenceStore, sync: () => Promise<void>, error: (message: string) => void) {
   let pending = Promise.resolve();
   const refresh = () => {
     pending = pending.catch(() => {}).then(async () => {
-      const account = await invoke<{ profile: { id: string } } | null>('account_status');
+      const account = await callAccount<{ profile: { id: string } } | null>('account_status');
       const id = account?.profile.id ?? '';
       if (id === preferences.value.cloudSyncAccount) return;
       if (!id) { preferences.update({ cloudSyncAccount: '', autoSyncCloudAccount: '' }); return; }
@@ -23,13 +24,16 @@ export async function connectCloudAutoSync(client: SyncClient, preferences: Pref
     void pending.catch(reason => error(reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '无法启用云同步'));
     return pending;
   };
-  const stop = await listen('client-profile-changed', () => { void refresh(); });
+  // App 的设置是独立窗口，用 Tauri 事件；网页客户端的设置在同一页面，用页面事件
+  const stop = !isServerLibrary() ? await listen('client-profile-changed', () => { void refresh(); })
+    : (() => { const handler = () => { void refresh(); }; addEventListener('client-profile-changed', handler); return () => removeEventListener('client-profile-changed', handler); })();
   await refresh().catch(() => {});
   return stop;
 }
 
+/** periodic 为 false 时只在本地改动后同步；网页客户端的定时同步由部署端负责，浏览器不再重复定时。 */
 export function startAutoSync(client: SyncClient, blocked: () => boolean, error: (message: string) => void, syncOnBackground = false,
-  schedule?: Pick<PreferenceStore, 'subscribe' | 'value'>) {
+  schedule?: Pick<PreferenceStore, 'subscribe' | 'value'>, periodic = true) {
   let status: SyncStatus = { busy: false, error: false, message: '' };
   let pending: Promise<void> | undefined;
   let lastAttempt = Date.now();
@@ -88,6 +92,7 @@ export function startAutoSync(client: SyncClient, blocked: () => boolean, error:
       if (!accountSyncNotices.has(message)) error(message);
     });
   };
+  if (!periodic) return { sync, changed, stop() { clearTimeout(editTimer); localChanges = false; unsubscribe(); } };
   const intervalMs = () => (schedule?.value.syncInterval ?? 3) * 60 * 1000;
   let interval = intervalMs(), timer = setInterval(attempt, interval);
   const unsubscribeSchedule = schedule?.subscribe(() => {

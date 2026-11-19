@@ -5,8 +5,14 @@ use crate::file_library::storage_usage::{StorageUsage, UsageTarget};
 pub(super) fn router(state: Arc<Service>) -> Router<Arc<Service>> {
     Router::new()
         .route("/web/library", get(snapshot))
+        .route("/web/notes/{id}/versions", get(versions))
+        .route("/web/notes/{id}/versions/{revision}", get(version_source))
         .route("/web/storage-usage", get(storage_usage))
         .route("/web/commands", axum::routing::post(change))
+        .route(
+            "/web/import",
+            axum::routing::post(import).layer(DefaultBodyLimit::max(MAX_IMPORT * 2)),
+        )
         .route(
             "/web/link-preview",
             axum::routing::post(link_preview).layer(DefaultBodyLimit::max(12 * 1024)),
@@ -17,8 +23,59 @@ pub(super) fn router(state: Arc<Service>) -> Router<Arc<Service>> {
                 .post(upload)
                 .layer(DefaultBodyLimit::max(assets::MAX_FILE * 4 + 65536)),
         )
+        .merge(account::routes())
+        .merge(server_sync::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .route_layer(middleware::from_fn_with_state(state, browser_only))
+}
+
+/// 一次导入的总大小上限（解码后），按 base64 上传时请求体约为它的 4/3。
+const MAX_IMPORT: usize = 32 * 1024 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportFile {
+    /// 文件名；导入文件夹时是相对路径，例如「旅行/京都.md」
+    path: String,
+    data: String,
+}
+
+/// 导入本机文件，和 App 的「导入文件…」「导入文件夹…」相同：先写进临时目录，再交给 DiskLibrary::import。
+async fn import(
+    State(state): State<Arc<Service>>,
+    body: std::result::Result<Json<Vec<ImportFile>>, JsonRejection>,
+) -> ApiResult<Json<serde_json::Value>> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let files = payload(body)?;
+    let staging = tempfile::tempdir().map_err(|_| ApiError::internal())?;
+    let mut total = 0;
+    for file in files {
+        let parts: Vec<&str> = file.path.split('/').collect();
+        if parts.iter().any(|part| {
+            part.is_empty() || part.starts_with('.') || part.chars().any(|c| c.is_control() || c == '\\')
+        }) || parts.len() > 32
+        {
+            return Err(ApiError::bad_request("Invalid import file name"));
+        }
+        let bytes = STANDARD
+            .decode(file.data)
+            .map_err(|_| ApiError::bad_request("Invalid import file content"))?;
+        total += bytes.len();
+        if total > MAX_IMPORT {
+            return Err(ApiError::bad_request("Import exceeds 32 MiB"));
+        }
+        let target = parts.iter().fold(staging.path().to_path_buf(), |path, part| path.join(part));
+        fs::create_dir_all(target.parent().ok_or_else(ApiError::internal)?).map_err(|_| ApiError::internal())?;
+        fs::write(&target, bytes).map_err(|_| ApiError::internal())?;
+    }
+    let root = staging.path().to_path_buf();
+    let result = with_store(state, move |store| {
+        store.import(&[root]).map_err(library_error)?;
+        view(store)
+    })
+    .await;
+    drop(staging);
+    result
 }
 
 async fn link_preview(
@@ -38,7 +95,7 @@ async fn browser_only(State(state): State<Arc<Service>>, request: Request, next:
         return ApiError(
             StatusCode::UNAUTHORIZED,
             "session_required",
-            "Sign in to use the editor",
+            "Sign in to use the editor".into(),
         )
         .into_response();
     }
@@ -61,12 +118,39 @@ fn view(store: &DiskLibrary) -> ApiResult<Json<serde_json::Value>> {
         .collect::<ApiResult<_>>()?;
     Ok(Json(
         json!({ "folders": store.data.folders, "notes": store.data.notes,
+        "trashedFolders": crate::file_library::folders::trashed_folders(&store.root),
         "versions": versions, "version": library_version(store)? }),
     ))
 }
 
 async fn snapshot(State(state): State<Arc<Service>>) -> ApiResult<Json<serde_json::Value>> {
     with_store(state, |store| view(store)).await
+}
+
+async fn versions(
+    State(state): State<Arc<Service>>,
+    RoutePath(id): RoutePath<String>,
+) -> ApiResult<Json<Vec<crate::file_library::history::NoteVersion>>> {
+    with_store(state, move |store| {
+        store
+            .note_versions(&id)
+            .map(Json)
+            .map_err(|_| ApiError::not_found())
+    })
+    .await
+}
+
+async fn version_source(
+    State(state): State<Arc<Service>>,
+    RoutePath((id, revision)): RoutePath<(String, String)>,
+) -> ApiResult<Json<String>> {
+    with_store(state, move |store| {
+        store
+            .note_version_source(&id, &revision)
+            .map(Json)
+            .map_err(|_| ApiError::not_found())
+    })
+    .await
 }
 
 async fn storage_usage(State(state): State<Arc<Service>>) -> ApiResult<Json<StorageUsage>> {
@@ -120,6 +204,11 @@ enum Command {
         version: String,
         new_id: String,
     },
+    RestoreNoteVersion {
+        id: String,
+        version: String,
+        revision: String,
+    },
     CreateFolder {
         parent_id: String,
         name: String,
@@ -134,6 +223,34 @@ enum Command {
         version: String,
         destination_id: String,
     },
+    /// 和 App 移动端相同的文件夹操作：复制、移到指定文件夹、移到笔记库废纸篓、从废纸篓恢复
+    FolderAction {
+        action: String,
+        id: Option<String>,
+        version: String,
+        #[serde(default)]
+        value: String,
+    },
+    PurgeNotes {
+        ids: Vec<String>,
+        version: String,
+    },
+}
+
+fn library_changed(store: &DiskLibrary, version: &str) -> ApiResult<()> {
+    if version != library_version(store)? {
+        return Err(ApiError(
+            StatusCode::PRECONDITION_FAILED,
+            "version_conflict",
+            "The library changed; reload before changing it".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 带上笔记库给出的原因，网页和 App 显示同样的提示
+fn library_error(error: impl std::fmt::Display) -> ApiError {
+    ApiError(StatusCode::CONFLICT, "library_conflict", error.to_string().into())
 }
 
 fn versioned_note<'a>(store: &'a DiskLibrary, id: &str, version: &str) -> ApiResult<&'a Note> {
@@ -147,14 +264,14 @@ fn versioned_note<'a>(store: &'a DiskLibrary, id: &str, version: &str) -> ApiRes
         return Err(ApiError(
             StatusCode::PRECONDITION_FAILED,
             "version_conflict",
-            "The document changed; keep your draft and reload",
+            "The document changed; keep your draft and reload".into(),
         ));
     }
     if note.read_only {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
             "read_only_document",
-            "This document cannot be modified",
+            "This document cannot be modified".into(),
         ));
     }
     Ok(note)
@@ -261,6 +378,23 @@ async fn change(
                 });
                 commit(store, next, &format!("duplicate:{id}"))?;
             }
+            Command::RestoreNoteVersion {
+                id,
+                version,
+                revision,
+            } => {
+                let current = versioned_note(store, &id, &version)?.source.clone();
+                let root = store.root.to_string_lossy().into_owned();
+                store
+                    .restore_note_version(&root, &id, &revision, &current)
+                    .map_err(|_| {
+                        ApiError(
+                            StatusCode::CONFLICT,
+                            "history_restore_failed",
+                            "The version could not be restored".into(),
+                        )
+                    })?;
+            }
             Command::CreateFolder { parent_id, name } => {
                 store
                     .folder_change("create", &parent_id, &name, None)
@@ -268,7 +402,7 @@ async fn change(
                         ApiError(
                             StatusCode::CONFLICT,
                             "folder_conflict",
-                            "The folder cannot be created",
+                            "The folder cannot be created".into(),
                         )
                     })?;
             }
@@ -277,7 +411,7 @@ async fn change(
                     return Err(ApiError(
                         StatusCode::PRECONDITION_FAILED,
                         "version_conflict",
-                        "The library changed; reload before moving folders",
+                        "The library changed; reload before moving folders".into(),
                     ));
                 }
                 store
@@ -286,7 +420,7 @@ async fn change(
                         ApiError(
                             StatusCode::CONFLICT,
                             "folder_conflict",
-                            "The folder cannot be renamed",
+                            "The folder cannot be renamed".into(),
                         )
                     })?;
             }
@@ -299,7 +433,7 @@ async fn change(
                     return Err(ApiError(
                         StatusCode::PRECONDITION_FAILED,
                         "version_conflict",
-                        "The library changed; reload before moving folders",
+                        "The library changed; reload before moving folders".into(),
                     ));
                 }
                 let folder = store
@@ -320,9 +454,30 @@ async fn change(
                         ApiError(
                             StatusCode::CONFLICT,
                             "folder_conflict",
-                            "The folder cannot be moved",
+                            "The folder cannot be moved".into(),
                         )
                     })?;
+            }
+            Command::FolderAction {
+                action,
+                id,
+                version,
+                value,
+            } => {
+                if !matches!(
+                    action.as_str(),
+                    "duplicate" | "move-to-folder" | "trash-local" | "restore-folder"
+                ) {
+                    return Err(ApiError::bad_request("Unsupported folder action"));
+                }
+                library_changed(store, &version)?;
+                store
+                    .folder_change(&action, id.as_deref().unwrap_or("default"), &value, None)
+                    .map_err(library_error)?;
+            }
+            Command::PurgeNotes { ids, version } => {
+                library_changed(store, &version)?;
+                store.purge_notes(&ids).map_err(library_error)?;
             }
         }
         view(store)

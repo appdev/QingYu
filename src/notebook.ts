@@ -3,7 +3,7 @@ import { dailyFolderName, dailyNoteId, dailyTitle, findDailyNote, type DailyNote
 import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
 import type { AssetPlaceholders, AssetStat, AssetSync, StagedAsset } from './sync-files';
-import { ServerLibrary, type ServerSnapshot } from './server-library';
+import { ServerLibrary, ServerVersionConflict, type ServerSnapshot } from './server-library';
 
 export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
@@ -34,7 +34,7 @@ export type Checkpoint = { target: string; state: State; localNoteNames?: Record
 export type Library = { version: 1; folders: Folder[]; notes: Note[]; activeId: string; sync?: Checkpoint };
 export type EditorBuffer = { noteId: string; source: string };
 export type NoteVersion = { id: string; updatedAt: number };
-type FileSnapshot = { library: Library; root: string; revision: number };
+type FileSnapshot = { library: Library; root: string; revision: number; trashed_folders?: string[] };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 export class SyncSnapshotChanged extends Error {
   constructor() { super('同步期间本机笔记发生变化，已保留新内容，请再次同步'); }
@@ -94,6 +94,7 @@ export class Notebook {
   noteWindow = false;
   private remote?: ServerLibrary;
   onLocalChange?: () => void;
+  trashedFolders: readonly string[] = [];
   onSyncApply?: () => (applied: boolean) => void;
   get server() { return Boolean(this.remote); }
   constructor(private storage: Storage, starter: string) {
@@ -112,16 +113,21 @@ export class Notebook {
   get current() { return this.data.notes.find(note => note.id === this.data.activeId)!; }
   get root() { return this.disk?.root; }
   get assetRevision() { return this.disk?.revision ?? 0; }
-  get hasNoteHistory() { return Boolean(this.disk && !this.external && !this.loadError); }
+  get hasNoteHistory() { return Boolean((this.disk || this.remote) && !this.external && !this.loadError); }
   noteVersions(noteId: string) {
-    return invoke<NoteVersion[]>('library_note_versions', { noteId });
+    return this.remote?.noteVersions(noteId) ?? invoke<NoteVersion[]>('library_note_versions', { noteId });
   }
   noteVersion(noteId: string, version: string) {
-    return invoke<string>('library_note_version', { noteId, version });
+    return this.remote?.noteVersion(noteId, version) ?? invoke<string>('library_note_version', { noteId, version });
   }
   restoreNoteVersion(noteId: string, version: string, expectedSource: string, root: string | undefined) { return this.run(async () => {
-    if (!this.hasNoteHistory || !root || root !== this.root || this.data.activeId !== noteId) throw new Error('原笔记已切换，请重新打开版本历史');
-    this.adopt(await invoke<FileSnapshot>('library_restore_note_version', { root, noteId, version, expectedSource }));
+    if (!this.hasNoteHistory || root !== this.root || this.current?.id !== noteId) throw new Error('原笔记已切换，请重新打开版本历史');
+    if (this.remote) {
+      if (this.current.source !== expectedSource) throw new Error('笔记正文已更新，请重新打开版本历史');
+      this.adoptServer(await this.remote.restoreNoteVersion(noteId, version));
+    } else {
+      this.adopt(await invoke<FileSnapshot>('library_restore_note_version', { root, noteId, version, expectedSource }));
+    }
     this.externalRevision++;
   }); }
   importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> { return this.run(async () => {
@@ -138,13 +144,23 @@ export class Notebook {
       activeId: notes.some(note => note.id === activeId) ? activeId : (notes.find(note => !note.trashed) ?? notes[0])?.id ?? '' };
     if (!validLibrary(library)) throw new Error('服务器笔记库格式无效');
     this.data = library; this.remote!.accept(snapshot); this.persisted = true; this.loadError = false;
+    this.trashedFolders = snapshot.trashedFolders ?? [];
+  }
+  /** 文件夹和废纸篓操作作用于整个笔记库；部署端刚同步过时先读回最新内容再做一次，和 App 总是基于最新笔记库操作一致。 */
+  private async changeServer(change: () => Promise<ServerSnapshot>) {
+    try { this.adoptServer(await change()); }
+    catch (error) {
+      if (!(error instanceof ServerVersionConflict)) throw error;
+      this.adoptServer(await this.remote!.load());
+      this.adoptServer(await change());
+    }
   }
   stageDraft(source: string) { if (this.current) this.remote?.stageDraft(this.current.id, source, this.current.source); }
-  refreshServer(ready: () => boolean) { return this.run(async () => {
+  refreshServer(ready: () => boolean, preferredId?: string) { return this.run(async () => {
     if (!this.remote || !ready()) return false;
     const snapshot = await this.remote.load();
     if (!ready()) return false;
-    const previous = JSON.stringify(this.data); this.adoptServer(snapshot);
+    const previous = JSON.stringify(this.data); this.adoptServer(snapshot, preferredId);
     return previous !== JSON.stringify(this.data);
   }); }
   async attachExternal() {
@@ -170,6 +186,7 @@ export class Notebook {
     this.data = activeId === snapshot.library.activeId ? snapshot.library
       : { ...snapshot.library, activeId: snapshot.library.notes.some(note => note.id === activeId) ? activeId : '' };
     this.disk = { root: snapshot.root, revision: snapshot.revision }; this.persisted = true; this.loadError = false;
+    this.trashedFolders = snapshot.trashed_folders ?? [];
   }
   private run<T>(action: () => Promise<T>): Promise<T> {
     const operation = this.pending.then(action); this.pending = operation.catch(() => undefined); return operation;
@@ -293,14 +310,26 @@ export class Notebook {
     await this.commit({ ...this.data, folders: [...this.data.folders, folder] });
     return folder.id;
   }
-  folderAction(action: 'rename' | 'move' | 'trash' | 'reveal' | 'terminal', folderId: string | null, value?: string) { return this.run(async () => {
+  folderAction(action: 'rename' | 'move' | 'move-to-folder' | 'duplicate' | 'trash' | 'trash-local' | 'restore-folder' | 'reveal' | 'terminal', folderId: string | null, value?: string) { return this.run(async () => {
     if (this.remote) {
-      if (!folderId || !value || !['rename', 'move'].includes(action)) throw new Error('请在服务器配置笔记目录；此操作不适用于 Web');
-      this.adoptServer(await this.remote.folder(action as 'rename' | 'move', folderId, value)); return;
+      if (action === 'duplicate' || action === 'move-to-folder' || action === 'trash-local' || action === 'restore-folder') {
+        const remote = this.remote;
+        await this.changeServer(() => remote.folderAction(action, folderId, value));
+      } else {
+        // 在 Finder 或终端中打开需要本机系统，网页客户端不提供；桌面端的系统废纸篓在网页上用笔记库废纸篓代替
+        if (!folderId || !value || !['rename', 'move'].includes(action)) throw new Error('网页客户端不支持此文件夹操作');
+        const remote = this.remote;
+        await this.changeServer(() => remote.folder(action as 'rename' | 'move', folderId, value));
+      }
+      this.onLocalChange?.();
+      return;
     }
     if (this.external) throw new Error('临时文件模式不管理文件夹，请返回笔记库操作');
     if (this.disk) {
-      this.adopt(await invoke('library_folder_action', { action, folderId, value, revision: this.disk.revision })); return;
+      const revision = this.disk.revision;
+      this.adopt(await invoke('library_folder_action', { action, folderId, value, revision }));
+      if (this.disk.revision !== revision) this.onLocalChange?.();
+      return;
     }
     if (action !== 'rename') throw new Error('请在桌面应用中操作本地文件夹');
     const folder = this.data.folders.find(folder => folder.id === folderId);
@@ -335,10 +364,16 @@ export class Notebook {
     await this.updateNote(id, { folderId, trashed: false });
   }); }
   trashNote(id: string, trashed = true) { return this.run(() => this.updateNote(id, { trashed })); }
+  purgeNotes(ids: readonly string[]) { return this.run(async () => {
+    if (this.remote) { const remote = this.remote; await this.changeServer(() => remote.purgeNotes(ids)); this.onLocalChange?.(); return; }
+    if (!this.disk || this.external || this.noteWindow || this.loadError) throw new Error('请在本地笔记库的废纸篓里永久删除');
+    this.adopt(await invoke('library_purge_notes', { noteIds: ids, root: this.disk.root, revision: this.disk.revision }));
+    this.onLocalChange?.();
+  }); }
   duplicateNote(id: string) { return this.run(async () => {
     const note = this.data.notes.find(note => note.id === id);
     if (!note) throw new Error('笔记不存在');
-    if (note.readOnly) throw new Error('文件不可读，不能创建空白副本');
+    if (note.readOnly) throw new Error('文件不可读，无法复制');
     // MiaoYan getDupeName uses " Copy", then " Copy 2", without changing the body.
     const base = (note.filename ? note.filename.replace(/\.[^.]+$/, '') : noteTitle(note)).replace(/ Copy(?: \d+)?$/, '').slice(0, 145);
     let title = `${base} Copy`, number = 2;
@@ -407,7 +442,29 @@ export class Notebook {
       applied = true;
     } finally { finish?.(applied); }
   }); }
-  importFiles(directory = false) { return this.run(async () => { this.adopt(await invoke('library_import', { directory })); }); }
+  importFiles(directory = false) { return this.run(async () => {
+    const revision = this.disk?.revision;
+    this.adopt(await invoke('library_import', { directory }));
+    if (this.disk?.revision !== revision) this.onLocalChange?.();
+  }); }
+  /** 网页客户端导入用户在浏览器里选择的文件，由部署端用和 App 相同的导入逻辑写入笔记库。 */
+  importUploads(files: readonly File[]) { return this.run(async () => {
+    if (!this.remote) throw new Error('请在应用中导入本地文件');
+    const markdown = files.filter(file => /\.(md|markdown|txt)$/i.test(file.name));
+    if (!markdown.length) throw new Error('没有可导入的 Markdown 文件');
+    const uploads = await Promise.all(markdown.map(async file => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      return { path: file.webkitRelativePath || file.name, data: btoa(binary) };
+    }));
+    const previous = new Set(this.data.notes.map(note => note.id));
+    const snapshot = await this.remote.importFiles(uploads);
+    // 和 App 一样，导入后打开最后导入的那篇
+    const imported = snapshot.notes.filter(note => !previous.has(note.id)).at(-1);
+    this.adoptServer(snapshot, imported?.id);
+    this.onLocalChange?.();
+  }); }
   chooseRoot() { return this.run(async () => { this.adopt(await invoke('library_choose')); }); }
   reload() {
     if (this.remote) return this.run(async () => { this.adoptServer(await this.remote!.load()); });

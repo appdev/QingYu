@@ -19,7 +19,11 @@ export default defineConfig(({ mode }) => ({
     },
   }],
   css: { postcss: { plugins: [palettePlugin] } },
-  build: { target: 'es2022', rollupOptions: {
+  ssr: { noExternal: mode === 'server-sync' ? true : undefined },
+  define: mode === 'server-sync' ? { window: 'globalThis' } : undefined,
+  build: { target: 'es2022', copyPublicDir: mode !== 'server-sync', rollupOptions: mode === 'server-sync' ? {
+    output: { entryFileNames: 'server-sync-worker.mjs' },
+  } : {
     input: mode === 'web' ? ['index.html', 'login.html'] : ['index.html', 'settings.html', 'login.html', 'menubar.html', 'feature.html'],
   } },
   server: { watch: { ignored: ['**/src-tauri/**'] } },

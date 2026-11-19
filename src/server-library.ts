@@ -1,12 +1,17 @@
-import type { Folder, Library, Note } from './notebook';
+import type { Folder, Library, Note, NoteVersion } from './notebook';
 
-export type ServerSnapshot = { folders: Folder[]; notes: Note[]; versions: Record<string, string>; version: string };
+export type ServerSnapshot = { folders: Folder[]; notes: Note[]; versions: Record<string, string>; version: string; trashedFolders?: string[] };
+/** 和 App 移动端相同的文件夹操作，由部署端用同一个 DiskLibrary 执行。 */
+export type ServerFolderAction = 'duplicate' | 'move-to-folder' | 'trash-local' | 'restore-folder';
 const endpoint = '/api/web';
 const draftPrefix = 'qingyu.server-draft.';
 
+/** 部署端的笔记库在这次操作之前已经变化，例如刚完成一次同步。 */
+export class ServerVersionConflict extends Error {}
+
 export const isServerLibrary = () => document.querySelector('meta[name="qingyu-web-auth"][content="enabled"]') !== null;
 
-async function request(path: string, body?: object): Promise<ServerSnapshot> {
+async function requestJson(path: string, body?: object): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(endpoint + path, { credentials: 'same-origin', cache: 'no-store',
@@ -14,11 +19,20 @@ async function request(path: string, body?: object): Promise<ServerSnapshot> {
   } catch { throw new Error('无法连接服务器，未保存内容仍保留，请恢复连接后重试'); }
   if (!response.ok) {
     if (response.status === 401) throw new Error('登录已过期，未保存内容仍保留，请重新登录');
-    if (response.status === 412) throw new Error('服务器笔记已有新版本，未覆盖服务器内容；请先导出当前草稿再重新打开');
+    if (response.status === 412) throw new ServerVersionConflict('服务器笔记已有新版本，未覆盖服务器内容；请先导出当前草稿再重新打开');
     if (response.status === 404) throw new Error('服务器文件已被移除，当前编辑仍保留');
+    // 笔记库拒绝的操作带有和 App 相同的原因，例如「已有同名文件夹」
+    if (response.status === 409) {
+      const reply = await response.json().catch(() => undefined) as { error?: { message?: string } } | undefined;
+      if (reply?.error?.message) throw new Error(reply.error.message);
+    }
     throw new Error(`服务器未能保存修改（${response.status}），当前编辑仍保留`);
   }
-  const value = await response.json() as ServerSnapshot;
+  return response.json();
+}
+
+async function request(path: string, body?: object): Promise<ServerSnapshot> {
+  const value = await requestJson(path, body) as ServerSnapshot;
   if (!Array.isArray(value.folders) || !Array.isArray(value.notes) || !value.versions || typeof value.version !== 'string') throw new Error('服务器笔记库响应无效');
   return value;
 }
@@ -29,6 +43,21 @@ export class ServerLibrary {
   private versions: Record<string, string> = {};
   private version = '';
   load() { return request('/library'); }
+  async noteVersions(id: string): Promise<NoteVersion[]> {
+    const value = await requestJson(`/notes/${encodeURIComponent(id)}/versions`);
+    if (!Array.isArray(value) || value.some(item => !item || typeof item.id !== 'string' || !Number.isFinite(item.updatedAt))) {
+      throw new Error('版本历史响应无效');
+    }
+    return value;
+  }
+  async noteVersion(id: string, revision: string): Promise<string> {
+    const value = await requestJson(`/notes/${encodeURIComponent(id)}/versions/${encodeURIComponent(revision)}`);
+    if (typeof value !== 'string') throw new Error('历史版本正文无效');
+    return value;
+  }
+  restoreNoteVersion(id: string, revision: string) {
+    return request('/commands', { kind: 'restoreNoteVersion', id, revision, version: this.versions[id] });
+  }
   async importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> {
     const response = await fetch(`${endpoint}/assets/${encodeURIComponent(id)}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: this.versions[id], upload }) });
     if (!response.ok) throw new Error(response.status === 412 ? '笔记已发生变化，请重新打开后再添加附件' : '附件上传失败，原文件仍保留');
@@ -62,6 +91,11 @@ export class ServerLibrary {
     return request('/commands', { kind: action === 'rename' ? 'renameFolder' : 'moveFolder', id, version: this.version,
       ...(action === 'rename' ? { name: value } : { destinationId: value }) });
   }
+  folderAction(action: ServerFolderAction, id: string | null, value = '') {
+    return request('/commands', { kind: 'folderAction', action, id, version: this.version, value });
+  }
+  importFiles(files: { path: string; data: string }[]) { return request('/import', files); }
+  purgeNotes(ids: readonly string[]) { return request('/commands', { kind: 'purgeNotes', ids, version: this.version }); }
   private draftKey(id: string) { return `${draftPrefix}${id}.${this.writerId}`; }
   stageDraft(id: string, source: string, savedSource: string) {
     const key = this.draftKey(id);

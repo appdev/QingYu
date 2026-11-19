@@ -29,15 +29,21 @@
    这两处改用原生选区，它画在元素底色之上；CodeMirror 用 !important 隐藏原生选区，这里同样要加。 */
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-code-line, .cm-markra-inline-code) ::selection,
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-code-line, .cm-markra-inline-code)::selection { background: var(--selection) !important; }
-:is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title) { font-size: calc(28em / 13); font-weight: 700; line-height: 1.18; }
-:is(#rich-editor, #note-history-editor) .cm-markra-note-title { padding-block-end: 4px; }
 /* 空笔记的「标题」提示：提示所在的那一行直接按标题排（字号、粗细、行高），光标和提示一样高、对齐；
    打下第一个字后这一行变成真正的标题行，样式相同，不会跳。提示本身只是淡色，光标不在编辑区时不显示。 */
-#rich-editor .cm-line:has(> .cm-placeholder) { font-size: calc(28em / 13); font-weight: 700; line-height: 1.18; padding-block-end: 4px; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title),
+#rich-editor .cm-line:has(> .cm-placeholder) {
+  font-size: calc(28em / 13);
+  font-size: round(nearest, 28em / 13, 1px);
+  font-weight: 700; line-height: 1.18;
+}
+:is(#rich-editor, #note-history-editor) .cm-markra-note-title,
+#rich-editor .cm-line:has(> .cm-placeholder) { padding-block-end: 4px; }
 #rich-editor .cm-placeholder { color: var(--muted); opacity: .6; }
 #rich-editor .cm-editor:not(.cm-focused) .cm-placeholder { visibility: hidden; }
 :is(#rich-editor, #note-history-editor) .cm-markra-h2 { font-size: 1.25em; line-height: 1.26; }
-:is(#rich-editor, #note-history-editor) .cm-markra-h3 { font-size: 1.1em; font-weight: 600; }
+:is(#rich-editor, #note-history-editor) .cm-markra-h3 { font-size: 1.1em; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-h3, .cm-markra-h4, .cm-markra-h5, .cm-markra-h6) { font-weight: 600; }
 :is(#rich-editor, #note-history-editor) .qingyu-fold-heading { position: relative; }
 :is(#rich-editor, #note-history-editor) .qingyu-heading-fold, :is(#rich-editor, #note-history-editor) .qingyu-heading-more {
   border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0;

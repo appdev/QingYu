@@ -9,18 +9,43 @@ import { s3Defaults } from '../src/sync-store';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
 beforeEach(() => { document.querySelector('meta[name="qingyu-web-auth"]')?.remove(); localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
-it('server settings describe the mounted library and never load browser S3 credentials', async () => {
+it('web client settings keep sync settings on the deployment and never load browser S3 credentials', async () => {
   const marker = document.createElement('meta'); marker.name = 'qingyu-web-auth'; marker.content = 'enabled'; document.head.append(marker);
   const root = document.createElement('div'); document.body.append(root);
   const client: SyncClient = { load: vi.fn(), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: vi.fn() };
-  const view = mountSettings(root, client, vi.fn()); await view.loaded;
-  expect(root.textContent).toContain('服务器挂载的笔记目录');
-  expect(root.querySelector('[data-section="sync"]')).toBeNull(); expect(root.querySelector('.settings-sync-form')).toBeNull();
-  expect(client.load).not.toHaveBeenCalled(); expect(client.subscribe).not.toHaveBeenCalled();
-  view.select('sync');
-  expect(root.querySelector('#settings-panel-storage')?.hasAttribute('hidden')).toBe(false);
-  expect(root.querySelector('h1')?.textContent).toBe('存储');
-  view.destroy(); marker.remove();
+  const status = { busy: false, error: false, message: '', lastSyncedAt: null, lastSyncedAccount: null };
+  const profile = { ...s3Defaults, endpoint: 'https://s3.example.test', bucket: 'notes', region: 'us-east-1', prefix: 'qingyu',
+    accessKeyId: 'key', secretAccessKey: 'secret', mode: 's3' };
+  const replies: Record<string, unknown> = {
+    '/api/web/sync': status, '/api/web/sync/profile': profile, '/api/web/sync/schedule': { s3: false, cloudAccount: '', interval: 10 },
+    '/api/web/account': null,
+  };
+  const fetch = vi.fn(async (path: string, init?: RequestInit) => ({
+    ok: true, status: init?.method === 'PUT' ? 204 : 200, json: async () => replies[path] ?? {},
+  }));
+  vi.stubGlobal('fetch', fetch);
+  const view = mountSettings(root, client, vi.fn());
+  try {
+    await view.loaded;
+    expect(root.querySelector('#settings-tab-account')?.textContent).toBe('个人资料');
+    view.select('account');
+    expect(root.querySelector('h1')?.textContent).toBe('个人资料');
+    expect(root.textContent).toContain('部署时绑定的笔记目录');
+    expect(client.load).not.toHaveBeenCalled(); expect(client.subscribe).not.toHaveBeenCalled();
+    view.select('sync');
+    const panel = root.querySelector('#settings-panel-storage')!;
+    expect(panel.hasAttribute('hidden')).toBe(false);
+    expect(root.querySelector('h1')?.textContent).toBe('存储与同步');
+    // 和 App 一样显示 S3 表单，配置从部署端读取
+    await vi.waitFor(() => expect(panel.querySelector<HTMLInputElement>('[name=endpoint]')?.value).toBe('https://s3.example.test'));
+    // 自动同步设置以部署端为准
+    await vi.waitFor(() => expect(preferences.value.syncInterval).toBe(10));
+    const sync = [...panel.querySelectorAll('button')].find(button => button.textContent === '立即同步')!;
+    await vi.waitFor(() => expect(sync.disabled).toBe(false));
+    sync.click();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/web/sync', expect.objectContaining({ method: 'POST', body: '{}' })));
+    expect(fetch).toHaveBeenCalledWith('/api/web/sync/profile', expect.objectContaining({ method: 'PUT' }));
+  } finally { view.destroy(); marker.remove(); vi.unstubAllGlobals(); }
 });
 it('shows saved browser note sizes and omits settings that require a native host', async () => {
   const root = document.body.appendChild(document.createElement('div'));

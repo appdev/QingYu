@@ -18,7 +18,7 @@ import { imageMenuTarget, type ImagePreviewPluginOptions } from './vendor/markra
 import { captureActiveTableMenu, captureTableFormat, captureTableInsertion, formatActiveTableSelection, restoreCopiedTableHeader, tableContextMenu } from './vendor/markra/editor/codemirror/table';
 import { formatPanelState, formatPanelTransaction, formatTransaction, paragraphFormat, replaceSource, untickChecklist, type Format, type PanelFormat } from './format';
 import { isLocalAsset } from './server-assets';
-import { popupMenu, popupMenuOpen, type MenuItem } from './popup-menu';
+import { popupMenuOpen, showMenu, type MenuItem } from './popup-menu';
 import { renderEditorDiagram } from './editor-diagrams';
 import { linkCards, linkFormAt, linkStyleSource, otherLinkStyles, refreshLinkCards, type LinkPreviewLoader, type NoteCardPreview } from './editor-link-cards';
 import { slashMenu, type SlashCommand } from './editor-slash-menu';
@@ -261,8 +261,8 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         const items = choice.options.map(value => ({
           text: value, checked: choice.value.toLowerCase() === value.toLowerCase(), run: () => choice.set(value),
         }));
-        void popupMenu([...items, { text: '' }, { text: '清空', run: () => choice.set('') }],
-          x, y, message => options.onError?.(String(message)), restoreFocus, '选择单元格值');
+        void showMenu([...items, { text: '' }, { text: '清空', run: () => choice.set('') }],
+          { label: '选择单元格值', at: { x, y }, onError: message => options.onError?.(String(message)), restoreFocus });
         return;
       }
       const command = (text: string, run?: () => void, symbol?: string, destructive = false) => ({ text, run, enabled: Boolean(run), symbol, destructive });
@@ -296,7 +296,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         : onMac ? invoke<boolean>('table_clipboard_has_text').then(cellItems, () => cellItems(false))
         : cellItems(typeof navigator.clipboard?.readText === 'function');
       const label = scope === 'row' ? '行选项' : scope === 'column' ? '列选项' : '表格操作';
-      const showWeb = () => popupMenu(items, x, y, message => options.onError?.(message), restoreFocus, label).then(() => {
+      const showWeb = () => showMenu(items, { label, at: { x, y }, onError: message => options.onError?.(message), restoreFocus }).then(() => {
         if ((scope === 'row' || scope === 'column') && !popupMenuOpen()) restoreFocus();
       });
       if (bounds && lineSections && '__TAURI_INTERNALS__' in window
@@ -327,13 +327,12 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         }),
         calloutPreviewPlugin({
           showTypeMenu(anchor, current, apply, restoreFocus) {
-            const bounds = anchor.getBoundingClientRect();
-            void popupMenu(markdownCalloutTypeOrder.map(type => ({
+            void showMenu(markdownCalloutTypeOrder.map(type => ({
               text: markdownCalloutDefinitions[type].label,
               icon: createCalloutIcon(anchor.ownerDocument, type),
               checked: type === current,
               run: () => apply(type),
-            })), bounds.left, bounds.bottom + 4, message => options.onError?.(message), restoreFocus, '标注类型');
+            })), { anchor, label: '标注类型', onError: message => options.onError?.(message), restoreFocus });
           },
         }),
         codeBlockPreviewPlugin({
@@ -417,7 +416,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
             text: '从笔记中移除', destructive: true,
             run: () => edit(image.line.from, Math.min(image.line.to + 1, doc.length)),
           });
-          void popupMenu(readOnly ? items : withPlaceholderDeletion(items, image.source), event.clientX, event.clientY, message => options.onError?.(message), () => editor.focus(), '图片操作');
+          void showMenu(readOnly ? items : withPlaceholderDeletion(items, image.source), { label: '图片操作', at: { x: event.clientX, y: event.clientY }, onError: message => options.onError?.(message), restoreFocus: () => editor.focus() });
           return true;
         }
         const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
@@ -469,7 +468,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
             run: () => invoke<void>('open_external_link', { target, application }),
           }))), () => menuItems())
           : !readOnly && standalone?.form.kind === 'file' && target ? withPlaceholderDeletion(menuItems(), target) : menuItems();
-        void popupMenu(items, event.clientX, event.clientY, message => options.onError?.(message), () => editor.focus(), canUntick ? '任务清单操作' : code ? '代码块操作' : target ? '链接操作' : '编辑操作');
+        void showMenu(items, { label: canUntick ? '任务清单操作' : code ? '代码块操作' : target ? '链接操作' : '编辑操作', at: { x: event.clientX, y: event.clientY }, onError: message => options.onError?.(message), restoreFocus: () => editor.focus() });
         return true;
       },
     }),

@@ -5,6 +5,7 @@ pub(super) mod placeholders;
 mod transaction;
 pub use transaction::StagedAsset;
 pub(super) use transaction::{reap_stages, AssetOperation, StageFiles};
+pub(super) use transaction::stage_lock;
 
 pub(super) const MAX_FILE: usize = 64 * 1024 * 1024;
 
@@ -139,7 +140,7 @@ pub(super) fn scan_assets(root: &Path) -> Result<Vec<AssetStat>> {
     Ok(files)
 }
 
-fn read_asset(root: &Path, expected: &AssetStat) -> Result<Vec<u8>> {
+pub(super) fn read_asset(root: &Path, expected: &AssetStat) -> Result<Vec<u8>> {
     use std::io::Read;
     if !valid_path(&expected.path) {
         return Err("附件路径无效".into());

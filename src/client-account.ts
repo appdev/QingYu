@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { callAccount, openPortal } from './account-client';
 import { emit, listen } from '@tauri-apps/api/event';
 import { formatStorageBytes } from './library-settings';
 
@@ -39,7 +39,7 @@ export function sidebarAccount(button: HTMLButtonElement) {
     if (loading) { refreshAgain = true; return; }
     loading = true;
     try {
-      const profile = (await invoke<AccountInfo | null>('account_status'))?.profile;
+      const profile = (await callAccount<AccountInfo | null>('account_status'))?.profile;
       const emailPrefix = profile?.email?.trim().match(/^([^@]+)@[^@]+$/)?.[1];
       const name = emailPrefix || [profile?.displayName, profile?.name].map(value => value?.trim()).find(value => value && !value.includes('@'));
       const words = name?.split(/[\s._-]+/).filter(Boolean) ?? [];
@@ -55,7 +55,9 @@ export function sidebarAccount(button: HTMLButtonElement) {
       if (refreshAgain) { refreshAgain = false; void refresh(); }
     }
   }
+  // App 的设置是独立窗口，用 Tauri 事件通知；网页客户端的设置在同一页面，用页面事件
   if ('__TAURI_INTERNALS__' in window) void listen(profileChanged, () => void refresh()).catch(() => {});
+  else window.addEventListener(profileChanged, () => void refresh());
   return refresh;
 }
 
@@ -73,6 +75,7 @@ const errors: Record<string, string> = {
   email_unverified: '请先在轻羽门户验证邮箱。',
   redemption_failed: '激活码无法兑换，请检查后重试。',
   open_failed: '无法打开账号门户。',
+  config_required: '部署时没有设置配置目录（QINGYU_CONFIG_DIR），暂时不能登录轻羽账号。',
 };
 
 function accountError(reason: unknown) {
@@ -368,7 +371,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     }
     if (info !== undefined && (previous?.id !== current?.id || previous?.avatar !== current?.avatar || previous?.email !== current?.email ||
       previous?.displayName !== current?.displayName || previous?.name !== current?.name) && '__TAURI_INTERNALS__' in window) {
-      void emit(profileChanged).catch(() => {});
+      if ('__TAURI_INTERNALS__' in window) void emit(profileChanged).catch(() => {});
+      else dispatchEvent(new Event(profileChanged));
     }
     info = next;
   }
@@ -388,7 +392,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     retryHistory.hidden = true;
     if (!hasHistory) historyNote('正在读取…');
     try {
-      const records = await invoke<Redemption[]>('account_redemptions', force ? { accountId, force: true } : { accountId });
+      const records = await callAccount<Redemption[]>('account_redemptions', force ? { accountId, force: true } : { accountId });
       if (disposed || revision !== historyRevision) return;
       if (!records.length) { historyNote('暂无兑换记录'); return; }
       historyList.replaceChildren(...records.map(record => {
@@ -439,7 +443,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   async function readAccount(force: boolean) {
     const revision = accountRevision;
     const previous = info;
-    const next = force ? await invoke<AccountInfo | null>('account_status', { force: true }) : await invoke<AccountInfo | null>('account_status');
+    const next = force ? await callAccount<AccountInfo | null>('account_status', { force: true }) : await callAccount<AccountInfo | null>('account_status');
     if (disposed || revision !== accountRevision) return;
     setInfo(next);
     render();
@@ -472,7 +476,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     password.value = '';
     updateSubmit();
     void run(async () => {
-      setInfo(await invoke<AccountInfo>('account_login', { username, password: secret }));
+      setInfo(await callAccount<AccountInfo>('account_login', { username, password: secret }));
       if (disposed) return;
       signIn.close();
       resetSignIn();
@@ -506,7 +510,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     const accountId = info?.profile.id, everywhere = logoutTrigger === logoutAll;
     if (!accountId || !confirmation.open) return;
     void run(async () => {
-      const revoked = await invoke<boolean>('account_logout', { accountId, everywhere });
+      const revoked = await callAccount<boolean>('account_logout', { accountId, everywhere });
       if (disposed) return;
       setInfo(null);
       showMessage(everywhere ? '已退出所有客户端。'
@@ -524,7 +528,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     setRedeemOpen(false);
     void run(async () => {
       let years: number;
-      try { years = await invoke<number>('account_redeem', { accountId, activationCode }); }
+      try { years = await callAccount<number>('account_redeem', { accountId, activationCode }); }
       catch (reason) {
         if (reason === 'response_lost' || reason === 'invalid_response') {
           if (!disposed) {
@@ -537,7 +541,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       }
       if (disposed) return;
       try {
-        const next = await invoke<AccountInfo | null>('account_status', { force: true });
+        const next = await callAccount<AccountInfo | null>('account_status', { force: true });
         if (disposed) return;
         setInfo(next);
         showMessage(next?.profile.id === accountId && next.subscription
@@ -559,7 +563,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       button.onclick = () => navigate(button.dataset.settingsTarget as AccountPage);
     }
     for (const button of container.querySelectorAll<HTMLButtonElement>('[data-portal]')) {
-      button.onclick = () => void invoke('account_open_portal', { page: button.dataset.portal }).catch(() => {
+      button.onclick = () => void openPortal(button.dataset.portal!).catch(() => {
         if (!disposed) showMessage(errors.open_failed, true);
       });
     }

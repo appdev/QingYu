@@ -13,7 +13,10 @@ vi.mock('../src/preferences', async importOriginal => ({ ...await importOriginal
 vi.mock('@tauri-apps/api/core', async importOriginal => ({ ...await importOriginal<typeof import('@tauri-apps/api/core')>(), invoke: vi.fn() }));
 beforeEach(() => {
   localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); history.replaceState(null, '');
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.open = true; } });
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')); } },
+  });
 });
 const client: SyncClient = {
   load: async () => ({ endpoint: '', bucket: '', region: 'us-east-1', prefix: 'test', accessKeyId: '', secretAccessKey: '' }),
@@ -256,4 +259,68 @@ it('shows the bundled version and keeps disconnected and desktop-only controls o
   expect(root.querySelector('#settings-panel-ai, #settings-panel-privacy, #settings-panel-shortcuts, [name=buttonDisplay]')).toBeNull();
   expect(general.querySelector('button:disabled')).toBeNull();
   view.destroy();
+});
+
+it.each([false, true])('opens GitHub Issues from help (native: %s)', native => {
+  platform.native = native;
+  const open = vi.spyOn(window, 'open').mockReturnValue(null);
+  const ipc = vi.mocked(invoke).mockResolvedValue(null);
+  const root = document.body.appendChild(document.createElement('div'));
+  const view = mountSettings(root, undefined, vi.fn());
+  try {
+    view.select('help');
+    const page = root.querySelector('#settings-panel-help')!;
+    expect(page.querySelector('img')?.getAttribute('src')).toBe('/brand/qingyu-app.png');
+    expect(page.textContent).toContain('QingYu — The lightweight WYSIWYG Markdown editor.');
+    for (const [label, path] of [['问题反馈', 'issues/new'], ['常见问题', 'issues']]) {
+      const button = [...page.querySelectorAll('button')].find(item => item.querySelector('.settings-label')?.textContent === label)!;
+      button.click();
+      const url = `https://github.com/appdev/QingYu/${path}`;
+      if (native) expect(ipc).toHaveBeenLastCalledWith('plugin:opener|open_url', { url });
+      else expect(open).toHaveBeenLastCalledWith(url, '_blank', 'noopener,noreferrer');
+    }
+  } finally {
+    view.destroy();
+    platform.native = false;
+    ipc.mockReset();
+    open.mockRestore();
+  }
+});
+
+const [major, minor] = version.split('.').map(Number);
+const newerVersion = `${major}.${minor + 10}.0`;
+it.each([
+  [200, `v${newerVersion}`, `发现新版本 ${newerVersion}`, true],
+  [200, `v${version}`, '已是最新版本', false],
+  [200, 'v0.0.0', '已是最新版本', false],
+  [200, 'unrecognized', '暂时无法检查更新', false],
+  [404, undefined, '暂时无法检查更新', false],
+] as const)('checks a release before showing the result (%s, %s)', async (status, tag, title, hasUpdate) => {
+  const fetchRelease = vi.fn(async () => new Response(JSON.stringify({ tag_name: tag }), { status }));
+  vi.stubGlobal('fetch', fetchRelease);
+  const open = vi.spyOn(window, 'open').mockReturnValue(null);
+  const root = document.body.appendChild(document.createElement('div'));
+  const view = mountSettings(root, undefined, vi.fn());
+  try {
+    view.select('help');
+    const button = root.querySelector<HTMLButtonElement>('#settings-panel-help button')!;
+    button.click();
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain('正在检查');
+    button.click();
+    expect(fetchRelease).toHaveBeenCalledExactlyOnceWith('https://api.github.com/repos/appdev/QingYu/releases/latest', expect.anything());
+    expect(open).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(root.querySelector('dialog[open] h2')?.textContent).toBe(title));
+    expect(button.disabled).toBe(false);
+    const download = [...root.querySelectorAll<HTMLButtonElement>('dialog button')].find(item => item.textContent === '前往下载');
+    expect(Boolean(download)).toBe(hasUpdate);
+    if (download) {
+      download.click();
+      expect(open).toHaveBeenCalledExactlyOnceWith('https://github.com/appdev/QingYu/releases/latest', '_blank', 'noopener,noreferrer');
+    }
+  } finally {
+    view.destroy();
+    vi.unstubAllGlobals();
+    open.mockRestore();
+  }
 });

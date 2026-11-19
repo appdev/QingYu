@@ -166,3 +166,15 @@ it('stays quiet when the account is signed out or not ready, but reports other f
   await vi.advanceTimersByTimeAsync(180000);
   expect(error).toHaveBeenCalledExactlyOnceWith('无法连接账号服务，请检查网络');
 });
+it('syncs once after a local change without its own timer when the deployment schedules syncing', async () => {
+  vi.useFakeTimers();
+  const client: SyncClient = { load: vi.fn(async () => settings), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(async () => {}),
+    subscribe(fn) { fn({ busy: false, error: false, message: '' }); return () => {}; } };
+  const auto = startAutoSync(client, () => false, vi.fn(), false, undefined, false);
+  dispose = auto.stop;
+  await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+  expect(client.run).not.toHaveBeenCalled();
+  auto.changed(); auto.changed();
+  await vi.advanceTimersByTimeAsync(600);
+  expect(client.run).toHaveBeenCalledTimes(1);
+});

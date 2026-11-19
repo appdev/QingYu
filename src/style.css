@@ -270,7 +270,7 @@ html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=fa
 .share-popover[data-placement=above]::before { top: auto; bottom: -6px; transform: translateX(-50%) rotate(225deg); }
 .share-popover [role=tabpanel] { min-height: 0; overflow: auto; margin: 0 -4px -4px; padding: 0 4px 4px; }
 .share-tabs { display: flex; flex-shrink: 0; padding: 2px; border-radius: 8px; background: var(--control-fill); }
-.share-popover :where([role=tabpanel]) button:not(.primary-button, .secondary-button, .quiet-button) { border: 0; color: inherit; background: transparent; font: inherit; padding: 6px 2px; text-align: left; }
+.share-popover :where([role=tabpanel]) button:not(.primary-button, .secondary-button, .quiet-button, .picture-swatch) { border: 0; color: inherit; background: transparent; font: inherit; padding: 6px 2px; text-align: left; }
 .share-tabs button {
   flex: 1 1 0; min-width: 0; min-height: 24px; padding: 3px; border: 0; border-radius: 6px;
   background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; text-align: center;

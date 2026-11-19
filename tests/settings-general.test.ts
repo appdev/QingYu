@@ -25,16 +25,17 @@ beforeEach(() => {
   });
 });
 
-it('starts and stops the desktop API and copies a self-contained authenticated MCP config', async () => {
-  const connection = { url: 'http://127.0.0.1:8787/mcp', token: 'synthetic-token' };
+it('starts and stops the desktop MCP service and copies its current authenticated config', async () => {
+  const token = 'synthetic-token';
   const ipc = vi.mocked(invoke), implementation = ipc.getMockImplementation()!;
-  let running = false, portBusy = true;
+  let running = false, startFails = true, port = 49151;
   ipc.mockImplementation(async (command, args) => {
     if (command !== 'local_mcp') return implementation(command, args);
     const { enabled } = args as { enabled?: boolean };
-    if (enabled && portBusy) { portBusy = false; throw '端口已被占用'; }
+    if (enabled && startFails) { startFails = false; throw '无法启动 MCP 服务'; }
+    if (enabled) port++;
     running = enabled ?? running;
-    return (running ? connection : null) as never;
+    return (running ? { url: `http://127.0.0.1:${port}/mcp`, token } : null) as never;
   });
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -45,21 +46,65 @@ it('starts and stops the desktop API and copies a self-contained authenticated M
     view.select('ai');
     const page = root.querySelector('#settings-panel-ai')!;
     const toggle = page.querySelector('button')!;
+    const reveal = page.querySelector<HTMLButtonElement>('#settings-mcp-reveal')!;
     const copy = page.querySelector<HTMLButtonElement>('#settings-mcp-copy')!;
+    const copyAi = page.querySelector<HTMLButtonElement>('#settings-mcp-copy-ai')!;
+    const clientChoice = page.querySelector<HTMLSelectElement>('#settings-mcp-client')!;
+    const preview = page.querySelector<HTMLTextAreaElement>('[aria-label="配置预览"]')!;
+    const fallback = page.querySelector<HTMLTextAreaElement>('#settings-mcp-fallback')!;
+    function choose(name: string) {
+      clientChoice.value = name;
+      clientChoice.dispatchEvent(new Event('change'));
+    }
     await vi.waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(reveal.disabled).toBe(true);
     expect(copy.disabled).toBe(true);
+    expect(copyAi.disabled).toBe(true);
     toggle.click();
-    await vi.waitFor(() => expect(page.textContent).toContain('端口已被占用'));
+    await vi.waitFor(() => expect(page.textContent).toContain('无法启动 MCP 服务'));
     expect(copy.disabled).toBe(true);
     toggle.click();
     await vi.waitFor(() => expect(toggle.textContent).toBe('停止服务'));
-    expect(page.textContent).toContain(connection.url);
-    expect(page.textContent).not.toContain(connection.token);
+    expect(page.textContent).toContain('运行中 · http://127.0.0.1:49152/mcp');
+    expect(page.textContent).toContain('点击「复制配置」获取含完整令牌的 TOML 配置');
+    expect(preview.value).toContain('http://127.0.0.1:49152/mcp');
+    expect(preview.value).not.toContain(token);
     copy.click();
-    expect(writeText).toHaveBeenCalledWith(`[mcp_servers.qingyu]\nurl = "${connection.url}"\nhttp_headers = { Authorization = "Bearer ${connection.token}" }`);
+    expect(writeText).toHaveBeenLastCalledWith(`[mcp_servers.qingyu]\nurl = "http://127.0.0.1:49152/mcp"\nhttp_headers = { Authorization = "Bearer ${token}" }`);
+    reveal.click();
+    expect(reveal.textContent).toBe('隐藏令牌');
+    expect(preview.value).toBe(writeText.mock.lastCall![0]);
+    reveal.click();
+    expect(preview.value).not.toContain(token);
+    reveal.click();
+    choose('Claude Code');
+    expect(JSON.parse(preview.value).mcpServers.qingyu).toEqual({
+      type: 'http', url: 'http://127.0.0.1:49152/mcp', headers: { Authorization: 'Bearer <令牌已隐藏>' },
+    });
+    copy.click();
+    const claudeConfig = writeText.mock.lastCall![0];
+    expect(JSON.parse(claudeConfig).mcpServers.qingyu.headers.Authorization).toBe(`Bearer ${token}`);
+    copyAi.click();
+    expect(writeText.mock.lastCall![0]).toEqual(expect.stringContaining('~/.claude.json'));
+    expect(writeText.mock.lastCall![0]).toEqual(expect.stringContaining(claudeConfig));
+    choose('Cursor');
+    writeText.mockRejectedValueOnce(new Error('Clipboard denied'));
+    copy.click();
+    await vi.waitFor(() => expect(fallback.hidden).toBe(false));
+    expect(JSON.parse(fallback.value).mcpServers.qingyu).toEqual({
+      url: 'http://127.0.0.1:49152/mcp', headers: { Authorization: `Bearer ${token}` },
+    });
     toggle.click();
     await vi.waitFor(() => expect(page.textContent).toContain('已停止'));
     expect(copy.disabled).toBe(true);
+    expect(copyAi.disabled).toBe(true);
+    expect(fallback.value).toBe('');
+    expect(preview.value).toBe('');
+    toggle.click();
+    await vi.waitFor(() => expect(page.textContent).toContain('运行中 · http://127.0.0.1:49153/mcp'));
+    expect(preview.value).not.toContain(token);
+    copy.click();
+    expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining('http://127.0.0.1:49153/mcp'));
   } finally {
     view.destroy(); root.remove(); ipc.mockImplementation(implementation);
     Reflect.deleteProperty(navigator, 'clipboard');

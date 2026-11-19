@@ -47,10 +47,18 @@ pub(super) fn relative_path(store: &DiskLibrary, id: &str, value: &str) -> Resul
         }
     }
     let relative = parts.join("/");
+    let archive = note
+        .path
+        .strip_prefix("Trash/.folders/")
+        .and_then(|path| path.split_once('/'))
+        .map(|(folder, _)| format!("Trash/.folders/{folder}/"));
+    let in_own_archive = note.trashed && archive.is_some_and(|path| relative.starts_with(&path));
     if !assets::valid_path(&relative)
-        || parts
-            .iter()
-            .any(|part| part.starts_with('.') && part != ".attachments")
+        || parts.iter().enumerate().any(|(index, part)| {
+            part.starts_with('.')
+                && part != ".attachments"
+                && !(index == 1 && part == ".folders" && in_own_archive)
+        })
     {
         return Err("附件路径属于笔记库内部文件".into());
     }
