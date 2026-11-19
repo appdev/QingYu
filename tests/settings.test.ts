@@ -19,25 +19,21 @@ it('server settings describe the mounted library and never load browser S3 crede
   expect(client.load).not.toHaveBeenCalled(); expect(client.subscribe).not.toHaveBeenCalled();
   view.select('sync');
   expect(root.querySelector('#settings-panel-storage')?.hasAttribute('hidden')).toBe(false);
-  expect(root.querySelector('h1')?.textContent).toBe('存储与同步');
+  expect(root.querySelector('h1')?.textContent).toBe('存储');
   view.destroy(); marker.remove();
 });
-it('shows saved browser note sizes in the merged storage panel and refreshes them on focus', async () => {
+it('shows saved browser note sizes and omits settings that require a native host', async () => {
   const root = document.body.appendChild(document.createElement('div'));
-  const client: SyncClient = {
-    load: async () => ({ endpoint: '', bucket: '', region: '', prefix: '', accessKeyId: '', secretAccessKey: '' }),
-    save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {},
-  };
   const save = (source: string) => localStorage.setItem(libraryKey, JSON.stringify({ notes: [{ source }, { source: '删', trashed: true }] }));
   save('中文');
-  const view = mountSettings(root, client, vi.fn());
+  const view = mountSettings(root, undefined, vi.fn());
   try {
     view.select('storage');
     await Promise.resolve();
     expect(root.querySelector('output')?.textContent).toBe('9 B');
     expect(root.querySelector('.settings-usage-row[data-usage=notes] .settings-usage-value')?.textContent).toBe('6 B');
     expect(root.querySelector<HTMLElement>('.settings-storage-meter [data-usage=trash]')?.style.width).toBe('33.333333333333336%');
-    expect(root.querySelector('form[aria-labelledby=settings-sync-heading]')).not.toBeNull();
+    expect(root.querySelector('.settings-sync-form, #settings-tab-ai, #settings-tab-account, [name=menuBar], [name=alwaysOnTop]')).toBeNull();
     save('新正文');
     window.dispatchEvent(new Event('focus'));
     await Promise.resolve();
@@ -169,8 +165,7 @@ it('switches tabs with arrows and saves controls without a settings footer', asy
   expect(root.querySelector('#settings-panel-sync')).toBeNull();
   const syncHeading = storagePanel.querySelector<HTMLElement>('#settings-sync-heading')!;
   syncHeading.scrollIntoView = vi.fn();
-  view.select('account');
-  root.querySelector<HTMLButtonElement>('#settings-panel-account button[aria-label="存储与同步"]')!.click();
+  view.select('sync');
   expect(syncHeading.scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
   expect(storageTab.getAttribute('aria-selected')).toBe('true');
   expect(root.querySelector('h1')?.textContent).toBe('存储与同步');
@@ -226,13 +221,14 @@ it('starts unconfigured sync off and exposes advanced S3 fields and a copyable r
   try {
     const auto = root.querySelector<HTMLInputElement>('[name=automaticSync]')!;
     expect(auto.checked).toBe(false); expect(auto.disabled).toBe(true);
-    for (const [name, value] of Object.entries({ endpoint: 'https://unit.invalid', bucket: 'test', accessKeyId: 'synthetic-id', secretAccessKey: 'synthetic-secret', timeout: '299', concurrency: '16', forcePathStyle: 'false', tlsVerify: 'false' })) {
+    expect(root.querySelector<HTMLSelectElement>('[name=assetDownload]')!.value).toBe('all');
+    for (const [name, value] of Object.entries({ endpoint: 'https://unit.invalid', bucket: 'test', accessKeyId: 'synthetic-id', secretAccessKey: 'synthetic-secret', timeout: '299', concurrency: '16', forcePathStyle: 'false', tlsVerify: 'false', assetDownload: 'on-demand' })) {
       const field = root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name=${name}]`)!;
       field.value = value; field.dispatchEvent(new Event(field instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
     }
     root.querySelector<HTMLButtonElement>('.settings-sync-test')!.click();
     await vi.waitFor(() => expect(root.querySelector('.settings-sync-error')?.hasAttribute('hidden')).toBe(false));
-    expect(test).toHaveBeenCalledWith({ ...config, endpoint: 'https://unit.invalid', bucket: 'test', accessKeyId: 'synthetic-id', secretAccessKey: 'synthetic-secret', timeout: 299, concurrency: 16, forcePathStyle: false, tlsVerify: false });
+    expect(test).toHaveBeenCalledWith({ ...config, endpoint: 'https://unit.invalid', bucket: 'test', accessKeyId: 'synthetic-id', secretAccessKey: 'synthetic-secret', timeout: 299, concurrency: 16, forcePathStyle: false, tlsVerify: false, assetDownload: 'on-demand' });
     expect(client.run).not.toHaveBeenCalled();
     root.querySelector<HTMLButtonElement>('.settings-sync-copy')!.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('HTTP 403\n<Code>AccessDenied</Code> [已隐藏]'));

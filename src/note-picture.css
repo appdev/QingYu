@@ -10,6 +10,8 @@
 .note-picture-content a { color: var(--picture-link); text-decoration: underline; }
 .note-picture-content :is(ol, ul) { padding-left: 20px; }
 .note-picture-content .contains-task-list { list-style: none; padding-left: 4px; }
+.note-picture-content li.li-dash { list-style-type: '– '; }
+.note-picture-content li.li-bullet { list-style-type: disc; }
 .note-picture-tick { display: inline-block; box-sizing: border-box; margin-right: 5px; width: 12px; height: 12px; border: 1px solid var(--picture-muted); border-radius: 50%; vertical-align: -1px; text-align: center; font: 9px/10px system-ui; }
 .note-picture-tick.checked { border-color: var(--picture-mark); background: var(--picture-mark); color: var(--picture-page); }
 .note-picture-content blockquote { padding-left: 10px; margin-left: 0; color: var(--picture-muted); border-left: 2px solid var(--picture-mark); }
@@ -30,6 +32,7 @@
 .note-picture-mark { box-sizing: border-box; height: 32px; padding-top: 14px; font: 600 10px system-ui; color: var(--picture-muted); }
 .note-picture-mark::before { content: '✦'; font-size: 12px; color: var(--picture-mark); margin-right: 5px; }
 .note-picture { display: grid; gap: 10px; }
+.note-picture-controls { display: contents; }
 .note-picture-preview { display: block; max-width: 100%; width: auto; height: auto; max-height: 185px; margin: 0 auto; object-fit: contain; border-radius: 8px; }
 .note-picture-status { color: var(--muted); font-size: 12px; margin: 0; }
 .note-picture-status:empty { display: none; }
@@ -40,14 +43,46 @@
 .note-picture-actions { display: flex; gap: 6px; justify-content: end; }
 .note-picture-mode button { border: 0; padding: 6px 10px; border-radius: 8px; background: var(--control-fill); color: var(--ink); cursor: pointer; text-align: center; white-space: nowrap; font: inherit; }
 .share-popover .note-picture-actions .primary-button { flex: 1; }
-.note-picture-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 42px); overflow: auto; margin: auto; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--sidebar); color: var(--ink); font: 13px var(--font); }
-.note-picture-dialog::backdrop { background: var(--overlay); }
-.note-picture-dialog > .note-picture-done { position: absolute; bottom: 20px; left: 20px; }
-.note-picture-dialog .note-picture-preview { max-height: min(400px, 50dvh); border-radius: 14px; }
-.note-picture-dialog .note-picture { gap: 14px; }
-.note-picture-dialog .note-picture-backgrounds { overflow: auto; gap: 8px; padding: 4px; }
-.note-picture-dialog .picture-swatch { width: 66px; height: 44px; border-radius: 8px; }
 .note-picture-options { display: flex; justify-content: space-between; align-items: center; }
 .note-picture-mode { display: flex; gap: 2px; border-radius: 8px; background: var(--control-fill); }
 .note-picture-mode button { background: transparent; }
 .note-picture-mode button[aria-pressed=true] { background: var(--settings-selection); }
+
+.note-picture-detailed { height: 100%; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
+.note-picture-detailed .note-picture-controls {
+  container-type: size; display: grid; grid-auto-rows: max-content; gap: 12px;
+  overflow: auto; padding: 4px 16px 14px; overscroll-behavior: contain;
+}
+.note-picture-detailed .note-picture-preview {
+  width: 100%; max-height: max(120px, calc(100cqh - 120px)); align-self: start; border-radius: 14px;
+}
+.note-picture-detailed .note-picture-backgrounds { min-height: 52px; overflow: auto hidden; gap: 8px; padding: 4px; }
+.note-picture-detailed :is(.note-picture-controls, .note-picture-backgrounds) { scrollbar-width: none; }
+.note-picture-detailed :is(.note-picture-controls, .note-picture-backgrounds)::-webkit-scrollbar { display: none; }
+.note-picture-detailed .picture-swatch { width: 66px; height: 44px; border: 0; border-radius: 8px; }
+.note-picture-detailed .picture-swatch[aria-pressed=true] { outline: 0; box-shadow: 0 0 0 2px var(--ink); }
+.note-picture-detailed .picture-swatch:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.note-picture-detailed .note-picture-options { gap: 8px; min-height: 44px; }
+.note-picture-detailed .note-picture-mode { padding: 3px; border-radius: 22px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
+/* 和 Pinto 的系统分段控件一样，选中项是浮起的白色胶囊。 */
+.note-picture-detailed .note-picture-mode button[aria-pressed=true] { background: var(--card); box-shadow: 0 1px 4px color-mix(in srgb, var(--ink) 14%, transparent); }
+.note-picture-detailed .note-picture-mode button { min-height: 38px; padding-inline: 13px; border-radius: inherit; font-size: 14px; }
+.note-picture-detailed .note-picture-options label {
+  min-height: 44px; display: flex; flex-direction: row-reverse; align-items: center; gap: 8px; font-size: 15px;
+}
+.note-picture-detailed .note-picture-status { margin-top: 4px; }
+.note-picture-detailed input[role=switch] {
+  appearance: none; display: flex; align-items: center; width: 38px; height: 22px; margin: 0; padding: 3px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--control-fill);
+}
+.note-picture-detailed input[role=switch]:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.note-picture-detailed input[role=switch]::after { content: ''; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); }
+/* Pinto 的开关跟随正文色（.tint(.primary)），不用品牌色。 */
+.note-picture-detailed input[role=switch]:checked { border-color: var(--ink); background: var(--ink); justify-content: end; }
+.note-picture-detailed input[role=switch]:checked::after { background: var(--paper); }
+.note-picture-detailed [data-picture-action=save] { justify-self: start; }
+.note-picture-detailed .note-picture-actions {
+  display: grid; justify-content: stretch; gap: 8px;
+  padding: 12px 16px max(22px, var(--safe-area-bottom)); background: var(--sidebar);
+}
+.note-picture-detailed .note-picture-copy-icon { width: 20px; height: 20px; }

@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { palettePlugin } from './tools/palette';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   clearScreen: false,
   resolve: { alias: {
     '@markra/editor/codemirror': fileURLToPath(new URL('./src/vendor/markra/editor/codemirror/index.ts', import.meta.url)),
@@ -19,6 +19,8 @@ export default defineConfig({
     },
   }],
   css: { postcss: { plugins: [palettePlugin] } },
-  build: { target: 'es2022', rollupOptions: { input: ['index.html', 'settings.html', 'login.html', 'menubar.html'] } },
+  build: { target: 'es2022', rollupOptions: {
+    input: mode === 'web' ? ['index.html', 'login.html'] : ['index.html', 'settings.html', 'login.html', 'menubar.html', 'feature.html'],
+  } },
   server: { watch: { ignored: ['**/src-tauri/**'] } },
-});
+}));

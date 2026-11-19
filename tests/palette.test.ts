@@ -33,7 +33,7 @@ it('uses the same colors for diagrams, mindmaps and document surfaces', () => {
 
 it('keeps color literals out of application styles and renderer adapters', () => {
   for (const path of [
-    'src/theme.css', 'src/style.css', 'src/sidebar.css', 'src/settings.css', 'src/calendar.css', 'src/rich-editor.css', 'src/menu-bar.css',
+    'src/theme.css', 'src/style.css', 'src/buttons.css', 'src/sidebar.css', 'src/settings.css', 'src/calendar.css', 'src/rich-editor.css', 'src/menu-bar.css',
     'prototypes/web-login/tokens.css', 'public/miaoyan/css/theme-light.css', 'public/miaoyan/css/theme-dark.css',
     'public/miaoyan/css/base.css', 'public/miaoyan/css/typography.css',
   ]) {

@@ -64,10 +64,13 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
   }
   const open = async (id: string | null, type: FolderType, clicked: boolean, x: number, y: number, editing = false) => {
     const book = getBook();
-    const items = folderMenuItems(type, clicked).filter(({ text }) => {
+    // Pinto 的手机端在「全部笔记」「废纸篓」上长按，只有一个「新建文件夹」，预览就是这一行本身。
+    const libraryRow = actions.mobile && clicked && !editing && (type === 'all' || type === 'trash');
+    const items = (libraryRow ? [{ text: '新建文件夹' }] as MenuItem[] : folderMenuItems(type, clicked)).filter(({ text }) => {
       if (editing) return ['', '重命名文件夹', '上移', '下移'].includes(text);
-      return !((book.server || actions.mobile) && ['在 Finder 中显示', '在终端中打开'].includes(text)) &&
-        !(book.server && text === '移到废纸篓') && !(actions.mobile && ['在新窗口打开', '上移', '下移'].includes(text));
+      if (!book.root && ['在 Finder 中显示', '在终端中打开', '在新窗口打开', '制作副本', '移到废纸篓'].includes(text)) return false;
+      if (!book.root && !book.server && text === '移动到…') return false;
+      return !(actions.mobile && ['在 Finder 中显示', '在终端中打开', '在新窗口打开', '上移', '下移'].includes(text));
     });
     const run = (action: 'move' | 'trash' | 'reveal' | 'terminal') => actions.change(() => getBook().folderAction(action, type === 'trash' ? 'trash' : id));
     for (const item of items) {
@@ -95,7 +98,17 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     const menu = items.filter((item, index) => item.text || index > 0 && index < items.length - 1 && Boolean(items[index + 1].text));
     if (!menu.length) return;
     const preview = actions.mobile && clicked && !editing ? document.createElement('article') : undefined;
-    if (preview) {
+    const findRow = () => [...document.querySelectorAll<HTMLElement>('.folder-row')].find(row =>
+      (row.dataset.folderId || null) === id && (row.dataset.trash === 'true') === (type === 'trash'));
+    const row = findRow();
+    if (preview && libraryRow) {
+      preview.dataset.row = '';
+      const icon = row?.querySelector('.sidebar-icon')?.cloneNode(true), name = document.createElement('strong'), count = document.createElement('span');
+      name.textContent = row?.querySelector('.folder-name')?.textContent ?? (type === 'trash' ? '废纸篓' : '全部笔记');
+      count.textContent = row?.querySelector('.folder-count')?.textContent ?? '';
+      if (icon) preview.append(icon);
+      preview.append(name, count);
+    } else if (preview) {
       const notes = visibleNotes(book.data, id, '', type === 'trash'), cards = document.createElement('div');
       cards.className = 'context-folder-preview';
       for (const note of notes.slice(0, 4)) {
@@ -108,8 +121,7 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
       count.textContent = `${notes.length} 篇笔记`;
       preview.append(cards, title, count);
     }
-    const restoreFocus = () => [...document.querySelectorAll<HTMLElement>('.folder-row')].find(row =>
-      (row.dataset.folderId || null) === id && (row.dataset.trash === 'true') === (type === 'trash'))?.focus({ preventScroll: true });
+    const restoreFocus = () => findRow()?.focus({ preventScroll: true });
     await popupMenu(menu, x, y, actions.error, restoreFocus, '文件夹操作', preview);
   };
   return { open, rename, finishRename: () => finishEdit?.() ?? Promise.resolve(true) };

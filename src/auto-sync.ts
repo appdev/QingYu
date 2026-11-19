@@ -1,4 +1,5 @@
 import { accountSyncNotices, type SyncClient, type SyncStatus } from './sync-session';
+import { SyncSnapshotChanged } from './notebook';
 import { hasS3Connection, syncMode } from './sync-store';
 import type { PreferenceStore } from './preferences';
 import { invoke } from '@tauri-apps/api/core';
@@ -32,7 +33,23 @@ export function startAutoSync(client: SyncClient, blocked: () => boolean, error:
   let status: SyncStatus = { busy: false, error: false, message: '' };
   let pending: Promise<void> | undefined;
   let lastAttempt = Date.now();
-  const unsubscribe = client.subscribe(next => { status = next; });
+  let editTimer: ReturnType<typeof setTimeout> | undefined;
+  let localChanges = false;
+  function changed() {
+    localChanges = true;
+    if (pending || status.busy) return;
+    clearTimeout(editTimer);
+    editTimer = setTimeout(() => {
+      if (pending || status.busy) return;
+      if (blocked()) { changed(); return; }
+      localChanges = false;
+      attempt();
+    }, 600);
+  }
+  const unsubscribe = client.subscribe(next => {
+    status = next;
+    if (localChanges) changed();
+  });
   function joinCurrent() {
     return new Promise<void>((resolve, reject) => {
       const stop = client.subscribe(next => {
@@ -56,12 +73,16 @@ export function startAutoSync(client: SyncClient, blocked: () => boolean, error:
       }
       if (schedule?.value.autoSyncS3 === false || !hasS3Connection(settings)) return;
       await client.run(settings);
-    })().finally(() => { pending = undefined; lastAttempt = Date.now(); });
+    })().finally(() => {
+      pending = undefined; lastAttempt = Date.now();
+      if (localChanges) changed();
+    });
     return pending;
   }
   const attempt = () => {
     if (blocked()) return;
     void sync().catch(reason => {
+      if (reason instanceof SyncSnapshotChanged) { changed(); return; }
       const message = reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '自动同步失败';
       // 没登录或账号未就绪时后台静默跳过，手动同步时设置页里仍会显示原因。
       if (!accountSyncNotices.has(message)) error(message);
@@ -79,6 +100,11 @@ export function startAutoSync(client: SyncClient, blocked: () => boolean, error:
     if (document.hidden ? syncOnBackground : Date.now() - lastAttempt >= interval) attempt();
   };
   document.addEventListener('visibilitychange', visibility);
+  window.addEventListener('online', attempt);
   attempt();
-  return { sync, stop() { clearInterval(timer); document.removeEventListener('visibilitychange', visibility); unsubscribe(); unsubscribeSchedule?.(); } };
+  return { sync, changed, stop() {
+    clearInterval(timer); clearTimeout(editTimer); localChanges = false;
+    document.removeEventListener('visibilitychange', visibility); window.removeEventListener('online', attempt);
+    unsubscribe(); unsubscribeSchedule?.();
+  } };
 }

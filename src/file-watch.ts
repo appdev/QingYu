@@ -44,7 +44,7 @@ export async function setupFileWatch(book: Notebook, actions: {
     } finally {
       running = false; document.body.dataset.libraryBusy = 'false';
       if (shell) {
-        shell.inert = document.body.dataset.syncBusy === 'true';
+        shell.inert = false;
         // An own-save notification can make WebKit drop the editor's focus even when nothing was reloaded.
         if (!stopped && !shell.inert && !document.body.inert && root === book.root && previous?.id === book.current?.id
           && focused && shell.contains(focused) && document.activeElement === document.body) {

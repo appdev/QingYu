@@ -16,11 +16,11 @@ use std::{net::SocketAddr, sync::Arc};
 use subtle::ConstantTimeEq;
 
 const MAX_BODY: usize = 4 * 1024 * 1024;
-mod web;
 mod browser_library;
-mod mcp;
 #[cfg(all(feature = "app", desktop))]
 pub(crate) mod desktop;
+mod mcp;
+mod web;
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
 struct ApiError(StatusCode, &'static str, &'static str);
@@ -103,12 +103,7 @@ impl Service {
 }
 
 fn bearer_access(state: &Service, headers: &HeaderMap) -> (bool, bool) {
-    let token = if headers
-        .get_all(header::AUTHORIZATION)
-        .iter()
-        .count()
-        == 1
-    {
+    let token = if headers.get_all(header::AUTHORIZATION).iter().count() == 1 {
         headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())

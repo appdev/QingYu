@@ -25,3 +25,16 @@ it('makes a bounded PNG filename without splitting a Unicode character', () => {
   expect(pictureFilename(' ')).toBe('轻羽笔记.png');
   expect(pictureFilename('a'.repeat(71) + '😀尾')).toBe('a'.repeat(71) + '😀.png');
 });
+
+it('keeps dashed and bulleted list markers apart, leaving tasks and numbers alone', async () => {
+  const { renderMarkdown } = await import('../src/markdown');
+  const { html } = renderMarkdown('- 破折号\n  * 嵌套圆点\n\n* 圆点\n+ 加号\n\n- [ ] 任务\n- 普通项\n\n1. 编号');
+  expect(html).toMatch(/<li [^>]*class="li-dash"[^>]*>破折号/);
+  expect(html).toMatch(/<li [^>]*class="li-bullet"[^>]*>嵌套圆点/);
+  expect(html).toMatch(/<li [^>]*class="li-bullet"[^>]*>圆点/);
+  expect(html).toMatch(/<li [^>]*class="li-bullet"[^>]*>加号/);
+  expect(html).toMatch(/<li [^>]*class="task-list-item"[^>]*>/);
+  expect(html).not.toMatch(/task-list-item[^"]*li-/);
+  expect(html).toMatch(/<li [^>]*class="li-dash"[^>]*>普通项/);
+  expect(html).toMatch(/<ol[^>]*>\s*<li data-sourcepos="[^"]*">编号/);
+});

@@ -119,6 +119,16 @@ md.core.ruler.after('github-alerts', 'standalone-images', ({ tokens }) => {
   }
 });
 
+// 解析后就分不清列表用的是 - 还是 *，这里按编辑器的显示方式补上：- 是破折号，* 和 + 是圆点。
+// 任务项由 task-lists 插件处理，这条规则排在最后，正好能跳过它们。
+md.core.ruler.push('list-markers', ({ tokens }) => {
+  for (const token of tokens) {
+    if (token.type !== 'list_item_open' || !/^[-*+]$/.test(token.markup)) continue;
+    if (token.attrGet('class')?.includes('task-list-item')) continue;
+    token.attrJoin('class', token.markup === '-' ? 'li-dash' : 'li-bullet');
+  }
+});
+
 const renderImage = md.renderer.rules.image!;
 md.renderer.rules.image = (tokens, index, options, env, renderer) => {
   const token = tokens[index];

@@ -1,5 +1,26 @@
 # AGENTS.md
 
+## 通用操作按钮
+
+以当前 PC Web 的按钮为基准。`src/buttons.css` 是 App 和 Web 共用的实现，由 `src/style.css` 统一引入。新增普通操作使用原生 `<button>`，组合 `.button`、语义样式和尺寸类。现有语义类可独立使用，维护时按需迁移。
+
+| 尺寸 | 类名 | 高度 | 左右内边距 | 圆角 | 字号 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 紧凑 | 默认 | 28 px | 12 px（文字按钮为 9 px） | 10 px | 13 px |
+| 常规 | `.button-regular` | 40 px | 18 px | 14 px | 15 px |
+| 大 | `.button-big` | 50 px | 24 px | 14 px | 17 px |
+
+- `.primary-button` 用于主操作，底色和文字使用 `--primary-fill`、`--primary-ink`。`.secondary-button` 用于次要操作，使用 `--sand`、`--ink`。`.quiet-button` 用于弱化操作，默认透明并使用 `--muted`，悬停或按下时使用 `--sand`、`--ink`。破坏性主操作叠加 `.destructive-button`，使用 `--button-destructive`。
+- 通用字重为 `600`，图标与文字相隔 `6px`，无描边和阴影。主要和次要按钮统一由主题提供悬停、按下和禁用色。文字按钮禁用时透明度为 `0.5`。键盘焦点使用 `2px` 的 `--brand` 轮廓，外偏移 `2px`。按下缩放至 `0.97`，过渡 `120ms ease-out`，减少动态效果时关闭缩放。
+- `.button-wide` 撑满容器。`.button-touch` 将触控高度补到至少 `44px`，`.button-pill` 使用胶囊形圆角。手机 sheet 的「完成」（设置、图片分享）统一使用 `button floating-button`：白色浮起胶囊、链接色粗体字、高 `44px`；浏览器居中弹窗的「完成」使用 `button secondary-button button-regular button-touch button-pill`。底部主操作使用 `button primary-button button-big button-wide`。
+- 页面 CSS 管理按钮位置与操作区间距。通用颜色、圆角、尺寸及状态反馈在 `src/buttons.css` 和主题维护。系统提示框沿用统一的 `.alert-dialog` 和 `.alert-actions`，手机上按 iOS 提示框显示，两个按钮并排、取消在左；图标工具栏、分段控件和菜单行按各自控件规范维护。
+
+## 独立功能面板
+
+通过 `src/feature-panel.ts` 打开独立功能面板。App 在小于 `780px` 的移动视口使用底部面板，宽屏移动视口使用居中弹窗，原生桌面使用独立窗口。布局随视口变化。浏览器内的独立面板使用居中弹窗。
+
+功能模块提供内容挂载和清理回调，允许提供自己的导航头部。容器负责弹窗尺寸、动画、拖动、点外关闭和焦点恢复。面板尺寸通过 `--feature-*` 变量配置，设置页保留分级导航，并分别响应返回一级和关闭整个面板。桌面窗口由 `src-tauri/src/feature_window.rs` 统一创建、显示和重开，各功能保留自己的页面入口与内容初始化。
+
 ## 笔记详情工具栏「···」菜单尺寸
 
 以 Pinto Notes 原生菜单的实测尺寸为基准。分组间隔从上一组最后一行的底边量到下一组第一行的顶边，包含分隔线。同组相邻行之间不额外留白。

@@ -62,6 +62,7 @@ pub async fn note_picture_action(
 ) -> Result<bool, String> {
     if window.label() != "main"
         && !crate::file_library::workspace::is_document(window.app_handle(), window.label())
+        && !crate::feature_window::is_picture_window(window.label())
     {
         return Err("请在编辑器中导出图片".into());
     }
@@ -74,6 +75,41 @@ pub async fn note_picture_action(
         || !png.starts_with(b"\x89PNG\r\n\x1a\n")
     {
         return Err("无法识别这张 PNG 图片".into());
+    }
+    #[cfg(mobile)]
+    if action == "share" {
+        let app = window.app_handle().clone();
+        let cache = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| e.to_string())?
+            .join("attachments/pictures");
+        let (temp, path) = tauri::async_runtime::spawn_blocking(move || {
+            use std::fs;
+            fs::create_dir_all(&cache)?;
+            for entry in fs::read_dir(&cache)?.flatten() {
+                let stale = entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age.as_secs() > 86_400);
+                if stale {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+            let temp = tempfile::tempdir_in(cache)?;
+            let path = temp.path().join(filename);
+            fs::write(&path, png)?;
+            Ok::<_, std::io::Error>((temp, path))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "无法准备待分享图片")?;
+        tauri_plugin_attachments::share_picture(app, path).await?;
+        // The recipient may read the picture after the chooser returns.
+        let _ = temp.keep();
+        return Ok(true);
     }
     if action == "save" {
         #[cfg(target_os = "macos")]

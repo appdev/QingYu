@@ -1,0 +1,29 @@
+/* Keep the variants usable on existing buttons that do not yet declare .button. */
+:is(.button, .primary-button, .secondary-button, .quiet-button) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box;
+  height: 28px; min-width: 0; padding: 0 12px; border: 0; border-radius: 10px;
+  font: 600 13px/1 var(--font); white-space: nowrap; cursor: default;
+  transition: transform .12s ease-out, background-color .12s ease-out, color .12s ease-out;
+}
+:is(.button, .primary-button, .secondary-button, .quiet-button):focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+:is(.button, .primary-button, .secondary-button, .quiet-button):not(:disabled):active { transform: scale(.97); }
+.primary-button { background: var(--primary-fill); color: var(--primary-ink); }
+.primary-button:not(:disabled):hover { background-image: linear-gradient(var(--button-primary-hover), var(--button-primary-hover)); }
+.primary-button:not(:disabled):active { background-image: linear-gradient(var(--button-primary-pressed), var(--button-primary-pressed)); }
+.secondary-button { background: var(--sand); color: var(--ink); }
+.secondary-button:not(:disabled):hover { background-image: linear-gradient(var(--control-hover), var(--control-hover)); }
+.secondary-button:not(:disabled):active { background-image: linear-gradient(var(--button-pressed), var(--button-pressed)); }
+:is(.primary-button, .secondary-button):disabled { background: var(--button-disabled); color: var(--button-disabled-ink); }
+.primary-button.destructive-button { background: var(--button-destructive); color: var(--primary-ink); }
+/* 取消、返回这类：平时没有底色，灰字；指针移上去才有浅底，字变正文色。 */
+.quiet-button { padding: 0 9px; background: transparent; color: var(--muted); }
+.quiet-button:not(:disabled):is(:hover, :active) { background: var(--sand); color: var(--ink); }
+.quiet-button:disabled { opacity: .5; }
+/* 手机 sheet 左上角或右上角的「完成」：白色浮起胶囊，链接色粗体字，设置和图片分享共用。 */
+.floating-button { height: 44px; min-width: 74px; padding: 0 16px; border-radius: 999px; background: var(--settings-card); color: var(--link); font-size: 17px; box-shadow: 0 8px 24px var(--shadow); }
+.button-regular { height: 40px; padding: 0 18px; border-radius: 14px; font-size: 15px; }
+.button-big { height: 50px; padding: 0 24px; border-radius: 14px; font-size: 17px; }
+.button-wide { width: 100%; }
+.button-touch { min-height: 44px; }
+.button-pill { border-radius: 999px; }
+@media (prefers-reduced-motion: reduce) { :is(.button, .primary-button, .secondary-button, .quiet-button):active { transform: none; } }

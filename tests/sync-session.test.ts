@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
-import { createSyncSession, type SyncStatus } from '../src/sync-session';
+import { createSyncSession, nativeRequest, type SyncStatus } from '../src/sync-session';
 import { invoke } from '@tauri-apps/api/core';
 import { syncNotebook } from '../src/sync';
 import type { S3Settings } from '../src/sync-store';
@@ -32,6 +32,31 @@ it('restores advanced S3 options and rejects invalid values without overwriting 
   expect(await reopened.load()).toEqual(settings);
   await expect(reopened.save({ ...settings, timeout: 0 })).rejects.toThrow('超时');
   expect(persisted).toEqual(settings);
+});
+it('sends and receives S3 bodies as raw bytes instead of JSON number arrays', async () => {
+  const body = Uint8Array.from([0, 255, 128, 7]);
+  const meta = new TextEncoder().encode(JSON.stringify({ status: 206, headers: { etag: '"中"' } }));
+  const reply = new Uint8Array(4 + meta.length + body.length);
+  new DataView(reply.buffer).setUint32(0, meta.length);
+  reply.set(meta, 4); reply.set(body, 4 + meta.length);
+  vi.mocked(invoke).mockResolvedValueOnce(reply.buffer);
+  const response = await nativeRequest({ url: 'https://unit.invalid/test/a?x=1', method: 'PUT', headers: { 'x-amz-date': '1' }, body: body.buffer });
+  const [command, payload, options] = vi.mocked(invoke).mock.calls[0]!;
+  expect(command).toBe('sync_request');
+  expect(payload).toBeInstanceOf(Uint8Array);
+  expect([...payload as Uint8Array]).toEqual([0, 255, 128, 7]);
+  const header = (options as { headers: Record<string, string> }).headers['x-qingyu-request']!;
+  expect(JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(header), char => char.charCodeAt(0)))))
+    .toEqual({ url: 'https://unit.invalid/test/a?x=1', method: 'PUT', headers: { 'x-amz-date': '1' }, hasBody: true });
+  expect(response.status).toBe(206);
+  expect(response.headers).toEqual({ etag: '"中"' });
+  expect([...new Uint8Array(response.arrayBuffer)]).toEqual([0, 255, 128, 7]);
+  vi.mocked(invoke).mockResolvedValueOnce(Array.from(reply.subarray(0, 4 + meta.length)));
+  const empty = await nativeRequest({ url: 'https://unit.invalid/test/b', method: 'GET' });
+  expect(JSON.parse(new TextDecoder().decode(Uint8Array.from(atob((vi.mocked(invoke).mock.calls[1]![2] as { headers: Record<string, string> }).headers['x-qingyu-request']!), char => char.charCodeAt(0)))).hasBody).toBe(false);
+  expect(empty.text).toBe('');
+  vi.mocked(invoke).mockResolvedValueOnce(new Uint8Array([0, 0, 0, 9, 1]).buffer);
+  await expect(nativeRequest({ url: 'https://unit.invalid/test/c', method: 'GET' })).rejects.toThrow('S3 响应格式无效');
 });
 it('redacts detailed connection errors and does not sync or mark the notebook as synced', async () => {
   persisted = config;

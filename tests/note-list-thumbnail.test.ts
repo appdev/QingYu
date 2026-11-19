@@ -47,7 +47,11 @@ it('marks shared notes with a link icon before the date, like Pinto, but not uns
   const url = 'https://share.example.com/n/a';
   book.data.notes[0].share = { status: 'shared', url };
   book.data.notes.push({ ...book.current!, id: 'off', title: '未分享', share: { status: 'unshared', url } });
-  createSidebar(() => book, { async select() { return true; }, async create() { return true; }, async save() { return true; }, reload() {}, error: vi.fn() });
+  const actions = { async select() { return true; }, async create() { return true; }, async save() { return true; }, reload() {}, error: vi.fn() };
+  const sidebar = createSidebar(() => book, actions);
+  expect(document.querySelector('.note-row-shared')).toBeNull();
+  vi.stubGlobal('__TAURI_INTERNALS__', {});
+  sidebar.refresh();
   const row = (id: string) => document.querySelector<HTMLElement>(`.note-row[data-note-id="${id}"]`)!;
   const shared = row(book.data.notes[0].id), date = shared.querySelector('.note-row-date')!;
   expect([...date.children].map(child => child.tagName.toLowerCase())).toEqual(['svg', 'time']);

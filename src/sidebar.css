@@ -2,7 +2,7 @@
 #library-sidebar { position: relative; display: flex; flex-direction: column; flex-shrink: 0; width: calc(var(--folder-width, 268px) + var(--notes-width, 330px)); min-height: 0; background: var(--sidebar); -webkit-user-select: none; user-select: none; }
 #library-sidebar input { -webkit-user-select: text; user-select: text; }
 .sidebar-panes { display: flex; flex: 1; min-height: 0; }
-.sidebar-footer { position: absolute; z-index: 2; left: 12px; bottom: max(12px, env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 24px; background: var(--paper); box-shadow: 0 2px 10px var(--shadow); }
+.sidebar-footer { position: absolute; z-index: 2; left: 12px; bottom: max(12px, var(--safe-area-bottom)); display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 24px; background: var(--paper); box-shadow: 0 2px 10px var(--shadow); }
 #app-shell[data-mac-sidebar-foot] .sidebar-footer { display: none; }
 .sidebar-footer .icon-button { width: 36px; height: 36px; border-radius: 50%; }
 .sidebar-footer .icon-button::before { inset: 0; }
@@ -81,7 +81,7 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .note-row-folder .sidebar-icon { width: 14px; height: 14px; }
 .note-row-folder > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notes-empty { padding: 24px 11px; color: var(--muted); font-size: 13px; text-align: center; }
-#document-column { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#document-column { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #document-column .titlebar { padding-left: 25px; }
 .editor-scroll-edge, .editor-scroll-wash { display: none; }
 #sidebar-button { color: var(--muted); }
@@ -99,12 +99,13 @@ html[data-platform='macos'] #app-shell[data-sidebar='list'] .notes-toolbar { pad
 #empty-note { flex: 1; display: grid; place-content: center; justify-items: center; gap: 14px; color: var(--muted); font-size: 15px; }
 #empty-note p { margin: 0; }
 #sidebar-backdrop { display: none; }
-#folder-dialog { background: var(--card); color: var(--ink); border: 1px solid var(--border); border-radius: 13px; padding: 24px; width: min(340px, calc(100vw - 32px)); box-shadow: 0 12px 40px var(--shadow-modal); }
-#folder-dialog::backdrop { background: var(--overlay); }
-#folder-dialog h2 { margin: 0 0 18px; font-size: 18px; }
-#folder-dialog label { display: block; font-size: 13px; margin-bottom: 7px; }
-#folder-name { width: 100%; height: 34px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--paper); color: var(--ink); font: inherit; }
-#folder-error { min-height: 20px; margin: 7px 0 14px; font-size: 12px; color: var(--error); }
+/* 新建文件夹用统一的提示框（style.css 的 .alert-dialog），这里只管说明文字和胶囊输入框。 */
+#folder-dialog-message { margin-bottom: 18px; }
+#folder-dialog label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#folder-name { width: 100%; height: 48px; padding: 0 18px; border: 0; border-radius: 24px; outline: none; background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--ink); font: 17px var(--font); }
+#folder-name::placeholder { color: color-mix(in srgb, var(--ink) 35%, transparent); }
+#folder-error { margin: 8px 14px 0; font-size: 13px; color: var(--error); }
+#folder-error:empty { display: none; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }
 #rename-note { display: block; width: 100%; padding: 0; margin: 0; border: 0; border-radius: 0; outline: none; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; }
 #rename-note[aria-invalid] { text-decoration: underline wavy var(--error); text-underline-offset: 4px; }
@@ -188,6 +189,20 @@ html:not([data-web], [data-mobile]) :is(.toolbar-context-menu, .toolbar-glassy-m
 .toolbar-menu-items > button > kbd:empty { display: none; }
 .toolbar-menu-items > hr { height: 1px; border: 0; margin: var(--menu-divider-margin) var(--menu-divider-inset, calc(10 * var(--menu-unit))); background: var(--line); }
 .toolbar-menu-items > button.destructive { color: var(--toolbar-context-destructive); }
+/* 手机子菜单：盖在原菜单上，原菜单变淡；选中的勾放在行首。 */
+.toolbar-context-menu:has(> .toolbar-submenu) > .toolbar-menu-items { opacity: .35; transition: opacity .18s ease-out; }
+.note-context-menu.toolbar-submenu { z-index: 1; box-shadow: 0 12px 32px -6px var(--shadow-raised), 0 2px 6px -1px var(--shadow); animation: toolbar-submenu-in .22s cubic-bezier(.2, .8, .28, 1); }
+@keyframes toolbar-submenu-in { from { opacity: 0; transform: translateY(-6px) scale(.97); } }
+@media (prefers-reduced-motion: reduce) { .note-context-menu.toolbar-submenu { animation: none; } }
+.toolbar-menu-items > .toolbar-submenu-header { font-weight: 600; }
+.toolbar-menu-items > .toolbar-submenu-header > .context-submenu-chevron { flex: none; margin-inline-start: auto; }
+.toolbar-menu-items > .context-check-leading { position: relative; padding-inline-start: calc(40 * var(--menu-unit)); }
+.toolbar-menu-items > .context-check-leading > kbd { display: none; }
+.toolbar-menu-items > .context-check-leading[aria-checked=true]::before {
+  content: ''; position: absolute; left: calc(14 * var(--menu-unit)); top: 50%; width: calc(16 * var(--menu-unit)); height: calc(16 * var(--menu-unit)); translate: 0 -50%;
+  background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 8.5 3.2 3.2L13 4.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 8.5 3.2 3.2L13 4.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
 .desktop-toolbar-menu { --menu-divider-inset: 8px; }
 .desktop-toolbar-menu .toolbar-menu-items { padding: 6px 8px; }
 .desktop-toolbar-menu :is(.toolbar-menu-items > button, glass-menu-item) { padding-inline: 8px; gap: 9px; border-radius: 5px; font-size: 13px; font-weight: 400; }
@@ -212,8 +227,8 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
   #app-shell:not([data-sidebar='note']) #sidebar-backdrop { display: block; position: fixed; z-index: 30; inset: 0; border: 0; background: var(--shadow-modal); }
   #document-column .titlebar { padding-left: 20px; padding-right: 10px; }
   html[data-platform='macos'] #document-column .titlebar { padding-left: 94px; }
-  .folder-toolbar { padding-top: env(safe-area-inset-top); height: calc(52px + env(safe-area-inset-top)); }
-  .notes-toolbar { flex-direction: column; align-items: stretch; height: auto; gap: 8px; padding: env(safe-area-inset-top) 10px 12px; }
+  .folder-toolbar { padding-top: var(--safe-area-top); height: calc(52px + var(--safe-area-top)); }
+  .notes-toolbar { flex-direction: column; align-items: stretch; height: auto; gap: 8px; padding: var(--safe-area-top) 10px 12px; }
   .notes-navigation { display: flex; align-items: center; min-height: 52px; gap: 8px; }
   .notes-navigation-title { display: block; flex: 1; text-align: center; font-size: 15px; font-weight: 600; }
   .notes-navigation .icon-button, .sidebar-footer .icon-button { width: 40px; height: 40px; padding: 10px; }
@@ -236,8 +251,12 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
 #app-shell[data-mobile-page] #folder-pane { background: var(--mobile-sidebar); }
 #app-shell[data-mobile-page] :is(#notes-pane, .notes-year) { background: var(--mobile-list); }
 #app-shell[data-mobile-page] :is(.note-row, .folder-row) { background: var(--mobile-row); }
-#app-shell[data-mobile-page] .note-row:is([aria-selected='true'], :hover) { background: var(--mobile-note-selection); }
+/* 手机单栏和 Pinto 一样不保留已打开笔记的高亮，只在按下时变灰；宽屏分栏时笔记就在旁边，才标出当前行。 */
+#app-shell[data-mobile-page] .note-row:active,
+#app-shell[data-mobile-page][data-mobile-wide] .note-row[aria-selected='true'] { background: var(--mobile-note-selection); }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) :is(.note-row[aria-selected='true'], .note-row:has(+ .note-row[aria-selected='true']))::after { background: var(--line); }
 #app-shell[data-mobile-page] #notes-pane {
+  --notes-top: calc(68px + var(--safe-area-top));
   z-index: 1; transform: translateX(100%); visibility: hidden;
   --navigation-hide-delay: var(--navigation-duration);
   box-shadow: -8px 0 20px var(--shadow);
@@ -269,7 +288,7 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
 }
 #app-shell[data-mobile-page] :is(.library-resizer, #sidebar-backdrop) { display: none; }
 #app-shell[data-mobile-page] .folder-toolbar {
-  padding-top: env(safe-area-inset-top); height: calc(52px + env(safe-area-inset-top));
+  padding-top: var(--safe-area-top); height: calc(52px + var(--safe-area-top));
   padding-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
 }
 .folder-toolbar-actions { display: flex; align-items: center; margin-inline-end: auto; }
@@ -301,6 +320,12 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
 .context-preview p { margin: 3px 0; font-size: 16px; line-height: 1.42; }
 .context-task { display: inline-grid; place-items: center; vertical-align: -1px; width: 15px; height: 15px; margin-inline-end: 8px; border: 1px solid var(--muted); border-radius: 50%; color: var(--primary-ink); font-size: 11px; }
 .context-task.checked { background: var(--brand); border-color: var(--brand); }
+/* 「全部笔记」「废纸篓」的长按预览是那一行本身：图标、名称和数量。 */
+.context-preview[data-row] { display: flex; align-items: center; gap: 16px; min-height: 52px; padding: 0 16px; border-radius: 26px; background: var(--mobile-row); }
+.context-preview[data-row] > .sidebar-icon { display: grid; width: 24px; height: 24px; color: var(--brand); }
+.context-preview[data-row] > .sidebar-icon svg { width: 100%; height: 100%; stroke-width: 1.55; }
+.context-preview[data-row] > strong { flex: 1; min-width: 0; margin: 0; font-size: 17px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-preview[data-row] > span:last-child { color: var(--muted); font-size: 16px; }
 .context-folder-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
 .context-folder-preview div { min-width: 0; border-radius: 12px; background: var(--control-fill); padding: 10px; }
 .context-folder-preview :is(strong, p) { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -311,6 +336,18 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
   width: min(100%, 300px); margin-inline: auto; padding: 10px; border-radius: 26px;
 }
 .context-sheet .note-context-menu > :is(button, hr) { grid-column: 1 / -1; }
+/* 手机长按：照 Pinto 的系统上下文菜单，预览左右各留约 20 px，菜单宽 250（以 402 宽为基准缩放），浅灰底、行高 42。 */
+html[data-mobile] .context-sheet { --context-unit: clamp(.8px, calc(100vw / 402), 1px); width: min(100%, 420px); max-width: none; padding: 10px calc(20 * var(--context-unit)); }
+html[data-mobile] .context-sheet > .context-preview { margin-bottom: calc(16 * var(--context-unit)); }
+html[data-mobile] .context-sheet > .note-context-menu {
+  width: calc(250 * var(--context-unit)); padding: calc(8 * var(--context-unit)) calc(10 * var(--context-unit));
+  border: 0; border-radius: calc(26 * var(--context-unit)); background: var(--context-menu-fill); box-shadow: 0 10px 30px var(--shadow-raised);
+}
+html[data-mobile] .context-sheet .note-context-menu > button:not(.context-quick-action) { min-height: calc(42 * var(--context-unit)); padding-block: 0; font-size: calc(17 * var(--context-unit)); }
+html[data-mobile] .context-sheet .note-context-menu > .context-quick-action { font-size: calc(13 * var(--context-unit)); }
+html[data-mobile] .context-sheet .note-context-menu > button.destructive { color: var(--toolbar-context-destructive); }
+html[data-mobile] .context-sheet .note-context-menu > button:is(:hover, :focus):not(:active) { background: transparent; }
+html[data-mobile] .context-sheet .note-context-menu > button:active:not(:disabled) { background: color-mix(in srgb, var(--ink) 8%, transparent); }
 .context-sheet .note-context-menu button { justify-content: start; gap: 12px; min-height: 42px; padding: 8px 12px; font-size: 16px; }
 .context-sheet .note-context-menu kbd { margin-inline-start: auto; }
 .context-sheet button:not([aria-haspopup]) > kbd { display: none; }
@@ -329,9 +366,9 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
   position: absolute; inset: auto 0 0 !important; max-height: 42dvh; overflow: auto; min-width: 0; border-radius: inherit;
 }
 .note-move-sheet {
-  position: fixed; inset: auto 0 max(8px, env(safe-area-inset-bottom)); margin: 0 auto; width: min(calc(100% - 16px), 540px);
+  position: fixed; inset: auto 0 max(8px, var(--safe-area-bottom)); margin: 0 auto; width: min(calc(100% - 16px), 540px);
   height: var(--sheet-drag-height, 50dvh); max-width: none;
-  max-height: calc(100dvh - max(12px, env(safe-area-inset-top))); padding: 0;
+  max-height: calc(100dvh - max(12px, var(--safe-area-top))); padding: 0;
   border: 0; border-radius: 26px; background: color-mix(in srgb, var(--settings-sheet) 80%, transparent); color: var(--ink); overflow: hidden;
   box-shadow: inset 0 0 0 1px var(--line), 0 10px 32px var(--shadow-raised);
   -webkit-backdrop-filter: blur(18px) saturate(145%); backdrop-filter: blur(18px) saturate(145%);
@@ -339,8 +376,8 @@ body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile
 }
 .note-move-sheet[open] { display: flex; flex-direction: column; }
 .note-move-sheet[data-expanded] {
-  bottom: 0; width: min(100%, 540px); height: var(--sheet-drag-height, calc(100dvh - max(12px, env(safe-area-inset-top))));
-  padding-bottom: env(safe-area-inset-bottom); border-radius: 30px 30px 0 0; background: var(--settings-sheet);
+  bottom: 0; width: min(100%, 540px); height: var(--sheet-drag-height, calc(100dvh - max(12px, var(--safe-area-top))));
+  padding-bottom: var(--safe-area-bottom); border-radius: 30px 30px 0 0; background: var(--settings-sheet);
 }
 .note-move-sheet[data-dragging] { transition: none; }
 .note-move-sheet::backdrop { background: color-mix(in srgb, var(--overlay) 65%, transparent); }
@@ -406,12 +443,6 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
   #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-name { grid-row: 1 / 3; grid-column: 2; align-self: center; }
   #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-spinner { grid-row: 1 / 3; grid-column: 3; }
   .sidebar-account-status { display: none; }
-  /* 同步时账户名下多一行灰色小字说明进度（Pinto 只在头像旁转圈，这里补一行进度文字）。 */
-  body[data-sync-busy=true] #app-shell[data-mac-sidebar-foot] #sidebar-account > .sidebar-account-name { grid-row: 1; align-self: end; line-height: 16px; }
-  body[data-sync-busy=true] #app-shell[data-mac-sidebar-foot] .sidebar-account-status {
-    display: block; grid-row: 2; grid-column: 2; align-self: start; min-width: 0; overflow: hidden;
-    font: 400 11px/14px var(--font); color: var(--muted); text-overflow: ellipsis; white-space: nowrap;
-  }
   .sidebar-account-avatar {
     display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; overflow: hidden;
     border-radius: 50%; background: var(--brand); color: var(--avatar-ink); font-size: 11.2px;
@@ -479,13 +510,14 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
   #app-shell:not([data-mobile-page]) .sidebar-footer .icon-button:hover { color: var(--ink); }
 }
 #app-shell[data-sidebar=list]:not([data-mobile-page]) .sidebar-footer {
-  position: static; flex-shrink: 0; padding: 4px 12px max(4px, env(safe-area-inset-bottom));
+  position: static; flex-shrink: 0; padding: 4px 12px max(4px, var(--safe-area-bottom));
   border-top: 1px solid var(--line); border-radius: 0; background: var(--list); box-shadow: none;
   --sync-badge-ring: var(--list);
 }
 #app-shell[data-mobile-page] .notes-toolbar {
-  flex-direction: column; align-items: stretch; height: auto; gap: 8px;
-  padding: env(safe-area-inset-top) 10px 12px;
+  position: relative; z-index: 2;
+  flex-direction: column; align-items: stretch; height: var(--notes-top); gap: 8px;
+  padding: var(--safe-area-top) 10px 12px;
 }
 #app-shell[data-mobile-page] .notes-navigation { display: flex; align-items: center; min-height: 52px; gap: 8px; }
 #app-shell[data-mobile-page] .notes-navigation-title { display: block; flex: 1; text-align: center; font-size: 15px; font-weight: 600; }
@@ -518,7 +550,7 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
   display: grid; place-items: center; width: 100%; height: 100%; overflow: hidden; border-radius: inherit; font-size: 17px; font-weight: 600;
 }
 #app-shell[data-mobile-page] .folder-toolbar .sidebar-account-avatar img { width: 100%; height: 100%; object-fit: cover; }
-#app-shell[data-mobile-page] .folder-toolbar :is(.sidebar-account-name, .sidebar-account-spinner) { display: none; }
+#app-shell[data-mobile-page] .folder-toolbar :is(.sidebar-account-name, .sidebar-account-status, .sidebar-account-spinner) { display: none; }
 #app-shell[data-mobile-page] .folder-row .sidebar-icon svg { stroke-width: 1.55; }
 [data-editing-folders] .folder-count { display: none; }
 [data-editing-folders] .folder-row:disabled { opacity: .5; cursor: default; }
@@ -528,22 +560,33 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
 #app-shell[data-mobile-page] .folder-toolbar #sync-button { display: none; }
 #app-shell[data-mobile-page] .sidebar-services { padding: 20px 32px 96px; }
 #app-shell[data-mobile-page] .sidebar-services button { font-size: 16px; }
-#app-shell[data-mobile-page] .mobile-library-tools { position: absolute; z-index: 3; inset-inline: 26px; bottom: max(20px,env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px; }
-.mobile-library-search { display: flex; align-items: center; flex: 1; min-width: 0; height: 48px; gap: 8px; padding-inline: 18px 12px; color: var(--ink); background: var(--mobile-row); border-radius: 26px; box-shadow: 0 8px 24px var(--shadow); }
-label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; stroke-width: 1.8; pointer-events: none; }
-.mobile-library-search:focus-within { outline: 1px solid var(--brand); }
+#app-shell[data-mobile-page] .mobile-library-tools { position: absolute; z-index: 3; inset-inline: 26px; bottom: max(20px,var(--safe-area-bottom)); display: flex; align-items: center; gap: 12px; }
+.mobile-library-search { display: flex; align-items: center; flex: 1; min-width: 0; height: 48px; gap: 8px; padding-inline: 18px 12px; color: var(--ink); background: var(--mobile-row); border-radius: 26px; box-shadow: 0 8px 28px 8px var(--toolbar-shadow); }
+label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; stroke-width: 1.8; pointer-events: none; }
+#app-shell:not([data-mobile-search]) .mobile-search-cancel { display: none; }
+#app-shell[data-mobile-search]:not([data-mobile-wide]) .mobile-library-tools :is(#today-note-button, #new-note-button) { display: none; }
+#app-shell[data-mobile-search]:not([data-mobile-wide]) #notes-pane .notes-toolbar { visibility: hidden; }
 #app-shell[data-mobile-page] .mobile-library-search #note-search { height: 100%; padding: 0; border: 0; font-size: 17px; box-shadow: none; }
-#app-shell[data-mobile-page] .mobile-library-tools .icon-button { width: 48px; height: 48px; padding: 12px; border-radius: 50%; background: var(--mobile-row); color: var(--ink); box-shadow: 0 8px 24px var(--shadow); font-weight: 700; font-size: 16px; }
+#app-shell[data-mobile-page] .mobile-library-tools .icon-button { width: 48px; height: 48px; padding: 12px; border-radius: 50%; background: var(--mobile-row); color: var(--ink); box-shadow: 0 8px 28px 8px var(--toolbar-shadow); font-weight: 700; font-size: 16px; }
 #app-shell[data-mobile-page] .mobile-library-tools .icon-button:disabled { opacity: .45; }
-#app-shell[data-mobile-page] .mobile-library-tools .icon-button svg { width: 24px; height: 24px; }
+/* Pinto 底栏的日历和新建图标约 20 pt，24 px 显得又大又重。 */
+#app-shell[data-mobile-page] .mobile-library-tools .icon-button svg { width: 21px; height: 21px; }
 #app-shell[data-mobile-page] .mobile-library-tools #today-note-button svg > path { stroke-width: 2.7; }
 #app-shell[data-mobile-page] .notes-toolbar { padding-bottom: 8px; }
 #app-shell[data-mobile-page] .notes-navigation { padding-inline: 6px; height: 60px; }
-#app-shell[data-mobile-page] .notes-navigation .icon-button { background: var(--mobile-row); border-radius: 50%; box-shadow: 0 8px 24px var(--shadow); }
+/* 列表页顶栏的返回和「···」与笔记详情一致：44 px 实心圆、正文色图标、无描边、中性灰阴影。 */
+#app-shell[data-mobile-page] .notes-navigation .icon-button { background: var(--toolbar-button-fill); color: var(--ink); border-radius: 50%; box-shadow: 0 8px 28px 8px var(--toolbar-shadow); }
+#app-shell[data-mobile-page] .notes-navigation #folders-back { padding: 4px; }
+#app-shell[data-mobile-page] .notes-navigation #folders-back svg { width: 36px; height: 36px; stroke-width: 1.4; }
+#app-shell[data-mobile-page] .notes-navigation #list-more-button svg { width: 24px; height: 24px; }
 #app-shell[data-mobile-page] .notes-summary { flex: 1; padding: 0; text-align: center; }
 #app-shell[data-mobile-page] #notes-heading { font-size: 17px; }
-#app-shell[data-mobile-page] #notes-count { font-size: 14px; }
-#app-shell[data-mobile-page] #notes-list { padding: 0 16px 96px; }
+#app-shell[data-mobile-page] #notes-count { font-size: 13px; }
+#app-shell[data-mobile-page] #notes-list {
+  margin-top: calc(-1 * var(--notes-top)); padding: var(--notes-top) 16px 96px; scroll-padding-top: var(--notes-top);
+  scrollbar-width: auto; scrollbar-color: auto;
+}
+#app-shell[data-mobile-page] #notes-list::-webkit-scrollbar-track:vertical { margin-top: var(--notes-top); }
 #app-shell[data-mobile-page] .notes-year { position: static; font-size: 20px; padding: 14px 0 12px; font-weight: 700; }
 #app-shell[data-mobile-page] #notes-list > section { margin-bottom: 12px; }
 #app-shell[data-mobile-page] .note-row { padding: 14px 20px; border-radius: 0; min-height: 72px; gap: 3px; }
@@ -555,16 +598,28 @@ label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; strok
 #app-shell[data-mobile-page] #notes-list:not([data-show-folders]) .note-row-folder { display: none; }
 #app-shell[data-mobile-page] .note-row-folder { font-size: 12px; margin-top: 3px; }
 #app-shell[data-mobile-page]:not([data-mobile-wide]) .actions :is(#format-button,#checklist-button,#table-button,#attach-button,#calendar-button) { display: none; }
-#app-shell[data-mobile-page]:not([data-mobile-wide]) .titlebar { height: calc(64px + env(safe-area-inset-top)); }
-#app-shell[data-mobile-page]:not([data-mobile-wide]) .titlebar > #sidebar-button { background: var(--paper); border-radius: 50%; box-shadow: 0 8px 24px var(--shadow); }
+#app-shell[data-mobile-page] #document-column .titlebar { position: relative; z-index: 3; }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) #document-column { --editor-toolbar-height: 64px; }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) #document-column .titlebar { height: calc(var(--editor-toolbar-height) + var(--safe-area-top)); }
+/* 对照 Pinto iPhone 笔记详情：左右各留 16 px，返回、撤销是 44 px 白圆，分享和更多合成 99×44 的胶囊，
+   两个图标中心相距 55 px。阴影和工具栏胶囊一样用中性灰向四周扩散，不用暖色的 --shadow。 */
+#app-shell[data-mobile-page]:not([data-mobile-wide]) #document-column .titlebar { padding-inline: 16px; }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) .titlebar > #sidebar-button {
+  padding: 4px; margin-left: 0; background: var(--toolbar-button-fill); border-radius: 50%; box-shadow: 0 8px 28px 8px var(--toolbar-shadow);
+}
+/* Pinto 的返回箭头约 21 px 高、线宽 2.1 px，原来的 20 px 图标里箭头只有 12 px 高。 */
+#app-shell[data-mobile-page]:not([data-mobile-wide]) .titlebar > #sidebar-button svg { width: 36px; height: 36px; stroke-width: 1.4; }
 #app-shell[data-mobile-page]:not([data-mobile-wide]) #note-location { visibility: hidden; }
-#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions { border: 0; }
-#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions .icon-button { width: 44px; height: 38px; }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions { border: 0; padding: 0; gap: 11px; }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions .icon-button { width: 44px; height: 44px; }
 #app-shell[data-mobile-page]:not([data-mobile-wide]) .actions .icon-button svg { width: 24px; height: 24px; }
 #app-shell[data-mobile-page] .titlebar > #note-undo {
-  width: 40px; height: 40px; margin-inline-end: 8px; border-radius: 50%;
-  background: var(--control-fill); color: var(--ink); box-shadow: 0 8px 24px var(--shadow);
+  width: 44px; height: 44px; padding: 0; margin-inline-end: 10px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--toolbar-button-fill); color: var(--ink); box-shadow: 0 8px 28px 8px var(--toolbar-shadow);
 }
+#app-shell[data-mobile-page] .titlebar > #note-undo[hidden] { display: none; }
+#app-shell[data-mobile-page] .titlebar > #note-undo svg { width: 22px; height: 22px; }
 
 .glass-toolbar, .glass-button {
   --glass-appearance: light; --gl-solid: var(--paper);
@@ -582,6 +637,10 @@ label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; strok
 /* Pinto 的工具栏阴影是中性灰并向四周扩展：下沿约 4%，两侧约 2.5%，向下约 30 px 淡出。 */
 .glass-toolbar { box-shadow: 0 8px 28px 8px color-mix(in srgb, var(--toolbar-shadow) var(--toolbar-morph-opacity, 100%), transparent); }
 :root[data-theme=dark] .glass-toolbar { --glass-control-fill: color-mix(in srgb, var(--mobile-row) 42%, transparent); }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions.glass-toolbar {
+  --glass-control-fill: var(--toolbar-button-fill);
+  --gl-solid: var(--toolbar-button-fill);
+}
 .glass-toolbar .icon-button { z-index: 1; }
 .glass-toolbar .icon-button:hover, .glass-toolbar #format-button[aria-expanded='true'] { background: transparent; }
 /* 展开菜单时图标保持正文色，由背后的灰圆表示状态；按下时出现同样的灰圆。 */
@@ -612,14 +671,29 @@ label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; strok
 @media (prefers-reduced-motion: reduce) {
   .glass-toolbar-lens { transition: none; }
 }
-.mobile-tools-group, .mobile-suggestions,
 #app-shell:not([data-mobile-page]) .notes-navigation,
-#app-shell[data-mobile-page] :is(.notes-navigation .icon-button, .mobile-library-tools #new-note-button:not(.glass-button)) {
+#app-shell[data-mobile-page] .mobile-library-tools #new-note-button:not(.glass-button) {
   border-radius: 999px;
   background: linear-gradient(160deg, var(--toolbar-glass-highlight), var(--toolbar-glass-fade)) var(--toolbar-glass-color, var(--control-fill));
   box-shadow: inset 0 0 0 1px var(--line), 0 3px 12px var(--shadow);
   -webkit-backdrop-filter: var(--toolbar-glass-filter, blur(10px) saturate(145%));
   backdrop-filter: var(--toolbar-glass-filter, blur(10px) saturate(145%));
+}
+
+:is(.notes-scroll-edge, .notes-scroll-wash) {
+  display: none; position: absolute; inset: 0 0 auto 0; z-index: 1; pointer-events: none;
+}
+.notes-scroll-wash {
+  background: linear-gradient(color-mix(in srgb, var(--notes-scroll-surface, var(--list)) 82%, transparent) calc(100% - 14px), transparent);
+}
+#app-shell[data-mobile-page] :is(.notes-scroll-edge, .notes-scroll-wash) {
+  --notes-scroll-surface: var(--mobile-list);
+  display: block; height: calc(var(--notes-top) + 14px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  #app-shell[data-mobile-page] :is(.notes-scroll-edge, .notes-scroll-wash) { display: none; }
+  #app-shell[data-mobile-page] #notes-list { margin-top: 0; padding-top: 0; scroll-padding-top: 0; }
+  #app-shell[data-mobile-page] #notes-list::-webkit-scrollbar-track:vertical { margin-top: 0; }
 }
 
 @media (min-width: 901px) {
@@ -643,11 +717,7 @@ label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; strok
      否则 WebKit 把它当成背景根，组件里的各层模糊就看不到下面的列表了。
      分组标题吸顶时，模糊区延伸到标题细线下方（--notes-edge，由 sidebar.ts 计算）。 */
   #app-shell:not([data-mobile-page]) :is(.notes-scroll-edge, .notes-scroll-wash) {
-    position: absolute; inset: 0 0 auto 0; z-index: 1; height: var(--notes-edge, var(--notes-top)); pointer-events: none;
-  }
-  /* 泛白单独一层：从顶部铺到分组标题细线，最后 14px 淡出，后面的内容只隐约可见。 */
-  #app-shell:not([data-mobile-page]) .notes-scroll-wash {
-    background: linear-gradient(color-mix(in srgb, var(--list) 82%, transparent) calc(100% - 14px), transparent);
+    display: block; height: var(--notes-edge, var(--notes-top));
   }
   #app-shell:not([data-mobile-page]) #notes-list { padding-top: calc(var(--notes-top) + 4px); scroll-padding-top: calc(var(--notes-top) + 44px); }
   #app-shell:not([data-mobile-page]) #notes-list { scrollbar-width: auto; scrollbar-color: auto; }
@@ -667,18 +737,17 @@ label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; strok
   #app-shell:not([data-mobile-page]) .note-row[data-thumbnail] { padding-right: 83px; }
 }
 
-#app-shell:not([data-mobile-page]) {
+#app-shell {
   --editor-scrollbar-mode: auto;
   @media (max-width: 900px) {
-    &:not([data-note-window]) {
+    &:not([data-note-window], [data-mobile-page]) {
       --editor-scroll-inset: 0px;
       --editor-scroll-edge-display: none;
       --editor-scrollbar-mode: initial;
     }
   }
   & #document-column:has(#workspace:not([hidden])):not(:has(.cm-panels-top)) {
-    position: relative;
-    --editor-scroll-overlap: var(--editor-scroll-inset, calc(52px + env(safe-area-inset-top)));
+    --editor-scroll-overlap: var(--editor-scroll-inset, calc(var(--editor-toolbar-height, 52px) + var(--safe-area-top)));
 
     & > #workspace { margin-top: calc(-1 * var(--editor-scroll-overlap)); }
     & #rich-editor .cm-content { padding-top: calc(var(--editor-scroll-overlap) + 15px); }
@@ -710,6 +779,9 @@ label.mobile-library-search > svg { width: 20px; height: 20px; flex: none; strok
   outline: .5px solid color-mix(in srgb, var(--ink) 12%, transparent); outline-offset: -.5px;
 }
 #app-shell[data-mobile-page] .note-row-thumbnail { right: 16px; width: 42px; height: 42px; border-radius: 9px; }
+.note-row-thumbnail.asset-image-placeholder { width: 32px; height: 32px; padding: 0; }
+#app-shell[data-mobile-page] .note-row-thumbnail.asset-image-placeholder { width: 42px; height: 42px; }
+.note-row-thumbnail.asset-image-placeholder span { display: none; }
 #app-shell[data-mobile-page] .note-row[data-thumbnail] { padding-right: 70px; }
 
 /* 窄屏布局里这一行是整条导航栏，不显示胶囊玻璃。 */

@@ -40,7 +40,7 @@ export function mountMenuBar(root: HTMLElement, host: MenuBarPanelHost) {
   const footer = root.appendChild(doc.createElement('div')); footer.className = 'menu-bar-footer';
   const button = (text: string, run: () => Promise<void>) => {
     const element = footer.appendChild(doc.createElement('button'));
-    element.type = 'button'; element.className = 'quiet-button'; element.textContent = text; element.onclick = () => { void run().catch(show); };
+    element.type = 'button'; element.className = 'button quiet-button'; element.textContent = text; element.onclick = () => { void run().catch(show); };
     return element;
   };
   button('打开轻羽', host.openMain);

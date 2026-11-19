@@ -87,6 +87,41 @@ pub struct SyncHttp {
     target: Mutex<Option<(Target, Client)>>,
 }
 
+#[cfg(target_os = "android")]
+struct LocalNetwork(tauri::plugin::PluginHandle<tauri::Wry>);
+
+#[cfg(target_os = "android")]
+pub fn local_network_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    use tauri::Manager;
+    tauri::plugin::Builder::new("local-network")
+        .setup(|app, api| {
+            app.manage(LocalNetwork(api.register_android_plugin(
+                "app.miaoyan.editor.prototype",
+                "LocalNetworkPlugin",
+            )?));
+            Ok(())
+        })
+        .build()
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub async fn sync_local_network_access(
+    window: tauri::WebviewWindow,
+    request: bool,
+) -> Result<Option<bool>, String> {
+    use tauri::Manager;
+    if window.label() != "main" {
+        return Err("不允许的同步窗口".into());
+    }
+    window
+        .state::<LocalNetwork>()
+        .0
+        .run_mobile_plugin_async("access", serde_json::json!({ "request": request }))
+        .await
+        .map_err(|_| "无法读取局域网权限".into())
+}
+
 #[tauri::command]
 pub fn sync_set_target(
     window: tauri::WebviewWindow,
@@ -140,22 +175,76 @@ pub struct Response {
     body: Vec<u8>,
 }
 
+#[derive(Deserialize)]
+struct RequestMeta {
+    url: String,
+    method: String,
+    headers: HashMap<String, String>,
+    #[serde(rename = "hasBody")]
+    has_body: bool,
+}
+
+const REQUEST_HEADER: &str = "x-qingyu-request";
+
+// 附件最大 64 MiB，走 JSON 数字数组会膨胀成几百 MB。请求体和响应体都按原始字节传，
+// 请求的地址和签名头放在 IPC 头里，响应的状态和头放在字节流开头。
+fn decode_request(request: &tauri::ipc::Request<'_>) -> Result<Request, String> {
+    use base64::Engine;
+    let meta = request
+        .headers()
+        .get(REQUEST_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or("S3 请求无效")?;
+    let meta = base64::engine::general_purpose::STANDARD
+        .decode(meta)
+        .map_err(|_| "S3 请求无效")?;
+    let meta: RequestMeta = serde_json::from_slice(&meta).map_err(|_| "S3 请求无效")?;
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        // 部分平台的 IPC 回退通道会把字节转成 JSON 数组。
+        tauri::ipc::InvokeBody::Json(value) => {
+            serde_json::from_value(value.clone()).map_err(|_| "S3 请求内容无效")?
+        }
+    };
+    Ok(Request {
+        url: meta.url,
+        method: meta.method,
+        headers: meta.headers,
+        body: meta.has_body.then_some(body),
+    })
+}
+
+fn encode_response(response: Response) -> Result<Vec<u8>, String> {
+    let meta = serde_json::to_vec(&serde_json::json!({
+        "status": response.status,
+        "headers": response.headers,
+    }))
+    .map_err(|_| "S3 响应无效")?;
+    let mut bytes = Vec::with_capacity(4 + meta.len() + response.body.len());
+    bytes.extend_from_slice(&(meta.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&meta);
+    bytes.extend_from_slice(&response.body);
+    Ok(bytes)
+}
+
 #[tauri::command]
 pub async fn sync_request(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, SyncHttp>,
-    request: Request,
-) -> Result<Response, String> {
+    request: tauri::ipc::Request<'_>,
+) -> Result<tauri::ipc::Response, String> {
     if window.label() != "main" {
         return Err("不允许的同步窗口".into());
     }
+    let request = decode_request(&request)?;
     let (target, client) = state
         .target
         .lock()
         .map_err(|_| "同步网络状态不可用")?
         .clone()
         .ok_or("请先配置同步目标")?;
-    perform(&target, &client, request).await
+    let response = perform(&target, &client, request).await?;
+    Ok(tauri::ipc::Response::new(encode_response(response)?))
 }
 
 async fn perform(target: &Target, client: &Client, request: Request) -> Result<Response, String> {
@@ -302,6 +391,20 @@ mod tests {
         assert!(Target::new("https://s3.example.test", "test", "", true).is_err());
         assert!(Target::new("https://s3.example.test", "test", "../outside", true).is_err());
         assert!(Target::new("http://127.0.0.1:9000", "test", "test-prefix", true).is_ok());
+    }
+    #[test]
+    fn frames_response_metadata_ahead_of_raw_body() {
+        let bytes = encode_response(Response {
+            status: 206,
+            headers: HashMap::from([("etag".into(), "\"中\"".into())]),
+            body: vec![0, 255, 128],
+        })
+        .unwrap();
+        let length = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        let meta: serde_json::Value = serde_json::from_slice(&bytes[4..4 + length]).unwrap();
+        assert_eq!(meta["status"], 206);
+        assert_eq!(meta["headers"]["etag"], "\"中\"");
+        assert_eq!(&bytes[4 + length..], [0, 255, 128]);
     }
     #[test]
     fn isolates_qingyu_cloud_prefix_for_virtual_hosted_buckets() {

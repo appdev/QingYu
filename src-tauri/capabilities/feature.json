@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "feature-window",
+  "description": "Allow feature windows to exchange data with their editor and close",
+  "windows": ["feature-picture-*"],
+  "permissions": ["core:event:default", "core:window:allow-close"]
+}

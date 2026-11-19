@@ -2,7 +2,7 @@ import { defaultKeymap, historyKeymap, isolateHistory } from '@codemirror/comman
 import { autocompletion, closeCompletion } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
 import { EditorSelection, EditorState, Transaction, type ChangeSet } from '@codemirror/state';
-import { EditorView, drawSelection, keymap, placeholder, tooltips } from '@codemirror/view';
+import { EditorView, ViewPlugin, drawSelection, keymap, placeholder, tooltips, type ViewUpdate } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import {
   blocksPlugin, calloutPreviewPlugin, codeBlockPreviewPlugin, footnotePreviewPlugin,
@@ -14,7 +14,7 @@ import {
 import { markdownCalloutDefinitions, markdownCalloutTypeOrder } from '@markra/shared';
 import { createCalloutIcon } from './vendor/markra/editor/codemirror/callout-preview';
 import { fencedCodeTextAt } from './vendor/markra/editor/codemirror/code-block';
-import { imageMenuTarget } from './vendor/markra/editor/codemirror/image';
+import { imageMenuTarget, type ImagePreviewPluginOptions } from './vendor/markra/editor/codemirror/image';
 import { captureActiveTableMenu, captureTableFormat, captureTableInsertion, formatActiveTableSelection, restoreCopiedTableHeader, tableContextMenu } from './vendor/markra/editor/codemirror/table';
 import { formatPanelState, formatPanelTransaction, formatTransaction, paragraphFormat, replaceSource, untickChecklist, type Format, type PanelFormat } from './format';
 import { isLocalAsset } from './server-assets';
@@ -40,7 +40,10 @@ type NoteLinkSuggestion = { title: string; target: string; detail?: string };
 type EditorOptions = {
   readOnly?: boolean;
   sortCheckedItems?: () => boolean;
-  openAsset?: (noteId: string, path: string) => void;
+  openAsset?: (noteId: string, path: string) => void | Promise<void>;
+  mountAssetImage?: (noteId: string, ...args: Parameters<NonNullable<ImagePreviewPluginOptions['mountImage']>>) => (() => void) | undefined;
+  pendingAssetSize?: (noteId: string, path: string) => Promise<number | undefined>;
+  deletePendingAsset?: (noteId: string, path: string) => Promise<void>;
   openNoteLink?: (target: string) => void;
   noteLinkExists?: (target: string) => boolean;
   describeNoteLink?: (target: string) => NoteCardPreview | undefined;
@@ -64,6 +67,30 @@ const slashFormats: Partial<Record<SlashCommand, Format>> = {
 };
 const linkStyles = { link: '显示为链接', compact: '紧凑显示', card: '显示为卡片' } as const;
 const imageSizes = { small: '小图', fit: '适应宽度', cover: '封面' } as const;
+
+// CodeMirror 画多行选区时，整行色块按 contentDOM 的外框取左右边，没扣掉正文栏左右的内边距，
+// 色块会伸出正文栏，在代码块灰底两边尤其明显。这里把选区层裁到正文栏以内。
+const selectionInColumn = ViewPlugin.fromClass(class {
+  clip = '';
+  constructor(readonly view: EditorView) { this.measure(); }
+  update(update: ViewUpdate) { if (update.geometryChanged || update.selectionSet) this.measure(); }
+  measure() {
+    this.view.requestMeasure({
+      key: this,
+      read: view => {
+        const content = view.contentDOM, rect = content.getBoundingClientRect(), style = getComputedStyle(content);
+        const origin = view.scrollDOM.getBoundingClientRect().left - view.scrollDOM.scrollLeft;
+        return { left: rect.left + parseFloat(style.paddingLeft) - origin, right: rect.right - parseFloat(style.paddingRight) - origin };
+      },
+      write: ({ left, right }, view) => {
+        const layer = view.scrollDOM.querySelector<HTMLElement>('.cm-selectionLayer');
+        const clip = `polygon(${left}px -1e7px, ${right}px -1e7px, ${right}px 1e7px, ${left}px 1e7px)`;
+        if (!layer || clip === this.clip) return;
+        layer.style.clipPath = this.clip = clip;
+      },
+    });
+  }
+});
 
 export function createRichEditor(parent: HTMLElement, onChange: (changes: ChangeSet) => void, options: EditorOptions = {}) {
   const { suggestNoteLinks, noteLinkExists, suggestionsHost } = options;
@@ -99,19 +126,32 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
       void noteHeadingOffset(doc.toString(), heading).then(position => {
         if (active && view.state.doc === doc && position !== undefined) scrollToLine(doc.lineAt(position).number);
       });
-    } else if (noteId && isLocalAsset(target)) options.openAsset?.(noteId, target);
+    } else if (noteId && isLocalAsset(target)) return Promise.resolve(options.openAsset?.(noteId, target)).catch(error => {
+      options.onError?.(String(error));
+      throw error;
+    });
     else if (external.test(target)) {
       if (onMac) void invoke('open_external_link', { target }).catch(error => options.onError?.(String(error)));
       else window.open(target, '_blank', 'noopener,noreferrer');
     }
   }
-  const images = { resolveSource: ({ source }: { source: string }) => resolveImage(source) };
+  const images: ImagePreviewPluginOptions = {
+    resolveSource: ({ source }) => resolveImage(source),
+    mountImage: (...args) => noteId ? options.mountAssetImage?.(noteId, ...args) : undefined,
+  };
   const resolveLink = (source: string) => wikiLinkTarget(source) ? source : resolveSafeLinkTarget(source);
   const links = {
     activation: 'click' as const,
     resolveTarget: ({ source }: { source: string }) => resolveLink(source),
-    open: ({ target }: { target: string }) => openLink(target),
+    open: ({ target }: { target: string }) => { void openLink(target)?.catch(() => undefined); },
   };
+  function withPlaceholderDeletion(items: MenuItem[], target: string) {
+    if (!noteId || !options.deletePendingAsset || !isLocalAsset(target)) return items;
+    const id = noteId;
+    return options.pendingAssetSize?.(id, target).then(size => size === undefined ? items : [...items, { text: '' }, {
+      text: '删除未下载附件…', destructive: true, run: () => options.deletePendingAsset!(id, target),
+    }]).catch(() => items) ?? items;
+  }
   function textMenu(editor: EditorView, visibleSelection: boolean): MenuItem[] {
     const selected = visibleSelection || editor.state.selection.ranges.some(range => !range.empty);
     return [
@@ -158,7 +198,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
   const extensions = () => [
     noteLinkExists ? wikiLinkAvailability.of(noteLinkExists) : [],
     EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly),
-    EditorView.lineWrapping, drawSelection(),
+    EditorView.lineWrapping, drawSelection(), selectionInColumn,
     // 对应 Pinto 的 titleHintText：空笔记里提示第一行就是标题，只在光标在里面时显示（样式见 rich-editor.css）。
     readOnly ? [] : placeholder('标题'),
     EditorView.contentAttributes.of({ 'aria-label': readOnly ? 'Markdown 预览' : '所见即所得编辑区', spellcheck: 'false', autocapitalize: 'off' }),
@@ -306,7 +346,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         tablePreviewPlugin({ images, links }), trailingSpacePlugin(),
       ],
     }),
-    linkCards(openLink, options.describeNoteLink, options.loadLinkPreview),
+    linkCards(openLink, options.describeNoteLink, options.loadLinkPreview, async path => noteId ? options.pendingAssetSize?.(noteId, path) : undefined),
     noteDateChips,
     editorHistoryMenuUpdates,
     headingFolds(() => documentId),
@@ -367,7 +407,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
           };
           const items: MenuItem[] = [{ text: '打开图片', run: () => {
             if (editor.state.doc !== doc) return;
-            if (noteId && options.openAsset && isLocalAsset(image.source)) openLink(image.source);
+            if (noteId && options.openAsset && isLocalAsset(image.source)) return openLink(image.source);
             else image.openPreview();
           } }];
           if (!readOnly) items.push({ text: '图片尺寸', items: Object.entries(imageSizes).map(([size, text]) => ({
@@ -377,7 +417,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
             text: '从笔记中移除', destructive: true,
             run: () => edit(image.line.from, Math.min(image.line.to + 1, doc.length)),
           });
-          void popupMenu(items, event.clientX, event.clientY, message => options.onError?.(message), () => editor.focus(), '图片操作');
+          void popupMenu(readOnly ? items : withPlaceholderDeletion(items, image.source), event.clientX, event.clientY, message => options.onError?.(message), () => editor.focus(), '图片操作');
           return true;
         }
         const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
@@ -428,7 +468,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
             text: defaultApp ? `${name}（默认）` : name,
             run: () => invoke<void>('open_external_link', { target, application }),
           }))), () => menuItems())
-          : menuItems();
+          : !readOnly && standalone?.form.kind === 'file' && target ? withPlaceholderDeletion(menuItems(), target) : menuItems();
         void popupMenu(items, event.clientX, event.clientY, message => options.onError?.(message), () => editor.focus(), canUntick ? '任务清单操作' : code ? '代码块操作' : target ? '链接操作' : '编辑操作');
         return true;
       },

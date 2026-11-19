@@ -26,54 +26,44 @@ pub async fn open_settings(app: tauri::AppHandle, section: Option<String>) -> Re
             Some("sync") => "sync",
             _ => "general",
         };
-        if let Some(window) = app.get_webview_window("settings") {
-            #[cfg(target_os = "macos")]
-            place_settings_on_main_display(&window, false)?;
-            window.show().map_err(|e| e.to_string())?;
-            window.set_focus().map_err(|e| e.to_string())?;
-            if select_section {
-                window
-                    .emit("settings-section", section)
-                    .map_err(|e| e.to_string())?;
+        let (window, created) = crate::feature_window::FeatureWindow {
+            label: "settings",
+            title: "设置",
+            route: format!("settings.html?section={section}"),
+            size: (760., 660.),
+            chrome: crate::feature_window::WindowChrome::Fixed,
+        }
+        .open(&app, |window, created| {
+            if created {
+                let handle = window.clone();
+                window.on_window_event(move |event| {
+                    if matches!(
+                        event,
+                        tauri::WindowEvent::Focused(false)
+                            | tauri::WindowEvent::CloseRequested { .. }
+                            | tauri::WindowEvent::Destroyed
+                    ) {
+                        let app = handle.app_handle().clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            crate::activation_shortcut::cancel_recording(&app)
+                        });
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = handle.hide();
+                    }
+                });
             }
-            return Ok(());
+            #[cfg(target_os = "macos")]
+            place_settings_on_main_display(window, created)?;
+            Ok(())
+        })?;
+        if !created && select_section {
+            window
+                .emit("settings-section", section)
+                .map_err(|e| e.to_string())?;
         }
-        let builder = tauri::WebviewWindowBuilder::new(
-            &app,
-            "settings",
-            tauri::WebviewUrl::App(format!("settings.html?section={section}").into()),
-        )
-        .title("设置")
-        .inner_size(760., 660.)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .center()
-        // 页面画好后由 workspace_window_ready 显示，见 file_library::workspace。
-        .visible(false);
-        #[cfg(target_os = "macos")]
-        let builder = builder
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(18., 28.));
-        let window = builder.build().map_err(|e| e.to_string())?;
-        {
-            let handle = window.clone();
-            window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::Focused(false) | tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed) {
-                    let app = handle.app_handle().clone();
-                    tauri::async_runtime::spawn_blocking(move || crate::activation_shortcut::cancel_recording(&app));
-                }
-                #[cfg(target_os = "macos")]
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = handle.hide();
-                }
-            });
-        }
-        #[cfg(target_os = "macos")]
-        place_settings_on_main_display(&window, true)?;
-        crate::file_library::workspace::show_when_ready(&app, "settings");
         Ok(())
     })
     .await
@@ -81,7 +71,10 @@ pub async fn open_settings(app: tauri::AppHandle, section: Option<String>) -> Re
 }
 
 #[cfg(target_os = "macos")]
-fn place_settings_on_main_display(window: &tauri::WebviewWindow, first_open: bool) -> Result<(), String> {
+fn place_settings_on_main_display(
+    window: &tauri::WebviewWindow,
+    first_open: bool,
+) -> Result<(), String> {
     use objc2_app_kit::NSWindow;
     use objc2_foundation::NSPoint;
 
@@ -94,9 +87,12 @@ fn place_settings_on_main_display(window: &tauri::WebviewWindow, first_open: boo
         .run_on_main_thread(move || {
             if let (Ok(main), Ok(settings)) = (main.ns_window(), settings.ns_window()) {
                 // AppKit uses logical screen coordinates, including across displays with different scales.
-                let (main, settings) = unsafe { (&*main.cast::<NSWindow>(), &*settings.cast::<NSWindow>()) };
+                let (main, settings) =
+                    unsafe { (&*main.cast::<NSWindow>(), &*settings.cast::<NSWindow>()) };
                 if let Some(screen) = main.screen() {
-                    let already_on_display = settings.screen().is_some_and(|current| current.frame() == screen.frame());
+                    let already_on_display = settings
+                        .screen()
+                        .is_some_and(|current| current.frame() == screen.frame());
                     if first_open || !already_on_display {
                         let area = screen.visibleFrame();
                         let size = settings.frame().size;
@@ -131,7 +127,9 @@ pub fn apply_preferences(
     for window in app.webview_windows().into_values() {
         window.set_theme(theme).map_err(|e| e.to_string())?;
         // 菜单栏面板始终浮在最上面，不跟「窗口置顶」走。
-        if window.label() == crate::menu_bar::PANEL { continue; }
+        if window.label() == crate::menu_bar::PANEL {
+            continue;
+        }
         window
             .set_always_on_top(always_on_top)
             .map_err(|e| e.to_string())?;
@@ -150,9 +148,18 @@ pub fn apply_preferences(
     #[cfg(target_os = "macos")]
     if let (Some(size), Some(menu)) = (note_text_size, app.menu()) {
         for entry in menu.items().map_err(|e| e.to_string())? {
-            let Some(submenu) = entry.as_submenu() else { continue };
-            for (id, enabled) in [("note-text-bigger", size < 24), ("note-text-smaller", size > 13), ("note-text-actual", size != 13)] {
-                if let Some(item) = submenu.get(id).and_then(|entry| entry.as_menuitem().cloned()) {
+            let Some(submenu) = entry.as_submenu() else {
+                continue;
+            };
+            for (id, enabled) in [
+                ("note-text-bigger", size < 24),
+                ("note-text-smaller", size > 13),
+                ("note-text-actual", size != 13),
+            ] {
+                if let Some(item) = submenu
+                    .get(id)
+                    .and_then(|entry| entry.as_menuitem().cloned())
+                {
                     item.set_enabled(enabled).map_err(|e| e.to_string())?;
                 }
             }
@@ -211,12 +218,22 @@ pub struct FormatMenuState {
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn editor_menu_state(window: tauri::WebviewWindow, undo: bool, redo: bool, sections: bool, format: FormatMenuState) -> Result<(), String> {
+pub fn editor_menu_state(
+    window: tauri::WebviewWindow,
+    undo: bool,
+    redo: bool,
+    sections: bool,
+    format: FormatMenuState,
+) -> Result<(), String> {
     if !window.is_focused().map_err(|e| e.to_string())? {
         return Ok(());
     }
-    let Some(menu) = window.app_handle().menu() else { return Ok(()) };
-    if let Some(find) = menu.get("editor-edit").and_then(|item| item.as_submenu()?.get("editor-find"))
+    let Some(menu) = window.app_handle().menu() else {
+        return Ok(());
+    };
+    if let Some(find) = menu
+        .get("editor-edit")
+        .and_then(|item| item.as_submenu()?.get("editor-find"))
         .and_then(|item| item.as_submenu().cloned())
     {
         let enabled = window.label() != "settings";
@@ -225,9 +242,15 @@ pub fn editor_menu_state(window: tauri::WebviewWindow, undo: bool, redo: bool, s
         }
     }
     for entry in menu.items().map_err(|e| e.to_string())? {
-        let Some(submenu) = entry.as_submenu() else { continue };
-        for (id, enabled) in [("editor-undo", undo), ("editor-redo", redo), ("note-sections-collapse", sections),
-            ("note-sections-expand", sections)] {
+        let Some(submenu) = entry.as_submenu() else {
+            continue;
+        };
+        for (id, enabled) in [
+            ("editor-undo", undo),
+            ("editor-redo", redo),
+            ("note-sections-collapse", sections),
+            ("note-sections-expand", sections),
+        ] {
             if let Some(item) = submenu.get(id).and_then(|item| item.as_menuitem().cloned()) {
                 if item.is_enabled().map_err(|e| e.to_string())? != enabled {
                     item.set_enabled(enabled).map_err(|e| e.to_string())?;
@@ -235,21 +258,31 @@ pub fn editor_menu_state(window: tauri::WebviewWindow, undo: bool, redo: bool, s
             }
         }
     }
-    if let Some(submenu) = menu.get("editor-format").and_then(|item| item.as_submenu().cloned()) {
+    if let Some(submenu) = menu
+        .get("editor-format")
+        .and_then(|item| item.as_submenu().cloned())
+    {
         for item in submenu.items().map_err(|e| e.to_string())? {
-            let Some(item) = item.as_menuitem() else { continue };
-            let enabled = format.editable && match item.id().as_ref() {
-                "format-tick" => format.ticked.is_some(),
-                "format-untick" => format.untick,
-                "format-move-up" => format.moves[0],
-                "format-move-down" => format.moves[1],
-                _ => true,
+            let Some(item) = item.as_menuitem() else {
+                continue;
             };
+            let enabled = format.editable
+                && match item.id().as_ref() {
+                    "format-tick" => format.ticked.is_some(),
+                    "format-untick" => format.untick,
+                    "format-move-up" => format.moves[0],
+                    "format-move-down" => format.moves[1],
+                    _ => true,
+                };
             if item.is_enabled().map_err(|e| e.to_string())? != enabled {
                 item.set_enabled(enabled).map_err(|e| e.to_string())?;
             }
             if item.id().as_ref() == "format-tick" {
-                let title = if format.ticked == Some(true) { "标为未完成" } else { "标为已完成" };
+                let title = if format.ticked == Some(true) {
+                    "标为未完成"
+                } else {
+                    "标为已完成"
+                };
                 if item.text().map_err(|e| e.to_string())? != title {
                     item.set_text(title).map_err(|e| e.to_string())?;
                 }
@@ -261,15 +294,23 @@ pub fn editor_menu_state(window: tauri::WebviewWindow, undo: bool, redo: bool, s
 
 #[cfg(desktop)]
 pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::{menu::{Menu, MenuItem}, Emitter};
+    use tauri::{
+        menu::{Menu, MenuItem},
+        Emitter,
+    };
     let menu = Menu::default(app.handle())?;
     let item = MenuItem::with_id(app, "settings", "设置…", true, Some("CmdOrCtrl+,"))?;
     #[cfg(target_os = "macos")]
     if let Some(submenu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
         submenu.insert(&item, 1)?;
         // Tauri's default app menu ends in native Quit (terminate:), which bypasses async exit work.
-        if let Some(quit) = submenu.items()?.last().and_then(|item| item.as_predefined_menuitem()) {
-            let replacement = MenuItem::with_id(app, "library-quit", "退出轻羽", true, Some("CmdOrCtrl+Q"))?;
+        if let Some(quit) = submenu
+            .items()?
+            .last()
+            .and_then(|item| item.as_predefined_menuitem())
+        {
+            let replacement =
+                MenuItem::with_id(app, "library-quit", "退出轻羽", true, Some("CmdOrCtrl+Q"))?;
             submenu.remove(quit)?;
             submenu.append(&replacement)?;
         }
@@ -284,12 +325,26 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
         }
     }
     for (_index, entry) in menu.items()?.into_iter().enumerate() {
-        let Some(submenu) = entry.as_submenu() else { continue };
+        let Some(submenu) = entry.as_submenu() else {
+            continue;
+        };
         #[cfg(target_os = "macos")]
         let replacement = if submenu.text()? == "Edit" {
             let edit = tauri::menu::Submenu::with_id(app, "editor-edit", "Edit", true)?;
-            edit.append(&MenuItem::with_id(app, "editor-undo", "撤销", false, Some("Cmd+Z"))?)?;
-            edit.append(&MenuItem::with_id(app, "editor-redo", "重做", false, Some("Cmd+Shift+Z"))?)?;
+            edit.append(&MenuItem::with_id(
+                app,
+                "editor-undo",
+                "撤销",
+                false,
+                Some("Cmd+Z"),
+            )?)?;
+            edit.append(&MenuItem::with_id(
+                app,
+                "editor-redo",
+                "重做",
+                false,
+                Some("Cmd+Shift+Z"),
+            )?)?;
             for item in submenu.items()?.into_iter().skip(2) {
                 edit.append(&item)?;
             }
@@ -306,7 +361,9 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
             menu.remove(submenu)?;
             menu.insert(&edit, _index)?;
             Some(edit)
-        } else { None };
+        } else {
+            None
+        };
         #[cfg(target_os = "macos")]
         let submenu = replacement.as_ref().unwrap_or(submenu);
         let title = match submenu.text()?.as_str() {
@@ -320,8 +377,20 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
         #[cfg(target_os = "macos")]
         if title == "显示" {
             submenu.append(&tauri::menu::PredefinedMenuItem::separator(app)?)?;
-            submenu.append(&MenuItem::with_id(app, "note-sections-collapse", "收起所有章节", false, Some("Cmd+Alt+Shift+Left"))?)?;
-            submenu.append(&MenuItem::with_id(app, "note-sections-expand", "展开所有章节", false, Some("Cmd+Alt+Shift+Right"))?)?;
+            submenu.append(&MenuItem::with_id(
+                app,
+                "note-sections-collapse",
+                "收起所有章节",
+                false,
+                Some("Cmd+Alt+Shift+Left"),
+            )?)?;
+            submenu.append(&MenuItem::with_id(
+                app,
+                "note-sections-expand",
+                "展开所有章节",
+                false,
+                Some("Cmd+Alt+Shift+Right"),
+            )?)?;
             submenu.append(&tauri::menu::PredefinedMenuItem::separator(app)?)?;
             for (id, label, key, enabled) in [
                 ("note-text-bigger", "放大正文", "CmdOrCtrl+Equal", true),
@@ -335,7 +404,9 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
             submenu.set_text(title)?;
         }
         for entry in submenu.items()? {
-            let Some(item) = entry.as_predefined_menuitem() else { continue };
+            let Some(item) = entry.as_predefined_menuitem() else {
+                continue;
+            };
             let title = match item.text()?.replace('&', "").as_str() {
                 "About" => "关于轻羽",
                 "Services" => "服务",
@@ -368,15 +439,27 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
                 format.append(&MenuItem::with_id(app, id, title, false, shortcut)?)?;
             }
         }
-        let index = menu.items()?.iter().position(|entry| entry.as_submenu()
-            .and_then(|submenu| submenu.text().ok()).is_some_and(|title| title == "显示")).unwrap_or(2);
+        let index = menu
+            .items()?
+            .iter()
+            .position(|entry| {
+                entry
+                    .as_submenu()
+                    .and_then(|submenu| submenu.text().ok())
+                    .is_some_and(|title| title == "显示")
+            })
+            .unwrap_or(2);
         menu.insert(&format, index)?;
     }
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         #[cfg(target_os = "macos")]
         if let Some(action @ ("undo" | "redo")) = event.id().as_ref().strip_prefix("editor-") {
-            if let Some(window) = app.webview_windows().into_values().find(|window| window.is_focused().unwrap_or(false)) {
+            if let Some(window) = app
+                .webview_windows()
+                .into_values()
+                .find(|window| window.is_focused().unwrap_or(false))
+            {
                 let _ = app.emit_to(window.label(), "editor-history-menu", action);
             }
             return;
@@ -387,19 +470,31 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
         }
         #[cfg(target_os = "macos")]
         if let Some(action) = event.id().as_ref().strip_prefix("note-sections-") {
-            if let Some(window) = app.webview_windows().into_values().find(|window| window.is_focused().unwrap_or(false)) {
+            if let Some(window) = app
+                .webview_windows()
+                .into_values()
+                .find(|window| window.is_focused().unwrap_or(false))
+            {
                 let _ = app.emit_to(window.label(), "note-sections", action);
             }
         }
         #[cfg(target_os = "macos")]
         if let Some(action) = event.id().as_ref().strip_prefix("note-find-") {
-            if let Some(window) = app.webview_windows().into_values().find(|window| window.is_focused().unwrap_or(false)) {
+            if let Some(window) = app
+                .webview_windows()
+                .into_values()
+                .find(|window| window.is_focused().unwrap_or(false))
+            {
                 let _ = app.emit_to(window.label(), "note-find", action);
             }
         }
         #[cfg(target_os = "macos")]
         if let Some(action) = event.id().as_ref().strip_prefix("format-") {
-            if let Some(window) = app.webview_windows().into_values().find(|window| window.is_focused().unwrap_or(false)) {
+            if let Some(window) = app
+                .webview_windows()
+                .into_values()
+                .find(|window| window.is_focused().unwrap_or(false))
+            {
                 let _ = app.emit_to(window.label(), "note-format", action);
             }
         }

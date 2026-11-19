@@ -25,6 +25,10 @@
 :is(#rich-editor, #note-history-editor) .cm-line { padding-inline: 0; min-height: 0; }
 :is(#rich-editor, #note-history-editor) .cm-cursor { border-left-color: var(--editor-ink); }
 :is(#rich-editor, #note-history-editor) :is(.cm-selectionBackground, .cm-content ::selection) { background: var(--selection); }
+/* drawSelection 把选区画在正文下面一层，代码块和行内代码的不透明底色会把它整块盖住。
+   这两处改用原生选区，它画在元素底色之上；CodeMirror 用 !important 隐藏原生选区，这里同样要加。 */
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-code-line, .cm-markra-inline-code) ::selection,
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-code-line, .cm-markra-inline-code)::selection { background: var(--selection) !important; }
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title) { font-size: calc(28em / 13); font-weight: 700; line-height: 1.18; }
 :is(#rich-editor, #note-history-editor) .cm-markra-note-title { padding-block-end: 4px; }
 /* 空笔记的「标题」提示：提示所在的那一行直接按标题排（字号、粗细、行高），光标和提示一样高、对齐；
@@ -91,6 +95,7 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[a
 .link-card-detail { font-size: .92em; color: var(--muted); }
 .link-card-source { font-size: .85em; color: var(--muted); }
 .link-card-source svg { width: 1em; height: 1em; margin-right: 4px; vertical-align: -.13em; }
+.link-card-download { margin-inline-start: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 :is(#rich-editor, #note-history-editor) .cm-markra-blockquote {
   color: var(--quote-text); border-left: 0; padding-left: 16px; position: relative;
 }
@@ -148,7 +153,7 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[a
 .editor-change-receipt button { padding: 4px 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
 .editor-change-receipt button::before { content: ''; display: inline-block; height: 14px; margin-inline-end: 8px; border-inline-start: 1px solid currentColor; opacity: .35; vertical-align: middle; }
 .editor-change-receipt button:hover { text-decoration: underline; }
-html[data-mobile] .editor-change-receipt { bottom: max(64px, env(safe-area-inset-bottom)); min-height: 44px; }
+html[data-mobile] .editor-change-receipt { bottom: max(64px, var(--safe-area-bottom)); min-height: 44px; }
 @media (prefers-reduced-motion: reduce) {
   :is(#rich-editor, #note-history-editor) :is(.cm-change-tint, .cm-change-line) { animation: none; }
 }
@@ -199,6 +204,22 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-image-line 
 :is(#rich-editor, #note-history-editor) .cm-markra-image-line .cm-markra-image[data-image-size=cover] {
   width: 100%; height: min(max(38.46cqi, 120px), 45dvh); max-height: none; object-fit: cover;
 }
+.asset-image-placeholder {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  box-sizing: border-box; width: min(320px, 70vw); max-width: 100%; height: 120px;
+  padding: 8px; border: 0; border-radius: 8px; background: var(--line); color: var(--ink);
+  font: inherit; font-size: 12px; vertical-align: middle;
+}
+button.asset-image-placeholder { cursor: pointer; }
+button.asset-image-placeholder:active { opacity: .6; }
+html[data-mobile] .asset-image-placeholder { height: 96px; }
+.asset-image-placeholder[style*="aspect-ratio"] { height: auto; }
+.asset-image-placeholder svg { flex: none; width: 20px; height: 20px; }
+.asset-image-placeholder[aria-busy=true] svg { animation: asset-download-spin .85s linear infinite; }
+@keyframes asset-download-spin { to { rotate: 1turn; } }
+@media (prefers-reduced-motion: reduce) { .asset-image-placeholder[aria-busy=true] svg { animation: none; } }
+img[hidden]:is(.cm-markra-image, .note-row-thumbnail, .markra-media-viewer-image) { display: none; }
+:is(#rich-editor, #note-history-editor) .markra-image-frame:has(> .asset-image-placeholder)::after { border-radius: 8px; }
 /* Pinto 的图片上没有放大按钮：双击或右键「打开图片」打开。按钮保留给右键菜单调用。 */
 :is(#rich-editor, #note-history-editor) .markra-image-viewer-button { display: none; }
 /* 对照 Pinto 的 ImageEmbed：1px 细描边，悬停压暗 6%；单击选中后盖一层 35% 的文字选中色和 2px 强调色描边。 */
@@ -215,16 +236,31 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-image-line 
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-table-wrap:has(> .markra-table-scroll) {
   --table-after-gap: 26.5px;
+  --table-pad-top: 14.5px;
+  --table-pad-end: 22px;
+  --table-pad-start: 0px;
   display: inline-block; vertical-align: top; width: max-content; max-width: 100%; box-sizing: border-box;
-  margin: 0; padding: 14.5px 22px var(--table-after-gap) 0;
+  margin: 0; padding: var(--table-pad-top) var(--table-pad-end) var(--table-after-gap) var(--table-pad-start);
 }
+/* 表格左右边缘的光标：和系统备忘录一样，在表格外侧画一条与表格等高的竖线并闪烁。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-table-wrap:has(> .markra-table-scroll[data-table-edge-caret]:not([data-table-armed]))::after {
+  content: ''; position: absolute; z-index: 2; pointer-events: none;
+  inset-block: var(--table-pad-top) var(--table-after-gap);
+  width: 2px; border-radius: 1px;
+  background: var(--editor-ink);
+  animation: table-edge-caret-blink 1.2s steps(1) infinite;
+}
+:is(#rich-editor, #note-history-editor) .cm-markra-table-wrap:has(> .markra-table-scroll[data-table-edge-caret=right])::after { inset-inline-end: calc(var(--table-pad-end) - 5px); }
+:is(#rich-editor, #note-history-editor) .cm-markra-table-wrap:has(> .markra-table-scroll[data-table-edge-caret=left])::after { inset-inline-start: calc(var(--table-pad-start) - 5px); }
+@keyframes table-edge-caret-blink { 50% { opacity: 0; } }
 :is(#rich-editor, #note-history-editor) .cm-markra-table-separator {
   block-size: 0; line-height: 0;
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-table-wrap .markra-table-scroll {
   border: 1px solid var(--border); border-radius: 10px;
 }
-:is(#rich-editor, #note-history-editor) .cm-markra-table-wrap .markra-table-scroll[data-table-edge-caret=right] { border-inline-end-color: var(--editor-ink); }
+/* 表格后按一次退格：整张表标成选中，再按一次才删除。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-table-wrap .markra-table-scroll[data-table-armed] { border-color: var(--brand); background-color: var(--selection); }
 :is(#rich-editor, #note-history-editor) .cm-focused:has([data-table-edge-caret]) .cm-cursor { visibility: hidden; }
 :is(#rich-editor, #note-history-editor) .cm-focused:has([data-table-edge-caret]) .cm-content { caret-color: transparent; }
 :is(#rich-editor, #note-history-editor) .cm-markra-table {
@@ -358,7 +394,7 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-image-line 
   --task-checkbox-size: 1.41em;
   --task-checkbox-gap: .7em;
   & .cm-markra-table :is(th, td) { height: max(44px, 2.59em); }
-  & .cm-markra-table-wrap:has(> .markra-table-scroll) { padding: 30px 0 var(--table-after-gap) 16px; }
+  & .cm-markra-table-wrap:has(> .markra-table-scroll) { --table-pad-top: 30px; --table-pad-end: 0px; --table-pad-start: 16px; }
   & .cm-line:not(.cm-markra-table-before-fenced-code) .qingyu-table-controls:is(:focus-within, [data-table-line-pick]):not(:has(> .markra-table-edge-input)) { --table-after-gap: 48px; }
   & .qingyu-table-controls .qingyu-table-add-column { display: none; }
   & .qingyu-table-controls :is(.qingyu-table-add-row, .qingyu-table-handle) {
@@ -491,7 +527,7 @@ svg.markra-media-viewer-media { background: var(--paper); padding: 16px; box-siz
 }
 .markra-media-viewer-toolbar svg { width: 17px; height: 17px; stroke-width: 1.8; }
 .markra-media-viewer-title {
-  position: relative; z-index: 1; max-width: 220px; padding: 0 8px 0 10px; overflow: hidden;
+  position: relative; z-index: 1; flex: 0 1 auto; min-width: 0; max-width: 220px; padding: 0 8px 0 10px; overflow: hidden;
   font: 600 13px/1 var(--font); text-overflow: ellipsis; white-space: nowrap;
 }
 .markra-media-viewer-separator { position: relative; z-index: 1; flex: none; width: 1px; height: 18px; margin: 0 6px; background: color-mix(in srgb, var(--mode-light) 18%, transparent); }
@@ -507,8 +543,16 @@ svg.markra-media-viewer-media { background: var(--paper); padding: 16px; box-siz
   .markra-media-viewer-dialog, .markra-media-viewer-media, .markra-media-viewer-toolbar { animation: none; }
   .markra-media-viewer-canvas { transition: none; }
 }
-html[data-mobile] .markra-media-viewer-content { padding: max(16px, env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom)); }
-html[data-mobile] .markra-media-viewer-media { max-width: calc(100vw - 32px); max-height: calc(100dvh - 140px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
-html[data-mobile] .markra-media-viewer-toolbar { bottom: max(20px, env(safe-area-inset-bottom)); height: 48px; }
+html[data-mobile] .markra-media-viewer-content { padding: calc(max(16px, var(--safe-area-top)) + 40px) 16px calc(96px + var(--safe-area-bottom)); }
+html[data-mobile] .markra-media-viewer-media { max-width: calc(100vw - 32px); max-height: calc(100dvh - 180px - var(--safe-area-top) - var(--safe-area-bottom)); }
+/* 手机上图片名称在顶部正中，白字一行，太长省略。 */
+.markra-media-viewer-title.markra-media-viewer-title-top {
+  position: absolute; top: calc(max(12px, var(--safe-area-top)) + 12px); left: 50%; translate: -50% 0;
+  max-width: calc(100vw - 48px); padding: 0; color: var(--viewer-ink); font: 600 15px/1.3 var(--font); text-align: center;
+  text-shadow: 0 1px 8px color-mix(in srgb, var(--mode-dark) 45%, transparent); pointer-events: none;
+}
+html[data-mobile] .markra-media-viewer-toolbar { bottom: max(20px, var(--safe-area-bottom)); height: 48px; }
 html[data-mobile] .markra-media-viewer-toolbar button { width: 40px; height: 40px; }
-html[data-mobile] .markra-media-viewer-fullscreen-button { display: none; }
+/* 手机上用双指缩放、双击放大还原，缩放按钮、百分比、还原和全屏整组不显示，工具条只留切换、名称和关闭。 */
+html[data-mobile] :is(.markra-media-viewer-zoom-out-button, .markra-media-viewer-zoom-value, .markra-media-viewer-zoom-in-button,
+  .markra-media-viewer-reset-button, .markra-media-viewer-fullscreen-button, .markra-media-viewer-zoom-separator) { display: none; }

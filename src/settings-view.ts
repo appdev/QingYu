@@ -7,7 +7,7 @@ import { settingsSelect } from './settings-select';
 import { glassToggle } from './glass-controls';
 import { mobile, native, noteTextSizes, preferences, syncIntervals, type Preferences } from './preferences';
 import type { SyncClient } from './sync-session';
-import { hasS3Connection, s3Defaults, syncMode, type S3Settings, type SyncMode } from './sync-store';
+import { defaultAssetDownload, hasS3Connection, s3Defaults, syncMode, type S3Settings, type SyncMode } from './sync-store';
 import './settings.css';
 import { themeNames, themePalette, type Theme } from './themes';
 import { isServerLibrary } from './server-library';
@@ -31,21 +31,26 @@ const settingsParents: Partial<Record<SettingsSection, SettingsSection>> = {
 };
 const nestedSections = Object.keys(settingsParents) as SettingsSection[];
 const backButton = (label: string, forward = false) => `<button type="button" class="settings-${forward ? 'forward' : 'back'}" aria-label="${label}"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${forward ? 'm9 5 7 7-7 7' : 'm15 5-7 7 7 7'}"/></svg></button>`;
-export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => void, openSection?: (section: SettingsSection) => void,
+export function mountSettings(root: HTMLElement, sync: SyncClient | undefined, close: () => void, openSection?: (section: SettingsSection) => void,
   loadDaily: () => DailyNoteChoices | Promise<DailyNoteChoices> = native && !mobile ? libraryDailyChoices : () => ({ folders: [] })) {
   const serverLibrary = isServerLibrary();
   const clientAccount = native && !serverLibrary;
-  const visibleSections = sections.filter(([key]) => !mobile
-    || !['ai', 'shortcuts', ...(clientAccount ? [] : ['personal', 'signIn'])].includes(key));
+  const visibleSections = sections.filter(([key]) => {
+    if (key === 'account') return clientAccount || (mobile && sync && !serverLibrary);
+    if (key === 'personal' || key === 'signIn') return clientAccount;
+    if (key === 'ai') return !mobile && (native || serverLibrary);
+    return key !== 'shortcuts' || !mobile;
+  });
   const accountName = serverLibrary ? '服务器笔记库' : '本地账户';
   const sectionTitle = (key: SettingsSection | undefined) => key === 'account' && clientAccount ? '个人资料'
-      : mobile && key === 'help' ? '关于轻羽' : visibleSections.find(([section]) => section === key)?.[1] ?? '';
+      : mobile && key === 'help' ? '关于轻羽'
+      : key === 'storage' && (!sync || serverLibrary) ? '存储' : visibleSections.find(([section]) => section === key)?.[1] ?? '';
   root.classList.add('settings');
   root.classList.toggle('settings-mobile', mobile);
   root.removeAttribute('data-settings-detail');
   root.innerHTML = mobile ? `<main class="settings-stack">
     <div class="settings-home">
-      <header class="settings-header"><button type="button" class="settings-done" aria-label="关闭设置">完成</button></header>
+      <header class="settings-header"><button type="button" class="button floating-button settings-done" aria-label="关闭设置">完成</button></header>
       <div class="settings-pages">
         <h1 class="settings-title" tabindex="-1" autofocus>设置</h1>
         <nav class="settings-categories" aria-label="设置分类"><div class="settings-category-group"></div></nav>
@@ -122,7 +127,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   let selected: SettingsSection | undefined;
   function select(section?: SettingsSection, focus = false) {
     clearSearch();
-    if (section === 'sync') { if (serverLibrary) section = 'storage'; }
+    if (section === 'sync') { if (!sync || serverLibrary) section = 'storage'; }
     else if (!section || !pages.has(section)) section = mobile ? undefined : 'general';
     if (!mobile && section && section !== trail[position]) {
       trail.splice(position + 1, trail.length, section);
@@ -339,25 +344,14 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     syncAccount = access;
     refreshSyncControls?.();
   });
-  else if (!mobile) {
-    const identity = document.createElement('div'); identity.className = 'settings-identity';
-    identity.innerHTML = `<span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span><strong>本地账户</strong><span>账户服务尚未接入</span>`;
-    pages.get('account')!.append(identity);
-    referenceRow('account', '个人信息', '', '', 'personal');
-    referenceRow('account', '登录与安全', '', '', 'signIn');
-    heading('account', '设备'); referenceRow('account', '本机', '设备管理尚未接入');
-    referenceRow('account', '退出登录…', '', '退出登录…');
-    referenceRow('personal', '姓名', '', '—'); referenceRow('personal', '电子邮箱', '', '—'); hint('personal');
-    referenceRow('signIn', '密码', '', '更改…'); referenceRow('signIn', '删除账户', '', '删除…'); hint('signIn');
-  }
-  if (!clientAccount) referenceRow('account', sectionTitle('storage'), serverLibrary ? '服务器笔记库' : mobile ? '本机笔记库与 S3 同步' : 'S3 同步设置', '', serverLibrary ? 'storage' : 'sync');
-  if (mobile) versionRow('general', '轻羽');
+  else if (pages.has('account')) referenceRow('account', sectionTitle('storage'), '本机笔记库与 S3 同步', '', 'sync');
+  if (mobile || !native) versionRow('general', '轻羽');
   else {
     referenceRow('general', '轻羽', '软件更新', '检查更新…');
     referenceRow('general', '更新内容', '', '↗');
     const mac = /Mac/.test(navigator.platform);
     heading('general', mac ? '此 Mac' : '此电脑');
-    if (native) setting('general', 'menuBar', mac ? '在菜单栏显示' : '在系统托盘显示', '关闭窗口后仍可新建或查找笔记。', undefined, true);
+    setting('general', 'menuBar', mac ? '在菜单栏显示' : '在系统托盘显示', '关闭窗口后仍可新建或查找笔记。', undefined, true);
     referenceSwitch('general', '登录时打开'); hint('general');
   }
   heading('general', '任务清单'); setting('general', 'sortCheckedItems', '已完成的项目移到底部', '');
@@ -451,9 +445,11 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     for (const [title, key] of [['粗体', '⌘B'], ['斜体', '⌘I'], ['二级标题', '⇧⌘H'], ['任务清单', '⇧⌘L'], ['插入日期', '⇧⌘D'], ['跳转到笔记／插入链接', '⌘K'], ['上移项目', '⌃⌘↑'], ['下移项目', '⌃⌘↓']]) {
       const value = document.createElement('kbd'); value.textContent = key; row('shortcuts', title, '', value).classList.add('settings-reference-row');
     }
-    referenceRow('help', '联系我们', '', '↗'); referenceRow('help', '常见问题', '', '↗');
+    if (native) {
+      referenceRow('help', '联系我们', '', '↗'); referenceRow('help', '常见问题', '', '↗');
+      hint('help', '帮助页面尚未接入。');
+    }
     referenceRow('help', '键盘快捷键', '', '', 'shortcuts');
-    hint('help', '帮助页面尚未接入。');
   }
   if (serverLibrary) row('storage', '笔记位置', '服务器挂载的笔记目录；当前浏览器只保留界面设置和未提交草稿', document.createElement('span'));
   if (native && !mobile) {
@@ -570,7 +566,8 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
   let loaded = Promise.resolve();
   const storagePage = pages.get('storage')!;
   let syncPanel: HTMLElement | undefined;
-  if (!serverLibrary) {
+  if (sync && !serverLibrary) {
+    const client = sync;
     storagePage.classList.add('settings-storage-page');
     const mode = document.createElement('select'); mode.name = 'storageMode';
     const modeStatus = document.createElement('p'); modeStatus.className = 'settings-sync-status';
@@ -648,6 +645,34 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       errorText.textContent = failed ? message : '';
       copyError.textContent = '复制错误信息';
     }
+    if (native && /Android/i.test(navigator.userAgent)) {
+      const permission = (request: boolean) => invoke<boolean | null>('sync_local_network_access', { request });
+      void permission(false).then(granted => {
+        if (disposed || granted === null) return;
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'button secondary-button';
+        const access = row('storage', '局域网访问', '连接局域网内的 S3 服务时需要系统授权。', button);
+        form.append(access);
+        const update = (allowed: boolean) => {
+          button.disabled = allowed;
+          button.textContent = allowed ? '已授权' : '授权';
+          button.ariaLabel = allowed ? '已授权局域网访问' : '授权局域网访问';
+        };
+        update(granted);
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            const allowed = await permission(true) === true;
+            if (disposed) return;
+            update(allowed);
+            showStatus(allowed ? '' : '未获局域网权限，可在系统设置中授权轻羽。', !allowed);
+          } catch (error) {
+            if (disposed) return;
+            update(false);
+            syncError(error);
+          }
+        };
+      }).catch(() => {});
+    }
     let saving = Promise.resolve(), revision = 0, profileLoaded = false, syncing = false, submitting = false, switching = false;
     let activeMode: SyncMode = clientAccount ? 'cloud' : 's3';
     let lastSyncedAt: number | undefined;
@@ -701,7 +726,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
         });
         if (!confirmed || disposed) return;
         await saving;
-        await sync.save(profile);
+        await client.save(profile);
         if (disposed) return;
         activeMode = next;
         lastSyncedAt = undefined;
@@ -724,7 +749,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       if (!profileLoaded || switching || activeMode !== 's3') return;
       const current = ++revision, next = values();
       showStatus('正在保存…'); updateSyncControls();
-      saving = sync.save(next);
+      saving = client.save(next);
       void saving.then(() => { if (!disposed && revision === current) showStatus(''); }).catch(error => { if (!disposed && revision === current) syncError(error); });
     }
     form.addEventListener('input', event => { if (event.target instanceof HTMLInputElement) saveFields(); });
@@ -737,12 +762,12 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
       try {
         await saving;
         const settings = values();
-        if (cloud) await sync.run(settings, accountId);
+        if (cloud) await client.run(settings, accountId);
         else {
           const missing = inputs.find(input => !input.value.trim());
           if (missing) { missing.focus(); throw new Error(`请填写${missing.labels?.[0]?.querySelector('span')?.textContent ?? '完整连接配置'}`); }
           if (!form.checkValidity()) throw new Error('请检查服务地址、超时和并发请求数的格式与范围');
-          if (testConnection) await sync.test(settings); else await sync.run(settings);
+          if (testConnection) await client.test(settings); else await client.run(settings);
         }
       }
       catch (e) { syncError(e); }
@@ -752,7 +777,7 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     test.onclick = () => void run(true);
     form.onsubmit = event => { event.preventDefault(); void run(); };
     updateSyncControls();
-    unsubscribeSync = sync.subscribe(value => {
+    unsubscribeSync = client.subscribe(value => {
       const finished = syncing && !value.busy;
       syncing = value.busy;
       lastSyncedAt = value.lastSyncedAt;
@@ -765,11 +790,11 @@ export function mountSettings(root: HTMLElement, sync: SyncClient, close: () => 
     let pendingProfile: Promise<void> | undefined;
     refreshSyncProfile = () => {
       if (profileLoaded) return loaded;
-      return pendingProfile ??= sync.load().then(config => {
+      return pendingProfile ??= client.load().then(config => {
         if (disposed) return;
         profileLoaded = true;
-        for (const input of inputs) input.value = String(config[input.name as keyof S3Settings] ?? s3Defaults[input.name as keyof typeof s3Defaults]
-          ?? (input.name === 'assetDownload' ? (mobile ? 'on-demand' : 'all') : ''));
+        for (const input of inputs) input.value = String(config[input.name as keyof S3Settings]
+          ?? (input.name === 'assetDownload' ? defaultAssetDownload(mobile) : s3Defaults[input.name as keyof typeof s3Defaults]) ?? '');
         if (clientAccount) activeMode = syncMode(config);
         modeStatus.textContent = '';
         updateSyncControls();

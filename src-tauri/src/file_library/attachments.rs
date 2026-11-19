@@ -199,19 +199,25 @@ pub fn response(
             .ok_or("附件路径缺失")?
             .1
             .into_owned();
-        with_store(app, label, |store| {
-            match resolve(store, id, &value) {
-                Ok(path) => Ok(Some((mime(&path), read(&path)?))),
-                Err(reason) if store.data.sync.as_ref().is_some_and(|sync| sync["version"].as_u64() == Some(2)) => {
-                    let relative = relative_path(store, id, &value)?;
-                    if !checked(&store.root, &relative)?.exists() && assets::placeholders::load(store)?.contains_key(&relative) {
-                        Ok(None)
-                    } else {
-                        Err(reason)
-                    }
+        with_store(app, label, |store| match resolve(store, id, &value) {
+            Ok(path) => Ok(Some((mime(&path), read(&path)?))),
+            Err(reason)
+                if store
+                    .data
+                    .sync
+                    .as_ref()
+                    .is_some_and(|sync| sync["version"].as_u64() == Some(2)) =>
+            {
+                let relative = relative_path(store, id, &value)?;
+                if !checked(&store.root, &relative)?.exists()
+                    && assets::placeholders::load(store)?.contains_key(&relative)
+                {
+                    Ok(None)
+                } else {
+                    Err(reason)
                 }
-                Err(reason) => Err(reason),
             }
+            Err(reason) => Err(reason),
         })
     })();
     match result {
@@ -252,10 +258,17 @@ pub async fn attachment_import(
 
 #[cfg(feature = "app")]
 #[tauri::command]
-pub async fn note_picture_asset(window: tauri::WebviewWindow, note_id: String, path: String) -> Result<tauri::ipc::Response> {
+pub async fn note_picture_asset(
+    window: tauri::WebviewWindow,
+    note_id: String,
+    path: String,
+) -> Result<tauri::ipc::Response> {
     with_store(window.app_handle(), window.label(), |store| {
         let file = resolve(store, &note_id, &path)?;
-        if !matches!(mime(&file), "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/bmp") {
+        if !matches!(
+            mime(&file),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/bmp"
+        ) {
             return Err("无法将此附件作为图片导出".into());
         }
         Ok(tauri::ipc::Response::new(read(&file)?))

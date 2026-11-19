@@ -1,10 +1,28 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Notebook } from './notebook';
+import { SyncSnapshotChanged, type Notebook } from './notebook';
 import { syncNotebook } from './sync';
-import { createStore, normalizeSettings, s3Defaults, syncMode, testS3Connection, validateS3Options, type S3Connection, type S3Settings } from './sync-store';
-import { setRequestHandler } from './vendor/mdsync/core';
+import { createStore, defaultAssetDownload, normalizeSettings, s3Defaults, syncMode, testS3Connection, validateS3Options, type S3Connection, type S3Settings } from './sync-store';
+import { setRequestHandler, type Request, type Response } from './vendor/mdsync/core';
 import { createAssetFetcher } from './asset-fetch';
-import { mobile } from './preferences';
+
+const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
+
+// 请求体和响应体都按原始字节走 IPC。地址、方法和签名头编码后放进 IPC 头；
+// 响应开头 4 字节是状态和响应头 JSON 的长度，后面跟 JSON，再后面是正文。
+export async function nativeRequest(request: Request): Promise<Response> {
+  const meta = textEncoder.encode(JSON.stringify({ url: request.url, method: request.method, headers: request.headers ?? {}, hasBody: Boolean(request.body) }));
+  let header = '';
+  for (let offset = 0; offset < meta.length; offset += 8192) header += String.fromCharCode(...meta.subarray(offset, offset + 8192));
+  const body = request.body ? new Uint8Array(request.body) : new Uint8Array(0);
+  const reply = new Uint8Array(await invoke<ArrayBuffer | number[]>('sync_request', body, { headers: { 'x-qingyu-request': btoa(header) } }));
+  const length = reply.length >= 4 ? new DataView(reply.buffer, reply.byteOffset, reply.byteLength).getUint32(0) : -1;
+  if (length < 0 || 4 + length > reply.length) throw new Error('S3 响应格式无效');
+  const { status, headers } = JSON.parse(textDecoder.decode(reply.subarray(4, 4 + length))) as Pick<Response, 'status' | 'headers'>;
+  const bytes = reply.slice(4 + length);
+  let text: string | undefined;
+  // 大附件的正文不需要转成字符串，只有真正读取 text 时才解码。
+  return { status, headers, arrayBuffer: bytes.buffer, get text() { return text ??= textDecoder.decode(bytes); }, json: {} };
+}
 
 export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string; mode?: 'cloud' | 's3' };
 export interface SyncClient {
@@ -36,7 +54,7 @@ function profile(value: S3Settings): S3Settings {
   for (const key of ['timeout', 'tlsVerify', 'forcePathStyle', 'concurrency', 'assetDownload'] as const) if (value[key] !== undefined) Object.assign(config, { [key]: value[key] });
   return config;
 }
-export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>): SyncClient & {
+export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>, mobile = false): SyncClient & {
   fetchAsset(path: string): Promise<string | undefined>;
 } {
   let config: S3Settings = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'miaoyan/v1', accessKeyId: '', secretAccessKey: '' };
@@ -78,13 +96,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     const next = normalizeSettings(connection);
     await invoke('sync_set_target', { endpoint: next.endpoint, bucket: next.bucket, prefix: next.prefix, forcePathStyle: next.forcePathStyle,
       timeout: connection.timeout ?? s3Defaults.timeout, tlsVerify: connection.tlsVerify ?? s3Defaults.tlsVerify });
-    setRequestHandler(async request => {
-      const reply = await invoke<{ status: number; headers: Record<string, string>; body: number[] }>('sync_request', {
-        request: { url: request.url, method: request.method, headers: request.headers ?? {}, body: request.body ? Array.from(new Uint8Array(request.body)) : null },
-      });
-      const bytes = new Uint8Array(reply.body);
-      return { status: reply.status, headers: reply.headers, arrayBuffer: bytes.buffer, text: new TextDecoder().decode(bytes), json: {} };
-    });
+    setRequestHandler(nativeRequest);
     return next;
   }
   function redact(error: unknown, connection: S3Connection) {
@@ -106,7 +118,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     return storage;
   });
   return {
-    fetchAsset: assets.fetchAsset,
+    fetchAsset: path => assets.fetchAsset(path).catch(error => { throw new Error(redact(error, config)); }),
     load: async () => { await writes.catch(() => {}); await load(); return { ...config }; },
     save,
     flush: () => writes,
@@ -146,7 +158,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
         } else {
           connection = profile(settings);
           await save({ ...connection, mode: undefined });
-          connection = { ...connection, assetDownload: connection.assetDownload ?? (mobile ? 'on-demand' : 'all') };
+          connection = { ...connection, assetDownload: connection.assetDownload ?? defaultAssetDownload(mobile) };
         }
         const next = await connect(connection);
         publish({ message: '正在连接 S3…' });
@@ -154,10 +166,18 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
           await invoke('account_check_sync', { accountId });
           return prepare();
         } : prepare;
-        const result = await syncNotebook(book, { ...next, ...(connection.assetDownload ? { assetDownload: connection.assetDownload } : {}) },
+        const synchronize = () => syncNotebook(book, { ...next, ...(connection.assetDownload ? { assetDownload: connection.assetDownload } : {}) },
           message => publish({ message }), beforeCommit);
+        const result = await synchronize().catch(reason => {
+          if (!(reason instanceof SyncSnapshotChanged)) throw reason;
+          return synchronize();
+        });
         refresh(); publish({ lastSyncedAt: Date.now(), lastSyncedAccount: accountId, message: `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
       } catch (error) {
+        if (error instanceof SyncSnapshotChanged) {
+          publish({ message: error.message });
+          throw error;
+        }
         let message = redact(error, connection);
         if (accountId && Object.hasOwn(cloudErrors, message)) message = cloudErrors[message];
         publish({ error: true, message });

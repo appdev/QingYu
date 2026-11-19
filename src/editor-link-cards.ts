@@ -5,6 +5,7 @@ import { createLucideIcon } from '@markra/shared';
 import { FileText, Folder, Globe, NotebookText, Paperclip } from 'lucide';
 import { readWikiLink } from './vendor/markra/editor/codemirror/wiki-link';
 import type { webLinkPreview, webLinkThumbnail } from './web-link-preview';
+import { formatAssetSize } from './asset-download-view';
 
 type LinkStyle = 'link' | 'compact' | 'card';
 type LinkForm = { kind: 'web' | 'note' | 'file'; style: LinkStyle; href: string; label: string; target: string; markup: string; indent: string };
@@ -67,7 +68,8 @@ export function linkStyleSource(form: LinkForm, style: LinkStyle, webTitle?: str
 
 export const refreshLinkCards = StateEffect.define<null>();
 
-export function linkCards(open: (href: string) => void, describeNote?: (target: string) => NoteCardPreview | undefined, web?: LinkPreviewLoader) {
+export function linkCards(open: (href: string) => void | Promise<void>, describeNote?: (target: string) => NoteCardPreview | undefined,
+  web?: LinkPreviewLoader, pendingAssetSize?: (path: string) => Promise<number | undefined>) {
   class LinkCardWidget extends WidgetType {
     constructor(readonly form: LinkForm, readonly about: NoteCardPreview | undefined, readonly selected: boolean) { super(); }
 
@@ -88,7 +90,15 @@ export function linkCards(open: (href: string) => void, describeNote?: (target: 
       link.classList.toggle('qingyu-link-card-selected', this.selected);
       link.setAttribute('href', href);
       link.contentEditable = 'false';
-      link.onclick = event => { event.preventDefault(); open(href); };
+      let download: HTMLSpanElement | undefined;
+      link.onclick = async event => {
+        event.preventDefault();
+        if (link.ariaBusy === 'true') return;
+        if (download) { link.ariaBusy = 'true'; download.textContent = '正在下载…'; }
+        try { await open(href); download?.remove(); download = undefined; }
+        catch { if (download) download.textContent = '点按重试'; }
+        finally { link.removeAttribute('aria-busy'); }
+      };
       const thumbnail = document.createElement('span');
       thumbnail.className = 'link-card-thumbnail';
       thumbnail.append(createLucideIcon(document, kind === 'web' ? Globe : kind === 'note' ? NotebookText : FileText, 'link-card-mark'));
@@ -108,6 +118,13 @@ export function linkCards(open: (href: string) => void, describeNote?: (target: 
         text.append(source);
       }
       link.append(thumbnail, text);
+      if (kind === 'file' && pendingAssetSize) void pendingAssetSize(href).then(size => {
+        if (size === undefined || !link.isConnected || link.ariaBusy === 'true') return;
+        download = document.createElement('span');
+        download.className = 'link-card-download';
+        download.textContent = `下载 · ${formatAssetSize(size)}`;
+        link.append(download);
+      }).catch(() => undefined);
       if (kind === 'web' && web) void web.page(href).then(async info => {
         if (!info || !link.isConnected) return;
         if (info.title) {

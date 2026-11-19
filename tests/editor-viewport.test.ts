@@ -38,6 +38,12 @@ it('brings a caret below the titlebar into view and keeps a visible caret still'
   const root = editor(40, 60); revealCaret(root); expect(root.scrollTop).toBe(56);
   const other = editor(100, 120); revealCaret(other); expect(other.scrollTop).toBe(100);
 });
+it('reveals a caret covered by the floating toolbar', () => {
+  const root = editor(100, 120);
+  root.style.scrollPaddingTop = '64px';
+  revealCaret(root);
+  expect(root.scrollTop).toBe(52);
+});
 it('does not scroll an unfocused editor or a selection belonging to another field', () => {
   const root = editor(360, 380); root.blur(); revealCaret(root); expect(root.scrollTop).toBe(100);
   const other = editor(360, 380); root.focus();

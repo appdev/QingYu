@@ -271,7 +271,7 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     const compact = actions.mobile && !toolbar && !multiple;
     const trash: Item = { text: multiple ? `删除 ${notes.length} 篇笔记` : compact ? '删除' : '移到废纸篓', destructive: true, run: () => changeNotes(notes, note => getBook().trashNote(note.id)) };
     const recover: Item = { text: multiple ? `恢复 ${notes.length} 篇笔记` : '恢复笔记', run: () => changeNotes(notes, note => getBook().trashNote(note.id, false)) };
-    const lock: Item = { text: '锁定笔记…', run: showLockNotePanel };
+    const lock: Item[] = '__TAURI_INTERNALS__' in window ? [{ text: '锁定笔记…', run: showLockNotePanel }] : [];
     const versions: Item = { text: '版本历史…', enabled: getBook().hasNoteHistory, async run() {
       if (!await actions.save()) return;
       const book = getBook();
@@ -328,10 +328,10 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       const latest = getBook().data.notes.find(item => item.id === id), anchor = row();
       if (latest && !latest.trashed && !latest.readOnly && anchor) actions.share?.(anchor, latest);
     } };
-    const opening: Item[] = actions.mobile || actions.noteWindow || getBook().external ? [] : [{
-      text: '在新窗口打开笔记', enabled: Boolean(actions.openNoteWindow),
+    const opening: Item[] = actions.openNoteWindow && !actions.mobile && !actions.noteWindow && !getBook().external ? [{
+      text: '在新窗口打开笔记',
       async run() { if (await actions.save()) await actions.openNoteWindow?.(id); },
-    }];
+    }] : [];
     const details: Item[] = [
       { text: '显示简介', shortcut: '⌥⌘I', run: () => showInfo(id, toolbar) },
       { text: '重命名', shortcut: '⌘R', enabled: !note.readOnly, run: () => renameSelected(id) },
@@ -351,8 +351,8 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       : note.trashed ? [[recover], moving]
       : toolbar ? [[...opening, pin, duplicate], deleting]
         .map(group => group.filter(item => item.enabled !== false))
-      : compact ? [[share, ...moving, ...deleting], [pin, lock, duplicate]]
-      : [opening, [pin, lock], [duplicate], [share], [...moving, versions], details, deleting];
+      : compact ? [[share, ...moving, ...deleting], [pin, ...lock, duplicate]]
+      : [opening, [pin, ...lock], [duplicate], [share], [...moving, ...(getBook().hasNoteHistory ? [versions] : [])], details, deleting];
     const items = groups.filter(group => group.length).flatMap((group, index) => index ? [{ text: '' }, ...group] : group);
     if (anchor) for (const item of items) {
       const icon = toolbarIcons[item.text];

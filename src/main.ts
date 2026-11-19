@@ -28,8 +28,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { showWindowWhenPainted } from './window-ready';
-import { assetBase, attachmentMarkdown, attachmentUrl, openAttachment } from './attachments';
-import { MAX_ASSET_BYTES, MAX_ASSETS_TOTAL } from './sync-files';
+import { assetBase, attachmentMarkdown, attachmentPlaceholder, attachmentUrl, openAttachment } from './attachments';
+import { downloadFromMain, hostAssetDownloads } from './asset-fetch';
+import { mountPendingImage } from './asset-download-view';
+import { MAX_ASSET_BYTES } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
 import { dismissPopupMenu, popupMenu, popupMenuOpen } from './popup-menu';
@@ -52,11 +54,8 @@ shareMarker.onclick = () => { const url = notebook.current?.share?.url; if (url)
 $('.titlebar').append(shareMarker);
 document.documentElement.dataset.platform = native && /Mac/.test(navigator.platform) ? 'macos' : 'other';
 const saveStatus = $('#save-status');
-const accountStatus = document.querySelector<HTMLElement>('.sidebar-account-status');
 function setStatus(message: string, error = false) {
   saveStatus.textContent = message;
-  // 同步进度以一行小字显示在侧栏账户名下面，不再弹出遮挡内容的提示框。
-  if (accountStatus) accountStatus.textContent = message;
   document.body.dataset.statusError = String(error);
 }
 const windowLabel = native ? getCurrentWindow().label : 'main';
@@ -68,6 +67,7 @@ if (noteWindow) {
   $('#empty-note p').textContent = '找不到这篇笔记';
 }
 const serverLibrary = isServerLibrary();
+const canAddAttachments = native || serverLibrary;
 const notebook = new Notebook({ getItem: key => documentWindow || serverLibrary ? null : localStorage.getItem(key), setItem: (key, value) => {
   if (documentWindow || serverLibrary) throw new Error('当前笔记不能转存到浏览器笔记库');
   localStorage.setItem(key, value);
@@ -88,6 +88,9 @@ else if (serverLibrary) {
 }
 let sidebar: ReturnType<typeof createSidebar> | undefined;
 let showingNote = Boolean(notebook.current) && !(noteWindow && notebook.loadError);
+let displayedNoteId = showingNote ? notebook.current.id : undefined;
+let syncApply: Promise<void> | undefined;
+let draftDuringSync: { previous: Note; applied?: Note } | undefined;
 let linkLibrary = notebook.data;
 const availableNoteLinks = new Map<string, boolean>();
 function noteLinkExists(target: string) {
@@ -106,32 +109,77 @@ $('#sync-button').onclick = async () => {
   try { await showSettings('sync'); }
   catch { setStatus('无法打开同步设置，本机笔记仍保留', true); }
 };
-const syncSession = createSyncSession(notebook, () => {
-  showCurrentNote(Boolean(notebook.current)); sidebar?.refresh();
-  setStatus('笔记库同步完成');
-}, () => {
+notebook.onSyncApply = () => {
+  const previous = notebook.current;
+  let release!: () => void;
+  syncApply = new Promise(resolve => { release = resolve; });
+  return applied => {
+    try { if (applied) refreshAfterSync(previous); }
+    finally { syncApply = undefined; release(); }
+  };
+};
+function refreshAfterSync(previous: Note | undefined) {
+  if (previous && displayedNoteId === previous.id) {
+    const current = notebook.current;
+    if (previous.id !== current?.id || previous.source !== current.source || previous.readOnly !== current.readOnly || previous.trashed !== current.trashed) {
+      if (richEditor.composing || sourceForSave() !== editorSource(previous.source)) {
+        draftDuringSync = { previous, applied: notebook.data.notes.find(note => note.id === previous.id) };
+      } else {
+        showCurrentNote(Boolean(current));
+      }
+    } else {
+      refreshTitle();
+      updateShareMarker();
+      richEditor.refreshNoteLinks();
+    }
+  } else if (!previous && !displayedNoteId && notebook.current) {
+    showCurrentNote(true);
+  }
+  sidebar?.refresh();
+}
+const syncSession = createSyncSession(notebook, () => setStatus('笔记库同步完成'), () => {
   if (notebook.loadError) throw new Error('笔记目录尚未读取成功，请先恢复目录访问或更改笔记位置');
   if (document.body.dataset.libraryBusy === 'true') throw new Error('笔记位置正在更改，请稍后同步');
   return saveDraft(true);
-});
+}, mobile);
+if (native && !documentWindow) void hostAssetDownloads(notebook, syncSession.fetchAsset).catch(() => undefined);
+let thumbnailRefresh: number | undefined;
+function downloadAttachment(entry: { root: string; path: string }) {
+  if (notebook.root !== entry.root) return Promise.reject(new Error('笔记库已切换，请重新下载附件'));
+  const download = documentWindow ? downloadFromMain(windowLabel, entry.root, entry.path) : syncSession.fetchAsset(entry.path);
+  // 列表缩略图不自己下载，正文里的图下完后刷新列表，缩略图才会从占位换成图片。
+  // 一篇笔记里的多张图会接连下完，合并成一次刷新。
+  return download.then(hash => {
+    if (hash && sidebar && thumbnailRefresh === undefined) {
+      thumbnailRefresh = window.setTimeout(() => { thumbnailRefresh = undefined; sidebar?.refresh(); }, 300);
+    }
+    return hash;
+  });
+}
+async function ensureAttachment(noteId: string, source: string) {
+  const entry = await attachmentPlaceholder(notebook, noteId, source);
+  if (entry) return downloadAttachment(entry);
+}
+function mountNoteAssetImage(noteId: string, image: HTMLImageElement, frame: HTMLElement, url: string, source: string, thumbnail = false) {
+  if (!native || notebook.external || notebook.data.sync?.version !== 2 || !isLocalAsset(source)) return;
+  return mountPendingImage(image, frame, url, attachmentPlaceholder(notebook, noteId, source), downloadAttachment, thumbnail);
+}
 let syncBusy = false;
-$('#sync-button').hidden = documentWindow || serverLibrary;
+$('#sync-button').hidden = documentWindow || !native;
 syncSession.subscribe(status => {
   syncBusy = status.busy;
   const button = $('#sync-button');
   // 未登录、账号未就绪不算同步出错，按钮不显示红点。
   const failed = status.error && !accountSyncNotices.has(status.message);
-  button.dataset.state = status.busy ? 'syncing' : failed ? 'error' : status.message && !status.error ? 'synced' : 'idle';
+  button.dataset.state = status.busy ? 'syncing' : failed ? 'error' : status.lastSyncedAt ? 'synced' : 'idle';
   const label = status.busy ? '正在同步…' : status.message || '存储与同步';
   button.title = `${label}\n点击查看同步设置`;
   button.setAttribute('aria-label', label);
-  $('#app-shell').inert = status.busy || document.body.dataset.libraryBusy === 'true';
   document.body.dataset.syncBusy = String(status.busy);
   if (status.busy) setStatus(status.message || '正在同步，请稍候…');
   showSyncState(status, failed);
 });
-// 侧栏账户行右侧的同步状态：同步中转圈，出错留一个红点；鼠标悬停账户行可看到状态。
-// 同步进行时界面不可操作，悬停不生效，这时进度直接写在账户名下面。
+// 账号行用转圈和红点表示同步状态，空闲时可悬停查看失败原因或上次同步时间。
 const syncTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
 const syncDay = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' });
 function showSyncState(status: { busy: boolean; message: string; lastSyncedAt?: number }, failed: boolean) {
@@ -139,9 +187,9 @@ function showSyncState(status: { busy: boolean; message: string; lastSyncedAt?: 
   const indicator = account?.querySelector<HTMLElement>('.sidebar-account-spinner');
   if (!account || !indicator) return;
   indicator.dataset.state = status.busy ? 'syncing' : failed ? 'error' : 'idle';
+  if (status.busy) { account.removeAttribute('title'); return; }
   let tip = '';
-  if (status.busy) tip = `正在同步：${status.message || '请稍候…'}`;
-  else if (failed) tip = `同步失败：${status.message}`;
+  if (failed) tip = `同步失败：${status.message}`;
   else if (status.lastSyncedAt) {
     const at = new Date(status.lastSyncedAt);
     const today = at.toDateString() === new Date().toDateString();
@@ -150,9 +198,9 @@ function showSyncState(status: { busy: boolean; message: string; lastSyncedAt?: 
   if (tip) account.title = tip;
   else account.removeAttribute('title');
 }
-document.addEventListener('keydown', event => { if ((syncBusy || document.body.dataset.libraryBusy === 'true') && !(event.target instanceof Element && event.target.closest('.settings-inline')) && !settingsShortcut(event)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+document.addEventListener('keydown', event => { if (document.body.dataset.libraryBusy === 'true' && !(event.target instanceof Element && event.target.closest('.settings-inline')) && !settingsShortcut(event)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
 function showSettings(section?: SettingsSection) {
-  return openSettings(syncSession, section, () => dailyNoteChoices(notebook.data));
+  return openSettings(native ? syncSession : undefined, section, () => dailyNoteChoices(notebook.data));
 }
 $('#settings-button').onclick = () => { void showSettings().catch(() => setStatus('无法打开设置', true)); };
 document.addEventListener('keydown', event => {
@@ -185,6 +233,7 @@ let closeFormatPanel: (() => void) | undefined;
 let refreshFormatPanel: (() => void) | undefined;
 let formatCell: ReturnType<RichEditor['captureTableFormat']> | undefined;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let draftWrites = Promise.resolve(true);
 
 function applyFormat(action: Format, keepMenu = false) {
   if (!currentWritingEditor()) return;
@@ -226,9 +275,18 @@ const richEditor = createRichEditor($('#rich-editor'), () => {
   sortCheckedItems: () => preferences.value.sortCheckedItems,
   relations: noteRelations,
   suggestionsHost: mobile ? mobileSuggestions : undefined,
-  attachFile: mobile ? undefined : () => attachFromKeyboard(),
+  attachFile: !mobile && canAddAttachments ? () => attachFromKeyboard() : undefined,
   selectionChanged: () => refreshFormatPanel?.(),
-  openAsset(id, path) { void openAttachment(notebook, id, path).catch(error => setStatus(String(error), true)); },
+  async openAsset(id, path) { await ensureAttachment(id, path); await openAttachment(notebook, id, path); },
+  mountAssetImage: mountNoteAssetImage,
+  async pendingAssetSize(id, path) { return (await attachmentPlaceholder(notebook, id, path))?.size; },
+  async deletePendingAsset(id, path) {
+    const entry = await attachmentPlaceholder(notebook, id, path);
+    if (!entry) return;
+    if (!window.confirm('下次同步时也会删除远端附件。要继续吗？')) return;
+    await notebook.removeAssetPlaceholder(entry.root, entry.path, entry.hash);
+    setStatus('已删除本地占位，下次同步时会删除远端附件');
+  },
   openNoteLink(target) { void followNoteLink(target); },
   noteLinkExists,
   describeNoteLink(target) { return describeNoteLink(notebook.data, target, notebook.current); },
@@ -250,12 +308,21 @@ const { view } = richEditor;
 function sourceForSave() {
   return view.state.doc.toString();
 }
+const editorSource = (source: string) => source.replace(/\r\n?/g, '\n');
 
 function refreshTitle(force = false) {
-  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote ? noteTitle({ ...notebook.current, source: view.state.doc.toString() }) : '未选择笔记';
+  const note = displayedNoteId === notebook.current?.id ? notebook.current : draftDuringSync?.previous;
+  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: view.state.doc.toString() }) : '未选择笔记';
   $('#word-count').textContent = showingNote ? `${view.state.doc.length.toLocaleString('zh-CN')} 字符` : '';
 }
-async function saveDraft(includeTitle = false) {
+function saveDraft(includeTitle = false) {
+  const write = draftWrites.then(() => persistDraft(includeTitle));
+  draftWrites = write.catch(() => false);
+  return write;
+}
+
+async function persistDraft(includeTitle: boolean): Promise<boolean> {
+  if (syncApply) await syncApply;
   if (documentWindow && notebook.loadError) return true;
   if (!showingNote) return true;
   if (!includeTitle && document.body.dataset.libraryBusy === 'true') {
@@ -265,29 +332,35 @@ async function saveDraft(includeTitle = false) {
   clearTimeout(saveTimer);
   saveTimer = undefined;
   const source = sourceForSave();
-  const note = notebook.current;
+  const recovered = draftDuringSync?.previous.id === displayedNoteId ? draftDuringSync : undefined;
+  const note = notebook.data.notes.find(entry => entry.id === displayedNoteId) ?? recovered?.previous;
   if (!note) return true;
   const titleInput = includeTitle ? document.querySelector<HTMLInputElement>('#rename-note') : null;
   if (titleInput?.dataset.composing === 'true') return false;
   const titleValue = titleInput?.value;
   const stored = note.source;
   // CodeMirror normalizes line endings internally; viewing a CRLF draft is not an edit.
-  const changed = stored.replace(/\r\n?/g, '\n') !== source.replace(/\r\n?/g, '\n');
+  const changed = editorSource(stored) !== source;
   try {
-    await notebook.save(changed ? source : stored, note.id);
+    if (recovered) {
+      if (source !== editorSource(recovered.previous.source)) await notebook.saveDraftAfterSync(recovered.previous, source, recovered.applied);
+      else if (displayedNoteId === recovered.previous.id) showCurrentNote(Boolean(notebook.current));
+      if (draftDuringSync === recovered) draftDuringSync = undefined;
+    } else await notebook.save(changed ? source : stored, note.id, syncBusy && changed && !note.trashed ? stored : undefined);
     if (titleInput?.isConnected && titleInput.dataset.noteId) {
       if (titleValue?.trim()) await notebook.renameNote(titleInput.dataset.noteId, titleValue);
-      if (titleInput.value !== titleValue) return saveDraft(includeTitle);
+      if (titleInput.value !== titleValue) return persistDraft(includeTitle);
       refreshTitle(true);
       sidebar?.refresh();
     }
     if (note.id === notebook.data.activeId) {
-      if (sourceForSave() !== source) return saveDraft(includeTitle);
+      if (sourceForSave() !== source) return persistDraft(includeTitle);
       setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.server ? '笔记已保存到服务器' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
     }
     if (changed) sidebar?.refresh();
     return true;
   } catch (error) {
+    if (!recovered && draftDuringSync?.previous.id === displayedNoteId && displayedNoteId === note.id) return persistDraft(includeTitle);
     setStatus(error instanceof Error ? error.message : typeof error === 'string' ? error : '笔记保存失败，暂不能切换；请复制原文备份', true);
     return false;
   }
@@ -327,6 +400,7 @@ function showCurrentNote(selected: boolean, fromHistory?: number) {
   saveTimer = undefined;
   richEditor.deactivate();
   showingNote = selected;
+  displayedNoteId = selected ? notebook.current.id : undefined;
   workspace.hidden = !selected;
   refreshEditorHistory();
   $('#empty-note').hidden = selected;
@@ -349,7 +423,7 @@ function showCurrentNote(selected: boolean, fromHistory?: number) {
 }
 function updateShareMarker() {
   const note = showingNote && !notebook.loadError ? notebook.current : undefined;
-  shareMarker.hidden = !note || !isShared(note) || !note.share?.url;
+  shareMarker.hidden = !native || !note || !isShared(note) || !note.share?.url;
 }
 
 function blankNote() {
@@ -415,7 +489,7 @@ async function createNote(folderId: string, title = '') {
 }
 let openingToday = false;
 async function openTodayNote() {
-  if (openingToday || notebook.loadError || notebook.external || syncBusy || document.body.dataset.libraryBusy === 'true' ||
+  if (openingToday || notebook.loadError || notebook.external || document.body.dataset.libraryBusy === 'true' ||
     document.querySelector('dialog[open]')) return;
   openingToday = true;
   try {
@@ -445,26 +519,34 @@ function bindChecklistTool(button: HTMLElement) {
 bindChecklistTool($('#checklist-button'));
 function pictureRequest(note: Note, source: string, selection?: PictureRange): PictureRequest | undefined {
   if (!note || note.trashed || note.readOnly) return;
-  return { title: noteTitle({ ...note, source }), source, selection, image: async href => {
-    if (!isLocalAsset(href) || href.startsWith('/') && !/^\/(?:i|files)\//u.test(href)) return;
-    const path = decodeURIComponent(href.split(/[?#]/u)[0]);
-    const type = path.toLowerCase().match(/\.(png|jpe?g|webp|gif|bmp)$/u)?.[1];
-    if (!type) return;
-    let blob: Blob;
-    if (native) {
-      const bytes = await invoke<ArrayBuffer>('note_picture_asset', { noteId: note.id, path });
-      blob = new Blob([bytes], { type: `image/${type === 'jpg' ? 'jpeg' : type}` });
-    } else {
-      if (!notebook.server) return;
-      const response = await fetch(`/api/web/assets/${encodeURIComponent(note.id)}?${new URLSearchParams({ path })}`);
-      if (!response.ok) return;
-      blob = await response.blob();
-    }
-    return new Promise<string | undefined>((resolve, reject) => {
-      const reader = new FileReader(); reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
-      reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob);
-    });
-  } };
+  const root = notebook.root;
+  return { title: noteTitle({ ...note, source }), source, selection,
+    prepareImage: href => {
+      if (notebook.root !== root) throw new Error('笔记库已切换，请重新打开图片预览');
+      return ensureAttachment(note.id, href);
+    },
+    image: async href => {
+      if (notebook.root !== root) return;
+      if (!isLocalAsset(href) || href.startsWith('/') && !/^\/(?:i|files)\//u.test(href)) return;
+      const path = decodeURIComponent(href.split(/[?#]/u)[0]);
+      const type = path.toLowerCase().match(/\.(png|jpe?g|webp|gif|bmp)$/u)?.[1];
+      if (!type) return;
+      let blob: Blob;
+      if (native) {
+        const bytes = await invoke<ArrayBuffer>('note_picture_asset', { noteId: note.id, path });
+        blob = new Blob([bytes], { type: `image/${type === 'jpg' ? 'jpeg' : type}` });
+      } else {
+        if (!notebook.server) return;
+        const response = await fetch(`/api/web/assets/${encodeURIComponent(note.id)}?${new URLSearchParams({ path })}`);
+        if (!response.ok) return;
+        blob = await response.blob();
+      }
+      return new Promise<string | undefined>((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
+        reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob);
+      });
+    },
+  };
 }
 function shareNote(anchor: HTMLElement, note: Note, source = note.source, selection?: PictureRange) {
   const text = markdownBody(source).body.split('\n').map(plainMarkdownLine).join('\n');
@@ -665,7 +747,7 @@ quickTable.className = 'mobile-table-button';
 quickTable.title = quickTable.ariaLabel = '表格';
 quickTable.querySelector('svg')!.insertAdjacentHTML('beforeend', `
   <g class="mobile-table-badge">
-    <rect x="11.7" y="12.4" width="11.7" height="8" rx="4" fill="var(--control-fill)" stroke="var(--control-fill)" stroke-width="2"/>
+    <rect x="11.7" y="12.4" width="11.7" height="8" rx="4" fill="var(--toolbar-button-fill)" stroke="var(--toolbar-button-fill)" stroke-width="2"/>
     <g fill="currentColor" stroke="none">
       <circle cx="14.65" cy="16.4" r="1"/><circle cx="17.55" cy="16.4" r="1"/><circle cx="20.45" cy="16.4" r="1"/>
     </g>
@@ -691,6 +773,11 @@ attachmentInput.type = 'file'; attachmentInput.multiple = true; attachmentInput.
 document.body.append(attachmentInput);
 const attachButton = $<HTMLButtonElement>('#attach-button');
 attachButton.setAttribute('aria-haspopup', 'menu');
+const attachMenuLabel = canAddAttachments ? '添加附件' : '插入链接';
+if (!canAddAttachments) {
+  attachButton.title = attachButton.ariaLabel = attachMenuLabel;
+  attachButton.replaceChildren(createLucideIcon(document, LinkIcon, ''));
+}
 function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
   const box = anchor.getBoundingClientRect();
   const accessory = anchor.closest('#mobile-tools');
@@ -715,16 +802,18 @@ function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
     }, focusEditor);
   };
   void popupMenu([
-    { text: '选择照片或视频…', icon: icon(Image), enabled: native || notebook.server, needsUserActivation: true, run: () => choose('image/*,video/*') },
-    { text: '添加文件…', icon: icon(FileText), enabled: native || notebook.server, needsUserActivation: true, run: () => choose('') },
-    { text: '' },
+    ...(canAddAttachments ? [
+      { text: '选择照片或视频…', icon: icon(Image), needsUserActivation: true, run: () => choose('image/*,video/*') },
+      { text: '添加文件…', icon: icon(FileText), needsUserActivation: true, run: () => choose('') },
+      { text: '' },
+    ] : []),
     { text: '链接到笔记…', icon: icon(NotebookIcon), run: linkNote },
     { text: '添加链接', icon: icon(LinkIcon), run: () => applyFormat('link') },
-  ], box.left - 90, box.bottom + 6, message => setStatus(message, true), focusEditor, '添加附件', undefined, 0, accessory ? { anchor, keyboard, above: true } : undefined);
+  ], box.left - 90, box.bottom + 6, message => setStatus(message, true), focusEditor, attachMenuLabel, undefined, 0, accessory ? { anchor, keyboard, above: true } : undefined);
 }
 function attachFromKeyboard() {
   if (!currentWritingEditor()) return;
-  if (!native && !notebook.server) { setStatus('当前笔记库不支持添加文件', true); return; }
+  if (!canAddAttachments) return;
   richEditor.captureSelection();
   attachmentInput.accept = '';
   attachmentInput.click();
@@ -747,7 +836,8 @@ async function insertAttachments(files: File[]) {
   const id = notebook.current.id;
   richEditor.captureSelection();
   try {
-    if (files.some(file => file.size > MAX_ASSET_BYTES) || files.reduce((size, file) => size + file.size, 0) > MAX_ASSETS_TOTAL) throw new Error('单附件不能超过 64 MiB，每次最多 256 MiB');
+    const maxImportBytes = 256 * 1024 * 1024;
+    if (files.some(file => file.size > MAX_ASSET_BYTES) || files.reduce((size, file) => size + file.size, 0) > maxImportBytes) throw new Error('单附件不能超过 64 MiB，每次最多 256 MiB');
     if (!await saveDraft(true)) return;
     document.body.dataset.libraryBusy = 'true';
     $('#app-shell').inert = true;
@@ -762,7 +852,7 @@ async function insertAttachments(files: File[]) {
     }
     setStatus('图片与附件已保存');
   } catch (error) { setStatus(error instanceof Error ? error.message : String(error), true); }
-  finally { document.body.dataset.libraryBusy = 'false'; $('#app-shell').inert = document.body.dataset.syncBusy === 'true'; }
+  finally { document.body.dataset.libraryBusy = 'false'; $('#app-shell').inert = false; }
 }
 attachmentInput.onchange = () => { const files = Array.from(attachmentInput.files ?? []); attachmentInput.value = ''; void insertAttachments(files); };
 workspace.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
@@ -780,6 +870,22 @@ document.addEventListener('pointerdown', event => {
   if (!menu.contains(event.target as Node) && !$('#format-button').contains(event.target as Node)) closeMenu();
 });
 if (mobile) window.addEventListener('popstate', () => { closeMenu(); closeFormatPanel?.(); });
+// 安卓返回键先交给这里：有菜单、弹窗或搜索就只收起最上面那一层，返回 true 表示已处理；
+// 设置自己写了浏览记录，交给 WebView 后退。MainActivity 收到 false 才走默认后退。
+if (mobile) Object.assign(window, { qingyuBack() {
+  if (popupMenuOpen()) { dismissPopupMenu(); return true; }
+  if (history.state?.settings) return false;
+  const dialog = [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1);
+  if (dialog) {
+    if (dialog.dispatchEvent(new Event('cancel', { cancelable: true }))) dialog.close();
+    return true;
+  }
+  const popover = [...document.querySelectorAll<HTMLElement>(':popover-open')].at(-1);
+  if (popover) { popover.hidePopover(); return true; }
+  if (closeFormatPanel) { closeFormatPanel(); return true; }
+  if (!menu.hidden) { closeMenu(); return true; }
+  return Boolean(sidebar?.cancelSearch());
+} });
 function findInNote(direction?: 'next' | 'previous') {
   if (document.querySelector('dialog[open], .search-picker:popover-open') || richEditor.composing) return false;
   if (!showingNote) {
@@ -908,7 +1014,7 @@ document.addEventListener('keydown', event => {
   }
   if (!view.dom.contains(document.activeElement) || event.isComposing || (!event.metaKey && !event.ctrlKey)) return;
   const action = formatShortcuts[`${event.altKey ? 'Alt-' : ''}${event.shiftKey ? 'Shift-' : ''}${event.code}`];
-  if (!action || (action === 'attach' && mobile)) return;
+  if (!action || action === 'attach' && (mobile || !canAddAttachments)) return;
   event.preventDefault(); event.stopPropagation();
   if (action === 'attach') attachFromKeyboard();
   else applyFormat(action);
@@ -975,6 +1081,7 @@ document.documentElement.toggleAttribute('data-web', !native);
 if ((mobile || document.documentElement.dataset.platform === 'macos') && !documentWindow) {
   if (!mobile) $('#app-shell').dataset.macSidebarFoot = '';
   const account = $<HTMLButtonElement>('#sidebar-account');
+  if (!native) account.title = account.ariaLabel = '设置';
   account.onclick = () => { void showSettings(mobile ? undefined : 'account').catch(() => setStatus('无法打开设置', true)); };
   if (native) {
     const refreshAccount = sidebarAccount(account);
@@ -989,6 +1096,11 @@ sidebar = createSidebar(() => notebook, {
   thumbnail(note) {
     const image = firstLocalImage(note.source);
     return image ? attachmentUrl(notebook, note.id, image) : undefined;
+  },
+  mountThumbnail(note, image, row, url) {
+    if (!native || notebook.data.sync?.version !== 2) return;
+    const source = firstLocalImage(note.source);
+    if (source) return mountNoteAssetImage(note.id, image, row, url, source, true);
   },
   noteWindow,
   openNoteWindow: native && desktop && !documentWindow && !notebook.loadError ? id => invoke('workspace_open_note', { noteId: id }) : undefined,
@@ -1072,6 +1184,7 @@ if ('__TAURI_INTERNALS__' in window) {
         clearTimeout(saveTimer); saveTimer = setTimeout(() => { void saveDraft(); }, 500);
       }
       sidebar?.refresh();
+      autoSync?.changed();
       setStatus('已载入外部文件变化');
     },
     backedUp(paths) { setStatus(notebook.external ? `文件已在外部变化，你的版本已备份到：${paths.join('、')}` : '文件已在外部变化，你的版本已备份到笔记目录的 .miaoyan-conflicts', true); },
@@ -1094,6 +1207,7 @@ if ('__TAURI_INTERNALS__' in window) {
   if (!documentWindow) {
     await connectCloudAutoSync(syncSession, preferences, async () => { await autoSync?.sync(); }, message => setStatus(message, true)).catch(() => setStatus('无法监听账号同步状态', true));
     autoSync = startAutoSync(syncSession, () => document.body.inert || notebook.loadError || document.body.dataset.libraryBusy === 'true', message => setStatus(message, true), mobile, preferences);
+    notebook.onLocalChange = autoSync.changed;
   }
 }
 window.addEventListener('preferences-applied', richEditor.requestMeasure);
@@ -1127,7 +1241,7 @@ if (native && desktop && !documentWindow) void hostMenuBar(() => notebook, {
   blocked() {
     if (notebook.loadError) return '笔记库还没打开';
     if (notebook.external) return '请回到笔记库后再试';
-    if (syncBusy || document.body.dataset.libraryBusy === 'true') return '正在同步或整理笔记库，请稍后再试';
+    if (document.body.dataset.libraryBusy === 'true') return '正在整理笔记库，请稍后再试';
   },
   async create(title, source) {
     if (!await saveDraft(true)) throw new Error('当前笔记还没保存好，请稍后再试');

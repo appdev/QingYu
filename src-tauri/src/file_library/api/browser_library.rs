@@ -7,8 +7,16 @@ pub(super) fn router(state: Arc<Service>) -> Router<Arc<Service>> {
         .route("/web/library", get(snapshot))
         .route("/web/storage-usage", get(storage_usage))
         .route("/web/commands", axum::routing::post(change))
-        .route("/web/link-preview", axum::routing::post(link_preview).layer(DefaultBodyLimit::max(12 * 1024)))
-        .route("/web/assets/{id}", get(asset).post(upload).layer(DefaultBodyLimit::max(assets::MAX_FILE * 4 + 65536)))
+        .route(
+            "/web/link-preview",
+            axum::routing::post(link_preview).layer(DefaultBodyLimit::max(12 * 1024)),
+        )
+        .route(
+            "/web/assets/{id}",
+            get(asset)
+                .post(upload)
+                .layer(DefaultBodyLimit::max(assets::MAX_FILE * 4 + 65536)),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .route_layer(middleware::from_fn_with_state(state, browser_only))
 }
@@ -66,15 +74,19 @@ async fn storage_usage(State(state): State<Arc<Service>>) -> ApiResult<Json<Stor
         let store = state.store.lock().map_err(|_| ApiError::internal())?;
         UsageTarget::new(&store)
     };
-    tokio::task::spawn_blocking(move || target.measure().map(Json).map_err(|_| ApiError::internal()))
-        .await
-        .map_err(|_| ApiError::internal())?
+    tokio::task::spawn_blocking(move || {
+        target.measure().map(Json).map_err(|_| ApiError::internal())
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 
 /// 和前端 validShare 一致：链接只接受 http(s)，长度不超过 2048。
 fn valid_share(share: &NoteShare) -> bool {
     share.url.as_deref().is_none_or(|url| {
-        url.len() <= 2048 && (url.starts_with("https://") || url.starts_with("http://")) && !url.chars().any(char::is_whitespace)
+        url.len() <= 2048
+            && (url.starts_with("https://") || url.starts_with("http://"))
+            && !url.chars().any(char::is_whitespace)
     })
 }
 
@@ -330,11 +342,32 @@ async fn asset(
     Query(query): Query<AssetQuery>,
 ) -> ApiResult<Response> {
     with_store(state, move |store| {
-        let path = attachments::resolve(store, &id, &query.path).map_err(|_| ApiError::not_found())?;
+        let path =
+            attachments::resolve(store, &id, &query.path).map_err(|_| ApiError::not_found())?;
         let content = attachments::read(&path).map_err(|_| ApiError::not_found())?;
         let mime = attachments::mime(&path);
-        let filename: String = path.file_name().unwrap_or_default().to_string_lossy().as_bytes().iter().map(|byte| if byte.is_ascii_alphanumeric() || b"-_.".contains(byte) { (*byte as char).to_string() } else { format!("%{byte:02X}") }).collect();
-        let disposition = format!("{}; filename*=UTF-8''{filename}", if mime.starts_with("image/") || ["application/pdf", "text/plain"].contains(&mime) { "inline" } else { "attachment" });
+        let filename: String = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .as_bytes()
+            .iter()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || b"-_.".contains(byte) {
+                    (*byte as char).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect();
+        let disposition = format!(
+            "{}; filename*=UTF-8''{filename}",
+            if mime.starts_with("image/") || ["application/pdf", "text/plain"].contains(&mime) {
+                "inline"
+            } else {
+                "attachment"
+            }
+        );
         Ok((
             [
                 (header::CONTENT_TYPE, mime),
@@ -343,10 +376,7 @@ async fn asset(
                     "sandbox; default-src 'none'; style-src 'unsafe-inline'",
                 ),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-                (
-                    header::CONTENT_DISPOSITION,
-                    disposition.as_str(),
-                ),
+                (header::CONTENT_DISPOSITION, disposition.as_str()),
             ],
             content,
         )
@@ -356,12 +386,22 @@ async fn asset(
 }
 
 #[derive(Deserialize)]
-struct AttachmentUpload { version: String, upload: attachments::Upload }
-async fn upload(State(state): State<Arc<Service>>, RoutePath(id): RoutePath<String>, Json(request): Json<AttachmentUpload>) -> ApiResult<Json<attachments::ImportedAttachment>> {
+struct AttachmentUpload {
+    version: String,
+    upload: attachments::Upload,
+}
+async fn upload(
+    State(state): State<Arc<Service>>,
+    RoutePath(id): RoutePath<String>,
+    Json(request): Json<AttachmentUpload>,
+) -> ApiResult<Json<attachments::ImportedAttachment>> {
     with_store(state, move |store| {
         versioned_note(store, &id, &request.version)?;
-        attachments::import(store, &id, request.upload).map(Json).map_err(|_| ApiError::bad_request("Invalid attachment name or file exceeds 64 MiB"))
-    }).await
+        attachments::import(store, &id, request.upload)
+            .map(Json)
+            .map_err(|_| ApiError::bad_request("Invalid attachment name or file exceeds 64 MiB"))
+    })
+    .await
 }
 
 #[cfg(test)]

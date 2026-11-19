@@ -1,6 +1,17 @@
 #[cfg(any(feature = "app", feature = "server"))]
 mod link_preview;
 
+#[cfg(all(feature = "app", target_os = "android"))]
+#[no_mangle]
+pub extern "system" fn Java_app_miaoyan_editor_prototype_MainActivity_initTlsVerifier<'local>(
+    mut env: jni::EnvUnowned<'local>,
+    _activity: jni::objects::JObject<'local>,
+    context: jni::objects::JObject<'local>,
+) {
+    env.with_env(|env| rustls_platform_verifier::android::init_with_env(env, context))
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+}
+
 #[cfg(feature = "app")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -8,12 +19,28 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-        file_library::workspace::request(app, args.into_iter().skip(1).filter(|arg| !arg.starts_with('-')).map(|arg| std::path::Path::new(&cwd).join(arg)));
+        file_library::workspace::request(
+            app,
+            args.into_iter()
+                .skip(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .map(|arg| std::path::Path::new(&cwd).join(arg)),
+        );
     }));
     let builder = builder
-        .register_uri_scheme_protocol("qingyu-asset", |context, request| file_library::attachments::response(context.app_handle(), context.webview_label(), request))
+        .register_uri_scheme_protocol("qingyu-asset", |context, request| {
+            file_library::attachments::response(
+                context.app_handle(),
+                context.webview_label(),
+                request,
+            )
+        })
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_calendar::init())
         .plugin(tauri_plugin_attachments::init())
         .manage(sync_http::SyncHttp::default())
@@ -24,12 +51,15 @@ pub fn run() {
         .manage(ExitPermit(std::sync::atomic::AtomicBool::new(false)));
     #[cfg(target_os = "ios")]
     let builder = builder.plugin(tauri_plugin_editor_menu::init());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(sync_http::local_network_plugin());
     #[cfg(desktop)]
     let builder = builder
         .manage(activation_shortcut::ActivationShortcut::default())
         .manage(menu_bar::MenuBar::default())
         .manage(file_library::api::desktop::LocalMcp::default());
-    builder.setup(|app| {
+    builder
+        .setup(|app| {
             #[cfg(desktop)]
             {
                 let _ = app.handle().plugin(activation_shortcut::plugin());
@@ -50,8 +80,14 @@ pub fn run() {
             // 没有带文件启动时不走 request：它会立即显示主窗口，抢在页面排好版之前。
             #[cfg(desktop)]
             {
-                let paths: Vec<_> = std::env::args_os().skip(1).filter(|arg| !arg.to_string_lossy().starts_with('-')).map(std::path::PathBuf::from).collect();
-                if !paths.is_empty() { file_library::workspace::request(app.handle(), paths); }
+                let paths: Vec<_> = std::env::args_os()
+                    .skip(1)
+                    .filter(|arg| !arg.to_string_lossy().starts_with('-'))
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                if !paths.is_empty() {
+                    file_library::workspace::request(app.handle(), paths);
+                }
             }
             Ok(())
         })
@@ -64,11 +100,14 @@ pub fn run() {
             client_account::account_sync_config,
             client_account::account_check_sync,
             client_account::account_open_portal,
+            #[cfg(target_os = "android")]
+            sync_http::sync_local_network_access,
             sync_http::sync_set_target,
             sync_http::sync_request,
             sync_profile::sync_load_profile,
             sync_profile::sync_save_profile,
             note_picture::note_picture_action,
+            feature_window::open_feature_window,
             note_picture::note_share_text,
             create_calendar_event,
             note_ui::show_note_info,
@@ -149,13 +188,19 @@ pub fn run() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     // 还有文档窗口、或菜单栏里有轻羽时，关掉主窗口只是把它藏起来，不退出。
-                    let keep = file_library::workspace::has_documents(window.app_handle()) || menu_bar::shown(window.app_handle());
-                    let event = if keep { "library-close-main" } else { "library-before-exit" };
+                    let keep = file_library::workspace::has_documents(window.app_handle())
+                        || menu_bar::shown(window.app_handle());
+                    let event = if keep {
+                        "library-close-main"
+                    } else {
+                        "library-before-exit"
+                    };
                     let _ = window.emit_to(window.label(), event, ());
                 }
             } else if file_library::workspace::is_document(window.app_handle(), window.label()) {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close(); let _ = window.emit_to(window.label(), "workspace-before-close", ());
+                    api.prevent_close();
+                    let _ = window.emit_to(window.label(), "workspace-before-close", ());
                 } else if matches!(event, tauri::WindowEvent::Destroyed) {
                     file_library::workspace::destroyed(window.app_handle(), window.label());
                 }
@@ -166,10 +211,17 @@ pub fn run() {
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { ref urls } = event {
-                file_library::workspace::request(app, urls.iter().filter_map(|url| url.to_file_path().ok()));
+                file_library::workspace::request(
+                    app,
+                    urls.iter().filter_map(|url| url.to_file_path().ok()),
+                );
             }
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
                 let _ = file_library::workspace::show_library(app);
             }
             #[cfg(desktop)]
@@ -190,21 +242,27 @@ mod file_library;
 #[cfg(any(feature = "server", all(feature = "app", desktop)))]
 pub use file_library::api;
 #[cfg(feature = "app")]
-mod note_ui;
+mod client_account;
+#[cfg(feature = "app")]
+mod feature_window;
 #[cfg(feature = "app")]
 mod note_picture;
+#[cfg(feature = "app")]
+mod note_ui;
 #[cfg(feature = "app")]
 mod settings;
 #[cfg(feature = "app")]
 mod sync_http;
 #[cfg(feature = "app")]
 mod sync_profile;
-#[cfg(feature = "app")]
-mod client_account;
 
 #[cfg(feature = "app")]
 #[tauri::command]
-async fn create_calendar_event(app: tauri::AppHandle, window: tauri::WebviewWindow, event: tauri_plugin_calendar::CalendarEvent) -> Result<String, String> {
+async fn create_calendar_event(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    event: tauri_plugin_calendar::CalendarEvent,
+) -> Result<String, String> {
     if window.label() != "main" && !file_library::workspace::is_document(&app, window.label()) {
         return Err("请在编辑器中创建日程".into());
     }
@@ -217,18 +275,37 @@ mod menu_bar;
 
 #[cfg(feature = "app")]
 #[tauri::command]
-async fn activation_shortcut_command(app: tauri::AppHandle, window: tauri::WebviewWindow, action: String, shortcut: Option<String>) -> Result<serde_json::Value, String> {
-    if !["main", "settings"].contains(&window.label()) { return Err("无法在此窗口设置唤起快捷键".into()); }
+async fn activation_shortcut_command(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    action: String,
+    shortcut: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if !["main", "settings"].contains(&window.label()) {
+        return Err("无法在此窗口设置唤起快捷键".into());
+    }
     #[cfg(desktop)]
-    { serde_json::to_value(activation_shortcut::activation_shortcut(app, action, shortcut).await?).map_err(|_| "无法读取唤起快捷键".into()) }
+    {
+        serde_json::to_value(activation_shortcut::activation_shortcut(app, action, shortcut).await?)
+            .map_err(|_| "无法读取唤起快捷键".into())
+    }
     #[cfg(mobile)]
-    { let _ = (app, action, shortcut); Err("移动端不支持系统全局快捷键".into()) }
+    {
+        let _ = (app, action, shortcut);
+        Err("移动端不支持系统全局快捷键".into())
+    }
 }
 
 #[cfg(feature = "app")]
 #[tauri::command]
-fn library_finish_exit(app: tauri::AppHandle, window: tauri::WebviewWindow, permit: tauri::State<'_, ExitPermit>) -> Result<(), String> {
-    if window.label() != "main" || !file_library::workspace::exit_allowed(&app) { return Err("请先保存所有文档窗口再退出".into()); }
+fn library_finish_exit(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    permit: tauri::State<'_, ExitPermit>,
+) -> Result<(), String> {
+    if window.label() != "main" || !file_library::workspace::exit_allowed(&app) {
+        return Err("请先保存所有文档窗口再退出".into());
+    }
     permit.0.store(true, std::sync::atomic::Ordering::Release);
     app.exit(0);
     Ok(())

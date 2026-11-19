@@ -1,7 +1,7 @@
 import UIKit
 import Tauri
 
-private struct OpenArgs: Decodable { let path: String; let mime: String }
+private struct OpenArgs: Decodable { let path: String; let mime: String; let share: Bool? }
 private struct ShareArgs: Decodable { let title: String; let text: String }
 class AttachmentsPlugin: Plugin, UIDocumentInteractionControllerDelegate {
     private var document: UIDocumentInteractionController?
@@ -34,6 +34,15 @@ class AttachmentsPlugin: Plugin, UIDocumentInteractionControllerDelegate {
                 var controller = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap { $0.windows }.first { $0.isKeyWindow }?.rootViewController
                 while let presented = controller?.presentedViewController { controller = presented }
                 guard let controller = controller else { invoke.reject("当前窗口不可用"); return }
+                if args.share == true {
+                    let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                    if let popover = share.popoverPresentationController {
+                        popover.sourceView = controller.view
+                        popover.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.maxY, width: 0, height: 0)
+                    }
+                    controller.present(share, animated: true) { invoke.resolve() }
+                    return
+                }
                 self.presenter = controller
                 let document = UIDocumentInteractionController(url: url)
                 self.document = document

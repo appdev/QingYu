@@ -74,7 +74,7 @@ export function mockWebShareActions(noteKey: string, title: string, text: string
     const label = document.createElement('p'); label.className = 'share-unavailable'; label.textContent = '本地模拟预览 · 此链接不对外开放';
     const heading = document.createElement('h2'); heading.textContent = title;
     const body = document.createElement('p'); body.className = 'share-web-body'; body.textContent = text;
-    const close = document.createElement('button'); close.type = 'button'; close.className = 'secondary-button'; close.textContent = '关闭'; close.autofocus = true; close.onclick = () => dialog.close();
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'button secondary-button'; close.textContent = '关闭'; close.autofocus = true; close.onclick = () => dialog.close();
     dialog.append(label, heading, body, close);
     dialog.addEventListener('close', () => { dialog.remove(); anchor.focus(); }, { once: true });
     document.body.append(dialog); dialog.showModal();
@@ -115,7 +115,7 @@ export function mountMockWebShare(root: HTMLElement, noteKey: string, title: str
       const preview = document.createElement('div'); preview.className = 'share-preview';
       const heading = document.createElement('strong'), body = document.createElement('p');
       heading.textContent = title; body.textContent = text.slice(0, 240); preview.append(heading, body);
-      const publish = document.createElement('button'); publish.type = 'button'; publish.className = 'primary-button';
+      const publish = document.createElement('button'); publish.type = 'button'; publish.className = 'button primary-button';
       publish.disabled = Boolean(web.pending); publish.textContent = publish.disabled ? '正在创建链接…' : '发布网页…';
       publish.onclick = () => { closePanel(); web.publish(); };
       controls.append(preview, publish);
@@ -124,7 +124,7 @@ export function mountMockWebShare(root: HTMLElement, noteKey: string, title: str
     const link = document.createElement('p'); link.className = 'share-web-link'; link.ariaLabel = '模拟分享链接'; link.title = url;
     const prefix = document.createElement('span'), suffix = document.createElement('span');
     prefix.textContent = url.slice(0, -20); suffix.textContent = url.slice(-20); link.append(prefix, suffix);
-    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'primary-button';
+    const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'button primary-button';
     copy.append(createLucideIcon(document, Link, ''), '复制链接');
     copy.onclick = async () => {
       copy.disabled = true;

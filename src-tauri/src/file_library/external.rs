@@ -54,30 +54,44 @@ impl DiskLibrary {
         next.scan()?;
         validate(&next.data)?;
         let mut backups = vec![];
-        if let Some(buffer) = buffer.filter(|buffer| buffer.expected_source.is_some() || buffer.note_id == self.data.active_id) {
-            let old = self.data.notes.iter().find(|note| note.id == buffer.note_id);
-            let external = next.data.notes.iter().find(|note| note.id == buffer.note_id);
-            if let Some(expected) = buffer.expected_source.as_deref().or_else(|| old.map(|note| note.source.as_str())) {
-                if !same_text(&buffer.source, expected) && !external.is_some_and(|note| {
-                    same_text(&note.source, expected) || same_text(&note.source, &buffer.source)
-                }) {
+        if let Some(buffer) = buffer.filter(|buffer| {
+            buffer.expected_source.is_some() || buffer.note_id == self.data.active_id
+        }) {
+            let old = self
+                .data
+                .notes
+                .iter()
+                .find(|note| note.id == buffer.note_id);
+            let external = next
+                .data
+                .notes
+                .iter()
+                .find(|note| note.id == buffer.note_id);
+            if let Some(expected) = buffer
+                .expected_source
+                .as_deref()
+                .or_else(|| old.map(|note| note.source.as_str()))
+            {
+                if !same_text(&buffer.source, expected)
+                    && !external.is_some_and(|note| {
+                        same_text(&note.source, expected) || same_text(&note.source, &buffer.source)
+                    })
+                {
                     let directory = checked(&self.root, ".miaoyan-conflicts")?;
                     fs::create_dir_all(&directory).map_err(error)?;
-                    let old_path = Path::new(old.or(external).map(|note| note.path.as_str()).unwrap_or("笔记.md"));
-                    let base = old_path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy();
+                    let old_path = Path::new(
+                        old.or(external)
+                            .map(|note| note.path.as_str())
+                            .unwrap_or("笔记.md"),
+                    );
+                    let base = old_path.file_stem().unwrap_or_default().to_string_lossy();
                     let project = old_path
                         .parent()
                         .and_then(Path::file_name)
                         .or_else(|| self.root.file_name())
                         .unwrap_or_default()
                         .to_string_lossy();
-                    let extension = old_path
-                        .extension()
-                        .unwrap_or_default()
-                        .to_string_lossy();
+                    let extension = old_path.extension().unwrap_or_default().to_string_lossy();
                     let filename =
                         format!("{project}-{base}-{}-{}.{extension}", now() as u64, id());
                     let path = format!(".miaoyan-conflicts/{filename}");
@@ -131,7 +145,9 @@ pub async fn library_reconcile(
         result.snapshot = Some(store.snapshot());
     }
     drop(lock);
-    if scanned_change { workspace::library_changed(window.app_handle(), &root, Some(window.label())); }
+    if scanned_change {
+        workspace::library_changed(window.app_handle(), &root, Some(window.label()));
+    }
     Ok(result)
 }
 
@@ -143,7 +159,11 @@ pub struct Watch {
 
 #[cfg(desktop)]
 impl Watch {
-    pub(super) fn start(root: PathBuf, recursive: bool, changed: impl Fn(Result<()>) + Send + 'static) -> Result<Self> {
+    pub(super) fn start(
+        root: PathBuf,
+        recursive: bool,
+        changed: impl Fn(Result<()>) + Send + 'static,
+    ) -> Result<Self> {
         use notify::{EventKind, RecursiveMode, Watcher};
         use std::{
             sync::mpsc,
@@ -169,7 +189,14 @@ impl Watch {
             })
             .map_err(error)?;
         watcher
-            .watch(&root, if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })
+            .watch(
+                &root,
+                if recursive {
+                    RecursiveMode::Recursive
+                } else {
+                    RecursiveMode::NonRecursive
+                },
+            )
             .map_err(error)?;
         std::thread::spawn(move || {
             while let Ok(mut message) = rx.recv() {

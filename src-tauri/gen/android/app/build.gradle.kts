@@ -1,3 +1,4 @@
+import groovy.json.JsonSlurper
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -69,7 +70,21 @@ rust {
     rootDirRel = "../../../"
 }
 
+val rustlsAndroidAar = run {
+    val metadata = providers.exec {
+        workingDir = file("../../..")
+        commandLine("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", "aarch64-linux-android")
+    }.standardOutput.asText.get()
+    val packages = (JsonSlurper().parseText(metadata) as Map<*, *>)["packages"] as List<*>
+    val verifier = packages.filterIsInstance<Map<*, *>>()
+        .single { it["name"] == "rustls-platform-verifier-android" }
+    val version = verifier["version"]
+    val manifest = file(verifier["manifest_path"] as String)
+    manifest.parentFile.resolve("maven/rustls/rustls-platform-verifier/$version/rustls-platform-verifier-$version.aar")
+}
+
 dependencies {
+    implementation(files(rustlsAndroidAar))
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")

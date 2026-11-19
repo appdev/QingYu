@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import { preferences } from '../src/preferences';
 import { mountSettings } from '../src/settings-view';
 import { openSettings } from '../src/open-settings';
@@ -7,7 +8,9 @@ import type { SyncClient } from '../src/sync-session';
 import { version } from '../package.json';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
-vi.mock('../src/preferences', async importOriginal => ({ ...await importOriginal<typeof import('../src/preferences')>(), mobile: true, native: false }));
+const platform = vi.hoisted(() => ({ native: false }));
+vi.mock('../src/preferences', async importOriginal => ({ ...await importOriginal<typeof import('../src/preferences')>(), mobile: true, get native() { return platform.native; } }));
+vi.mock('@tauri-apps/api/core', async importOriginal => ({ ...await importOriginal<typeof import('@tauri-apps/api/core')>(), invoke: vi.fn() }));
 beforeEach(() => {
   localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); history.replaceState(null, '');
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.open = true; } });
@@ -18,11 +21,40 @@ const client: SyncClient = {
   subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; },
 };
 
+it('requests Android local-network access only after a user selects the S3 authorization', async () => {
+  platform.native = true;
+  const userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Android');
+  const ipc = vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === 'sync_local_network_access') return Boolean((args as { request: boolean }).request);
+    return null;
+  });
+  const root = document.body.appendChild(document.createElement('div'));
+  const view = mountSettings(root, client, vi.fn());
+  try {
+    await view.loaded;
+    const button = root.querySelector<HTMLButtonElement>('[aria-label="授权局域网访问"]')!;
+    expect(button.closest('.settings-sync-form')).not.toBeNull();
+    expect(ipc.mock.calls.filter(([command]) => command === 'sync_local_network_access')).toEqual([
+      ['sync_local_network_access', { request: false }],
+    ]);
+    button.click();
+    await vi.waitFor(() => expect(button.textContent).toBe('已授权'));
+    expect(button.disabled).toBe(true);
+    expect(ipc).toHaveBeenCalledWith('sync_local_network_access', { request: true });
+  } finally {
+    view.destroy();
+    platform.native = false;
+    userAgent.mockRestore();
+    ipc.mockReset();
+  }
+});
+
 it('omits the former source editor controls on mobile', async () => {
   const root = document.createElement('div'); document.body.append(root);
   const view = mountSettings(root, client, vi.fn()); await view.loaded; view.select('general');
   expect(root.querySelector('#settings-panel-general [name=previewWidth]')).not.toBeNull();
   expect(root.querySelector('[name=defaultMode], [name=lineWrap]')).toBeNull();
+  expect(root.querySelector<HTMLSelectElement>('[name=assetDownload]')!.value).toBe('on-demand');
   view.destroy();
 });
 
@@ -109,6 +141,14 @@ it('dismisses the whole settings sheet from the nested S3 form', async () => {
   const root = document.querySelector<HTMLDialogElement>('.settings-inline')!;
   root.querySelector<HTMLButtonElement>('#settings-panel-account [aria-label="存储与同步"]')!.click();
   expect(history.state.settingsSection).toBe('sync'); expect(history.state.settingsDepth).toBe(2);
+  expect(root.matches('.feature-panel-dialog[data-feature-animated]')).toBe(true);
+  const cancel = new Event('cancel', { cancelable: true });
+  root.dispatchEvent(cancel);
+  expect(cancel.defaultPrevented).toBe(true);
+  await vi.waitFor(() => expect(history.state.settingsSection).toBe('account'));
+  expect(root.open).toBe(true);
+  root.querySelector<HTMLButtonElement>('#settings-panel-account [aria-label="存储与同步"]')!.click();
+  expect(history.state.settingsDepth).toBe(2);
   vi.spyOn(root, 'getBoundingClientRect').mockReturnValue(new DOMRect(10, 200, 380, 600));
   root.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 200, clientY: 100 }));
   await vi.waitFor(() => expect(document.querySelector('.settings-inline')).toBeNull()); expect(history.state).toEqual(route);
@@ -141,23 +181,23 @@ it('tracks a header drag, resets on a short or cancelled pull, and dismisses on 
 
   pointer('pointerdown', 220);
   pointer('pointermove', 300);
-  expect(root.hasAttribute('data-settings-dragging')).toBe(true);
-  expect(root.style.getPropertyValue('--settings-sheet-transform')).toBe('translateY(80px)');
+  expect(root.hasAttribute('data-feature-dragging')).toBe(true);
+  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('translateY(80px)');
   pointer('pointerup', 300);
-  expect(root.style.getPropertyValue('--settings-sheet-transform')).toBe('');
+  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('');
   expect(root.open).toBe(true);
   expect(history.state.settingsSection).toBe('sync');
 
   pointer('pointerdown', 220);
   pointer('pointermove', 380);
   pointer('pointercancel', 380);
-  expect(root.style.getPropertyValue('--settings-sheet-transform')).toBe('');
+  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('');
   expect(root.open).toBe(true);
 
   pointer('pointerdown', 220);
   pointer('pointermove', 380);
   pointer('pointerup', 380);
-  expect(root.style.getPropertyValue('--settings-sheet-transform')).toBe('translateY(160px)');
+  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('translateY(160px)');
   await vi.waitFor(() => expect(document.querySelector('.settings-inline')).toBeNull());
   expect(history.state).toEqual(libraryRoute);
 });

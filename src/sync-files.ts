@@ -20,7 +20,6 @@ type AssetIO = {
   readStage(asset: StagedAsset): Promise<Uint8Array>;
 };
 export const MAX_ASSET_BYTES = 64 * 1024 * 1024;
-export const MAX_ASSETS_TOTAL = 256 * 1024 * 1024;
 export function assetPath(path: string) { return `assets/${encodeId(path)}.bin`; }
 export function assetRelative(path: string) {
   const match = /^assets\/([A-Za-z0-9_-]+)\.bin$/.exec(path);

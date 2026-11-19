@@ -25,6 +25,9 @@
 !src-tauri/src/**
 !src-tauri/plugins/
 !src-tauri/plugins/**
+!src-tauri/vendor/
+!src-tauri/vendor/tauri-runtime-wry/
+!src-tauri/vendor/tauri-runtime-wry/**
 src-tauri/plugins/*/android/build/
 **/.env*
 **/.git/**

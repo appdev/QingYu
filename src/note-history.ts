@@ -41,11 +41,11 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
   dialog.innerHTML = `<aside class="history-sidebar"><header><h2 id="note-history-title">版本历史</h2><p class="history-note-title"></p></header>
     <div class="history-versions" role="group" aria-label="历史版本"></div></aside>
     <button class="history-close" type="button" aria-label="关闭版本历史" autofocus><span>×</span><span>完成</span></button>
-    <div class="history-state"><div role="status"><h3></h3><p></p></div><button type="button" class="secondary-button" hidden>重试</button></div>
+    <div class="history-state"><div role="status"><h3></h3><p></p></div><button type="button" class="button secondary-button" hidden>重试</button></div>
     <section class="history-detail" aria-label="版本预览" hidden><header>
       <button class="history-back" type="button" aria-label="返回版本列表">‹</button>
       <div class="history-summary"><h3></h3><p></p></div>
-      <select aria-label="对比版本"></select><button class="history-restore primary-button" type="button">恢复此版本</button>
+      <select aria-label="对比版本"></select><button class="history-restore button primary-button" type="button">恢复此版本</button>
     </header><p class="history-error" role="alert" hidden></p><div id="note-history-editor"></div></section>`;
   dialog.ariaLabel = '版本历史';
   const $ = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;

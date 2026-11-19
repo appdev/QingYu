@@ -3152,13 +3152,14 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "qingyu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
  "block2",
  "chardetng",
  "encoding_rs",
+ "jni 0.22.4",
  "libc",
  "notify",
  "objc2",
@@ -3167,6 +3168,7 @@ dependencies = [
  "objc2-quartz-core",
  "regex",
  "reqwest",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2",
@@ -4527,8 +4529,6 @@ dependencies = [
 [[package]]
 name = "tauri-runtime-wry"
 version = "2.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1aa9d8b7a120f879f44fdc1053f7b7dbf416bf0bbc6a72b714dec46b782b52f"
 dependencies = [
  "gtk",
  "http",

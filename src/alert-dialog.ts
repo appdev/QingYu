@@ -4,8 +4,8 @@
 export function alertActions(primary: HTMLButtonElement, ...others: HTMLButtonElement[]) {
   const actions = document.createElement('div');
   actions.className = 'alert-actions';
-  primary.classList.add('primary-button');
-  for (const button of others) button.classList.add('secondary-button');
+  primary.classList.add('button', 'primary-button');
+  for (const button of others) button.classList.add('button', 'secondary-button');
   actions.append(primary, ...others);
   return actions;
 }

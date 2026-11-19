@@ -12,7 +12,7 @@ import app.tauri.plugin.Plugin
 import java.io.File
 
 @InvokeArg
-class OpenArgs { lateinit var path: String; lateinit var mime: String }
+class OpenArgs { lateinit var path: String; lateinit var mime: String; var share: Boolean = false }
 
 @InvokeArg
 class ShareArgs { lateinit var title: String; lateinit var text: String }
@@ -37,7 +37,10 @@ class AttachmentsPlugin(private val activity: Activity) : Plugin(activity) {
             val file = File(args.path).canonicalFile
             require(file.toPath().startsWith(File(activity.cacheDir, "attachments").canonicalFile.toPath()) && file.isFile && file.length() <= 64L * 1024 * 1024) { "附件路径无效" }
             val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", file)
-            val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, args.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val intent = if (args.share) {
+                Intent(Intent.ACTION_SEND).setType(args.mime).putExtra(Intent.EXTRA_STREAM, uri)
+            } else Intent(Intent.ACTION_VIEW).setDataAndType(uri, args.mime)
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.clipData = ClipData.newRawUri(file.name, uri)
             activity.startActivity(Intent.createChooser(intent, file.name))
             invoke.resolve()

@@ -6,16 +6,24 @@ fn blocked_directory_access_times_out_without_writing_files() {
     fs::write(root.path().join("keep.md"), "original").unwrap();
     let (release, wait) = std::sync::mpsc::channel();
     let (finished, done) = std::sync::mpsc::channel();
-    let result = check_directory_access(root.path().into(), std::time::Duration::from_millis(20), move |_| {
-        wait.recv().unwrap();
-        finished.send(()).unwrap();
-        Ok(())
-    });
+    let result = check_directory_access(
+        root.path().into(),
+        std::time::Duration::from_millis(20),
+        move |_| {
+            wait.recv().unwrap();
+            finished.send(()).unwrap();
+            Ok(())
+        },
+    );
     assert!(result.unwrap_err().contains("读取笔记目录超时"));
     assert!(!root.path().join(META).exists());
     release.send(()).unwrap();
-    done.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
-    assert_eq!(fs::read_to_string(root.path().join("keep.md")).unwrap(), "original");
+    done.recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.path().join("keep.md")).unwrap(),
+        "original"
+    );
     assert!(!root.path().join(META).exists());
 }
 
@@ -23,11 +31,22 @@ fn blocked_directory_access_times_out_without_writing_files() {
 fn directory_access_checks_parents_without_creating_a_missing_library() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("new/notes");
-    check_directory_access(missing.clone(), std::time::Duration::from_secs(1), read_library_directory).unwrap();
+    check_directory_access(
+        missing.clone(),
+        std::time::Duration::from_secs(1),
+        read_library_directory,
+    )
+    .unwrap();
     assert!(!missing.exists());
     let file = root.path().join("note.md");
     fs::write(&file, "keep").unwrap();
-    assert!(check_directory_access(file, std::time::Duration::from_secs(1), read_library_directory).unwrap_err().contains("无法读取笔记目录"));
+    assert!(check_directory_access(
+        file,
+        std::time::Duration::from_secs(1),
+        read_library_directory
+    )
+    .unwrap_err()
+    .contains("无法读取笔记目录"));
 }
 
 #[test]
@@ -41,17 +60,32 @@ fn renamed_default_library_reuses_existing_notes_without_moving_them() {
     assert_eq!(default_library_directory(documents.path().into()), legacy);
     fs::create_dir(&current).unwrap();
     assert_eq!(default_library_directory(documents.path().into()), current);
-    assert_eq!(fs::read_to_string(legacy.join("existing.md")).unwrap(), "keep my notes");
+    assert_eq!(
+        fs::read_to_string(legacy.join("existing.md")).unwrap(),
+        "keep my notes"
+    );
 }
 
 #[test]
 fn write_lock_excludes_other_handles_and_releases_on_close() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("write.lock");
-    let first = fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap();
-    let second = fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+    let first = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    let second = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
     try_lock(&first).unwrap();
-    assert!(matches!(try_lock(&second), Err(fs::TryLockError::WouldBlock)));
+    assert!(matches!(
+        try_lock(&second),
+        Err(fs::TryLockError::WouldBlock)
+    ));
     drop(first);
     try_lock(&second).unwrap();
 }
@@ -93,19 +127,67 @@ fn saving_a_note_body_preserves_other_notes_and_the_active_selection() {
     let second = create(&mut store, Some("第二篇"), "二\n");
     let root = store.snapshot().root;
 
-    store.save_note_body(&root, &second.id, &second.source, "第二篇其他窗口\n".into(), "edit").unwrap();
-    store.save_note_body(&root, &first.id, &first.source, "第一篇窗口\n".into(), "edit").unwrap();
+    store
+        .save_note_body(
+            &root,
+            &second.id,
+            &second.source,
+            "第二篇其他窗口\n".into(),
+            "edit",
+        )
+        .unwrap();
+    store
+        .save_note_body(
+            &root,
+            &first.id,
+            &first.source,
+            "第一篇窗口\n".into(),
+            "edit",
+        )
+        .unwrap();
     let latest = store.snapshot();
     assert_eq!(latest.library.active_id, second.id);
     assert_eq!(latest.library.notes[0].source, "第一篇窗口\n");
     assert_eq!(latest.library.notes[1].source, "第二篇其他窗口\n");
-    assert_eq!(fs::read_to_string(directory.path().join(&first.path)).unwrap(), "第一篇窗口\n");
-    assert_eq!(fs::read_to_string(directory.path().join(&second.path)).unwrap(), "第二篇其他窗口\n");
+    assert_eq!(
+        fs::read_to_string(directory.path().join(&first.path)).unwrap(),
+        "第一篇窗口\n"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join(&second.path)).unwrap(),
+        "第二篇其他窗口\n"
+    );
 
-    store.save_note_body(&root, &first.id, &first.source, "第一篇窗口\n".into(), "edit").unwrap();
+    store
+        .save_note_body(
+            &root,
+            &first.id,
+            &first.source,
+            "第一篇窗口\n".into(),
+            "edit",
+        )
+        .unwrap();
     assert_eq!(store.revision, latest.revision);
-    assert!(store.save_note_body(&root, &first.id, &first.source, "同一篇旧草稿".into(), "edit").unwrap_err().contains("正文已更新"));
-    assert!(store.save_note_body("/another-library", &first.id, "第一篇窗口\n", "旧笔记库内容".into(), "edit").unwrap_err().contains("位置已更改"));
+    assert!(store
+        .save_note_body(
+            &root,
+            &first.id,
+            &first.source,
+            "同一篇旧草稿".into(),
+            "edit"
+        )
+        .unwrap_err()
+        .contains("正文已更新"));
+    assert!(store
+        .save_note_body(
+            "/another-library",
+            &first.id,
+            "第一篇窗口\n",
+            "旧笔记库内容".into(),
+            "edit"
+        )
+        .unwrap_err()
+        .contains("位置已更改"));
     assert_eq!(store.data, latest.library);
 }
 
@@ -120,7 +202,10 @@ fn saving_a_note_body_checks_disk_bytes_even_on_retry() {
     fs::write(&path, "外部文件改写").unwrap();
 
     for source in ["当前窗口草稿", note.source.as_str()] {
-        assert!(store.save_note_body(&root, &note.id, &note.source, source.into(), "edit").unwrap_err().contains("磁盘文件已被外部修改"));
+        assert!(store
+            .save_note_body(&root, &note.id, &note.source, source.into(), "edit")
+            .unwrap_err()
+            .contains("磁盘文件已被外部修改"));
     }
     assert_eq!(fs::read_to_string(path).unwrap(), "外部文件改写");
     assert_eq!(store.revision, revision);
@@ -366,7 +451,9 @@ fn interrupted_creation_rolls_back_only_its_own_file() {
     };
     operation.apply(temp.path()).unwrap();
     // Android publishes by rename, so recovery cannot rely on a remaining hard link.
-    if temp.path().join(staged).exists() { fs::remove_file(temp.path().join(staged)).unwrap(); }
+    if temp.path().join(staged).exists() {
+        fs::remove_file(temp.path().join(staged)).unwrap();
+    }
     atomic(
         &temp.path().join(JOURNAL),
         &serde_json::to_vec(&Transaction {
@@ -455,10 +542,16 @@ fn sync_preserves_distinct_notes_with_the_same_logical_filename() {
         next.notes.push(peer.clone());
         next.sync = Some(checkpoint.clone());
         store.commit(next, "sync").unwrap();
-        assert_eq!(fs::read_to_string(temp.path().join(&local.path)).unwrap(), "local welcome");
+        assert_eq!(
+            fs::read_to_string(temp.path().join(&local.path)).unwrap(),
+            "local welcome"
+        );
         let imported = store.data.notes.iter().find(|n| n.id == peer.id).unwrap();
         assert_eq!(imported.path, "轻羽 Markdown 语法指南 1.md");
-        assert_eq!(fs::read_to_string(temp.path().join(&imported.path)).unwrap(), text);
+        assert_eq!(
+            fs::read_to_string(temp.path().join(&imported.path)).unwrap(),
+            text
+        );
         let alias = &store.data.sync.as_ref().unwrap()["localNoteNames"][&peer.id];
         assert_eq!(alias["filename"], "轻羽 Markdown 语法指南.md");
         assert_eq!(alias["localFilename"], "轻羽 Markdown 语法指南 1.md");
@@ -617,9 +710,15 @@ fn share_state_round_trips_and_stays_out_of_untouched_notes() {
     let mut note = draft(Some("分享"), "# 分享");
     let plain = serde_json::to_value(&note).unwrap();
     assert!(plain.get("share").is_none());
-    note.share = Some(NoteShare { status: ShareStatus::Shared, url: Some("https://share.example.com/n/a".into()) });
+    note.share = Some(NoteShare {
+        status: ShareStatus::Shared,
+        url: Some("https://share.example.com/n/a".into()),
+    });
     let value = serde_json::to_value(&note).unwrap();
-    assert_eq!(value["share"], serde_json::json!({ "status": "shared", "url": "https://share.example.com/n/a" }));
+    assert_eq!(
+        value["share"],
+        serde_json::json!({ "status": "shared", "url": "https://share.example.com/n/a" })
+    );
     assert_eq!(serde_json::from_value::<Note>(value).unwrap(), note);
     let legacy: Note = serde_json::from_value(plain).unwrap();
     assert_eq!(legacy.share, None);
@@ -631,10 +730,24 @@ fn share_state_survives_a_disk_commit_and_reopen() {
     let mut store = open(dir.path());
     let note = create(&mut store, Some("分享"), "# 分享");
     let mut next = store.data.clone();
-    next.notes.iter_mut().find(|n| n.id == note.id).unwrap().share =
-        Some(NoteShare { status: ShareStatus::Shared, url: Some("https://share.example.com/n/a".into()) });
+    next.notes
+        .iter_mut()
+        .find(|n| n.id == note.id)
+        .unwrap()
+        .share = Some(NoteShare {
+        status: ShareStatus::Shared,
+        url: Some("https://share.example.com/n/a".into()),
+    });
     store.commit(next, "share").unwrap();
     let reopened = open(dir.path());
-    let saved = reopened.data.notes.iter().find(|n| n.id == note.id).unwrap();
-    assert_eq!(saved.share.as_ref().map(|s| s.status), Some(ShareStatus::Shared));
+    let saved = reopened
+        .data
+        .notes
+        .iter()
+        .find(|n| n.id == note.id)
+        .unwrap();
+    assert_eq!(
+        saved.share.as_ref().map(|s| s.status),
+        Some(ShareStatus::Shared)
+    );
 }

@@ -10,8 +10,14 @@ import { groupNotes, noteListDate, type Note } from '../src/notebook';
 import type { SyncClient } from '../src/sync-session';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
+const platform = vi.hoisted(() => ({ native: false }));
+vi.mock('../src/preferences', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/preferences')>(),
+  get native() { return platform.native; },
+}));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 const sync: SyncClient = { load: async () => ({ endpoint: '', bucket: '', region: '', prefix: '', accessKeyId: '', secretAccessKey: '' }), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
-beforeEach(() => { localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
+beforeEach(() => { platform.native = false; localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
 
 it('persists all six appearance themes, updates rendering tokens and restores the default palette', async () => {
   const root = document.createElement('div'); document.body.append(root); const view = mountSettings(root, sync, vi.fn()); await view.loaded; view.select('appearance');
@@ -131,6 +137,7 @@ it('adjusts note text live with the five slider stops and navigates back and for
 });
 
 it('shows the parent of the current desktop settings page independently of navigation history', () => {
+  platform.native = true;
   const root = document.body.appendChild(document.createElement('div'));
   const close = vi.fn(), view = mountSettings(root, sync, close);
   const back = root.querySelector<HTMLButtonElement>('.settings-back')!;
@@ -147,7 +154,7 @@ it('shows the parent of the current desktop settings page independently of navig
   view.select('appearance');
   view.select('personal');
   expect(title()).toBe('个人信息');
-  expect(parent().textContent).toBe('账户');
+  expect(parent().textContent).toBe('个人资料');
   expect(root.querySelector('#settings-tab-account')?.getAttribute('aria-selected')).toBe('true');
   expect(shortcut('[', true)).toBe(true);
   expect(title()).toBe('个人信息');
@@ -157,14 +164,13 @@ it('shows the parent of the current desktop settings page independently of navig
   expect(shortcut(']')).toBe(false);
   expect(title()).toBe('个人信息');
   parent().click();
-  expect(title()).toBe('账户');
+  expect(title()).toBe('个人资料');
   expect(forward.disabled).toBe(true);
-  root.querySelector<HTMLButtonElement>('.settings-close')!.click();
-  expect(close).toHaveBeenCalledTimes(1);
   view.destroy();
 });
 
 it('shows sharing tabs with mock web publishing and keeps unavailable lock operations disabled', () => {
+  platform.native = true;
   Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value() {} });
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.open = true; } });
   const anchor = document.createElement('button'); document.body.append(anchor);

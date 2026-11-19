@@ -12,7 +12,7 @@ import { createFolderMenu } from './folder-menu';
 import { folderRows } from './folder-tree';
 import { setupSidebarResize } from './sidebar-resize';
 import { dismissPopupMenu, popupMenu } from './popup-menu';
-import { ArrowUpDown, CalendarDays, Check, Folder as FolderIcon, FolderPlus, Inbox, Link as LinkIcon, Search, SquarePen, Trash2 } from 'lucide';
+import { ArrowUpDown, CalendarDays, Check, Folder as FolderIcon, FolderPlus, Inbox, Link as LinkIcon, Search, SquarePen, Trash2, X } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 
 const pageDepth = { folders: 0, notes: 1, note: 2 } as const;
@@ -38,6 +38,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   openNoteWindow?(id: string): Promise<void>;
   /** 列表行尾缩略图的图片地址，没有可显示的图片时返回 undefined。 */
   thumbnail?(note: Note): string | undefined;
+  mountThumbnail?(note: Note, image: HTMLImageElement, row: HTMLElement, url: string): (() => void) | undefined;
   noteWindow?: boolean;
 }, mobile = false) {
   const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
@@ -49,7 +50,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
   const restored = mobile ? history.state?.qingyuNavigation as MobileRoute | undefined : undefined;
   let page: MobilePage = restored?.page ?? 'folders';
   const search = $<HTMLInputElement>('#note-search'), dialog = $<HTMLDialogElement>('#folder-dialog');
-  const folderName = $<HTMLInputElement>('#folder-name'), folderError = $('#folder-error');
+  const folderName = $<HTMLInputElement>('#folder-name'), folderError = $('#folder-error'), createFolder = $<HTMLButtonElement>('#create-folder');
+  // 和 iOS 提示框一样，名称为空时「创建」不可点。
+  folderName.addEventListener('input', () => { createFolder.disabled = !folderName.value.trim(); folderError.textContent = ''; });
   let folderId = restored?.folderId ?? null;
   let trash = restored?.trash ?? Boolean(getBook().current?.trashed);
   const orderKey = 'miaoyan-editor.note-order.v1';
@@ -150,9 +153,15 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const bottom = document.createElement('div'); bottom.className = 'mobile-library-tools';
     const searchField = document.createElement('label'); searchField.className = 'mobile-library-search';
     searchField.append(createLucideIcon(document, Search, ''), search);
-    bottom.append(searchField, today, compose); $('#library-sidebar').append(bottom);
+    // 和 Pinto 一样，搜索时收起顶栏，右侧的今日笔记和新建换成一个关闭按钮。
+    const cancelSearch = document.createElement('button');
+    cancelSearch.type = 'button'; cancelSearch.className = 'icon-button mobile-search-cancel'; cancelSearch.ariaLabel = '取消搜索';
+    cancelSearch.append(createLucideIcon(document, X, ''));
+    cancelSearch.onclick = () => endMobileSearch(true);
+    bottom.append(searchField, today, compose, cancelSearch); $('#library-sidebar').append(bottom);
     document.querySelector<HTMLElement>('#library-search-button')?.setAttribute('hidden', '');
     search.addEventListener('focus', () => {
+      if (!shell.hasAttribute('data-mobile-search')) { searchFrom = page; shell.toggleAttribute('data-mobile-search', true); }
       if (page !== 'folders') return;
       folderId = null; trash = false; list.scrollTop = 0;
       refresh(); navigate('notes');
@@ -176,7 +185,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
         if (focused) list.querySelector<HTMLElement>('[aria-selected=true]')?.focus({ preventScroll: true });
       }
     } catch (error) { actions.error(error instanceof Error ? error.message : String(error)); }
-    finally { document.body.dataset.libraryBusy = 'false'; shell.inert = document.body.dataset.syncBusy === 'true'; }
+    finally { document.body.dataset.libraryBusy = 'false'; shell.inert = false; }
   } });
   const folderMenu = createFolderMenu(getBook, { create: newFolder, createNote: id => newNote('', id), error: actions.error, change: changeFolder, mobile, reorder(id, direction, apply) {
     const rows = folderRows(getBook().data.folders, expanded, folderOrder);
@@ -209,7 +218,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       const notes = notesIn(folderId);
       if (!notes.some(note => note.id === getBook().data.activeId)) await actions.select(notes[0]?.id ?? null);
       refresh();
-    } finally { document.body.dataset.libraryBusy = 'false'; shell.inert = document.body.dataset.syncBusy === 'true'; }
+    } finally { document.body.dataset.libraryBusy = 'false'; shell.inert = false; }
   }
 
   function applyLayout(next: SidebarLayout) {
@@ -273,8 +282,20 @@ export function createSidebar(getBook: () => Notebook, actions: {
       renderLayout({ columns: 'list', unfolding: false });
     } else renderLayout(layout);
   }
+  let searchFrom: MobilePage | undefined;
+  function endMobileSearch(goBack: boolean) {
+    if (!shell.hasAttribute('data-mobile-search')) return false;
+    const from = searchFrom;
+    searchFrom = undefined;
+    shell.removeAttribute('data-mobile-search');
+    search.value = ''; search.blur(); delete notesPane.dataset.searching;
+    refresh();
+    if (goBack && from === 'folders' && page === 'notes') navigate('folders');
+    return true;
+  }
   function renderMobile(next: MobilePage, animate = false) {
     const previous = page;
+    if (next === 'folders') endMobileSearch(false);
     const active = document.activeElement;
     page = next;
     if (page !== 'folders' && editingFolders()) setFolderEditing(false);
@@ -378,6 +399,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     while (parent) { expanded.add(parent); parent = rows.find(row => row.folder.id === parent)?.parentId; }
     saveExpansion();
   }
+  const thumbnailCleanups: (() => void)[] = [];
   function refresh() {
     const now = new Date();
     listDay = now.toDateString();
@@ -446,6 +468,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const name = trash ? '废纸篓' : getBook().data.folders.find(folder => folder.id === folderId)?.name ?? '全部笔记';
     $('#notes-heading').textContent = name;
     $('#notes-count').textContent = `${notes.length} 篇笔记`;
+    for (const cleanup of thumbnailCleanups.splice(0)) cleanup();
     list.replaceChildren();
     list.toggleAttribute('data-show-folders', !folderId);
     const date = noteListDate(now);
@@ -467,7 +490,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
         const summary = document.createElement('span'); summary.className = 'note-row-summary'; summary.textContent = text.summary;
         // 参照 Pinto 列表：已分享的笔记在日期前放一个弱化的链接图标。
         const stamp = document.createElement('span'); stamp.className = 'note-row-date';
-        if (isShared(note)) {
+        if ('__TAURI_INTERNALS__' in window && isShared(note)) {
           stamp.append(createLucideIcon(document, LinkIcon, 'note-row-shared'));
           row.dataset.shared = ''; row.setAttribute('aria-description', '已分享');
         }
@@ -480,10 +503,13 @@ export function createSidebar(getBook: () => Notebook, actions: {
         const picture = actions.thumbnail?.(note);
         if (picture) {
           const image = document.createElement('img'); image.className = 'note-row-thumbnail';
-          image.alt = ''; image.loading = 'lazy'; image.decoding = 'async'; image.draggable = false; image.src = picture;
+          image.alt = ''; image.loading = 'lazy'; image.decoding = 'async'; image.draggable = false;
           // 图片读不到时只去掉缩略图，行本身照常显示。
           image.onerror = () => { image.remove(); delete row.dataset.thumbnail; };
           row.dataset.thumbnail = ''; row.append(image);
+          const cleanup = actions.mountThumbnail?.(note, image, row, picture);
+          if (cleanup) thumbnailCleanups.push(cleanup);
+          else image.src = picture;
         }
         row.onclick = async event => {
           if (event.shiftKey || event.metaKey || event.ctrlKey) {
@@ -498,7 +524,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
         };
         row.oncontextmenu = async event => {
           event.preventDefault();
-          if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') return;
+          if (document.body.dataset.libraryBusy === 'true') return;
           if (!await actions.save()) return;
           if (!selectedNotes.has(note.id)) {
             selectedNotes = new Set([note.id]); selectionAnchor = note.id; renderSelection();
@@ -558,7 +584,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       return;
     }
     $('#folder-dialog-title').textContent = parentId === 'default' ? '新建文件夹' : '新建子文件夹';
-    folderError.textContent = ''; folderName.value = ''; dialog.showModal(); folderName.focus();
+    folderError.textContent = ''; folderName.value = ''; createFolder.disabled = true; dialog.showModal(); folderName.focus();
   }
   $('#folder-form').onsubmit = async event => {
     event.preventDefault();
@@ -599,8 +625,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
         } })) },
       ...(!mobile && !getBook().external ? [{ text: '' }, { text: '新建文件夹', icon: createLucideIcon(document, FolderPlus, ''), run: () => newFolder() }] : []),
     ], box.left, box.bottom + 6, actions.error, () => listMore.focus(), '列表选项', undefined, 0,
-    // 桌面上与编辑器右上角共用玻璃工具栏菜单：从按钮展开、按钮后显示高亮。手机保持原样。
-    mobile ? undefined : { anchor: listMore, keyboard: event.detail === 0 });
+    // 与编辑器右上角共用玻璃工具栏菜单：从按钮展开、按钮后显示高亮；手机上和 Pinto 一样用大号菜单。
+    { anchor: listMore, keyboard: event.detail === 0 });
   };
   $('#new-note-button').onclick = $('#new-empty-note').onclick = () => { void newNote(); };
   search.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); void newNote(search.value); } });
@@ -612,14 +638,13 @@ export function createSidebar(getBook: () => Notebook, actions: {
   };
   if (searchButton) searchButton.onclick = () => { if (!actions.quickOpen?.()) focusSearch(); };
   search.addEventListener('blur', () => { if (!search.value) delete notesPane.dataset.searching; });
+  const edge = document.createElement('glass-progressive-blur');
+  edge.className = 'notes-scroll-edge';
+  edge.setAttribute('edge', 'top'); edge.setAttribute('blur', '20'); edge.setAttribute('layers', '6');
+  const wash = document.createElement('div'); wash.className = 'notes-scroll-wash'; wash.ariaHidden = 'true';
+  notesToolbar.before(edge, wash);
   if (!mobile) {
-    $('.notes-toolbar').prepend($('.notes-summary'));
-    // 列表滚到标题栏下面时逐渐模糊淡出，对应 Pinto 的 scrollEdgeEffectStyle(.soft)。
-    const edge = document.createElement('glass-progressive-blur');
-    edge.className = 'notes-scroll-edge';
-    edge.setAttribute('edge', 'top'); edge.setAttribute('blur', '20'); edge.setAttribute('layers', '6');
-    const wash = document.createElement('div'); wash.className = 'notes-scroll-wash'; wash.ariaHidden = 'true';
-    notesToolbar.before(edge, wash);
+    notesToolbar.prepend($('.notes-summary'));
     let frame = 0;
     const markStuck = () => {
       frame = 0;
@@ -705,7 +730,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   $('#notes-pane').addEventListener('contextmenu', event => {
     if (!(event.target as HTMLElement).closest('input')) event.preventDefault();
   });
-  document.addEventListener('contextmenu', event => { if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') event.preventDefault(); }, true);
+  document.addEventListener('contextmenu', event => { if (document.body.dataset.libraryBusy === 'true') event.preventDefault(); }, true);
   $('#folder-pane').addEventListener('keydown', event => {
     if ((event.target as HTMLElement).closest('input') || event.isComposing) return;
     const row = document.activeElement?.closest<HTMLElement>('.folder-row') ?? document.activeElement?.closest('.folder-entry')?.querySelector<HTMLElement>('.folder-row');
@@ -732,7 +757,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       event.preventDefault(); const box = row.getBoundingClientRect(); row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box.left + 20, clientY: box.top + 20 })); return;
     }
     const command = event.metaKey || event.ctrlKey;
-    if (event.key === 'F6' && event.shiftKey || command && (event.altKey && event.key.toLowerCase() === 'r' || event.key.toLowerCase() === 'j' || event.shiftKey && event.key === 'Backspace')) {
+    if (event.key === 'F6' && event.shiftKey || command && getBook().root && (event.altKey && event.key.toLowerCase() === 'r' || event.key.toLowerCase() === 'j' || event.shiftKey && event.key === 'Backspace')) {
       event.preventDefault();
       const id = row.dataset.folderId || null;
       if (event.key === 'F6') {
@@ -827,5 +852,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     showCurrentMenu(x: number, y: number, keyboard: boolean) { const note = getBook().current; if (note) return contextMenu(note.id, x, y, { keyboard }); },
     moveCurrentNote() { const note = getBook().current; if (note) return contextMenu(note.id, 0, 0, 'move'); },
     revealCurrent() { folderId = null; trash = Boolean(getBook().current?.trashed); search.value = ''; refresh(); },
+    /** 安卓返回键：搜索中先退出搜索。 */
+    cancelSearch: () => mobile && page !== 'note' && endMobileSearch(true),
   };
 }

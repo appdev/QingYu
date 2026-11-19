@@ -100,15 +100,27 @@ export function previewPreferences() {
   return { dark: isDark(), theme: p.theme, font: fontCSS(p.previewFont), size: p.previewFontSize, width: p.previewWidth };
 }
 const appShell = document.querySelector<HTMLElement>('#app-shell');
+let viewingMedia = false;
+/** 把 #RRGGBB 的 base 和 over 按 amount 混合，用来算出半透明遮罩盖在页面上的颜色。 */
+export function mixHex(base: string, over: string, amount: number) {
+  const channel = (hex: string, index: number) => parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16);
+  return '#' + [0, 1, 2].map(index => Math.round(channel(base, index) * (1 - amount) + channel(over, index) * amount).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
 function updateNativeAppearance() {
   if (!window.nativeAppearance) return;
   const dark = isDark(), colors = themePalette(preferences.value.theme, dark);
   const page = appShell?.hasAttribute('data-mobile-wide') ? undefined : appShell?.dataset.mobilePage;
+  // 图片查看器盖住整页：系统栏后面露出的原生背景也换成查看器的暗色（页面压暗 62%），状态栏改用浅色图标。
+  if (viewingMedia) { window.nativeAppearance.postMessage(`dark:${mixHex(colors.paper.slice(0, 7), colors['mode-dark'].slice(0, 7), .62)}`); return; }
   const background = page === 'folders' ? colors['mobile-sidebar'] : page === 'notes' ? colors['mobile-list'] : colors.paper;
   window.nativeAppearance.postMessage(`${dark ? 'dark' : 'light'}:${background}`);
 }
 if (window.nativeAppearance && appShell) {
   new MutationObserver(updateNativeAppearance).observe(appShell, { attributes: true, attributeFilter: ['data-mobile-page', 'data-mobile-wide'] });
+  document.addEventListener('media-viewer-toggle', event => {
+    viewingMedia = (event as CustomEvent<boolean>).detail;
+    updateNativeAppearance();
+  });
 }
 function apply() {
   const p = preferences.value, root = document.documentElement, preview = previewPreferences();

@@ -36,6 +36,9 @@ export type EditorBuffer = { noteId: string; source: string };
 export type NoteVersion = { id: string; updatedAt: number };
 type FileSnapshot = { library: Library; root: string; revision: number };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
+export class SyncSnapshotChanged extends Error {
+  constructor() { super('同步期间本机笔记发生变化，已保留新内容，请再次同步'); }
+}
 
 function encodeAsset(bytes: Uint8Array) {
   const encoded: string[] = [];
@@ -90,6 +93,8 @@ export class Notebook {
   external = false;
   noteWindow = false;
   private remote?: ServerLibrary;
+  onLocalChange?: () => void;
+  onSyncApply?: () => (applied: boolean) => void;
   get server() { return Boolean(this.remote); }
   constructor(private storage: Storage, starter: string) {
     this.data = initialLibrary(starter);
@@ -171,12 +176,14 @@ export class Notebook {
   }
   private async commit(next: Library, intent = 'edit', assets?: AssetSync) {
     if (this.loadError) throw new Error('笔记库读取失败，未覆盖原有数据');
+    const changed = intent !== 'sync' && (next.notes !== this.data.notes || next.folders !== this.data.folders);
     if (this.remote) {
       const snapshot = await this.remote.commit(this.data, next, intent);
       if (snapshot) this.adoptServer(snapshot, next.activeId); else this.data = next;
     }
     else if (this.disk) this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }), this.noteWindow ? next.activeId : undefined);
     else { this.storage.setItem(libraryKey, JSON.stringify(next)); this.data = next; this.persisted = true; }
+    if (changed) this.onLocalChange?.();
   }
   save(source: string, id = this.data.activeId, expectedSource?: string) { const externalRevision = this.externalRevision, root = this.disk?.root; return this.run(async () => {
     if (externalRevision !== this.externalRevision) throw new Error('文件已在外部变化，旧的延迟保存已取消');
@@ -196,9 +203,26 @@ export class Notebook {
     if (root && !this.external && !this.remote && changed) {
       if (this.loadError) throw new Error('笔记库读取失败，未覆盖原有数据');
       this.adopt(await invoke('library_save_note', { root, noteId: id, expectedSource: current.source, source }));
+      this.onLocalChange?.();
       return;
     }
     await this.commit(changed ? { ...this.data, notes: this.data.notes.map(note => note.id === current.id ? { ...note, source, updatedAt: Date.now() } : note) } : this.data);
+  }); }
+  saveDraftAfterSync(note: Note, source: string, applied?: Note) { return this.run(async () => {
+    const current = this.data.notes.find(entry => entry.id === note.id);
+    if (current?.readOnly) throw new Error('文件内容损坏或不可读，已阻止覆盖');
+    if (current?.source === source && !current.trashed) return;
+    const now = Date.now();
+    const folderId = current?.folderId ?? this.data.folders.find(folder => folder.id === note.folderId)?.id ?? this.data.folders[0]!.id;
+    const recovered = { ...(current ?? note), folderId, source, updatedAt: now, trashed: false };
+    const notes = current
+      ? this.data.notes.map(entry => entry.id === note.id ? recovered : entry)
+      : [...this.data.notes, recovered];
+    if (current && current.source === applied?.source && current.source !== source && current.source !== note.source) {
+      notes.push({ id: crypto.randomUUID(), folderId, source: current.source, createdAt: now, updatedAt: now,
+        title: `${noteTitle(current).slice(0, 145)}（冲突副本）`, conflictOf: current.id });
+    }
+    await this.commit({ ...this.data, notes, activeId: note.id });
   }); }
   select(id: string) { return this.run(async () => {
     if (!this.data.notes.some(note => note.id === id)) throw new Error('笔记不存在');
@@ -356,14 +380,32 @@ export class Notebook {
     if (!this.disk || this.external || this.disk.root !== root) throw new Error('笔记库已切换');
     this.adopt(await invoke<FileSnapshot>('library_delete_asset_placeholder', { root, revision: this.disk.revision, path, hash }));
   }); }
-  commitSync(library: Library, checkpoint: Checkpoint, expected: string, assets?: AssetSync,
-    location = { root: this.root, revision: this.assetRevision }) { return this.run(async () => {
+  commitSync(library: Library, checkpoint: Checkpoint, expected: Library, assets?: AssetSync,
+    location = { root: this.root, revision: this.assetRevision }, published?: State, ready = true) { return this.run(async () => {
     if (this.external) throw new Error('外部文件不在 S3 同步范围内');
     if (this.remote) throw new Error('Web 使用服务器笔记库，S3 同步请在桌面端操作');
-    if (this.root !== location.root || this.assetRevision !== location.revision || JSON.stringify(this.data) !== expected) throw new Error('同步期间本机笔记发生变化，已保留新内容，请再次同步');
-    const next = { ...library, sync: checkpoint };
+    if (this.root !== location.root) throw new SyncSnapshotChanged();
+    const current = this.data;
+    if (!ready || JSON.stringify({ ...current, activeId: expected.activeId }) !== JSON.stringify(expected)
+      || (current.activeId === expected.activeId && this.assetRevision !== location.revision)) {
+      // Record what this device published without acknowledging remote changes it has yet to apply.
+      if (published && JSON.stringify(current.sync) === JSON.stringify(expected.sync)) {
+        const previous = current.sync?.target === checkpoint.target ? current.sync : undefined;
+        await this.commit({ ...current, sync: { ...(previous ?? { version: 1, target: checkpoint.target }), state: published } });
+      }
+      if (!ready) throw new Error('当前输入尚未保存，已保留本机内容，请完成输入后再次同步');
+      throw new SyncSnapshotChanged();
+    }
+    const activeId = current.activeId !== expected.activeId && library.notes.some(note => note.id === current.activeId && !note.trashed)
+      ? current.activeId : library.activeId;
+    const next = { ...library, activeId, sync: checkpoint };
     if (!validLibrary(next)) throw new Error('同步结果格式无效，未覆盖本机笔记');
-    await this.commit(next, 'sync', assets);
+    const finish = this.onSyncApply?.();
+    let applied = false;
+    try {
+      await this.commit(next, 'sync', assets);
+      applied = true;
+    } finally { finish?.(applied); }
   }); }
   importFiles(directory = false) { return this.run(async () => { this.adopt(await invoke('library_import', { directory })); }); }
   chooseRoot() { return this.run(async () => { this.adopt(await invoke('library_choose')); }); }

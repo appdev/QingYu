@@ -42,9 +42,9 @@ export function mockAssetDisk(book: Notebook, initial: Asset[] = []) {
   });
   vi.spyOn(book, 'removeAssetPlaceholder').mockImplementation(async (_root, path, hash) => { removePlaceholder(path, hash); });
   const commit = book.commitSync.bind(book);
-  vi.spyOn(book, 'commitSync').mockImplementation(async (library, checkpoint, expected, sync, location) => {
+  vi.spyOn(book, 'commitSync').mockImplementation(async (library, checkpoint, expected, sync, location, published, ready) => {
     expect(sync?.before).toEqual(metadata());
-    await commit(library, checkpoint, expected, sync, location);
+    await commit(library, checkpoint, expected, sync, location, published, ready);
     const next = new Map(assets.map(asset => [asset.path, asset]));
     for (const { path } of sync!.deletes) next.delete(path);
     for (const { path, modified, staged } of sync!.writes) {

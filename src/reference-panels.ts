@@ -162,7 +162,7 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     );
     if (picture) items.push({ text: '分享为图片…', icon: icon(Image), async run() {
       const { showNotePicture } = await import('./note-picture');
-      showNotePicture(picture, restore);
+      await showNotePicture(picture, restore);
     } });
     anchor.setAttribute('aria-haspopup', 'menu');
     void popupMenu(items, 0, 0, report, restore, '分享', undefined, 0, { anchor, keyboard: anchor.matches(':focus-visible') });
@@ -173,19 +173,25 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
   panel.addEventListener('keydown', event => event.stopPropagation());
   const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = '分享方式';
   const content = document.createElement('div'); content.role = 'tabpanel'; content.id = 'share-content';
+  const modes = [
+    { index: 0, title: '发送副本' },
+    ...(native ? [{ index: 1, title: '网页' }] : []),
+    ...(native || picture ? [{ index: 2, title: '图片' }] : []),
+  ];
   const buttons: HTMLButtonElement[] = [];
   let removePicture: (() => void) | undefined, revision = 0;
-  function select(index: number) {
+  function select(position: number) {
+    const { index } = modes[position];
     lastShareTabs.set(noteKey, index);
     const selected = ++revision;
     removePicture?.(); removePicture = undefined;
-    for (const [i, button] of buttons.entries()) { button.setAttribute('aria-selected', String(i === index)); button.tabIndex = i === index ? 0 : -1; }
+    for (const [i, button] of buttons.entries()) { button.setAttribute('aria-selected', String(i === position)); button.tabIndex = i === position ? 0 : -1; }
     content.replaceChildren();
     const detail = document.createElement('p'); detail.className = 'share-description';
     detail.textContent = ['发送笔记的当前副本，之后的修改不会同步给收件人。', '获得链接的人都可查看。网页会随笔记更新，直到停止发布。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
     if (index === 0) {
       if (nativeShare || typeof navigator.share === 'function') {
-        const send = document.createElement('button'); send.textContent = '分享…'; send.className = 'primary-button share-send';
+        const send = document.createElement('button'); send.textContent = '分享…'; send.className = 'button primary-button share-send';
         send.onclick = async () => {
           send.disabled = true;
           try { if (await sendCopy()) panel.hidePopover(); }
@@ -203,6 +209,19 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
       mountMockWebShare(content, noteKey, title, text, anchor, shareStore);
       return;
     } else if (index === 2 && picture) {
+      if (native) {
+        const open = document.createElement('button');
+        open.type = 'button'; open.className = 'button primary-button button-wide'; open.textContent = '分享为图片…';
+        open.onclick = async () => {
+          panel.hidePopover();
+          try {
+            const { showNotePicture } = await import('./note-picture');
+            await showNotePicture(picture, () => anchor.focus({ preventScroll: true }));
+          } catch { report('无法打开图片预览'); }
+        };
+        content.append(open);
+        return;
+      }
       void import('./note-picture').then(({ mountNotePicture }) => {
         if (panel.isConnected && selected === revision) removePicture = mountNotePicture(content, picture);
       }).catch(() => report('无法打开图片预览'));
@@ -218,18 +237,19 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
       }
       const actions = document.createElement('div'); actions.className = 'share-actions';
       for (const [i, label] of ['复制图片', '保存…', '分享…'].entries()) {
-        const action = document.createElement('button'); action.className = i ? 'secondary-button' : 'primary-button'; action.disabled = true; action.textContent = label; actions.append(action);
+        const action = document.createElement('button'); action.className = i ? 'button secondary-button' : 'button primary-button'; action.disabled = true; action.textContent = label; actions.append(action);
       }
       content.append(actions);
     }
     const unavailable = document.createElement('p'); unavailable.className = 'share-unavailable'; unavailable.textContent = '灰色操作尚未接入。'; content.append(unavailable);
   }
-  for (const [index, title] of ['发送副本', '网页', '图片'].entries()) {
+  for (const [position, { title }] of modes.entries()) {
     const button = document.createElement('button'); button.role = 'tab'; button.textContent = title; button.setAttribute('aria-controls', content.id);
-    button.onclick = () => select(index); buttons.push(button); tabs.append(button);
-    button.onkeydown = event => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); const next = (index + (event.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length; select(next); buttons[next].focus(); };
+    button.onclick = () => select(position); buttons.push(button); tabs.append(button);
+    button.onkeydown = event => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); const next = (position + (event.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length; select(next); buttons[next].focus(); };
   }
-  panel.append(tabs, content); document.body.append(panel); select(lastShareTabs.get(noteKey) ?? 0); panel.showPopover();
+  panel.append(tabs, content); document.body.append(panel);
+  select(Math.max(0, modes.findIndex(mode => mode.index === lastShareTabs.get(noteKey)))); panel.showPopover();
   const box = anchor.getBoundingClientRect();
   const center = box.left + box.width / 2;
   const left = Math.max(8, Math.min(center - panel.offsetWidth / 2, innerWidth - panel.offsetWidth - 8));

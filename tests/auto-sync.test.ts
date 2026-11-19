@@ -42,6 +42,23 @@ it('joins a running manual sync, propagates its failure on exit and can retry', 
   publish({ busy: false, error: true, message: '连接失败' }); await failure;
   await auto.sync(); expect(client.run).toHaveBeenCalledTimes(2);
 });
+it('coalesces saved edits and queues one follow-up while another sync is running', async () => {
+  const { auto, client, publish } = fixture(); await vi.advanceTimersByTimeAsync(0);
+  auto.changed();
+  await vi.advanceTimersByTimeAsync(300);
+  auto.changed();
+  await vi.advanceTimersByTimeAsync(599);
+  expect(client.run).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(client.run).toHaveBeenCalledTimes(2);
+  publish({ busy: true, error: false, message: '' });
+  auto.changed(); auto.changed();
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(client.run).toHaveBeenCalledTimes(2);
+  publish({ busy: false, error: false, message: '' });
+  await vi.advanceTimersByTimeAsync(600);
+  expect(client.run).toHaveBeenCalledTimes(3);
+});
 it('uses the selected interval and cloud account for launch, periodic and exit sync', async () => {
   let change!: (value: Preferences) => void;
   const value = { syncInterval: 3, autoSyncCloudAccount: 'bound-account', autoSyncS3: true } as Preferences;

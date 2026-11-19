@@ -52,7 +52,6 @@ export function showEditorInputPanel(panel: HTMLDialogElement, input?: HTMLEleme
   return { useInput, close() { panel.remove(); releaseInput(); } };
 }
 
-// Native insets and the app toolbar already define the editor's visible box.
 export function revealCaret(root?: HTMLElement) {
   if (!root || !root.contains(root.ownerDocument.activeElement)) return;
   const selection = root.ownerDocument.getSelection();
@@ -72,7 +71,10 @@ function revealInScroller(scroller: HTMLElement, target: VerticalBounds | null |
   if (!target || target.bottom <= target.top) return;
   const box = scroller.getBoundingClientRect();
   if (target.bottom > box.bottom - margin) scroller.scrollTop += target.bottom - box.bottom + margin;
-  else if (target.top < box.top + margin) scroller.scrollTop -= box.top + margin - target.top;
+  else {
+    const top = box.top + (parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0) + margin;
+    if (target.top < top) scroller.scrollTop -= top - target.top;
+  }
 }
 
 export function keepPanelTargetVisible(

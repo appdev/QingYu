@@ -3,5 +3,7 @@ node_modules/
 src-tauri/target/
 src-tauri/gen/schemas/
 /src-tauri/plugins/*/android/build/
+/src-tauri/plugins/**/.tauri/
+/src-tauri/plugins/*/ios/Package.resolved
 artifacts/
 .DS_Store

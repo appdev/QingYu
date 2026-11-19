@@ -84,12 +84,18 @@ async fn storage_usage_reports_counts_from_the_mounted_library_to_the_editor_ses
     fs::write(root.join("测试.md"), "正文").unwrap();
     fs::write(root.join("图片.png"), [0; 21]).unwrap();
     let path = "/api/web/storage-usage";
-    assert_eq!(call(&app, "GET", path, "", json!(null)).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        call(&app, "GET", path, "", json!(null)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
     let cookie = login(&app).await;
     let (status, headers, body) = call(&app, "GET", path, &cookie, json!(null)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), json!({"notes":6,"files":21,"trash":0}));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        json!({"notes":6,"files":21,"trash":0})
+    );
 }
 
 #[tokio::test]
@@ -288,15 +294,57 @@ async fn update_note_keeps_share_state_and_rejects_non_web_links() {
     let (_dir, _state, app) = fixture();
     let cookie = login(&app).await;
     let id = Uuid::new_v4().to_string();
-    let created = json_call(&app, &cookie, json!({"kind":"createNote","id":id,"folderId":"default","title":"分享","source":"# 分享"})).await;
+    let created = json_call(
+        &app,
+        &cookie,
+        json!({"kind":"createNote","id":id,"folderId":"default","title":"分享","source":"# 分享"}),
+    )
+    .await;
     let update = |version: &serde_json::Value, share: serde_json::Value| json!({"kind":"updateNote","id":id,"version":version,"source":"# 分享","title":"分享","pinned":false,"trashed":false,"folderId":"default","share":share});
-    let bad = call(&app, "POST", "/api/web/commands", &cookie, update(&created["versions"][&id], json!({"status":"shared","url":"javascript:alert(1)"}))).await;
+    let bad = call(
+        &app,
+        "POST",
+        "/api/web/commands",
+        &cookie,
+        update(
+            &created["versions"][&id],
+            json!({"status":"shared","url":"javascript:alert(1)"}),
+        ),
+    )
+    .await;
     assert_eq!(bad.0, StatusCode::BAD_REQUEST);
-    let shared = json_call(&app, &cookie, update(&created["versions"][&id], json!({"status":"shared","url":"https://share.example.com/n/a"}))).await;
-    let note = |snapshot: &serde_json::Value| snapshot["notes"].as_array().unwrap().iter().find(|n| n["id"] == id.as_str()).unwrap().clone();
-    assert_eq!(note(&shared)["share"], json!({"status":"shared","url":"https://share.example.com/n/a"}));
-    assert_eq!(note(&load(&app, &cookie).await)["share"]["status"], "shared");
-    let stopped = json_call(&app, &cookie, update(&shared["versions"][&id], json!({"status":"unshared"}))).await;
+    let shared = json_call(
+        &app,
+        &cookie,
+        update(
+            &created["versions"][&id],
+            json!({"status":"shared","url":"https://share.example.com/n/a"}),
+        ),
+    )
+    .await;
+    let note = |snapshot: &serde_json::Value| {
+        snapshot["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == id.as_str())
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        note(&shared)["share"],
+        json!({"status":"shared","url":"https://share.example.com/n/a"})
+    );
+    assert_eq!(
+        note(&load(&app, &cookie).await)["share"]["status"],
+        "shared"
+    );
+    let stopped = json_call(
+        &app,
+        &cookie,
+        update(&shared["versions"][&id], json!({"status":"unshared"})),
+    )
+    .await;
     assert_eq!(note(&stopped)["share"], json!({"status":"unshared"}));
 }
 
@@ -376,20 +424,58 @@ async fn attachment_upload_uses_note_version_and_preserves_named_binary_resource
     let version = snapshot["versions"][id].as_str().unwrap();
     let endpoint = format!("/api/web/assets/{id}");
     let body = json!({"version":version,"upload":{"name":"说明.txt","bytes":[0,255,128]}});
-    assert_eq!(call(&app, "POST", &endpoint, "", body.clone()).await.0, StatusCode::UNAUTHORIZED);
-    assert_eq!(call(&app, "POST", &endpoint, &cookie, json!({"version":"stale","upload":{"name":"a.pdf","bytes":[]}})).await.0, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        call(&app, "POST", &endpoint, "", body.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &endpoint,
+            &cookie,
+            json!({"version":"stale","upload":{"name":"a.pdf","bytes":[]}})
+        )
+        .await
+        .0,
+        StatusCode::PRECONDITION_FAILED
+    );
     let (status, _, bytes) = call(&app, "POST", &endpoint, &cookie, body).await;
-    assert_eq!(status, StatusCode::OK, "{}",String::from_utf8_lossy(&bytes));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
     let receipt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(receipt["name"], "说明.txt"); assert_eq!(receipt["image"], false);
+    assert_eq!(receipt["name"], "说明.txt");
+    assert_eq!(receipt["image"], false);
     let path = receipt["path"].as_str().unwrap();
     assert!(path.starts_with(".attachments/"));
-    let query: String = path.as_bytes().iter().map(|byte| format!("%{byte:02X}")).collect();
-    let (status, headers, bytes) = call(&app, "GET", &format!("{endpoint}?path={query}"), &cookie, json!(null)).await;
-    assert_eq!(status, StatusCode::OK); assert_eq!(bytes, [0,255,128]);
-    assert!(headers[header::CONTENT_DISPOSITION].to_str().unwrap().contains("filename*=UTF-8''"));
+    let query: String = path
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("%{byte:02X}"))
+        .collect();
+    let (status, headers, bytes) = call(
+        &app,
+        "GET",
+        &format!("{endpoint}?path={query}"),
+        &cookie,
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, [0, 255, 128]);
+    assert!(headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .contains("filename*=UTF-8''"));
     let after = load(&app, &cookie).await;
     assert_eq!(after["notes"].as_array().unwrap().len(), 1); // A .txt attachment must not become another note.
     let large = json!({"version":version,"upload":{"name":"large.bin","bytes":vec![255u8; MAX_BODY / 4 + 1]}});
-    assert_eq!(call(&app, "POST", &endpoint, &cookie, large).await.0, StatusCode::OK);
+    assert_eq!(
+        call(&app, "POST", &endpoint, &cookie, large).await.0,
+        StatusCode::OK
+    );
 }

@@ -1,4 +1,5 @@
 @import './theme.css';
+@import './buttons.css';
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
 body { display: flex; flex-direction: column; height: 100dvh; background: var(--paper); }
@@ -7,40 +8,16 @@ body { display: flex; flex-direction: column; height: 100dvh; background: var(--
 button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
 button, [role='separator'] { touch-action: manipulation; }
 button:focus-visible, [role='separator']:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
-
-/* 按钮，照 Pinto 的 DesignSystem：主要、次要、文字三种，紧凑 28 / 常规 40 / 大 50 三种尺寸。
-   不加描边和阴影；按下缩到 0.97（120ms）；键盘焦点是强调色 2px 描边，向外 2px。 */
-:is(.primary-button, .secondary-button, .quiet-button) {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box;
-  height: 28px; min-width: 0; padding: 0 12px; border: 0; border-radius: 10px;
-  font: 600 13px/1 var(--font); white-space: nowrap; cursor: default;
-  transition: transform .12s ease-out, background-color .12s ease-out, color .12s ease-out;
-}
-:is(.primary-button, .secondary-button, .quiet-button):focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
-:is(.primary-button, .secondary-button, .quiet-button):not(:disabled):active { transform: scale(.97); }
-.primary-button { background: var(--primary-fill); color: var(--primary-ink); }
-.primary-button:not(:disabled):hover { background-image: linear-gradient(var(--button-primary-hover), var(--button-primary-hover)); }
-.primary-button:not(:disabled):active { background-image: linear-gradient(var(--button-primary-pressed), var(--button-primary-pressed)); }
-.secondary-button { background: var(--sand); color: var(--ink); }
-.secondary-button:not(:disabled):hover { background-image: linear-gradient(var(--control-hover), var(--control-hover)); }
-.secondary-button:not(:disabled):active { background-image: linear-gradient(var(--button-pressed), var(--button-pressed)); }
-:is(.primary-button, .secondary-button):disabled { background: var(--button-disabled); color: var(--button-disabled-ink); }
-.primary-button.destructive-button { background: var(--button-destructive); color: var(--primary-ink); }
-/* 取消、返回这类：平时没有底色，灰字；指针移上去才有浅底，字变正文色。 */
-.quiet-button { padding: 0 9px; background: transparent; color: var(--muted); }
-.quiet-button:not(:disabled):is(:hover, :active) { background: var(--sand); color: var(--ink); }
-.quiet-button:disabled { opacity: .5; }
-.button-regular { height: 40px; padding: 0 18px; border-radius: 14px; font-size: 15px; }
-.button-big { height: 50px; padding: 0 24px; border-radius: 14px; font-size: 17px; }
-.button-wide { width: 100%; }
-@media (prefers-reduced-motion: reduce) { :is(.primary-button, .secondary-button, .quiet-button):active { transform: none; } }
 /* 系统提示框（macOS 的 NSAlert）：按钮 28px 高的胶囊，撑满宽度上下排列，常规字重；默认按钮用强调色。 */
 .alert-actions { display: flex; flex-direction: column; gap: 8px; }
 .alert-actions :is(.primary-button, .secondary-button) { width: 100%; border-radius: 999px; font-weight: 400; }
 .alert-actions .primary-button:not(:disabled) { background-color: var(--alert-primary); color: var(--primary-ink); }
-:root[data-mobile] .alert-actions :is(.primary-button, .secondary-button) { height: 44px; font-size: 17px; }
+:root[data-mobile] .alert-actions :is(.primary-button, .secondary-button) { height: 48px; font-size: 17px; }
+/* iOS 的提示框：两个按钮并排，取消在左、默认操作在右，取消用强调色字。 */
+:root[data-mobile] .alert-actions:has(> :nth-child(2):last-child) { flex-direction: row-reverse; }
+:root[data-mobile] .alert-actions .secondary-button:not(:disabled) { color: var(--brand); }
 [hidden] { display: none !important; }
-.titlebar { position: relative; height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 24px 0 29px; display: flex; align-items: center; flex-shrink: 0; user-select: none; }
+.titlebar { position: relative; height: calc(52px + var(--safe-area-top)); padding: var(--safe-area-top) 24px 0 29px; display: flex; align-items: center; flex-shrink: 0; user-select: none; }
 html[data-platform='macos'] .titlebar { padding-left: 94px; }
 h1#note-title { font-family: system-ui, sans-serif; font-size: 20px; font-weight: 600; letter-spacing: -.005em; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
 .actions { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 22px; background: var(--control-fill); }
@@ -62,7 +39,7 @@ h1#note-title:has(#rename-note) + #note-location { display: none; }
 .statusbar { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* 出错提示与同步进度同一种底部居中的轻量胶囊，红字，不带字数。 */
 body[data-status-error='true'] .statusbar {
-  position: fixed; z-index: 20; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); translate: -50% 0;
+  position: fixed; z-index: 20; left: 50%; bottom: calc(16px + var(--safe-area-bottom)); translate: -50% 0;
   width: auto; max-width: min(560px, calc(100vw - 32px)); height: auto; margin: 0; padding: 5px 12px; clip-path: none;
   border-radius: 999px; background: color-mix(in srgb, var(--paper) 86%, transparent); color: var(--error);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 4px 16px var(--toolbar-shadow);
@@ -71,14 +48,14 @@ body[data-status-error='true'] .statusbar {
 body[data-status-error='true'] .statusbar #word-count { display: none; }
 /* 同步中：侧栏账户行可见时进度已写在账户名下，这里不再显示；否则在底部居中给一个轻量胶囊，不带字数。 */
 body[data-sync-busy='true']:not(:has(#app-shell[data-mac-sidebar-foot][data-sidebar=all]:not([data-mobile-page]))) .statusbar {
-  position: fixed; z-index: 110; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); translate: -50% 0;
+  position: fixed; z-index: 110; left: 50%; bottom: calc(16px + var(--safe-area-bottom)); translate: -50% 0;
   width: auto; max-width: calc(100vw - 32px); height: auto; margin: 0; padding: 5px 12px; clip-path: none;
   border-radius: 999px; background: color-mix(in srgb, var(--paper) 82%, transparent); color: var(--muted);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: 0 4px 16px var(--toolbar-shadow);
   font: 12px/16px var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
 }
 body[data-sync-busy='true'] .statusbar #word-count { display: none; }
-.format-menu { position: fixed; z-index: 10; top: calc(57px + env(safe-area-inset-top)); right: 108px; width: 192px; max-height: calc(100dvh - 72px); overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 22px; background: var(--list); box-shadow: 0 8px 28px var(--shadow-raised); }
+.format-menu { position: fixed; z-index: 10; top: calc(57px + var(--safe-area-top)); right: 108px; width: 192px; max-height: calc(100dvh - 72px); overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 22px; background: var(--list); box-shadow: 0 8px 28px var(--shadow-raised); }
 .format-inline { display: flex; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 6px; margin-bottom: 4px; }
 .format-menu [data-format=title] { height: 32px; font-size: 20px; font-weight: 800; }
 .format-menu [data-format=heading] { height: 29px; font-size: 16.5px; font-weight: 700; }
@@ -127,27 +104,43 @@ body[data-sync-busy='true'] .statusbar #word-count { display: none; }
 .editor-history-notice button { padding: 8px 0; border: 0; background: none; color: var(--link); cursor: pointer; }
 .editor-history-notice button::before { content: ''; display: inline-block; height: 14px; margin-inline-end: 8px; border-inline-start: 1px solid var(--line); vertical-align: middle; }
 .editor-history-notice button:hover { text-decoration: underline; }
-html[data-mobile] .editor-history-notice { bottom: max(64px, env(safe-area-inset-bottom)); }
+html[data-mobile] .editor-history-notice { bottom: max(64px, var(--safe-area-bottom)); }
 html[data-mobile] body.keyboard-open .editor-history-notice { bottom: 12px; }
 html[data-mobile] .editor-history-notice button { min-height: 44px; }
-.mobile-tools { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; overflow-x: auto; padding: 4px 12px max(4px, env(safe-area-inset-bottom)); }
-.mobile-tools-group { display: flex; align-items: center; gap: 8px; padding: 2px 8px; border-radius: 999px; background: var(--control-fill); }
+/* 对照 Pinto 键盘上方的快捷栏：格式胶囊 216×48、收键盘按钮 48 px 圆，都是白底、无描边，
+   阴影和顶部工具栏一样向四周柔和扩散。外层不能裁切，否则阴影会被截掉，横向滚动放到胶囊里面。 */
+/* 浅色用纸色，深色时纸色是纯黑，按钮会融进背景，改用抬高一级的行底色。 */
+:root { --toolbar-button-fill: var(--paper); }
+:root[data-theme=dark] { --toolbar-button-fill: var(--mobile-row); }
+.mobile-tools { position: relative; z-index: 2; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 12px max(4px, var(--safe-area-bottom)); }
+.mobile-tools-group, .mobile-suggestions, .mobile-tools .dismiss-keyboard {
+  background: color-mix(in srgb, var(--toolbar-button-fill) 90%, transparent);
+  box-shadow: 0 8px 28px 8px var(--toolbar-shadow);
+  -webkit-backdrop-filter: blur(16px) saturate(160%); backdrop-filter: blur(16px) saturate(160%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .mobile-tools-group, .mobile-suggestions, .mobile-tools .dismiss-keyboard { background: var(--toolbar-button-fill); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+.mobile-tools-group { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 2px 8px; border-radius: 999px; }
+.mobile-tools-group::-webkit-scrollbar { display: none; }
+.mobile-suggestions { border-radius: 999px; }
 .mobile-suggestions { display: none; flex: 1; min-width: 0; padding: 2px 4px; overflow: hidden; }
 .mobile-suggestions:not([hidden], [data-composing]):has(.note-link-completion, .editor-slash-menu:not([hidden])) { display: block; }
 .mobile-suggestions:not([hidden], [data-composing]):has(.note-link-completion, .editor-slash-menu:not([hidden])) + .mobile-tools-group,
 .mobile-suggestions:has(.note-link-completion) .editor-slash-menu { display: none; }
 .mobile-tools button { border: 0; background: transparent; min-width: 44px; width: 44px; height: 44px; border-radius: 50%; padding: 0; color: var(--ink); }
-.mobile-tools .dismiss-keyboard { width: 48px; height: 48px; background: var(--control-fill); flex-shrink: 0; }
+.mobile-tools button.dismiss-keyboard { width: 48px; height: 48px; flex-shrink: 0; }
+.mobile-tools .dismiss-keyboard svg { width: 26px; height: 26px; }
 .mobile-tools button:active { background: var(--sand); }
 .mobile-tools .mobile-table-button { display: grid; place-items: center; min-width: 44px; height: 44px; }
 .mobile-tools-group[data-in-table] .mobile-table-button { color: var(--brand); }
 .mobile-tools-group:not([data-in-table]) .mobile-table-badge { display: none; }
-.mobile-tools button svg { display: block; width: 22px; height: 22px; margin-inline: auto; }
+.mobile-tools button svg { display: block; width: 24px; height: 24px; margin-inline: auto; }
 body:has(.format-panel[open], .table-panel[open]) #mobile-tools { display: none; }
 :is(.table-panel, .format-panel) {
   --table-panel-pill: light-dark(var(--paper), color-mix(in srgb, var(--settings-sheet), var(--ink) 11%));
   position: fixed; z-index: 40; inset: auto 0 0; margin: 0 auto; width: calc(100% - 16px); max-width: none;
-  max-height: 62dvh; overflow: auto; padding: 20px 20px calc(8px + env(safe-area-inset-bottom));
+  max-height: 62dvh; overflow: auto; padding: 20px 20px calc(8px + var(--safe-area-bottom));
   border: 0; border-radius: 30px; background: var(--settings-sheet); color: var(--ink);
   box-shadow: 0 -4px 24px var(--shadow-raised);
 }
@@ -255,6 +248,13 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 .alert-dialog h2 { margin: 0 5px 8px; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
 .alert-dialog p { margin: 0 5px; }
 .alert-dialog .alert-actions { margin-top: 20px; }
+/* 手机上照 iOS 26 的提示框：宽 320、圆角 34，标题 17、说明 15。 */
+:root[data-mobile] .alert-dialog { width: min(320px, calc(100vw - 40px)); padding: 22px 16px 16px; border: 0; border-radius: 34px; background: var(--context-menu-fill); font-size: 15px; line-height: 20px; }
+:root[data-mobile] .alert-dialog h2 { margin: 0 14px 6px; font-size: 17px; font-weight: 600; line-height: 22px; }
+:root[data-mobile] .alert-dialog p { margin: 0 14px; color: var(--muted); }
+/* 手机上界面文字不能长按选中复制，和原生应用一样；编辑区、输入框和个别需要复制的错误信息、链接除外。 */
+html[data-mobile] body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=false]), .cm-editor) { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 .share-popover {
   position: fixed; inset: auto; margin: 0; width: min(316px, calc(100vw - 16px)); padding: 12px 15px 15px;
   max-height: var(--share-available-height, calc(100dvh - 80px)); overflow: visible;
@@ -390,12 +390,12 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 }
 .note-history[data-compact] {
   width: min(540px, 100%); max-width: 100%; height: 100dvh; max-height: 100dvh;
-  padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  padding-top: var(--safe-area-top); padding-bottom: var(--safe-area-bottom);
 }
 :root[data-mobile] .note-history[data-compact] { width: 100%; border: 0; border-radius: 0; font-size: 15px; }
 .note-history[data-compact]:not([data-preview]) .history-detail,
 .note-history[data-compact][data-preview] .history-sidebar { display: none; }
-.note-history[data-compact] .history-close { inset-block-start: calc(env(safe-area-inset-top) + 12px); width: 36px; height: 36px; }
+.note-history[data-compact] .history-close { inset-block-start: calc(var(--safe-area-top) + 12px); width: 36px; height: 36px; }
 .note-history[data-compact] .history-sidebar header { padding: 18px 60px 10px 20px; }
 .note-history[data-compact] .history-versions { padding-inline: 16px; }
 .note-history[data-compact] .history-versions button { min-height: 44px; }
@@ -424,7 +424,7 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 .note-history[data-compact] .history-back { display: block; width: 34px; height: 34px; padding: 0; font: 25px/1 var(--font); }
 .note-history[data-compact] .history-detail select { grid-column: 2; justify-self: start; min-height: 36px; }
 .note-history[data-compact] .history-restore {
-  position: absolute; inset: auto 20px calc(env(safe-area-inset-bottom) + 8px);
+  position: absolute; inset: auto 20px calc(var(--safe-area-bottom) + 8px);
   min-height: 44px; border-radius: 999px;
 }
 .note-history[data-compact] .history-detail[data-current] .history-restore { display: none; }

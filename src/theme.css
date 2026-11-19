@@ -1,6 +1,8 @@
 @qingyu-palette;
 
 :root {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   color-scheme: light dark;
   accent-color: var(--brand);
   --navigation-duration: 280ms;
@@ -14,9 +16,18 @@
   -webkit-font-smoothing: subpixel-antialiased;
 }
 
+/* Avoid drawing controls over the status bar before Android supplies the inset. */
+:root[data-android-inset-pending] #app-shell { opacity: 0; pointer-events: none; }
+
 :root[data-mobile] {
   --ink: var(--mobile-ink);
   --muted: var(--mobile-muted);
+  /* Pinto 在 iOS 上用暖色的次要填充（Palette.soft），桌面才是中性灰。 */
+  --sand: var(--mobile-sand);
+  /* 输入框描边和禁用按钮也换成 Pinto iOS 的暖棕。 */
+  --field-hairline: var(--mobile-field-hairline);
+  --button-disabled: var(--mobile-button-disabled);
+  --button-disabled-ink: var(--mobile-button-disabled-ink);
   --editor-ink: var(--ink);
   --render-text: var(--ink);
   --quote-text: var(--muted);

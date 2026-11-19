@@ -216,6 +216,42 @@ describe('MDSync application synchronization', () => {
     expect(a.assets().map(asset => asset.path)).toEqual(['a.pdf']);
     expect(b.assets()).toEqual(a.assets());
   });
+  it('keeps the unseen remote version when a different local file takes a placeholder path', async () => {
+    const large = Array<number>(1_000_000).fill(7);
+    const a = assetsBook([{ path: 'a.pdf', bytes: large, modified: 1 }, { path: 'same.pdf', bytes: large, modified: 2 }]);
+    const b = assetsBook([]);
+    const demand = () => syncNotebook(b.book, { ...config, assetDownload: 'on-demand' });
+    await sync(a.book); await demand();
+    const remote = b.placeholders()['a.pdf']!.hash;
+    const copy = `a（冲突-${remote.slice(0, 12)}）.pdf`;
+    // a.pdf 换成了别的内容；same.pdf 拷进来的是同一份文件，不需要副本。
+    b.setAssets([{ path: 'a.pdf', bytes: [1, 2, 3], modified: 5 }, { path: 'same.pdf', bytes: large, modified: 2 }]);
+    await demand(); await sync(a.book);
+    expect(b.placeholders()).toEqual({});
+    expect(b.book.data.sync?.version).toBe(1);
+    expect(a.assets().map(asset => asset.path)).toEqual(['a.pdf', copy, 'same.pdf']);
+    expect(a.assets().find(asset => asset.path === 'a.pdf')!.bytes).toEqual([1, 2, 3]);
+    expect(a.assets().find(asset => asset.path === copy)!.bytes).toEqual(large);
+    expect(b.assets()).toEqual(a.assets());
+  });
+  it('limits active attachment downloads to three across different paths', async () => {
+    const bytes = Array<number>(1_000_000).fill(7);
+    const paths = ['a.pdf', 'b.pdf', 'c.pdf', 'd.pdf'];
+    const a = assetsBook(paths.map(path => ({ path, bytes, modified: 1 }))), b = assetsBook([]);
+    await sync(a.book);
+    await syncNotebook(b.book, { ...config, assetDownload: 'on-demand' });
+    vi.spyOn(b.book, 'root', 'get').mockReturnValue('/test/library');
+    const storage = createStore(normalizeSettings(config));
+    const permits: (() => void)[] = [];
+    const { fetchAsset } = createAssetFetcher(b.book, () => new Promise(resolve => { permits.push(() => resolve(storage)); }));
+    const jobs = paths.map(fetchAsset);
+    await vi.waitFor(() => expect(permits).toHaveLength(3));
+    permits[0]!();
+    await vi.waitFor(() => expect(permits).toHaveLength(4));
+    for (const permit of permits.slice(1)) permit();
+    await Promise.all(jobs);
+    expect(b.placeholders()).toEqual({});
+  });
   it('persists the scan cache after a pull and reads only changed disk attachments', async () => {
     const a = assetsBook([{ path: 'a.pdf', bytes: [0, 255], modified: 1 }, { path: 'b.pdf', bytes: [255], modified: 2 }]);
     const b = assetsBook([]);
@@ -242,13 +278,19 @@ describe('MDSync application synchronization', () => {
       read, stage: async () => ({ path: 'staged', hash }), readStage: read,
     });
     await files.writeAsset(assetPath('a.pdf'), bytes, Date.now());
-    const storage = createStore(normalizeSettings(config));
-    const result = await core.compare({ space: core.VAULT_SPACE, adapter: files, scope, storage,
-      key: await openKey(storage), state, maxFileBytes: 64 * 1024 * 1024, concurrency: 2 }, state.baseline);
+    const storage = createStore(normalizeSettings(config)), key = await openKey(storage);
+    async function assertUnchanged() {
+      const result = await core.compare({ space: core.VAULT_SPACE, adapter: files, scope, storage,
+        key, state, maxFileBytes: 64 * 1024 * 1024, concurrency: 2 }, state.baseline);
+      expect(result.snapshot.files[assetPath('a.pdf')]?.scene).toBeUndefined();
+      expect(result.snapshot.skipped).toEqual([]);
+      expect(result.diff.localChanges).toEqual([]);
+      expect(result.diff.conflicts).toEqual([]);
+    }
+    await assertUnchanged();
+    files.setPlaceholder(assetPath('a.pdf'), { hash, size: bytes.length, mtime: Date.now() });
+    await assertUnchanged();
     expect(read).not.toHaveBeenCalled();
-    expect(result.snapshot.skipped).toEqual([]);
-    expect(result.diff.localChanges).toEqual([]);
-    expect(result.diff.conflicts).toEqual([]);
   });
   it('keeps the remote head and local checkpoint when a disk attachment becomes unreadable', async () => {
     const a = assetsBook([{ path: 'a.pdf', bytes: [0, 255], modified: 1 }]);
@@ -419,6 +461,51 @@ describe('MDSync application synchronization', () => {
     await expect(syncNotebook(a.book, config, message => { if (message === '正在保存同步结果…') a.book.save('同步期间的新输入'); })).rejects.toThrow('发生变化');
     expect(a.book.current.source).toBe('同步期间的新输入');
     await sync(a.book);
+  });
+  it('keeps an undo, a new note and the latest selection when edits arrive during manifest upload', async () => {
+    const [a, b] = await paired();
+    const originalSource = a.book.current.source;
+    await b.book.save('另一台设备的新正文', 'note-b'); await sync(b.book);
+    await a.book.save('上传开始时的旧正文');
+    server.beforePut = async key => {
+      if (!key.endsWith(core.REMOTE_MANIFEST_KEY)) return;
+      server.beforePut = undefined;
+      await a.book.save(originalSource);
+      await a.book.select('note-b');
+      await a.book.createNote('default', '同步时创建');
+      await a.book.save('新笔记的正文');
+    };
+    await expect(sync(a.book)).rejects.toThrow('本机笔记发生变化');
+    const newId = a.book.data.activeId;
+    expect(a.book.current.source).toBe('新笔记的正文');
+    await sync(a.book); await sync(b.book);
+    expect(a.book.data.activeId).toBe(newId);
+    for (const { book } of [a, b]) {
+      expect(book.data.notes).toHaveLength(3);
+      expect(book.data.notes.find(note => note.id === 'note-a')?.source).toBe(originalSource);
+      expect(book.data.notes.find(note => note.id === 'note-b')?.source).toBe('另一台设备的新正文');
+      expect(book.data.notes.find(note => note.id === newId)?.source).toBe('新笔记的正文');
+    }
+  });
+  it('applies an incoming change without moving a selection changed during sync', async () => {
+    const [a, b] = await paired();
+    await b.book.save('远端正文'); await sync(b.book);
+    await syncNotebook(a.book, config, () => {}, () => a.book.select('note-b'));
+    expect(a.book.data.activeId).toBe('note-b');
+    expect(a.book.data.notes.find(note => note.id === 'note-a')?.source).toBe('远端正文');
+  });
+  it('keeps keystrokes made during local writeback and retains the remote edit as a copy', async () => {
+    const [a, b] = await paired();
+    const before = a.book.current;
+    await b.book.save('远端编辑'); await sync(b.book);
+    let draft: Promise<void> | undefined;
+    a.book.onSyncApply = () => applied => {
+      if (applied) draft = a.book.saveDraftAfterSync(before, '写回期间的输入', a.book.current);
+    };
+    await sync(a.book);
+    await draft;
+    expect(a.book.current.source).toBe('写回期间的输入');
+    expect(a.book.data.notes).toContainEqual(expect.objectContaining({ conflictOf: before.id, source: '远端编辑' }));
   });
 
   it('flushes late editor input before committing and refuses an unfinished IME composition', async () => {

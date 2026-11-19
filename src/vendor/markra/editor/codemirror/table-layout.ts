@@ -19,6 +19,21 @@ export function tableColumnWidths(text: readonly number[], available: number, fo
 const measuringCanvases = new WeakMap<Document, CanvasRenderingContext2D>();
 export const tableDisplayChanged = "markra-table-display-changed";
 
+// 撤销、重绘时表格控件会整个重建。先套用上次量好的列宽，
+// 避免首帧按自动宽度画出来、下一帧再跳到实测宽度造成闪烁。
+const recentColumnWidths = new Map<string, number[]>();
+const recentColumnWidthLimit = 64;
+
+function tableWidthKey(table: HTMLTableElement, fill: boolean) {
+  return `${fill ? 1 : 0}\u0000${Array.from(table.rows, row => Array.from(row.cells, cell => cell.textContent ?? "").join("\u0001")).join("\u0002")}`;
+}
+
+function applyColumnWidths(columns: HTMLTableColElement, table: HTMLTableElement, widths: readonly number[]) {
+  widths.forEach((width, index) => { (columns.children[index] as HTMLElement | undefined)?.style.setProperty("width", `${width}px`); });
+  table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
+  table.dataset.measuredColumns = "true";
+}
+
 export function layoutTableColumns(view: EditorView, wrapper: HTMLElement, scroller: HTMLElement, table: HTMLTableElement, fill = false) {
   const document = wrapper.ownerDocument;
   const window = document.defaultView;
@@ -27,6 +42,9 @@ export function layoutTableColumns(view: EditorView, wrapper: HTMLElement, scrol
   for (const _cell of table.rows[0]?.cells ?? []) columns.append(document.createElement("col"));
   table.prepend(columns);
   let active = true, font = "", longest: number[] = [], previousWidth = 0;
+  const widthKey = tableWidthKey(table, fill);
+  const cached = recentColumnWidths.get(widthKey);
+  if (cached?.length === columns.childElementCount) applyColumnWidths(columns, table, cached);
 
   function overflow() {
     scroller.toggleAttribute("data-overflow-left", scroller.scrollLeft > 1);
@@ -72,9 +90,10 @@ export function layoutTableColumns(view: EditorView, wrapper: HTMLElement, scrol
       },
       write(widths) {
         if (!active || !widths?.length) return;
-        widths.forEach((width, index) => { (columns.children[index] as HTMLElement).style.width = `${width}px`; });
-        table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
-        table.dataset.measuredColumns = "true";
+        applyColumnWidths(columns, table, widths);
+        recentColumnWidths.delete(widthKey);
+        recentColumnWidths.set(widthKey, widths);
+        if (recentColumnWidths.size > recentColumnWidthLimit) recentColumnWidths.delete(recentColumnWidths.keys().next().value!);
       },
     });
   }

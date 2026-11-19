@@ -74,7 +74,7 @@ export interface MediaViewerHandle {
 /** 同一篇笔记里的其他图片，按出现顺序；查看器里可以前后切换。 */
 export interface MediaViewerGallery {
   readonly index: number;
-  readonly items: readonly { readonly alt: string; readonly source: string; readonly title: string }[];
+  readonly items: readonly { readonly alt: string; readonly source: string; readonly title: string; readonly original?: string }[];
   readonly labels: { readonly next: string; readonly previous: string };
 }
 
@@ -83,6 +83,7 @@ interface OpenMediaViewerOptions {
   readonly labels: MediaViewerLabels;
   readonly media: Element;
   readonly mount: Element;
+  readonly mountImage?: (image: HTMLImageElement, frame: HTMLElement, source: string, original: string) => (() => void) | undefined;
   readonly restoreFocus?: HTMLElement | null;
 }
 
@@ -126,6 +127,7 @@ export function openMediaViewer({
   labels,
   media,
   mount,
+  mountImage,
   restoreFocus,
 }: OpenMediaViewerOptions): MediaViewerHandle {
   const document = media.ownerDocument;
@@ -138,13 +140,16 @@ export function openMediaViewer({
   const content = document.createElement("div");
   const canvas = document.createElement("div");
   const title = document.createElement("span");
+  const phone = document.documentElement.hasAttribute("data-mobile");
   let shown = media.cloneNode(true) as Element;
-  const separator = () => {
+  const separator = (group = "") => {
     const line = document.createElement("span");
-    line.className = "markra-media-viewer-separator";
+    // 带 group 的分隔线只在那组按钮显示时才有用（手机上缩放按钮整组隐藏）。
+    line.className = `markra-media-viewer-separator ${group}`.trim();
     line.ariaHidden = "true";
     return line;
   };
+  const titleSeparator = separator();
   const makeButton = (
     className: string,
     label: string,
@@ -211,6 +216,9 @@ export function openMediaViewer({
     shown.classList.add("markra-media-viewer-image");
   }
   canvas.append(shown);
+  const selected = gallery?.items[gallery.index];
+  let cleanImage = shown instanceof HTMLImageElement && selected?.original
+    ? mountImage?.(shown, canvas, selected.source, selected.original) : undefined;
 
   let closed = false;
   let scale = 1;
@@ -223,7 +231,14 @@ export function openMediaViewer({
     pointerId: number;
     startX: number;
     startY: number;
+    touch: boolean;
   } | null = null;
+  // 触摸中的所有手指；两根手指时是双指缩放。
+  const touches = new Map<number, { x: number; y: number }>();
+  let pinch: { distance: number; scale: number; localX: number; localY: number } | null = null;
+  // 一次手势里用过双指，就不再把抬起的手指当成轻点或滑动。
+  let pinched = false;
+  let lastTap: { time: number; x: number; y: number } | null = null;
   const syncZoom = () => {
     const scaleValue = String(scale);
     canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleValue})`;
@@ -232,6 +247,26 @@ export function openMediaViewer({
   };
   const setZoom = (nextScale: number) => {
     scale = Math.max(0.25, Math.min(6, nextScale));
+    syncZoom();
+  };
+  const resetZoom = () => {
+    scale = 1;
+    translateX = 0;
+    translateY = 0;
+    syncZoom();
+  };
+  // 画布按中心缩放，平移叠加在外面：屏幕上的点 p 对应画布里的 (p - 中心 - 平移) / 缩放。
+  const canvasCenter = () => {
+    const bounds = canvas.getBoundingClientRect();
+    return { x: bounds.left + bounds.width / 2 - translateX, y: bounds.top + bounds.height / 2 - translateY };
+  };
+  /** 以屏幕上的 (x, y) 为中心缩放到 nextScale，这一点在图上的位置保持不动。 */
+  const zoomAt = (nextScale: number, x: number, y: number) => {
+    const center = canvasCenter();
+    const localX = (x - center.x - translateX) / scale, localY = (y - center.y - translateY) / scale;
+    scale = Math.max(0.25, Math.min(6, nextScale));
+    translateX = x - center.x - localX * scale;
+    translateY = y - center.y - localY * scale;
     syncZoom();
   };
   const setFullscreen = (isFullscreen: boolean) => {
@@ -279,17 +314,37 @@ export function openMediaViewer({
     if (item.title) image.title = item.title;
     image.decoding = "async";
     image.draggable = false;
-    image.src = item.source;
+    cleanImage?.();
+    cleanImage = undefined;
     shown.replaceWith(image);
     shown = image;
+    if (item.original) cleanImage = mountImage?.(image, canvas, item.source, item.original);
+    if (!cleanImage) image.src = item.source;
     title.textContent = (item.alt || item.title).trim();
     title.hidden = !title.textContent;
-    title.nextElementSibling?.toggleAttribute("hidden", title.hidden);
-    scale = 1;
-    translateX = 0;
-    translateY = 0;
-    syncZoom();
+    titleSeparator.hidden = title.hidden;
+    resetZoom();
     syncGallery();
+  };
+  const canStep = (amount: -1 | 1) => Boolean(gallery) && position >= 0 && position + amount >= 0 && position + amount < gallery!.items.length;
+  /** 跟手滑动后的切换：当前这张滑出屏幕，下一张从另一侧滑进来。减少动态效果时直接换。 */
+  const slide = (amount: -1 | 1) => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) { step(amount); return; }
+    const width = content.clientWidth || window.innerWidth;
+    translateX = -amount * width;
+    syncZoom();
+    window.setTimeout(() => {
+      if (closed) return;
+      step(amount);
+      // 新图片先放到另一侧（不带过渡），再滑回中间。
+      content.dataset.dragging = "true";
+      translateX = amount * width;
+      syncZoom();
+      void canvas.offsetWidth;
+      delete content.dataset.dragging;
+      translateX = 0;
+      syncZoom();
+    }, 180);
   };
   previous?.addEventListener("click", () => step(-1));
   next?.addEventListener("click", () => step(1));
@@ -323,9 +378,11 @@ export function openMediaViewer({
     close(options = {}) {
       if (closed) return;
       closed = true;
+      cleanImage?.();
       document.removeEventListener("keydown", onKeyDown, true);
       dialog.remove();
       for (const element of blocked) element.removeAttribute("inert");
+      document.dispatchEvent(new CustomEvent("media-viewer-toggle", { detail: false }));
       if (activeMediaViewers.get(document) === handle) {
         activeMediaViewers.delete(document);
       }
@@ -336,12 +393,7 @@ export function openMediaViewer({
   fullscreen.ariaPressed = "false";
   zoomOut.addEventListener("click", () => setZoom(scale - 0.25));
   zoomIn.addEventListener("click", () => setZoom(scale + 0.25));
-  reset.addEventListener("click", () => {
-    scale = 1;
-    translateX = 0;
-    translateY = 0;
-    syncZoom();
-  });
+  reset.addEventListener("click", resetZoom);
   fullscreen.addEventListener("click", () => {
     setFullscreen(dialog.dataset.fullscreen !== "true");
   });
@@ -350,6 +402,30 @@ export function openMediaViewer({
     event.preventDefault();
     setZoom(scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12));
   }, { passive: false });
+  const startDrag = (event: PointerEvent, x = event.clientX, y = event.clientY) => {
+    drag = {
+      onMedia: event.target instanceof Node && shown.contains(event.target),
+      originX: translateX,
+      originY: translateY,
+      pointerId: event.pointerId,
+      startX: x,
+      startY: y,
+      touch: event.pointerType === "touch",
+    };
+  };
+  const startPinch = () => {
+    const [a, b] = [...touches.values()];
+    const center = canvasCenter(), midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+    pinch = {
+      distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      scale,
+      localX: (midX - center.x - translateX) / scale,
+      localY: (midY - center.y - translateY) / scale,
+    };
+    pinched = true;
+    drag = null;
+    content.dataset.dragging = "true";
+  };
   content.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -357,33 +433,81 @@ export function openMediaViewer({
     // cursor leaves the viewport while a large diagram or image is panned.
     content.setPointerCapture?.(event.pointerId);
     content.dataset.dragging = "true";
-    drag = {
-      onMedia: event.target instanceof Node && shown.contains(event.target),
-      originX: translateX,
-      originY: translateY,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
+    if (event.pointerType === "touch") {
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touches.size === 1) pinched = false;
+      if (touches.size === 2) { startPinch(); return; }
+      if (touches.size > 2) return;
+    }
+    startDrag(event);
   });
   content.addEventListener("pointermove", (event) => {
+    if (touches.has(event.pointerId)) touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch && touches.size >= 2) {
+      event.preventDefault();
+      // 两指中点下的那一点跟着中点走，同时按两指距离缩放。
+      const [a, b] = [...touches.values()];
+      const center = canvasCenter(), midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
+      scale = Math.max(0.5, Math.min(6, pinch.scale * Math.hypot(a.x - b.x, a.y - b.y) / pinch.distance));
+      translateX = midX - center.x - pinch.localX * scale;
+      translateY = midY - center.y - pinch.localY * scale;
+      syncZoom();
+      return;
+    }
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
+    // 手机上原尺寸时横向跟手，用来切换上一张、下一张；到头了只给一点阻尼，不跟满。
+    if (drag.touch && scale <= 1.01) {
+      const dx = event.clientX - drag.startX;
+      translateX = canStep(dx < 0 ? 1 : -1) ? dx : dx * 0.3;
+      translateY = 0;
+      syncZoom();
+      return;
+    }
     translateX = drag.originX + event.clientX - drag.startX;
     translateY = drag.originY + event.clientY - drag.startY;
     syncZoom();
   });
   const stopDragging = (event: PointerEvent) => {
-    if (!drag || drag.pointerId !== event.pointerId) return;
     if (content.hasPointerCapture?.(event.pointerId)) {
       content.releasePointerCapture(event.pointerId);
     }
+    if (touches.delete(event.pointerId) && pinch) {
+      pinch = null;
+      // 缩得比原尺寸还小时松手弹回原样；还剩一根手指就接着拖动。
+      if (scale < 1) resetZoom();
+      const [rest] = [...touches.entries()];
+      if (rest) {
+        startDrag(event, rest[1].x, rest[1].y);
+        if (drag) drag.pointerId = rest[0];
+      } else delete content.dataset.dragging;
+      return;
+    }
+    if (!drag || drag.pointerId !== event.pointerId) return;
     delete content.dataset.dragging;
-    // 没有拖动、也没点在图片上：和预览、照片一样，点空白处关闭。
-    const tapped = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4;
-    const outside = !drag.onMedia;
+    const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
+    const tapped = Math.hypot(dx, dy) < 4 && !pinched;
+    const { onMedia, touch } = drag;
     drag = null;
-    if (event.type === "pointerup" && tapped && outside) handle.close();
+    if (event.type !== "pointerup" || pinched) return;
+    if (touch) {
+      // 原尺寸时横向滑动切换图片，和「照片」一样；不够远或已到头就弹回原位。
+      if (scale <= 1.01 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && canStep(dx < 0 ? 1 : -1)) { slide(dx < 0 ? 1 : -1); return; }
+      if (scale <= 1.01 && translateX !== 0) { resetZoom(); return; }
+      // 在图片上快速点两下：放大到两倍（以点的位置为中心），再点两下还原。
+      if (tapped && onMedia) {
+        const now = event.timeStamp;
+        if (lastTap && now - lastTap.time < 320 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 30) {
+          lastTap = null;
+          if (scale > 1.01) resetZoom(); else zoomAt(2, event.clientX, event.clientY);
+          return;
+        }
+        lastTap = { time: now, x: event.clientX, y: event.clientY };
+        return;
+      }
+    }
+    // 没有拖动、也没点在图片上：和预览、照片一样，点空白处关闭。
+    if (tapped && !onMedia) handle.close();
   };
   // 双击图片在「适合窗口」和两倍之间切换。
   content.addEventListener("dblclick", (event) => {
@@ -391,12 +515,8 @@ export function openMediaViewer({
     const bounds = shown.getBoundingClientRect();
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) return;
     event.preventDefault();
-    if (scale > 1.01) {
-      scale = 1;
-      translateX = 0;
-      translateY = 0;
-      syncZoom();
-    } else setZoom(2);
+    if (scale > 1.01) resetZoom();
+    else setZoom(2);
   });
   content.addEventListener("pointerup", stopDragging);
   content.addEventListener("pointercancel", stopDragging);
@@ -406,11 +526,21 @@ export function openMediaViewer({
   document.addEventListener("keydown", onKeyDown, true);
 
   if (previous && next) toolbar.append(previous, counter, next, separator());
-  toolbar.append(title, separator(), zoomOut, zoomValue, zoomIn, separator(), reset, fullscreen, separator(), closeButton);
-  title.nextElementSibling?.toggleAttribute("hidden", title.hidden);
+  // 手机上名称放在顶部正中，和「照片」一样；桌面放在工具条里。
+  if (!phone) toolbar.append(title, titleSeparator);
+  toolbar.append(
+    zoomOut, zoomValue, zoomIn,
+    separator("markra-media-viewer-zoom-separator"), reset, fullscreen,
+    separator("markra-media-viewer-zoom-separator"), closeButton,
+  );
+  titleSeparator.hidden = title.hidden;
   syncGallery();
   content.append(canvas);
   panel.append(content, toolbar);
+  if (phone) {
+    title.classList.add("markra-media-viewer-title-top");
+    panel.append(title);
+  }
   dialog.append(panel);
   mount.append(dialog);
   // 查看期间页面其余部分不可交互：编辑器拿不到焦点，按键和输入法都不会改到下面选中的图片。
@@ -422,6 +552,8 @@ export function openMediaViewer({
     fill: "var(--viewer-glass-fill)",
   });
   activeMediaViewers.set(document, handle);
+  // 手机上原生窗口在系统栏后面露出背景色，打开期间让它跟着变暗（preferences.ts）。
+  document.dispatchEvent(new CustomEvent("media-viewer-toggle", { detail: true }));
   syncZoom();
   // 用鼠标打开时不让关闭按钮出现焦点环；Esc 仍可关闭，Tab 可以进入工具条。
   content.focus({ preventScroll: true });

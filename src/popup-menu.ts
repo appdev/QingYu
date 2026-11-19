@@ -1,6 +1,6 @@
 import { clamp, getSurface, glass, mix, Spring, type GlassSurface } from 'glassy-liquid';
 import { toolbarMenuGlass } from './toolbar-menu-glass';
-import { ChevronRight } from 'lucide';
+import { ChevronDown, ChevronRight } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 
 export type MenuItem = { text: string; icon?: SVGElement; enabled?: boolean; destructive?: boolean; checked?: boolean; shortcut?: string; nativeRole?: 'Cut' | 'Copy' | 'Paste'; needsUserActivation?: boolean; run?: () => void | Promise<void>; items?: MenuItem[] };
@@ -203,7 +203,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
     preview.open();
     return;
   }
-  function browserMenu(entries: MenuItem[], left: number, top: number, container: HTMLElement, trigger?: HTMLButtonElement) {
+  function browserMenu(entries: MenuItem[], left: number, top: number, container: HTMLElement, trigger?: HTMLButtonElement, inline?: { item: MenuItem; width: number }) {
     const menu = document.createElement('div'); menu.className = 'note-context-menu'; menu.role = 'menu'; menu.ariaLabel = trigger?.ariaLabel ?? label;
     menu.tabIndex = -1;
     const content = anchor ? document.createElement('div') : menu;
@@ -215,6 +215,23 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
       content.role = 'presentation';
       menu.append(content);
     }
+    if (inline && trigger) {
+      menu.classList.add('toolbar-submenu');
+      menu.style.width = `${inline.width}px`;
+      const header = document.createElement('button');
+      header.type = 'button'; header.className = 'toolbar-submenu-header'; header.ariaLabel = `收起${inline.item.text}`;
+      const title = document.createElement('span'); title.textContent = inline.item.text;
+      const icon = trigger.querySelector('.context-action-icon')?.cloneNode(true);
+      if (icon) header.append(icon);
+      header.append(title, createLucideIcon(document, ChevronDown, 'context-submenu-chevron'));
+      header.onclick = () => {
+        getSurface(menu)?.destroy(); menu.remove();
+        trigger.setAttribute('aria-expanded', 'false');
+        if (!keepEditorFocus) trigger.focus({ preventScroll: true });
+      };
+      const divider = document.createElement('hr'); divider.role = 'separator';
+      content.append(header, divider);
+    }
     if (keepEditorFocus) menu.onpointerdown = event => {
       if ((event.target as Element).closest('button')) event.preventDefault();
     };
@@ -225,6 +242,13 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
       submenu?.remove();
       menu.querySelector('[aria-expanded=true]')?.setAttribute('aria-expanded', 'false');
     }
+    // 子菜单盖在上面时，点原菜单的空处或其他项只是收回子菜单。
+    if (anchor && !desktopToolbar) content.addEventListener('pointerdown', event => {
+      const submenu = menu.querySelector<HTMLElement>(':scope > .toolbar-submenu');
+      if (!submenu || submenu.contains(event.target as Node)) return;
+      event.preventDefault(); event.stopPropagation();
+      submenu.querySelector<HTMLButtonElement>('.toolbar-submenu-header')?.click();
+    }, true);
     for (const [index, item] of entries.entries()) {
       if (!item.text) { const divider = document.createElement('hr'); divider.role = 'separator'; content.append(divider); continue; }
       const button = document.createElement('button'); button.role = item.checked === undefined ? 'menuitem' : 'menuitemradio'; button.ariaLabel = item.text; button.disabled = item.enabled === false;
@@ -240,6 +264,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
       const key = document.createElement('kbd'); key.textContent = item.items ? '' : item.checked ? '✓' : anchor && document.documentElement.hasAttribute('data-mobile') ? '' : item.shortcut ?? '';
       if (item.items) key.append(createLucideIcon(document, ChevronRight, 'context-submenu-chevron'));
       button.append(title, key); content.append(button);
+      if (inline && item.checked !== undefined) button.classList.add('context-check-leading');
       if (item.items) {
         button.setAttribute('aria-haspopup', 'menu');
         button.setAttribute('aria-expanded', 'false');
@@ -247,13 +272,21 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
           if (button.disabled) return;
           closeSubmenu(); const box = menu.getBoundingClientRect();
           button.setAttribute('aria-expanded', 'true');
-          const submenu = browserMenu(item.items!, box.right - 4, button.getBoundingClientRect().top, menu, button);
+          // 手机上和 iOS 的 UIMenu 一样，子菜单盖在原菜单上展开：顶行是加粗的父项和向下箭头，点它收回。
+          const inline = anchor && !desktopToolbar;
+          const row = button.getBoundingClientRect();
+          const submenu = inline
+            ? browserMenu(item.items!, box.left - 8, row.top - 8, menu, button, { item, width: box.width + 8 })
+            : browserMenu(item.items!, box.right - 4, row.top, menu, button);
           // 工具栏菜单的二级菜单也用同样的玻璃面板，否则半透明底色下会透出后面的正文。
           if (anchor) {
             const radius = Number.parseFloat(getComputedStyle(submenu).borderTopLeftRadius) || 0;
             glass(submenu, { ...toolbarMenuGlass, radius, fill: 'var(--toolbar-menu-glass-fill)', shadow: false });
           }
-          if (!keepEditorFocus) submenu.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+          // 触摸展开时焦点放在子菜单本身，免得首行一出来就是高亮的；键盘展开仍落到首个可用项。
+          if (keepEditorFocus) return;
+          if (inline && !button.matches(':focus-visible')) submenu.focus({ preventScroll: true });
+          else submenu.querySelector<HTMLButtonElement>(inline ? 'button:not(:disabled):not(.toolbar-submenu-header)' : 'button:not(:disabled)')?.focus();
         };
         button.onclick = open;
         button.onkeydown = event => { if (event.key === 'ArrowRight') { event.preventDefault(); open(); } };
@@ -294,7 +327,7 @@ export async function popupMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: nu
       }
     }
     if (anchor && (!toolbar?.above || trigger)) menu.style.maxHeight = `${Math.max(0, bottom - top - 8)}px`;
-    if (trigger && left + menu.offsetWidth > innerWidth - 4) left = container.getBoundingClientRect().left - menu.offsetWidth + 4;
+    if (trigger && !inline && left + menu.offsetWidth > innerWidth - 4) left = container.getBoundingClientRect().left - menu.offsetWidth + 4;
     menu.style.left = `${Math.max(4, Math.min(left, innerWidth - menu.offsetWidth - 4))}px`;
     menu.style.top = `${Math.max(4, Math.min(top, bottom - menu.offsetHeight - 4))}px`;
     return menu;

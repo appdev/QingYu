@@ -45,16 +45,38 @@ pub async fn open(
     path: std::path::PathBuf,
     mime: &'static str,
 ) -> Result<(), String> {
+    send_file(app, path, mime, false).await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn share_picture(app: tauri::AppHandle, path: std::path::PathBuf) -> Result<(), String> {
+    send_file(app, path, "image/png", true).await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn send_file(
+    app: tauri::AppHandle,
+    path: std::path::PathBuf,
+    mime: &'static str,
+    share: bool,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<AttachmentHandle>()
             .0
             .run_mobile_plugin::<serde_json::Value>(
                 "openFile",
-                serde_json::json!({ "path": path, "mime": mime }),
+                serde_json::json!({ "path": path, "mime": mime, "share": share }),
             )
             .map(|_| ())
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|_| "无法打开附件".to_string())?
+    .map_err(|_| {
+        if share {
+            "无法打开系统分享"
+        } else {
+            "无法打开附件"
+        }
+        .to_string()
+    })?
 }

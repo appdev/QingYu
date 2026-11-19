@@ -5,6 +5,8 @@ import { folderRows } from '../src/folder-tree';
 import { Notebook, visibleNotes } from '../src/notebook';
 import { createSidebar } from '../src/sidebar';
 
+vi.hoisted(() => { Object.assign(globalThis, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) }); });
+
 beforeEach(() => {
   document.body.innerHTML = readFileSync('index.html', 'utf8').match(/<body[^>]*>([\s\S]*)<\/body>/)![1];
   localStorage.clear(); vi.stubGlobal('CSS', { escape: (text: string) => text });

@@ -181,7 +181,7 @@ it('attaches only its own native snapshot and never enrols the document in S3 or
   expect(await book.select('external')).toBe(false); expect(book.current.id).toBe('external');
   await book.save('edited source'); expect(invoke).toHaveBeenLastCalledWith('workspace_commit', expect.objectContaining({ next: expect.objectContaining({ notes: [expect.objectContaining({ source: 'edited source' })] }) }));
   await expect(book.readSyncAssets()).rejects.toThrow('不在 S3');
-  await expect(book.commitSync(book.data, {} as any, JSON.stringify(book.data))).rejects.toThrow('不在 S3');
+  await expect(book.commitSync(book.data, {} as any, book.data)).rejects.toThrow('不在 S3');
   await book.reload(); expect(invoke).toHaveBeenLastCalledWith('workspace_reconcile', expect.objectContaining({ root: '/Downloads' }));
   expect(storage.setItem).not.toHaveBeenCalled();
 });

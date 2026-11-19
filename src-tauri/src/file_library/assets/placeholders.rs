@@ -207,6 +207,78 @@ mod tests {
     }
 
     #[test]
+    fn keeps_folders_with_pending_attachments_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = DiskLibrary::open(dir.path().to_owned(), None).unwrap();
+        store
+            .folder_change("create", "default", "旅行", None)
+            .unwrap();
+        store
+            .folder_change("create", "default", "其他", None)
+            .unwrap();
+        let folder = |store: &DiskLibrary, path: &str| {
+            store
+                .data
+                .folders
+                .iter()
+                .find(|f| f.path == path)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let travel = folder(&store, "旅行");
+        let mut library = store.data.clone();
+        library.sync = Some(serde_json::json!({ "version": 1, "target": "test", "state": {} }));
+        let hash = format!("{:x}", Sha256::digest([1]));
+        let entries = Placeholders::from([(
+            "旅行/.attachments/u/a.pdf".into(),
+            Placeholder {
+                hash: hash.clone(),
+                size: 1,
+                mtime: 10.0,
+            },
+        )]);
+        store
+            .commit_bytes(
+                library,
+                "sync",
+                &HashMap::new(),
+                Some(&AssetSync {
+                    before: vec![],
+                    writes: vec![],
+                    deletes: vec![],
+                    placeholders: entries,
+                }),
+            )
+            .unwrap();
+        let revision = store.revision;
+        let renamed = store
+            .folder_change("rename", &travel, "游记", None)
+            .unwrap_err();
+        assert!(renamed.contains("1 个附件尚未下载"), "{renamed}");
+        let destination = dir.path().join("其他");
+        assert!(store
+            .folder_change("move", &travel, destination.to_str().unwrap(), None)
+            .is_err());
+        assert_eq!(store.revision, revision);
+        assert!(dir.path().join("旅行").is_dir());
+        assert!(!dir.path().join("游记").exists());
+        // 其他文件夹没有占位附件，照常重命名。
+        let other = folder(&store, "其他");
+        store.folder_change("rename", &other, "别处", None).unwrap();
+        assert!(dir.path().join("别处").is_dir());
+        // 附件下载后占位消失，文件夹就能移动了。
+        update(&mut store, "旅行/.attachments/u/a.pdf", &hash, Some(&[1])).unwrap();
+        store
+            .folder_change("rename", &travel, "游记", None)
+            .unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("游记/.attachments/u/a.pdf")).unwrap(),
+            [1]
+        );
+    }
+
+    #[test]
     fn refuses_corrupt_index_and_allows_explicit_placeholder_deletion() {
         let dir = tempfile::tempdir().unwrap();
         let (mut store, hash) = with_placeholder(dir.path());

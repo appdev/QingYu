@@ -22,7 +22,7 @@ export async function setupFileLibrary(book: Notebook, actions: { save(): Promis
       if (payload === 'library-choose' || payload === 'library-reload') await invoke('library_watch');
     } finally {
       changing = false; document.body.dataset.libraryBusy = 'false';
-      if (shell) shell.inert = document.body.dataset.syncBusy === 'true';
+      if (shell) shell.inert = false;
     }
   }
   await listen<string>('library-command', async ({ payload }) => {

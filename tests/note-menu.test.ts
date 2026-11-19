@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createNoteMenu, noteInformation } from '../src/note-menu';
 import { Notebook } from '../src/notebook';
 
+vi.hoisted(() => { Object.assign(globalThis, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) }); });
+
 afterEach(() => { document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it.each([
@@ -34,7 +36,6 @@ it.each([
 it.each([false, true])('shows the toolbar actions with icons and a divider before trash (mobile: %s)', async mobile => {
   document.body.innerHTML = '<button id="note-more-button">更多</button>';
   const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# Note');
-  vi.spyOn(book, 'hasNoteHistory', 'get').mockReturnValue(true);
   await book.createFolder('目标目录');
   const menu = createNoteMenu(() => book, {
     save: async () => true, change: async run => { await run(); }, error: vi.fn(), mobile,
@@ -57,6 +58,9 @@ it.each([false, true])('shows the toolbar actions with icons and a divider befor
   await menu(book.current!.id, 200, 100, { keyboard: true });
   expect(document.activeElement).toBe(document.querySelector('.toolbar-context-menu [role=menuitem]'));
   if (!mobile) {
+    await menu(book.current!.id, 200, 100);
+    expect(document.querySelector('.note-context-menu [aria-label="版本历史…"]')).toBeNull();
+    vi.spyOn(book, 'hasNoteHistory', 'get').mockReturnValue(true);
     await menu(book.current!.id, 200, 100);
     expect(document.querySelector('.note-context-menu [aria-label="版本历史…"]')).not.toBeNull();
   }

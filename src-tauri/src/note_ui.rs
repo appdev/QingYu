@@ -25,7 +25,10 @@ pub fn table_clipboard_has_text(window: tauri::WebviewWindow) -> Result<bool, St
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn table_clipboard(window: tauri::WebviewWindow, text: Option<String>) -> Result<Option<String>, String> {
+pub fn table_clipboard(
+    window: tauri::WebviewWindow,
+    text: Option<String>,
+) -> Result<Option<String>, String> {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
     use objc2_foundation::NSString;
     check_editor_window(&window)?;
@@ -36,10 +39,14 @@ pub fn table_clipboard(window: tauri::WebviewWindow, text: Option<String>) -> Re
     let text_type = unsafe { NSPasteboardTypeString };
     if let Some(text) = text {
         board.clearContents();
-        return board.setString_forType(&NSString::from_str(&text), text_type)
-            .then_some(None).ok_or_else(|| "无法复制到剪贴板".into());
+        return board
+            .setString_forType(&NSString::from_str(&text), text_type)
+            .then_some(None)
+            .ok_or_else(|| "无法复制到剪贴板".into());
     }
-    Ok(board.stringForType(text_type).map(|value| value.to_string()))
+    Ok(board
+        .stringForType(text_type)
+        .map(|value| value.to_string()))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -70,10 +77,7 @@ mod palette_tests {
             palette_color(false, "muted").unwrap(),
             [106. / 255., 106. / 255., 106. / 255., 1.]
         );
-        assert_eq!(
-            palette_color(true, "paper").unwrap(),
-            [0., 0., 0., 1.]
-        );
+        assert_eq!(palette_color(true, "paper").unwrap(), [0., 0., 0., 1.]);
         for dark in [false, true] {
             for role in ["paper", "ink", "muted", "line"] {
                 assert!(palette_color(dark, role).is_ok());
@@ -150,7 +154,9 @@ pub(crate) use folder_dialog::{
 #[cfg(target_os = "macos")]
 mod folder_dialog {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSModalResponseOK, NSOpenPanel, NSWindow};
+    use objc2_app_kit::{
+        NSAlert, NSAlertFirstButtonReturn, NSModalResponseOK, NSOpenPanel, NSWindow,
+    };
     use objc2_foundation::{NSString, NSURL};
     use std::sync::mpsc::SyncSender;
     type Reply<T> = SyncSender<Result<T, String>>;
@@ -268,7 +274,9 @@ mod mac {
     pub fn link_applications(target: &str) -> Result<Vec<(String, String, bool)>, String> {
         let url = external_url(target)?;
         let workspace = NSWorkspace::sharedWorkspace();
-        let default = workspace.URLForApplicationToOpenURL(&url).and_then(|app| app.path());
+        let default = workspace
+            .URLForApplicationToOpenURL(&url)
+            .and_then(|app| app.path());
         let manager = NSFileManager::defaultManager();
         let mut apps: Vec<_> = workspace
             .URLsForApplicationsToOpenURL(&url)
@@ -289,22 +297,28 @@ mod mac {
             let url = external_url(target)?;
             let workspace = NSWorkspace::sharedWorkspace();
             let Some(application) = application else {
-                return workspace.openURL(&url).then_some(()).ok_or_else(|| "无法打开链接".into());
+                return workspace
+                    .openURL(&url)
+                    .then_some(())
+                    .ok_or_else(|| "无法打开链接".into());
             };
             let app = workspace
                 .URLsForApplicationsToOpenURL(&url)
                 .iter()
-                .find(|app| app.path().is_some_and(|path| path.to_string() == application))
+                .find(|app| {
+                    app.path()
+                        .is_some_and(|path| path.to_string() == application)
+                })
                 .ok_or("此应用无法打开该链接")?;
             let (send, receive) = std::sync::mpsc::sync_channel(1);
-            let completion = RcBlock::new(
-                move |_: *mut NSRunningApplication, error: *mut NSError| {
+            let completion =
+                RcBlock::new(move |_: *mut NSRunningApplication, error: *mut NSError| {
                     // AppKit owns the error for the duration of this callback.
-                    let result = unsafe { error.as_ref() }
-                        .map_or(Ok(()), |error| Err(error.localizedDescription().to_string()));
+                    let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| {
+                        Err(error.localizedDescription().to_string())
+                    });
                     let _ = send.send(result);
-                },
-            );
+                });
             workspace.openURLs_withApplicationAtURL_configuration_completionHandler(
                 &NSArray::from_retained_slice(&[url]),
                 &app,
@@ -343,17 +357,34 @@ mod mac {
             .contains(&item.title().to_string().as_str())
         });
         let table_menu = menu.itemArray().iter().any(|item| {
-            matches!(item.title().to_string().as_str(), "在下方插入行" | "在左侧插入列")
+            matches!(
+                item.title().to_string().as_str(),
+                "在下方插入行" | "在左侧插入列"
+            )
         });
-        let editor_menu = table_menu || menu.itemArray().iter().any(|item| {
-            matches!(item.title().to_string().as_str(), "打开链接" | "打开笔记" | "打开附件" | "打开图片" | "复制代码" | "分享为图片…" | "取消勾选此清单的所有任务")
-        });
+        let editor_menu = table_menu
+            || menu.itemArray().iter().any(|item| {
+                matches!(
+                    item.title().to_string().as_str(),
+                    "打开链接"
+                        | "打开笔记"
+                        | "打开附件"
+                        | "打开图片"
+                        | "复制代码"
+                        | "分享为图片…"
+                        | "取消勾选此清单的所有任务"
+                )
+            });
         if !note_menu && !folder_menu && !moving && !editor_menu {
             return;
         }
         if table_menu {
             menu.setAllowsContextMenuPlugIns(false);
-            if NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 15 {
+            if NSProcessInfo::processInfo()
+                .operatingSystemVersion()
+                .majorVersion
+                >= 15
+            {
                 menu.setAutomaticallyInsertsWritingToolsItems(false);
             }
         }
@@ -431,7 +462,11 @@ mod mac {
             ("Tip", "lightbulb.fill", "alert-tip-rgb"),
             ("Success", "checkmark.circle.fill", "alert-tip-rgb"),
             ("Question", "questionmark.circle.fill", "alert-warning-rgb"),
-            ("Warning", "exclamationmark.triangle.fill", "alert-warning-rgb"),
+            (
+                "Warning",
+                "exclamationmark.triangle.fill",
+                "alert-warning-rgb",
+            ),
             ("Danger", "bolt.fill", "alert-caution-rgb"),
             ("Bug", "ladybug.fill", "alert-caution-rgb"),
             ("Example", "list.bullet", "alert-important-rgb"),
@@ -457,7 +492,10 @@ mod mac {
         };
         let palette: serde_json::Value =
             serde_json::from_str(include_str!("../../src/palette.json")).unwrap_or_default();
-        let supports_color = NSProcessInfo::processInfo().operatingSystemVersion().majorVersion >= 12;
+        let supports_color = NSProcessInfo::processInfo()
+            .operatingSystemVersion()
+            .majorVersion
+            >= 12;
         for (item, (_, symbol, role)) in items.iter().zip(kinds) {
             let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                 &NSString::from_str(symbol),
@@ -478,10 +516,10 @@ mod mac {
                     f64::from(*blue) / 255.,
                     1.,
                 );
-                let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
-                    13.,
-                    unsafe { NSFontWeightSemibold },
-                );
+                let config =
+                    NSImageSymbolConfiguration::configurationWithPointSize_weight(13., unsafe {
+                        NSFontWeightSemibold
+                    });
                 let palette = NSImageSymbolConfiguration::configurationWithPaletteColors(
                     &NSArray::from_retained_slice(&[color]),
                 );

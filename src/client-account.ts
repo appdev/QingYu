@@ -125,7 +125,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
           <button type="button" class="client-text-button" data-change-email hidden>更改邮箱</button>
           <input type="password" name="password" aria-label="密码" placeholder="密码" autocomplete="current-password" maxlength="4096" hidden>
           <p class="client-account-status" role="status"></p>
-          <button type="submit" class="primary-button" disabled>继续</button>
+          <button type="submit" class="button primary-button" disabled>继续</button>
         </fieldset>
         <footer>
           <p>通过轻羽门户管理账号。</p>

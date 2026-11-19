@@ -1,14 +1,19 @@
 import { GFM, parser } from '@lezer/markdown';
 import DOMPurify from 'dompurify';
 import { invoke } from '@tauri-apps/api/core';
+import { Copy } from 'lucide';
 import { markdownBody, renderMarkdown } from './markdown';
 import { isDark, native, previewPreferences } from './preferences';
 import { themePalette } from './themes';
 import { readWikiLink } from './vendor/markra/editor/codemirror/wiki-link';
+import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { mountFeaturePanel, openFeaturePanel } from './feature-panel';
 import './note-picture.css';
 
 export type PictureRange = { from: number; to: number };
-export type PictureRequest = { title: string; source: string; selection?: PictureRange; image?: (path: string) => Promise<string | undefined> };
+export type PictureRequest = { title: string; source: string; selection?: PictureRange; image?: (path: string) => Promise<string | undefined>;
+  prepareImage?: (path: string) => Promise<unknown>;
+};
 const scenes = { hills: '山丘', sea: '海边', dusk: '暮色', orchard: '果园', paper: '纸白', ink: '墨色' };
 type Scene = keyof typeof scenes;
 type Look = { scene: Scene; dark: boolean; mark: boolean };
@@ -64,7 +69,7 @@ function replaceUnavailableImage(image: HTMLImageElement) {
   image.replaceWith(placeholder);
 }
 
-async function pictureContent(text: string, startsAtTitle: boolean, image: PictureRequest['image']) {
+async function pictureContent(text: string, startsAtTitle: boolean, { image, prepareImage }: PictureRequest) {
   const first = text.split('\n', 1)[0];
   const title = startsAtTitle && first && /^[\p{L}\p{N}]/u.test(first) && !/^\d+[.)]\s/u.test(first) && !first.includes('|') && !/^https?:\/\//iu.test(first);
   const fragment = DOMPurify.sanitize(renderMarkdown(title ? `# ${text}` : text).html, {
@@ -83,7 +88,11 @@ async function pictureContent(text: string, startsAtTitle: boolean, image: Pictu
   let imageCount = 0;
   await Promise.all([...fragment.querySelectorAll('img')].map(async element => {
     const src = element.getAttribute('src') ?? '';
-    const data = image && src && imageCount++ < 12 ? await image(src).catch(() => undefined) : undefined;
+    let data: string | undefined;
+    if (image && src && imageCount++ < 12) {
+      await prepareImage?.(src);
+      data = await image(src).catch(() => undefined);
+    }
     if (data && /^data:image\/(?:png|jpeg|webp|gif|bmp);base64,/u.test(data)) element.src = data;
     else replaceUnavailableImage(element);
   }));
@@ -119,7 +128,7 @@ async function renderPicture(request: PictureRequest, look: Look) {
   card.style.fontFamily = prefs.font;
   const body = document.createElement('article'); body.className = 'note-picture-content';
   const prefix = passage.text.slice(0, 24_000);
-  body.append(await pictureContent(prefix, passage.startsAtTitle, request.image)); card.append(body);
+  body.append(await pictureContent(prefix, passage.startsAtTitle, request)); card.append(body);
   if (look.mark) {
     const mark = document.createElement('div'); mark.className = 'note-picture-mark'; mark.textContent = '轻羽 QingYu'; card.append(mark);
   }
@@ -147,7 +156,8 @@ async function renderPicture(request: PictureRequest, look: Look) {
 
 export function mountNotePicture(root: HTMLElement, request: PictureRequest, detailed = false) {
   const look = lookFromDevice();
-  const area = document.createElement('div'); area.className = 'note-picture';
+  const area = document.createElement('div'); area.className = detailed ? 'note-picture note-picture-detailed' : 'note-picture';
+  const content = document.createElement('div'); content.className = 'note-picture-controls';
   const preview = document.createElement('img'); preview.className = 'note-picture-preview'; preview.alt = '导出的笔记图片预览'; preview.hidden = true;
   const status = document.createElement('p'); status.className = 'note-picture-status'; status.role = 'status';
   const backgrounds = document.createElement('div'); backgrounds.className = 'note-picture-backgrounds'; backgrounds.role = 'group'; backgrounds.ariaLabel = '背景';
@@ -161,7 +171,9 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     button.onclick = () => { look.scene = scene; saveLook(); void draw(); };
     backgrounds.append(button); return { scene, button };
   });
-  area.append(preview, status, backgrounds);
+  content.append(preview);
+  if (!detailed) content.append(status);
+  content.append(backgrounds);
   function saveLook() { try { localStorage.setItem(configKey, JSON.stringify({ scene: look.scene, mark: look.mark })); } catch { /* This render remains usable. */ } }
   if (detailed) {
     const options = document.createElement('div'); options.className = 'note-picture-options';
@@ -172,24 +184,37 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     light.onclick = () => { look.dark = false; updateMode(); void draw(); }; dark.onclick = () => { look.dark = true; updateMode(); void draw(); };
     updateMode(); mode.append(light, dark);
     const mark = document.createElement('label'), toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = look.mark;
+    toggle.role = 'switch';
     toggle.onchange = () => { look.mark = toggle.checked; saveLook(); void draw(); }; mark.append(toggle, ' 轻羽标记');
-    options.append(mode, mark); area.append(options);
+    options.append(mode, mark); content.append(options);
   }
+  if (detailed) content.append(status);
   const buttons = document.createElement('div'); buttons.className = 'note-picture-actions';
+  const isMobile = document.documentElement.hasAttribute('data-mobile');
   const isMac = native && document.documentElement.dataset.platform === 'macos';
+  const nativeImageShare = native && isMobile;
   const filename = pictureFilename(request.title);
   let result: Awaited<ReturnType<typeof renderPicture>>, imageURL = '', generation = 0;
-  const actions = (['copy', 'save', 'share'] as const).map(action => {
+  // 手机和 Pinto 的 iOS 一样只有分享和复制，想存到相册走系统分享；保存…只留给桌面。
+  const actionOrder = detailed ? (isMobile ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const) : ['copy', 'save', 'share'] as const;
+  const actions = actionOrder.map(action => {
     const button = document.createElement('button'); button.type = 'button'; button.disabled = true;
-    const title = { copy: '复制图片', save: '保存…', share: '分享…' }[action];
-    button.textContent = title; button.dataset.pictureAction = action;
-    button.className = action === (detailed ? 'share' : 'copy') ? 'primary-button' : 'secondary-button';
-    if (action === 'share' && !isMac && !navigator.canShare?.({ files: [new File([], filename, { type: 'image/png' })] })) button.hidden = true;
+    const title = { copy: '复制图片', save: '保存…', share: detailed ? '分享' : '分享…' }[action];
+    const label = document.createTextNode(title);
+    if (detailed && action === 'copy') button.append(createLucideIcon(document, Copy, 'note-picture-copy-icon'));
+    button.append(label); button.dataset.pictureAction = action;
+    button.className = action === (detailed ? 'share' : 'copy') ? 'button primary-button' : 'button secondary-button';
+    if (detailed) {
+      if (action === 'save') button.classList.add('button-regular', 'button-touch');
+      else button.classList.add('button-big', 'button-wide');
+    }
+    if (action === 'share' && !isMac && !nativeImageShare && !navigator.canShare?.({ files: [new File([], filename, { type: 'image/png' })] })) button.hidden = true;
+    if (action === 'copy' && !native && (!navigator.clipboard?.write || typeof ClipboardItem !== 'function')) button.hidden = true;
     button.onclick = async () => {
       if (!result) return;
       const blob = result.blob;
       try {
-        if (isMac || native && action === 'save' && !document.documentElement.hasAttribute('data-mobile')) {
+        if (isMac || nativeImageShare && action === 'share' || native && action === 'save' && !isMobile) {
           const { x, y, width, height } = button.getBoundingClientRect();
           const completed = await invoke<boolean>('note_picture_action', { action, filename, png: Array.from(new Uint8Array(await blob.arrayBuffer())), anchor: { x, y, width, height } });
           if (!completed) return;
@@ -198,12 +223,13 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
         else {
           const link = document.createElement('a'); link.href = imageURL; link.download = filename; link.click();
         }
-        if (action !== 'share') { button.textContent = action === 'copy' ? '已复制' : '已保存'; setTimeout(() => { button.textContent = title; }, 1500); }
+        if (action !== 'share') { label.data = action === 'copy' ? '已复制' : '已保存'; setTimeout(() => { label.data = title; }, 1500); }
       } catch (err) { if (!(err instanceof DOMException && err.name === 'AbortError')) status.textContent = '操作未完成，请重试。'; }
     };
-    buttons.append(button); return button;
+    (detailed && action === 'save' ? content : buttons).append(button);
+    return button;
   });
-  area.append(buttons); root.append(area);
+  area.append(content, buttons); root.append(area);
   async function draw() {
     const version = ++generation;
     actions.forEach(button => { button.disabled = true; });
@@ -224,10 +250,15 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
 }
 
 export function showNotePicture(request: PictureRequest, restoreFocus: () => void) {
-  const dialog = document.createElement('dialog'); dialog.className = 'note-picture-dialog'; dialog.ariaLabel = '分享为图片';
-  const close = document.createElement('button'); close.type = 'button'; close.className = 'note-picture-done secondary-button'; close.textContent = '完成'; close.onclick = () => dialog.close();
-  dialog.addEventListener('keydown', event => event.stopPropagation());
-  dialog.append(close); document.body.append(dialog); dialog.showModal();
-  const dispose = mountNotePicture(dialog, request, true);
-  dialog.addEventListener('close', () => { dispose(); dialog.remove(); restoreFocus(); }, { once: true });
+  return openFeaturePanel({
+    title: '分享为图片',
+    mount: (dialog, close) => ({
+      dispose: mountFeaturePanel(dialog, '分享为图片', close, root => mountNotePicture(root, request, true)),
+    }),
+    restoreFocus,
+    openWindow: async () => {
+      const { openPictureWindow } = await import('./picture-window');
+      await openPictureWindow(request, restoreFocus);
+    },
+  });
 }

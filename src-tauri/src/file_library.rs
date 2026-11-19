@@ -15,16 +15,16 @@ type Result<T> = std::result::Result<T, String>;
 const META: &str = ".miaoyan";
 const INDEX: &str = ".miaoyan/library.json";
 const JOURNAL: &str = ".miaoyan/transaction.json";
-pub(crate) mod folders;
-pub(crate) mod external;
-pub(crate) mod assets;
-pub(crate) mod storage_usage;
-pub(crate) mod attachments;
-pub(crate) mod history;
-#[cfg(feature = "app")]
-pub(crate) mod workspace;
 #[cfg(any(feature = "server", all(feature = "app", desktop)))]
 pub mod api;
+pub(crate) mod assets;
+pub(crate) mod attachments;
+pub(crate) mod external;
+pub(crate) mod folders;
+pub(crate) mod history;
+pub(crate) mod storage_usage;
+#[cfg(feature = "app")]
+pub(crate) mod workspace;
 
 fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
     #[cfg(target_os = "android")]
@@ -155,7 +155,10 @@ pub struct DiskLibrary {
 }
 #[cfg(feature = "app")]
 #[derive(Default)]
-pub struct FileLibrary(pub Mutex<Option<DiskLibrary>>, #[cfg(desktop)] Mutex<Option<external::Watch>>);
+pub struct FileLibrary(
+    pub Mutex<Option<DiskLibrary>>,
+    #[cfg(desktop)] Mutex<Option<external::Watch>>,
+);
 struct Imported {
     bytes: Vec<u8>,
     from: PathBuf,
@@ -404,8 +407,16 @@ fn move_exclusive(from: &Path, to: &Path) -> Result<()> {
         let to = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(error)?;
         // Android's app sandbox forbids hard links, including links within app data.
         if unsafe {
-            libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE)
-        } == 0 {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        } == 0
+        {
             return Ok(());
         }
         return Err(error(io::Error::last_os_error()));
@@ -650,7 +661,12 @@ impl Operation {
     }
     fn undo(&self, root: &Path) -> Result<()> {
         match self {
-            Self::Create { path, staged, identity, .. } => {
+            Self::Create {
+                path,
+                staged,
+                identity,
+                ..
+            } => {
                 let path = checked(root, path)?;
                 if path.exists()
                     && (same_file(&path, &checked(root, staged)?)
@@ -721,8 +737,7 @@ impl DiskLibrary {
             .truncate(false)
             .open(checked(&root, ".miaoyan/write.lock")?)
             .map_err(error)?;
-        try_lock(&scan_lock)
-            .map_err(|_| "笔记库正在被另一实例写入，请稍后重试".to_string())?;
+        try_lock(&scan_lock).map_err(|_| "笔记库正在被另一实例写入，请稍后重试".to_string())?;
         folders::recover(&root)?;
         let index_path = checked(&root, INDEX)?;
         let journal = checked(&root, JOURNAL)?;
@@ -750,7 +765,13 @@ impl DiskLibrary {
             for operation in &transaction.operations {
                 let note_path = |path: &str| -> Result<()> {
                     checked(&root, path)?;
-                    if transaction.asset_sync && (assets::valid_path(path) || assets::trash_path(path) || path == assets::placeholders::INDEX_PATH) { return Ok(()); }
+                    if transaction.asset_sync
+                        && (assets::valid_path(path)
+                            || assets::trash_path(path)
+                            || path == assets::placeholders::INDEX_PATH)
+                    {
+                        return Ok(());
+                    }
                     if !allowed(Path::new(path))
                         || Path::new(path)
                             .components()
@@ -1086,7 +1107,11 @@ impl DiskLibrary {
         if root != self.root.to_string_lossy() {
             return Err("笔记库位置已更改，未保存旧窗口中的正文".into());
         }
-        let index = self.data.notes.iter().position(|note| note.id == note_id)
+        let index = self
+            .data
+            .notes
+            .iter()
+            .position(|note| note.id == note_id)
             .ok_or("笔记不存在")?;
         let note = &self.data.notes[index];
         if note.read_only {
@@ -1123,8 +1148,7 @@ impl DiskLibrary {
             .truncate(false)
             .open(lock_path)
             .map_err(error)?;
-        try_lock(&lock)
-            .map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
+        try_lock(&lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
         let index_path = checked(&self.root, INDEX)?;
         if index_path.exists() {
             let index: Index =
@@ -1133,7 +1157,9 @@ impl DiskLibrary {
                 return Err("磁盘笔记库已被另一实例更新，请重新打开".into());
             }
         }
-        if checked(&self.root, JOURNAL)?.exists() || checked(&self.root, folders::FOLDER_JOURNAL)?.exists() {
+        if checked(&self.root, JOURNAL)?.exists()
+            || checked(&self.root, folders::FOLDER_JOURNAL)?.exists()
+        {
             return Err("存在未恢复的文件事务，请重新打开笔记库".into());
         }
         validate(&next)?;
@@ -1147,13 +1173,21 @@ impl DiskLibrary {
             }
         }
         let mut asset_stage = assets::StageFiles::new(&self.root);
-        let mut operations = match assets { Some(sync) if intent == "sync" => assets::operations(&self.root, sync, &mut asset_stage, &self.data, &mut next)?, Some(_) => return Err("附件只能随同步事务提交".into()), None => vec![] };
+        let mut operations = match assets {
+            Some(sync) if intent == "sync" => {
+                assets::operations(&self.root, sync, &mut asset_stage, &self.data, &mut next)?
+            }
+            Some(_) => return Err("附件只能随同步事务提交".into()),
+            None => vec![],
+        };
         let generation = self.revision + 1;
         let committed_at = now() as u64;
         // A sync result carries logical names. Native attachment-only commits keep the existing aliases.
-        let sync_names = intent == "sync" && next.sync.as_ref().is_some_and(|sync| {
-            sync.is_object() && sync.get("localNoteNames").is_none()
-        });
+        let sync_names = intent == "sync"
+            && next
+                .sync
+                .as_ref()
+                .is_some_and(|sync| sync.is_object() && sync.get("localNoteNames").is_none());
         let mut local_note_names = serde_json::Map::new();
         let mut occupied: HashSet<String> = HashSet::new();
         for folder in &mut next.folders {
@@ -1161,14 +1195,32 @@ impl DiskLibrary {
                 folder.path = old.path.clone();
             } else {
                 let directory = if intent == "sync" && !folder.path.is_empty() {
-                    if folder.path.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.') || part.contains(['\\', ':'])) { return Err("远端文件夹路径无效".into()); }
+                    if folder.path.split('/').any(|part| {
+                        part.is_empty()
+                            || part == "."
+                            || part == ".."
+                            || part.starts_with('.')
+                            || part.contains(['\\', ':'])
+                    }) {
+                        return Err("远端文件夹路径无效".into());
+                    }
                     folder.path.clone()
-                } else { name(&folder.name)? };
+                } else {
+                    name(&folder.name)?
+                };
                 if directory.is_empty() {
                     return Err("请输入文件夹名称".into());
                 }
                 let path = checked(&self.root, &directory)?;
-                if path.exists() && (intent != "sync" || !path.is_dir() || self.data.folders.iter().any(|f| f.path.eq_ignore_ascii_case(&directory))) {
+                if path.exists()
+                    && (intent != "sync"
+                        || !path.is_dir()
+                        || self
+                            .data
+                            .folders
+                            .iter()
+                            .any(|f| f.path.eq_ignore_ascii_case(&directory)))
+                {
                     return Err("已有同名文件夹或文件".into());
                 }
                 fs::create_dir_all(&path).map_err(error)?;
@@ -1198,7 +1250,13 @@ impl DiskLibrary {
                 }
                 let moving = note.folder_id != old.folder_id || note.trashed != old.trashed;
                 let alias = sync_names
-                    .then(|| self.data.sync.as_ref()?.get("localNoteNames")?.get(&note.id))
+                    .then(|| {
+                        self.data
+                            .sync
+                            .as_ref()?
+                            .get("localNoteNames")?
+                            .get(&note.id)
+                    })
                     .flatten();
                 let keeping_alias = alias.is_some_and(|alias| {
                     alias["localTitle"].as_str() == old.title.as_deref()
@@ -1255,8 +1313,12 @@ impl DiskLibrary {
                         }
                         let ext = Path::new(&old.path).extension().unwrap().to_string_lossy();
                         path = unique(
-                            &self.root, target_folder, note.title.as_deref().unwrap_or(""),
-                            &ext, &mut occupied, intent,
+                            &self.root,
+                            target_folder,
+                            note.title.as_deref().unwrap_or(""),
+                            &ext,
+                            &mut occupied,
+                            intent,
                         )?;
                     } else if sync_names {
                         occupied.insert(path.to_lowercase());
@@ -1270,7 +1332,9 @@ impl DiskLibrary {
                     });
                 }
                 if changed {
-                    if let Some(version) = history::capture(&self.root, old, intent, generation, committed_at)? {
+                    if let Some(version) =
+                        history::capture(&self.root, old, intent, generation, committed_at)?
+                    {
                         operations.push(version);
                     }
                     operations.push(Operation::Write {
@@ -1354,10 +1418,13 @@ impl DiskLibrary {
                 .map(|n| n.to_string_lossy().into());
             if let Some((title, filename)) = requested_name {
                 if title != note.title || filename != note.filename {
-                    local_note_names.insert(note.id.clone(), serde_json::json!({
-                        "title": title, "filename": filename,
-                        "localTitle": note.title, "localFilename": note.filename,
-                    }));
+                    local_note_names.insert(
+                        note.id.clone(),
+                        serde_json::json!({
+                            "title": title, "filename": filename,
+                            "localTitle": note.title, "localFilename": note.filename,
+                        }),
+                    );
                 }
             }
         }
@@ -1624,7 +1691,11 @@ pub fn collect_imports(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
 fn default_library_directory(documents: PathBuf) -> PathBuf {
     let current = documents.join("QingYu");
     let legacy = documents.join("MiaoYan Editor");
-    if !current.exists() && legacy.is_dir() { legacy } else { current }
+    if !current.exists() && legacy.is_dir() {
+        legacy
+    } else {
+        current
+    }
 }
 
 #[cfg(feature = "app")]
@@ -1635,7 +1706,9 @@ pub async fn library_open(
     state: State<'_, FileLibrary>,
     seed: Option<Library>,
 ) -> Result<Snapshot> {
-    if window.label() != "main" { return Err("请在主窗口打开笔记库".into()); }
+    if window.label() != "main" {
+        return Err("请在主窗口打开笔记库".into());
+    }
     if let Some(store) = state.0.lock().map_err(error)?.as_ref() {
         return Ok(store.snapshot());
     }
@@ -1672,9 +1745,12 @@ fn check_directory_access(
 ) -> Result<()> {
     let (send, receive) = std::sync::mpsc::channel();
     let path = root.clone();
-    std::thread::Builder::new().name("library-access".into()).spawn(move || {
-        let _ = send.send(probe(&path));
-    }).map_err(error)?;
+    std::thread::Builder::new()
+        .name("library-access".into())
+        .spawn(move || {
+            let _ = send.send(probe(&path));
+        })
+        .map_err(error)?;
     match receive.recv_timeout(timeout) {
         Ok(result) => result.map_err(|reason| format!("无法读取笔记目录 {}：{reason}。请检查目录访问权限，或在设置中更改笔记位置。", root.display())),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!("读取笔记目录超时：{}。请检查系统的文件夹访问提示，完成后使用“文件 → 重新读取笔记文件夹”，或在设置中更改笔记位置。原笔记未被覆盖。", root.display())),
@@ -1699,9 +1775,15 @@ fn read_library_directory(root: &Path) -> io::Result<()> {
 #[cfg(feature = "app")]
 async fn open_accessible_library(root: PathBuf, seed: Option<Library>) -> Result<DiskLibrary> {
     tauri::async_runtime::spawn_blocking(move || {
-        check_directory_access(root.clone(), std::time::Duration::from_secs(10), read_library_directory)?;
+        check_directory_access(
+            root.clone(),
+            std::time::Duration::from_secs(10),
+            read_library_directory,
+        )?;
         DiskLibrary::open(root, seed)
-    }).await.map_err(error)?
+    })
+    .await
+    .map_err(error)?
 }
 #[cfg(feature = "app")]
 #[tauri::command]
@@ -1715,12 +1797,15 @@ pub async fn library_commit(
 ) -> Result<Snapshot> {
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
-    let note_window = workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
+    let note_window =
+        workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
     if store.revision != revision {
         return Err("笔记库已发生变化，请重新打开后再操作".into());
     }
     if note_window {
-        if next.folders != store.data.folders || next.sync != store.data.sync || assets.is_some()
+        if next.folders != store.data.folders
+            || next.sync != store.data.sync
+            || assets.is_some()
             || !(matches!(intent.as_str(), "edit" | "create") || intent.starts_with("duplicate:"))
         {
             return Err("请在主窗口管理笔记库".into());
@@ -1847,7 +1932,10 @@ pub async fn library_choose(
         if app.state::<workspace::Workspace>().has_note_windows()? {
             return Err("请关闭独立笔记窗口后再更改笔记库位置".into());
         }
-        let window = app.get_webview_window("settings").filter(|settings| settings.is_focused().unwrap_or(false)).unwrap_or(window);
+        let window = app
+            .get_webview_window("settings")
+            .filter(|settings| settings.is_focused().unwrap_or(false))
+            .unwrap_or(window);
         let chosen = tauri::async_runtime::spawn_blocking(move || {
             window
                 .dialog()
@@ -1863,7 +1951,9 @@ pub async fn library_choose(
             let opened = open_accessible_library(path, None).await?;
             let mcp = app.state::<api::desktop::LocalMcp>();
             let mut listener = mcp.0.lock().await;
-            let stop_mcp = listener.as_ref().is_some_and(|listener| listener.root != opened.root);
+            let stop_mcp = listener
+                .as_ref()
+                .is_some_and(|listener| listener.root != opened.root);
             {
                 let workspace = app.state::<workspace::Workspace>();
                 let _opening = workspace.opening.lock().map_err(error)?;
@@ -1881,7 +1971,9 @@ pub async fn library_choose(
                 )?;
                 *lock = Some(opened);
             }
-            if stop_mcp { api::desktop::stop(&mut listener).await; }
+            if stop_mcp {
+                api::desktop::stop(&mut listener).await;
+            }
         }
         let lock = state.0.lock().map_err(error)?;
         Ok(lock.as_ref().ok_or("尚未打开本地笔记库")?.snapshot())
@@ -1895,7 +1987,10 @@ pub async fn library_choose(
 
 #[cfg(feature = "app")]
 #[tauri::command]
-pub async fn library_reload(window: tauri::WebviewWindow, state: State<'_, FileLibrary>) -> Result<Snapshot> {
+pub async fn library_reload(
+    window: tauri::WebviewWindow,
+    state: State<'_, FileLibrary>,
+) -> Result<Snapshot> {
     let mut lock = state.0.lock().map_err(error)?;
     let current = lock.as_ref().ok_or("请先打开本地笔记库")?;
     workspace::check_library_window(window.app_handle(), window.label(), &current.root)?;
@@ -1938,20 +2033,27 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
         ("library-choose", "更改笔记库位置…", None),
         ("library-import", "导入文件…", None),
         ("library-import-folder", "导入文件夹…", None),
-        (
-            "library-reload",
-            "重新读取笔记文件夹",
-            None,
-        ),
+        ("library-reload", "重新读取笔记文件夹", None),
     ] {
         files.append(&MenuItem::with_id(app, id, text, true, key)?)?;
     }
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
-        if event.id().as_ref().starts_with("library-") || event.id().as_ref().starts_with("workspace-") {
+        if event.id().as_ref().starts_with("library-")
+            || event.id().as_ref().starts_with("workspace-")
+        {
             let target = if event.id().as_ref().starts_with("workspace-") {
-                app.webview_windows().into_values().find(|window| window.is_focused().unwrap_or(false) && workspace::is_document(app, window.label())).map(|window| window.label().to_string()).unwrap_or_else(|| "main".into())
-            } else { "main".into() };
+                app.webview_windows()
+                    .into_values()
+                    .find(|window| {
+                        window.is_focused().unwrap_or(false)
+                            && workspace::is_document(app, window.label())
+                    })
+                    .map(|window| window.label().to_string())
+                    .unwrap_or_else(|| "main".into())
+            } else {
+                "main".into()
+            };
             let _ = app.emit_to(&target, "library-command", event.id().as_ref());
         }
     });

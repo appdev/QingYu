@@ -12,7 +12,8 @@ use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 
-const PORTAL: &str = "https://sy.apkdv.com";
+const API_ORIGIN: &str = "https://api.qynotes.com";
+const PORTAL: &str = "https://qynotes.com";
 const API: &str = "/api/client/v1";
 const STORAGE_ERROR: &str = "secure_storage";
 const MAX_SESSION_BYTES: u64 = 64 * 1024;
@@ -784,7 +785,7 @@ impl ClientAccount {
             .join(".account")
             .join("session.json");
         Ok(Service {
-            origin: PORTAL,
+            origin: API_ORIGIN,
             client,
             session,
         })

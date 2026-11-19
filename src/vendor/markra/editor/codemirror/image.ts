@@ -31,6 +31,7 @@ export interface MarkraImageSourceContext {
 export interface ImagePreviewPluginOptions {
   className?: string;
   resolveSource?: (context: MarkraImageSourceContext) => string | null;
+  mountImage?: (image: HTMLImageElement, frame: HTMLElement, source: string, original: string) => (() => void) | undefined;
 }
 
 interface ImageDetails {
@@ -46,6 +47,7 @@ interface ImageWidgetDomState {
   frame: HTMLSpanElement;
   image: HTMLImageElement;
   imageRecord: ImageWidgetDomRecord;
+  cleanImage?: () => void;
   mediaViewer: MediaViewerHandle | null;
   onViewKeyDown: (event: KeyboardEvent) => void;
   viewerButton: HTMLButtonElement;
@@ -155,7 +157,7 @@ function noteImages(view: CodeMirrorView, resolver: ImagePreviewPluginOptions["r
       const details = imageDetails(view.state, node.node as MarkraSyntaxNode);
       const source = details && resolveImageSource(view, details, resolver);
       if (details && source) {
-        items.push({ alt: details.alt.replace(markdownImageSizeSuffix, ""), from: node.from, source, title: details.title });
+        items.push({ alt: details.alt.replace(markdownImageSizeSuffix, ""), from: node.from, source, original: details.source, title: details.title });
       }
       return false;
     },
@@ -172,11 +174,6 @@ function updateImageElement(image: HTMLImageElement, widget: ImageWidget) {
   if (sized) image.dataset.imageSize = sized.size;
   else delete image.dataset.imageSize;
   if (image.className !== widget.className) image.className = widget.className;
-  // Editing above an image shifts its Markdown range and updates the widget.
-  // Reassigning an unchanged src makes browsers reload the image and flash.
-  if (image.getAttribute("src") !== widget.source) {
-    image.src = widget.source;
-  }
   if (widget.details.title) {
     if (image.title !== widget.details.title) image.title = widget.details.title;
   } else if (image.hasAttribute("title")) {
@@ -248,6 +245,7 @@ class ImageWidget extends WidgetType {
     readonly from: number,
     readonly readOnly: boolean,
     readonly resolver: ImagePreviewPluginOptions["resolveSource"],
+    readonly mountImage: ImagePreviewPluginOptions["mountImage"],
     readonly selected: boolean,
     readonly source: string,
     readonly to: number,
@@ -270,6 +268,12 @@ class ImageWidget extends WidgetType {
 
   ignoreEvent(event: Event) {
     return event.type !== "contextmenu";
+  }
+
+  private setSource(image: HTMLImageElement, frame: HTMLElement) {
+    const clean = this.mountImage?.(image, frame, this.source, this.details.source);
+    if (!clean && image.getAttribute("src") !== this.source) image.src = this.source;
+    return clean;
   }
 
   toDOM(view: CodeMirrorView) {
@@ -308,6 +312,7 @@ class ImageWidget extends WidgetType {
       frame,
       image,
       imageRecord,
+      cleanImage: this.setSource(image, frame),
       mediaViewer: null,
       onViewKeyDown: (event: KeyboardEvent) => {
         const current = imageWidgetDomState.get(root);
@@ -397,6 +402,7 @@ class ImageWidget extends WidgetType {
           zoomOut: "缩小",
         },
         media: image,
+        mountImage: state.widget.mountImage,
         mount: view.dom.closest(".markdown-paper") ?? view.dom.ownerDocument.body,
         // 关闭后回到正文，图片仍保持选中，和 Pinto 关掉 Quick Look 后一样。
         restoreFocus: view.contentDOM,
@@ -445,6 +451,8 @@ class ImageWidget extends WidgetType {
     if (state.widget.source !== this.source) {
       state.mediaViewer?.close({ restoreFocus: false });
       state.mediaViewer = null;
+      state.cleanImage?.();
+      state.cleanImage = this.setSource(state.image, state.frame);
     }
     state.widget = this;
     state.imageRecord.from = this.from;
@@ -459,6 +467,7 @@ class ImageWidget extends WidgetType {
     const state = imageWidgetDomState.get(dom);
     if (!state) return;
     state.cancelPress();
+    state.cleanImage?.();
     state.widget.view.dom.removeEventListener(
       "keydown",
       state.onViewKeyDown,
@@ -552,6 +561,7 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
                 context.node.from,
                 context.state.facet(EditorState.readOnly),
                 options.resolveSource,
+                options.mountImage,
                 selected,
                 source,
                 context.node.to,

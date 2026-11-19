@@ -29,7 +29,7 @@ export function themePalette(theme: Theme, dark: boolean) {
     }).join('').toUpperCase(),
     'settings-selection': selection, 'switch-on': accent,
     'mobile-sidebar': sidebar, 'mobile-list': list, 'mobile-row': card,
-    'mobile-note-selection': selection, 'mobile-ink': ink, 'mobile-muted': muted,
+    'mobile-note-selection': selection, 'mobile-ink': ink, 'mobile-muted': muted, 'mobile-sand': soft,
     'diagram-text': ink, 'diagram-node': card, 'diagram-group': soft, 'diagram-border': line,
   };
 }

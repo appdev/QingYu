@@ -1089,6 +1089,7 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
   private mobileTableTap?: { tableFrom: string; down: boolean; cell: HTMLTableCellElement | null };
   private edgeCaret?: Element;
   private edgeInput?: HTMLTextAreaElement;
+  private startCaret?: Element;
 
   constructor(private readonly view: CodeMirrorView) {
     this.eventType = view.dom.ownerDocument.documentElement.hasAttribute("data-mobile") ? "click" : "mousedown";
@@ -1150,7 +1151,7 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
     this.selectBelow(node, Boolean(!mobile && onRight && rect && event.clientY >= rect.top && event.clientY < rect.bottom));
   };
 
-  private selectBelow(node: { from: number; to: number }, right: boolean, atEdge = false) {
+  private selectBelow(node: { from: number; to: number }, right: boolean, atEdge = false, armed = false) {
     const { view } = this;
     const placement = selectAfterTable(view, node.to, right || atEdge);
     const table = renderedTableAt(view, node.from);
@@ -1159,7 +1160,7 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
       this.edgeCaret = scroller;
       scroller.setAttribute("data-table-edge-caret", "right");
     }
-    if (placement && table) this.focusEdgeInput(table, node, placement);
+    if (placement && table) this.focusEdgeInput(table, node, placement, armed);
     else view.focus();
   }
 
@@ -1172,14 +1173,28 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
     const table = tableNodeAt(view.state, doc.line(line.number - 2).to, -1);
     if (!table || !renderedTableAt(view, table.from)) return false;
     // Removing this break could turn the following paragraph into another GFM row.
-    this.selectBelow(table, true, true);
+    // Like Pinto, the first press marks the table and the next one removes it.
+    this.selectBelow(table, true, true, true);
     return true;
   }
 
-  private focusEdgeInput(table: HTMLTableElement, node: { from: number; to: number }, placement: TableEdgeInput) {
+  private focusEdgeInput(table: HTMLTableElement, node: { from: number; to: number }, placement: TableEdgeInput, armed = false) {
     const { view } = this;
     const wrapper = table.closest(".cm-markra-table-wrap");
     if (!wrapper) return;
+    const scroller = table.closest<HTMLElement>(".markra-table-scroll");
+    const arm = () => { armed = true; scroller?.setAttribute("data-table-armed", ""); };
+    if (armed) arm();
+    // The same keystroke can also arrive as beforeinput; skip it until this task ends.
+    let handledKey = false;
+    // Backspace at the table's edge: mark it first, then delete the whole table.
+    const backspace = () => {
+      if (!armed) { arm(); return; }
+      const preview = tablePreviewAt(view.state, node.from, node.to);
+      this.clearEdgeCaret();
+      if (preview) deleteTable(view, preview);
+      else view.focus();
+    };
     const input = table.ownerDocument.createElement("textarea");
     input.className = "markra-table-edge-input";
     input.ariaLabel = "在表格后输入";
@@ -1211,6 +1226,12 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
       if (inputType === "insertLineBreak" || inputType === "insertParagraph") commit("", true);
       else if (input.value) commit(input.value);
     });
+    // Android soft keyboards often send Backspace only as beforeinput, without a usable keydown.
+    input.addEventListener("beforeinput", event => {
+      if (composing || event.inputType !== "deleteContentBackward" || input.value) return;
+      event.preventDefault();
+      if (!handledKey) backspace();
+    });
     input.addEventListener("compositionstart", () => { composing = true; });
     input.addEventListener("compositionend", event => {
       composing = false;
@@ -1236,6 +1257,13 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const { key } = event;
       if (key === "Enter") { event.preventDefault(); commit("", true); return; }
+      if (key === "Backspace" && !input.value) {
+        event.preventDefault();
+        handledKey = true;
+        setTimeout(() => { handledKey = false; });
+        backspace();
+        return;
+      }
       if (event.shiftKey) return;
       if (key === "ArrowLeft" || key === "ArrowUp" || key === "Escape") {
         event.preventDefault();
@@ -1264,12 +1292,33 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
   private clearEdgeCaret() {
     const input = this.edgeInput;
     this.edgeInput = undefined;
+    input?.closest(".cm-markra-table-wrap")?.querySelector(".markra-table-scroll")?.removeAttribute("data-table-armed");
     input?.remove();
     this.edgeCaret?.removeAttribute("data-table-edge-caret");
     this.edgeCaret = undefined;
   }
 
+  // 光标停在表格开头时，CodeMirror 会画一条和整行（含上下留白）一样高的竖线，
+  // 还压在表格左边框上。换成和右边缘一样、与表格等高的光标。
+  private syncStartCaret() {
+    const { view } = this;
+    const { selection } = view.state;
+    const head = selection.main.head;
+    const node = view.hasFocus && !view.compositionStarted && selection.ranges.length === 1 && selection.main.empty
+      ? tableNodeAt(view.state, head, 1) : null;
+    const scroller = node && node.headerFrom === head ? renderedTableAt(view, node.from)?.parentElement : null;
+    if (scroller === this.startCaret) return;
+    this.startCaret?.removeAttribute("data-table-edge-caret");
+    this.startCaret = undefined;
+    if (!scroller || scroller.hasAttribute("data-table-edge-caret")) return;
+    scroller.setAttribute("data-table-edge-caret", "left");
+    this.startCaret = scroller;
+  }
+
   update(update: ViewUpdate) {
+    if (update.docChanged || update.selectionSet || update.focusChanged) {
+      queueMicrotask(() => { if (this.view.dom.isConnected) this.syncStartCaret(); });
+    }
     if (this.edgeCaret && (update.docChanged || !this.edgeInput && (update.selectionSet ||
       update.focusChanged && !update.view.hasFocus))) this.clearEdgeCaret();
     const { state, view } = update;
@@ -1278,6 +1327,8 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
       !view.hasFocus || view.compositionStarted || !selection.main.empty || selection.ranges.length !== 1 ||
       doc.lineAt(selection.main.head).text.trim()) return;
     const deletedLine = update.docChanged && update.transactions.some(transaction => transaction.isUserEvent("delete.backward"));
+    // 撤销删表后回到删除前的右边缘光标，不进单元格：手机上进单元格会弹控件、触发输入法补行。
+    const undone = update.docChanged && update.transactions.some(transaction => transaction.isUserEvent("undo"));
     // Backspace, undo and arrow keys can land on the Markdown separator. Once the DOM
     // settles, give it the same input target as a click in the compact gap.
     queueMicrotask(() => {
@@ -1291,7 +1342,8 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
       const table = tableBeforeGap(view, line);
       const grid = table && renderedTableAt(view, table.from);
       if (!table || !grid) return;
-      if (deletedLine || beforeFence) this.selectBelow(table, deletedLine);
+      if (undone) this.selectBelow(table, true);
+      else if (deletedLine || beforeFence) this.selectBelow(table, deletedLine);
       else {
         const row = grid.rows.length - 1;
         restoreTableCaret(view, table.from, row, grid.rows[row].cells.length - 1);
@@ -1301,6 +1353,7 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
 
   destroy() {
     this.clearEdgeCaret();
+    this.startCaret?.removeAttribute("data-table-edge-caret");
     this.view.contentDOM.removeEventListener(this.eventType, this.selectProse, true);
     if (this.eventType === "click") this.view.contentDOM.removeEventListener("mousedown", this.rememberTableTap, true);
   }

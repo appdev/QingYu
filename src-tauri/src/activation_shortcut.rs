@@ -114,7 +114,10 @@ pub fn restore(app: &tauri::App) {
             String::new()
         }
     };
-    if app.try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>().is_none() {
+    if app
+        .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+        .is_none()
+    {
         status.error = Some("当前系统无法使用全局快捷键".into());
     } else if !status.shortcut.is_empty() {
         match parse(&status.shortcut).and_then(|shortcut| {
@@ -199,7 +202,11 @@ pub async fn activation_shortcut(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<ActivationShortcut>();
         let mut status = state.0.lock().map_err(|_| "唤起快捷键暂时不可用")?;
-        if action != "status" && app.try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>().is_none() {
+        if action != "status"
+            && app
+                .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+                .is_none()
+        {
             return Err("当前系统无法使用全局快捷键".into());
         }
         match action.as_str() {

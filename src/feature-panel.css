@@ -1,0 +1,52 @@
+dialog.feature-panel-dialog {
+  position: fixed; inset: 0;
+  width: min(var(--feature-width, 560px), calc(100% - var(--feature-gutter, 32px)));
+  height: min(var(--feature-height, 720px), calc(100dvh - var(--feature-gutter, 32px)));
+  max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden;
+  border: 1px solid var(--feature-border, var(--line)); border-radius: var(--feature-radius, 20px);
+  background: var(--feature-background, var(--paper)); color: var(--ink); box-shadow: var(--feature-shadow, none);
+}
+.feature-panel-dialog::backdrop { background: var(--overlay); }
+.feature-panel-dialog[data-feature-animated] {
+  transform: var(--feature-sheet-transform, none);
+  transition: transform var(--navigation-duration) var(--navigation-easing);
+  animation: feature-card-in var(--navigation-duration) var(--navigation-easing) backwards;
+}
+.feature-panel-dialog[data-feature-animated]::backdrop {
+  opacity: var(--feature-backdrop-opacity, 1);
+  transition: opacity var(--navigation-duration) ease;
+  animation: feature-backdrop-in var(--navigation-duration) ease backwards;
+}
+.feature-panel-dialog[data-feature-dragging], .feature-panel-dialog[data-feature-dragging]::backdrop { transition: none; }
+.feature-panel-dialog[data-feature-closing] { animation-name: feature-card-out; animation-fill-mode: both; }
+.feature-panel-dialog[data-feature-closing]::backdrop { animation-name: feature-backdrop-out; animation-fill-mode: both; }
+@keyframes feature-card-in { from { opacity: 0; transform: translateY(12px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes feature-card-out {
+  from { opacity: 1; transform: var(--feature-sheet-transform, none); }
+  to { opacity: 0; transform: var(--feature-sheet-transform, translateY(0)) translateY(12px) scale(.98); }
+}
+@keyframes feature-sheet-in { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes feature-sheet-out { from { transform: var(--feature-sheet-transform, none); } to { transform: translateY(100%); } }
+@keyframes feature-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes feature-backdrop-out { from { opacity: var(--feature-backdrop-opacity, 1); } to { opacity: 0; } }
+.feature-panel { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.feature-panel > header {
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  padding: 5px 16px;
+}
+.feature-panel > header > button { justify-self: start; }
+.feature-panel > header h2 { grid-column: 2; margin: 0; font-size: 18px; }
+.feature-panel-content { min-width: 0; min-height: 0; overflow: auto; }
+.feature-window-root { height: 100%; }
+@media (width < 780px) {
+  html[data-mobile]:not([data-web]) .feature-panel-dialog {
+    width: 100%; height: calc(100dvh - max(var(--feature-sheet-gap, 8px), var(--safe-area-top)));
+    margin: auto 0 0; border: 0; border-radius: var(--feature-sheet-radius, 28px) var(--feature-sheet-radius, 28px) 0 0;
+    box-shadow: none;
+  }
+  html[data-mobile]:not([data-web]) .feature-panel-dialog[data-feature-animated] { animation-name: feature-sheet-in; }
+  html[data-mobile]:not([data-web]) .feature-panel-dialog[data-feature-closing] { animation-name: feature-sheet-out; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .feature-panel-dialog[data-feature-animated], .feature-panel-dialog[data-feature-animated]::backdrop { animation: none; transition: none; }
+}

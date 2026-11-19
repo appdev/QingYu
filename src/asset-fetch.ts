@@ -1,4 +1,5 @@
 import type { Notebook } from './notebook';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { assetPath, assetRelative } from './sync-files';
 import { openKey } from './sync-store';
 import { loadRemoteBytes, sha256Hex, type Storage } from './vendor/mdsync/core';
@@ -58,4 +59,41 @@ export function createAssetFetcher(book: Notebook, connect: (target: string) => 
     return job;
   }
   return { fetchAsset, drain: () => Promise.allSettled(pending.values()) };
+}
+
+type WindowRequest = { id: string; origin: string; root: string; path: string };
+type WindowReply = { hash?: string; error?: string };
+const assetRequestEvent = 'asset-download-request';
+
+export function hostAssetDownloads(book: Notebook, fetchAsset: (path: string) => Promise<string | undefined>) {
+  return listen<WindowRequest>(assetRequestEvent, async ({ payload }) => {
+    const { id, origin, root, path } = payload ?? {};
+    if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id) || typeof origin !== 'string' || !origin.startsWith('document-note-')
+        || typeof path !== 'string' || path.length > 4096 || typeof root !== 'string') return;
+    let reply: WindowReply;
+    try {
+      if (book.root !== root) throw new Error('笔记库已切换，请重新下载附件');
+      reply = { hash: await fetchAsset(path) };
+    } catch (error) {
+      reply = { error: error instanceof Error ? error.message : '附件下载失败' };
+    }
+    await emitTo(origin, `asset-download-reply-${id}`, reply);
+  }, { target: 'main' });
+}
+
+export async function downloadFromMain(origin: string, root: string, path: string) {
+  const id = crypto.randomUUID();
+  let receive!: (reply: WindowReply) => void;
+  const response = new Promise<WindowReply>(resolve => { receive = resolve; });
+  const stop = await listen<WindowReply>(`asset-download-reply-${id}`, ({ payload }) => receive(payload), { target: origin });
+  const timer = setTimeout(() => receive({ error: '主窗口未响应，请打开主窗口后重试' }), 300_000);
+  try {
+    await emitTo('main', assetRequestEvent, { id, origin, root, path } satisfies WindowRequest);
+    const reply = await response;
+    if (reply.error) throw new Error(reply.error);
+    return reply.hash;
+  } finally {
+    clearTimeout(timer);
+    stop();
+  }
 }

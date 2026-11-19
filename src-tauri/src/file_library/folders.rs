@@ -254,6 +254,17 @@ impl DiskLibrary {
                 if to == folder.path {
                     return Ok(());
                 }
+                // 占位附件只在索引里，目录搬走后它们仍指向旧路径，笔记里的引用就断了。
+                let prefix = format!("{}/", folder.path.to_lowercase());
+                let pending = assets::placeholders::load(self)?
+                    .keys()
+                    .filter(|path| path.to_lowercase().starts_with(&prefix))
+                    .count();
+                if pending > 0 {
+                    return Err(format!(
+                        "文件夹里有 {pending} 个附件尚未下载。请在 S3 设置中将附件下载改为「全部下载」并同步，再重命名或移动"
+                    ));
+                }
                 let target = visible_path(&self.root, &to)?;
                 let source = visible_path(&self.root, &folder.path)?;
                 if target.starts_with(&source)

@@ -3,7 +3,8 @@ export type SyncMode = 'cloud' | 's3';
 type S3Fields = Pick<core.Config, 'endpoint' | 'region' | 'bucket' | 'prefix' | 'accessKeyId' | 'secretAccessKey'>;
 export type S3Connection = S3Fields & Partial<Pick<core.Config, 'forcePathStyle' | 'concurrency'>> & { timeout?: number; tlsVerify?: boolean; assetDownload?: 'all' | 'on-demand' };
 export type S3Settings = S3Connection & { mode?: SyncMode };
-export const s3Defaults = { timeout: 45, tlsVerify: true, forcePathStyle: true, concurrency: 2 };
+export const s3Defaults = { timeout: 45, tlsVerify: true, forcePathStyle: true, concurrency: 2, assetDownload: 'all' as const };
+export const defaultAssetDownload = (mobile: boolean) => mobile ? 'on-demand' as const : s3Defaults.assetDownload;
 export function hasS3Connection(settings: S3Settings) {
   return [settings.endpoint, settings.bucket, settings.prefix, settings.accessKeyId, settings.secretAccessKey].every(value => value?.trim());
 }

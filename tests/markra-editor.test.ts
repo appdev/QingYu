@@ -1116,6 +1116,42 @@ it.each([
   } finally { view.destroy(); root.remove(); }
 });
 
+it('marks the table on the first Backspace after it and deletes it on the second, like Pinto', async () => {
+  const table = '| 名称 | 状态 |\n| --- | --- |\n| 表格 | 完成 |';
+  const source = '前文\n\n' + table + '\n\n后文';
+  const root = document.body.appendChild(document.createElement('div'));
+  const editor = createRichEditor(root, () => {});
+  const view = EditorView.findFromDOM(root.querySelector('.cm-editor')!)!;
+  const press = (key: string) => document.activeElement!.dispatchEvent(
+    new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+  );
+  try {
+    editor.activate(source, 'table-backspace-delete');
+    const wrapper = root.querySelector('.qingyu-table-controls')!;
+    wrapper.querySelector('table')!.getBoundingClientRect = () => new DOMRect(20, 100, 200, 100);
+    wrapper.querySelector('.markra-table-scroll')!.getBoundingClientRect = () => new DOMRect(19, 99, 202, 102);
+    wrapper.closest('.cm-line')!.dispatchEvent(new MouseEvent('mousedown', {
+      clientX: 300, clientY: 170, bubbles: true, cancelable: true, detail: 1,
+    }));
+    expect(document.activeElement?.classList.contains('markra-table-edge-input')).toBe(true);
+    press('Backspace');
+    expect(view.state.doc.toString()).toBe(source);
+    expect(wrapper.querySelector('.markra-table-scroll')!.hasAttribute('data-table-armed')).toBe(true);
+    // 软键盘只发 beforeinput 时也一样删除。
+    await new Promise(resolve => setTimeout(resolve));
+    document.activeElement!.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true }));
+    expect(view.state.doc.toString()).toBe('前文\n\n\n后文');
+    expect(root.querySelector('.cm-markra-table')).toBeNull();
+    // 撤销后回到删除前的右边缘光标，而不是进入最后一个单元格。
+    expect(undo(view)).toBe(true);
+    await Promise.resolve();
+    expect(view.state.doc.toString()).toBe(source);
+    expect(document.activeElement?.classList.contains('markra-table-edge-input')).toBe(true);
+    expect(root.querySelector('[data-table-edge-caret=right]')).not.toBeNull();
+    expect(root.querySelector('[data-table-armed]')).toBeNull();
+  } finally { view.destroy(); root.remove(); }
+});
+
 it('keeps the table separator compact across consecutive Returns and Backspaces before a code fence', async () => {
   const table = '| 名称 | 状态 |\n| --- | --- |\n| 表格 | 完成 |';
   const code = '```js\nconsole.log(12);\n```';
@@ -1510,7 +1546,7 @@ it('shows note aliases and summaries and preserves attachment paths and ordinary
   const editor = createRichEditor(root, () => {}, {
     openNoteLink: target => opened.push(target),
     describeNoteLink: () => ({ folder: '工作', detail: '第二行摘要' }),
-    openAsset: (id, path) => opened.push(`${id}:${path}`),
+    openAsset: (id, path) => { opened.push(`${id}:${path}`); },
   });
   const view = EditorView.findFromDOM(root.querySelector('.cm-editor')!)!;
   try {

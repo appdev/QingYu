@@ -4,6 +4,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { Notebook } from '../src/notebook';
 import { createSidebar } from '../src/sidebar';
 
+vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
+
 afterEach(() => vi.unstubAllGlobals());
 
 it('keeps the list and note when returning or changing tablet width', async () => {
@@ -23,6 +25,7 @@ it('keeps the list and note when returning or changing tablet width', async () =
   const shell = get('#app-shell'), list = get('#notes-list'), editor = get('#document-column');
   const expectPage = (page: string) => vi.waitFor(() => expect(shell.dataset.mobilePage).toBe(page));
   expect(shell.dataset.mobilePage).toBe('folders');
+  expect(get('#notes-pane > glass-progressive-blur.notes-scroll-edge')).not.toBeNull();
   expect(editor.inert).toBe(true);
   expect(get('.folder-toolbar #sidebar-account').querySelector('.sidebar-account-avatar svg')).not.toBeNull();
   expect(get('#settings-button').hidden).toBe(true);

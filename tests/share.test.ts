@@ -3,11 +3,27 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { showShare } from '../src/reference-panels';
 import { copyShareLink } from '../src/mock-web-share';
+import { dismissPopupMenu } from '../src/popup-menu';
+import { showNotePicture } from '../src/note-picture';
 import type { NoteShare } from '../src/notebook';
 
 const platform = vi.hoisted(() => ({ native: false }));
-vi.mock('../src/preferences', () => ({ get native() { return platform.native; } }));
+vi.mock('../src/preferences', () => ({
+  get native() { return platform.native; },
+  isDark: () => false,
+  previewPreferences: () => ({ theme: 'default' }),
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('html2canvas', () => ({ default: async () => ({
+  toBlob: (done: (blob: { arrayBuffer(): Promise<ArrayBuffer> }) => void) => done({
+    arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer,
+  }),
+}) }));
+vi.mock('glassy-liquid', async importOriginal => ({
+  ...await importOriginal<typeof import('glassy-liquid')>(),
+  glass: vi.fn(),
+  getSurface: vi.fn(),
+}));
 const show = vi.fn(), hide = vi.fn(), report = vi.fn();
 beforeEach(() => {
   platform.native = false;
@@ -61,6 +77,7 @@ it.each(['macos', 'android', 'ios'])('uses the native share bridge on %s', async
 it('keeps copying available without system sharing support', async () => {
   const panel = open();
   expect(panel.querySelector('.share-send')).toBeNull();
+  expect([...panel.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual(['发送副本']);
   expect(panel.textContent).toContain('当前环境不支持系统分享');
   panel.querySelector<HTMLButtonElement>('.share-copy')!.click();
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith('测试标题\n\n当前副本');
@@ -100,16 +117,93 @@ function click(panel: HTMLElement, label: string) {
   [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === label)!.click();
 }
 
+it('runs the mock publish flow and opens system sharing from the mobile toolbar menu', async () => {
+  vi.useFakeTimers();
+  platform.native = true;
+  document.documentElement.setAttribute('data-mobile', '');
+  const anchor = document.body.appendChild(document.createElement('button'));
+  anchor.id = 'share-button';
+  const key = crypto.randomUUID();
+  const openMenu = () => {
+    showShare(anchor, '移动端笔记', '完整正文', report, undefined, key);
+    return document.querySelector<HTMLElement>('[role=menu][aria-label="分享"]')!;
+  };
+  try {
+    click(openMenu(), '分享链接…');
+    await vi.advanceTimersByTimeAsync(0);
+    click(document.querySelector<HTMLElement>('.share-web-confirm')!, '取消');
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+
+    click(openMenu(), '分享链接…');
+    await vi.advanceTimersByTimeAsync(0);
+    click(document.querySelector<HTMLElement>('.share-web-confirm')!, '创建链接');
+    await vi.advanceTimersByTimeAsync(600);
+    expect(document.querySelector('.share-web-notice')?.textContent).toBe('链接已创建并复制');
+
+    click(openMenu(), '停止发布');
+    await vi.advanceTimersByTimeAsync(600);
+    expect(document.querySelector('.share-web-notice')?.textContent).toBe('分享已停止');
+
+    const menu = openMenu();
+    expect(menu.textContent).toContain('分享链接…');
+    expect(menu.textContent).toContain('复制为纯文本');
+    click(menu, '发送副本…');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(invoke).toHaveBeenCalledWith('note_share_text', expect.objectContaining({ title: '移动端笔记', text: '完整正文' }));
+  } finally {
+    dismissPopupMenu();
+  }
+});
+
+it('puts mobile picture actions in the footer and sends the rendered PNG to the native chooser', async () => {
+  platform.native = true;
+  document.documentElement.setAttribute('data-mobile', '');
+  vi.stubGlobal('matchMedia', () => ({ matches: true }));
+  vi.stubGlobal('URL', class extends URL {
+    static createObjectURL() { return 'blob:note-preview'; }
+    static revokeObjectURL() {}
+  });
+  vi.mocked(invoke).mockResolvedValue(true);
+  const restoreFocus = vi.fn();
+  await showNotePicture({ title: '移动端笔记', source: '# 标题\n\n正文' }, restoreFocus);
+  const sheet = document.querySelector<HTMLDialogElement>('.feature-panel-dialog')!;
+  const actions = [...sheet.querySelectorAll<HTMLButtonElement>('.note-picture-actions button')];
+  expect(sheet.querySelector('header h2')?.textContent).toBe('分享为图片');
+  expect(actions.map(button => button.dataset.pictureAction)).toEqual(['share', 'copy']);
+  expect(actions[0].matches('.button.primary-button.button-big.button-wide')).toBe(true);
+  expect(actions[1].matches('.button.secondary-button.button-big.button-wide')).toBe(true);
+  expect(sheet.querySelector('header .button.floating-button')?.textContent).toBe('完成');
+  expect(sheet.querySelector('[data-picture-action=save]')).toBeNull();
+  await vi.waitFor(() => expect(actions[0].disabled).toBe(false));
+  expect(actions[0].hidden).toBe(false);
+  actions[0].click();
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('note_picture_action', expect.objectContaining({
+    action: 'share', filename: '移动端笔记.png', png: [137, 80, 78, 71, 13, 10, 26, 10],
+  })));
+  const selected = () => [...sheet.querySelectorAll('.picture-swatch[aria-pressed=true]')];
+  const target = sheet.querySelector<HTMLButtonElement>('.picture-swatch[aria-pressed=false]')!;
+  expect(selected()).toHaveLength(1);
+  target.click();
+  expect(selected()).toEqual([target]);
+  click(sheet, '完成');
+  expect(restoreFocus).toHaveBeenCalledOnce();
+});
+
 function createLink(panel: HTMLElement) {
   click(panel, '发布网页…');
   click(document.querySelector<HTMLElement>('.share-web-confirm')!, '创建链接');
+}
+
+function openNative(...args: Parameters<typeof open>) {
+  platform.native = true;
+  return open(...args);
 }
 
 it('confirms before publishing, closes the panel and automatically copies the created link', async () => {
   vi.useFakeTimers();
   vi.stubGlobal('fetch', vi.fn());
   const key = crypto.randomUUID();
-  let panel = web(open(key));
+  let panel = web(openNative(key));
   expect(panel.textContent).toContain('模拟测试');
   click(panel, '发布网页…');
   const confirm = document.querySelector<HTMLDialogElement>('.share-web-confirm')!;
@@ -139,7 +233,7 @@ it('confirms before publishing, closes the panel and automatically copies the cr
 
 it('cancels the publishing confirmation without creating or copying a link', () => {
   const key = crypto.randomUUID();
-  let panel = web(open(key)); click(panel, '发布网页…');
+  let panel = web(openNative(key)); click(panel, '发布网页…');
   click(document.querySelector<HTMLElement>('.share-web-confirm')!, '取消');
   expect(document.querySelector('.share-web-confirm')).toBeNull();
   expect(document.querySelector('.share-web-notice')).toBeNull();
@@ -152,7 +246,7 @@ it('cancels the publishing confirmation without creating or copying a link', () 
 it('stops sharing directly with progress and success toasts, then creates a new link on republish', async () => {
   vi.useFakeTimers();
   const key = crypto.randomUUID();
-  let panel = web(open(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
+  let panel = web(openNative(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   panel.remove(); panel = open(key);
   const url = panel.querySelector('.share-web-link')!.textContent;
   click(panel, '停止发布');
@@ -171,7 +265,7 @@ it('stops sharing directly with progress and success toasts, then creates a new 
 it('retains mock publication across tabs and popovers without mixing notes or libraries', async () => {
   vi.useFakeTimers();
   const key = crypto.randomUUID();
-  let panel = web(open(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
+  let panel = web(openNative(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   panel.remove(); panel = open(key);
   const url = panel.querySelector('.share-web-link')!.textContent;
   click(panel, '发送副本'); web(panel);
@@ -187,7 +281,7 @@ it('retains mock publication across tabs and popovers without mixing notes or li
 it('previews the latest note locally as text and restores focus on close', async () => {
   vi.useFakeTimers();
   const key = crypto.randomUUID();
-  let panel = web(open(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600); panel.remove();
+  let panel = web(openNative(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600); panel.remove();
   panel = web(open(key, '<unsafe>', '<script>latest note</script>\n完整内容'));
   click(panel, '打开网页');
   const preview = document.querySelector<HTMLDialogElement>('.share-web-preview')!;
@@ -204,7 +298,7 @@ it('previews the latest note locally as text and restores focus on close', async
 it('keeps a mock publication active when copying its link fails', async () => {
   vi.useFakeTimers();
   const key = crypto.randomUUID();
-  let panel = web(open(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
+  let panel = web(openNative(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   panel.remove(); panel = open(key);
   const url = panel.querySelector('.share-web-link')!.textContent;
   vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error('denied'));
@@ -218,7 +312,7 @@ it('keeps the created link when automatic copying fails and reports the partial 
   vi.useFakeTimers();
   vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error('denied'));
   const key = crypto.randomUUID();
-  let panel = web(open(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
+  let panel = web(openNative(key)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   expect(document.querySelector('.share-web-notice')!.textContent).toBe('链接已创建，但无法复制，请使用“复制链接”重试');
   panel.remove(); panel = open(key);
   expect(panel.querySelector('.share-web-link')).not.toBeNull();
@@ -227,7 +321,7 @@ it('keeps the created link when automatic copying fails and reports the partial 
 it('prevents duplicate publishing while the mock request is pending', async () => {
   vi.useFakeTimers();
   const key = crypto.randomUUID();
-  let panel = web(open(key)); createLink(panel);
+  let panel = web(openNative(key)); createLink(panel);
   panel.remove(); panel = open(key);
   const publish = panel.querySelector<HTMLButtonElement>('.share-web-controls button')!;
   expect(publish.disabled).toBe(true); publish.click();
@@ -243,7 +337,7 @@ it('writes publish and stop into the note share state and reads it back when the
   let saved: NoteShare | undefined;
   const store = { get: () => saved, set: vi.fn(async (share: NoteShare) => { saved = share; }) };
   const key = crypto.randomUUID();
-  let panel = web(open(key, undefined, undefined, store)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
+  let panel = web(openNative(key, undefined, undefined, store)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   expect(saved?.status).toBe('shared');
   expect(new URL(saved!.url!).hostname).toBe('share.qingyu.invalid');
   panel.remove(); panel = open(key, undefined, undefined, store);
@@ -263,7 +357,7 @@ it('keeps the note unshared and says so when saving the share state fails', asyn
   vi.useFakeTimers();
   const store = { get: () => undefined, set: vi.fn().mockRejectedValue(new Error('disk full')) };
   const key = crypto.randomUUID();
-  let panel = web(open(key, undefined, undefined, store)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
+  let panel = web(openNative(key, undefined, undefined, store)); createLink(panel); await vi.advanceTimersByTimeAsync(600);
   expect(document.querySelector('.share-web-notice')!.textContent).toBe('链接未能保存到笔记，请重试');
   expect(document.querySelector('.share-web-notice')!.getAttribute('data-state')).toBe('error');
   panel.remove(); panel = open(key, undefined, undefined, store);

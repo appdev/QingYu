@@ -114,18 +114,19 @@
     <main id="workspace">
       <section id="rich-pane" aria-label="所见即所得编辑区"><div id="rich-editor"></div></section>
     </main>
-    <section id="empty-note" hidden><p>此文件夹还没有笔记</p><button id="new-empty-note" class="secondary-button">新建笔记</button></section>
+    <section id="empty-note" hidden><p>此文件夹还没有笔记</p><button id="new-empty-note" class="button secondary-button">新建笔记</button></section>
       </div>
     </div>
     <footer class="statusbar"><span id="save-status" role="status" aria-live="polite">草稿已保留</span><span id="word-count"></span></footer>
     <div id="format-menu" class="format-menu" role="menu" aria-label="Markdown 格式" hidden></div>
     <div id="mobile-tools" class="mobile-tools" aria-label="快捷格式工具栏" hidden></div>
-    <dialog id="folder-dialog" aria-labelledby="folder-dialog-title">
+    <dialog id="folder-dialog" class="alert-dialog" aria-labelledby="folder-dialog-title" aria-describedby="folder-dialog-message">
       <form id="folder-form">
         <h2 id="folder-dialog-title">新建文件夹</h2>
-        <label for="folder-name">名称</label><input id="folder-name" required maxlength="80" autocomplete="off" />
+        <p id="folder-dialog-message">为此文件夹输入名称。</p>
+        <label for="folder-name">名称</label><input id="folder-name" required maxlength="80" autocomplete="off" placeholder="名称" />
         <p id="folder-error" role="alert"></p>
-        <div class="dialog-actions"><button id="cancel-folder" class="secondary-button" type="button">取消</button><button class="primary-button" type="submit">创建</button></div>
+        <div class="alert-actions"><button id="create-folder" class="button primary-button" type="submit" disabled>创建</button><button id="cancel-folder" class="button secondary-button" type="button">取消</button></div>
       </form>
     </dialog>
     <script type="module" src="/src/main.ts"></script>

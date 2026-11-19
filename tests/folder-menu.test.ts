@@ -5,6 +5,8 @@ import { folderMenuItems } from '../src/folder-menu';
 import { Notebook } from '../src/notebook';
 import { createSidebar } from '../src/sidebar';
 
+vi.hoisted(() => { Object.assign(globalThis, { matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) }); });
+
 it('groups creation and management for the clicked folder and protects the library root', () => {
   const labels = (type: 'all' | 'folder' | 'root' | 'trash', clicked: boolean) => folderMenuItems(type, clicked);
   expect(labels('all', false).map(item => item.text)).toEqual(['新建笔记', '新建文件夹', '', '在终端中打开']);
@@ -50,6 +52,7 @@ it('creates a note in the folder that was right-clicked without first changing t
 
   document.querySelector(`.folder-row[data-folder-id="${target}"]`)!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
   await vi.waitFor(() => expect(document.querySelector('[role=menuitem][aria-label="新建笔记"]')).not.toBeNull());
+  expect(document.querySelectorAll('[role=menuitem][aria-label="在 Finder 中显示"], [role=menuitem][aria-label="在终端中打开"], [role=menuitem][aria-label="移到废纸篓"]')).toHaveLength(0);
   expect(select).not.toHaveBeenCalled();
   expect(document.querySelector('#notes-heading')!.textContent).toBe('全部笔记');
   document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="新建笔记"]')!.click();
