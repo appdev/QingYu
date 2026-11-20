@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { preferences } from '../src/preferences';
@@ -23,6 +24,36 @@ const client: SyncClient = {
   save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(),
   subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; },
 };
+
+it('changes language from the native mobile settings menu and stays on General', async () => {
+  platform.native = true;
+  const html = document.documentElement;
+  const applyMobileLayout = () => html.setAttribute('data-mobile', '');
+  window.addEventListener('preferences-applied', applyMobileLayout);
+  applyMobileLayout();
+  vi.mocked(invoke).mockResolvedValue(null);
+  try {
+    await openSettings(client, 'general');
+    const root = document.querySelector<HTMLDialogElement>('.settings-inline')!;
+    const trigger = root.querySelector<HTMLButtonElement>('#settings-select-language')!;
+    trigger.click();
+    const options = [...root.querySelectorAll<HTMLButtonElement>('[role=menuitemradio]')];
+    options.find(option => option.textContent === '日本語')!.click();
+    await vi.waitFor(() => expect(root.querySelector('.settings-select-popup')).toBeNull());
+    expect(root.querySelector('.settings-detail-title')?.textContent).toBe('一般');
+    expect(document.documentElement.lang).toBe('ja');
+    expect(trigger.ariaLabel).toBe('言語：日本語');
+    expect(history.state.settingsSection).toBe('general');
+    root.querySelector<HTMLButtonElement>('.settings-detail .settings-back')!.click();
+    await vi.waitFor(() => expect(root.hasAttribute('data-settings-detail')).toBe(false));
+    root.querySelector<HTMLButtonElement>('.settings-done')!.click();
+    await vi.waitFor(() => expect(document.querySelector('.settings-inline')).toBeNull());
+  } finally {
+    window.removeEventListener('preferences-applied', applyMobileLayout);
+    html.removeAttribute('data-mobile');
+    platform.native = false;
+  }
+});
 
 it('requests Android local-network access only after a user selects the S3 authorization', async () => {
   platform.native = true;
@@ -271,7 +302,7 @@ it.each([false, true])('opens GitHub Issues from help (native: %s)', native => {
     view.select('help');
     const page = root.querySelector('#settings-panel-help')!;
     expect(page.querySelector('img')?.getAttribute('src')).toBe('/brand/qingyu-app.png');
-    expect(page.textContent).toContain('QingYu — The lightweight WYSIWYG Markdown editor.');
+    expect(page.textContent).toContain('QingYu — 轻量的所见即所得 Markdown 编辑器。');
     for (const [label, path] of [['问题反馈', 'issues/new'], ['常见问题', 'issues']]) {
       const button = [...page.querySelectorAll('button')].find(item => item.querySelector('.settings-label')?.textContent === label)!;
       button.click();

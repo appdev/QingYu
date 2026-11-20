@@ -27,7 +27,7 @@ it('updates and routes the native menus without waiting for a WebKit repaint', a
     const apply = vi.fn();
     await connectEditorHistoryMenu({ current: () => view, apply });
     expect(invoke).toHaveBeenCalledWith('editor_menu_state', {
-      undo: false, redo: false, sections: false, format: { editable: false, ticked: null, untick: false, moves: [false, false] },
+      undo: false, redo: false, sections: false, tickLabel: '标为已完成', format: { editable: false, ticked: null, untick: false, moves: [false, false] },
     });
     const emit = (event: string, payload: string) => vi.mocked(listen).mock.calls.find(call => call[0] === event)![1]({ event, id: 1, payload });
     emit('note-format', 'title');
@@ -43,6 +43,11 @@ it('updates and routes the native menus without waiting for a WebKit repaint', a
     expect(apply).toHaveBeenCalledWith('title');
     emit('note-format', 'tick');
     expect(view.state.doc.toString()).toBe(source.replace('[ ]', '[x]'));
+    document.documentElement.lang = 'en';
+    window.dispatchEvent(new Event('ui-language-change'));
+    await Promise.resolve();
+    expect(invoke).toHaveBeenLastCalledWith('editor_menu_state', expect.objectContaining({ tickLabel: 'Mark Incomplete' }));
+    document.documentElement.lang = '';
     emit('note-format', 'untick');
     expect(view.state.doc.toString()).toBe(source.replace('[x]', '[ ]'));
     emit('editor-history-menu', 'undo');

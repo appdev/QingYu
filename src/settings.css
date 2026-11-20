@@ -125,8 +125,17 @@
 .settings-sync-status:empty { display: none; }
 .settings-sync-error { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--settings-ground); }
 .settings-sync-error pre { margin: 0 0 10px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; user-select: text; -webkit-user-select: text; }
-.settings :is(.settings-sync-now, .settings-sync-test, .settings-sync-copy) { flex: none; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--settings-ground); color: var(--ink); font-size: 13px; font-weight: 500; }
-.settings-mobile :is(.settings-sync-now, .settings-sync-test, .settings-sync-copy) { min-height: 40px; font-size: 15px; }
+.settings-sync-action {
+  flex: none; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--settings-card); color: var(--ink); box-shadow: 0 1px 1px var(--shadow);
+}
+@media (hover: hover) {
+  .settings-sync-action:enabled:hover { background: color-mix(in srgb, var(--settings-card), var(--ink) 5%); }
+}
+.settings-sync-action:enabled:active { background: color-mix(in srgb, var(--settings-card), var(--ink) 10%); box-shadow: none; }
+.settings-sync-action:disabled { opacity: .5; box-shadow: none; }
+.settings .settings-sync-action:focus-visible { outline: 2px solid var(--brand); }
+.settings-mobile .settings-sync-action { min-height: 44px; font-size: 15px; }
 .settings button:where(:not(.button)):disabled, .settings input:disabled { opacity: .5; }
 .settings-back { display: none; border: 0; background: transparent; }
 .settings-inline {
@@ -467,6 +476,13 @@
 .client-logout-confirmation::backdrop { background: color-mix(in srgb, var(--overlay) 90%, transparent); }
 .client-logout-confirmation h2 { margin: 0 0 8px; font-size: 15px; }
 .client-logout-confirmation p { margin: 0 0 16px; line-height: 1.45; font-size: 14px; }
+.settings-password-form label { display: block; margin-bottom: 12px; font-size: 13px; }
+.settings-password-form label[hidden] { display: none; }
+.settings-password-form input {
+  display: block; box-sizing: border-box; width: 100%; margin-top: 4px; padding: 8px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font-size: 16px;
+}
+.settings-password-form p { color: var(--error); }
 .client-logout-actions { display: flex; gap: 8px; }
 .settings .client-logout-actions > button {
   flex: 1; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 999px;

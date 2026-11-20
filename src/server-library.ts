@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import type { Folder, Library, Note, NoteVersion } from './notebook';
 
 export type ServerSnapshot = { folders: Folder[]; notes: Note[]; versions: Record<string, string>; version: string; trashedFolders?: string[] };
@@ -120,17 +121,17 @@ export function offerServerDrafts(library: Library) {
     try { const draft = JSON.parse(localStorage.getItem(key)!); if (typeof draft.id === 'string' && typeof draft.source === 'string' && library.notes.find(note => note.id === draft.id)?.source !== draft.source) drafts.push(draft); } catch { /* Keep unrecognized local data untouched. */ }
   }
   if (!drafts.length) return;
-  const dialog = document.createElement('dialog'); dialog.setAttribute('aria-label', '未保存的草稿');
-  const text = document.createElement('p'); text.textContent = `此浏览器有 ${drafts.length} 份未提交草稿。请先下载对比，服务器内容不会自动被覆盖。`;
+  const dialog = document.createElement('dialog'); dialog.setAttribute('aria-label', translatedLabel('未保存的草稿'));
+  const text = document.createElement('p'); text.textContent = formatLabel('此浏览器有 {count} 份未提交草稿。请先下载对比，服务器内容不会自动被覆盖。', { count: drafts.length });
   dialog.append(text);
   for (const [i, draft] of drafts.entries()) {
-    const button = document.createElement('button'); button.textContent = `下载草稿 ${i + 1}`;
+    const button = document.createElement('button'); button.textContent = formatLabel('下载草稿 {index}', { index: i + 1 });
     button.onclick = () => {
       const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([draft.source], { type: 'text/markdown;charset=utf-8' }));
       link.download = `轻羽草稿-${i + 1}.md`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 30_000);
     };
     dialog.append(button);
   }
-  const close = document.createElement('button'); close.textContent = '稍后处理'; close.onclick = () => dialog.close(); dialog.append(close);
+  const close = document.createElement('button'); close.textContent = translatedLabel('稍后处理'); close.onclick = () => dialog.close(); dialog.append(close);
   dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
 }

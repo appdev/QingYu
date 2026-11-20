@@ -400,7 +400,6 @@ mod mac {
                 "显示简介" => "info.circle",
                 "置顶" => "pin",
                 "取消置顶" => "pin.slash",
-                "锁定笔记…" => "lock",
                 "在新窗口打开笔记" | "在新窗口打开" => "macwindow",
                 "分享…" => "square.and.arrow.up",
                 "分享为图片…" => "photo",

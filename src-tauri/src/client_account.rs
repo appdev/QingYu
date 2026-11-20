@@ -819,12 +819,19 @@ impl ClientAccount {
         Ok(info)
     }
 
-    pub async fn logout(&self, session: PathBuf, account_id: &str, everywhere: bool) -> Result<bool> {
+    pub async fn logout(
+        &self,
+        session: PathBuf,
+        account_id: &str,
+        everywhere: bool,
+        after_logout: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
         let mut state = self.session.lock().await;
         let service = self.service(session)?;
         service.require_account(&state.access, account_id)?;
         let revoked = service.logout(&mut state.access, everywhere).await?;
         *state = AccountState::default();
+        after_logout()?;
         Ok(revoked)
     }
 
@@ -866,6 +873,19 @@ impl ClientAccount {
         self.service(session)?
             .require_account(&state.access, account_id)
     }
+
+    #[cfg(feature = "app")]
+    pub(crate) async fn with_sync_account<T>(
+        &self,
+        session: PathBuf,
+        account_id: &str,
+        operation: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        let state = self.session.lock().await;
+        self.service(session)?
+            .require_account(&state.access, account_id)?;
+        Ok(operation.await)
+    }
 }
 
 pub fn portal_url(page: &str) -> Result<String> {
@@ -881,7 +901,7 @@ pub fn portal_url(page: &str) -> Result<String> {
 
 // App 的 Tauri 命令：只检查调用窗口、取 App 的私有目录，然后交给上面的共用方法。
 #[cfg(feature = "app")]
-fn app_session(window: &tauri::WebviewWindow) -> Result<PathBuf> {
+pub(crate) fn app_session(window: &tauri::WebviewWindow) -> Result<PathBuf> {
     use tauri::Manager;
     if !matches!(window.label(), "main" | "settings") {
         return Err("not_allowed".into());
@@ -922,7 +942,14 @@ pub async fn account_logout(
     account_id: String,
     everywhere: bool,
 ) -> Result<bool> {
-    state.logout(app_session(&window)?, &account_id, everywhere).await
+    use tauri::Manager;
+    let config = window.path().app_config_dir().map_err(|_| STORAGE_ERROR)?;
+    state
+        .logout(app_session(&window)?, &account_id, everywhere, || {
+            crate::sync_profile::forget_account_keys(&config, &account_id)
+                .map_err(|_| "sync_key_remove_failed".into())
+        })
+        .await
 }
 
 #[cfg(feature = "app")]

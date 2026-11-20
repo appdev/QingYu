@@ -1,9 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { SyncSnapshotChanged, type Notebook } from './notebook';
 import { syncNotebook } from './sync';
-import { createStore, defaultAssetDownload, normalizeSettings, s3Defaults, syncMode, testS3Connection, validateS3Options, type S3Connection, type S3Settings } from './sync-store';
-import { setRequestHandler, type Request, type Response } from './vendor/mdsync/core';
+import { createStore, defaultAssetDownload, hasS3Connection, normalizeSettings, s3Defaults, syncMode, syncTargetIdentity, testS3Connection, validateS3Options, type S3Connection, type S3Settings } from './sync-store';
+import { setRequestHandler, sha256Hex, type Request, type Response, type Storage } from './vendor/mdsync/core';
 import { createAssetFetcher } from './asset-fetch';
+import { LegacySyncKey, manageSyncPassword, openProtectedKey, syncPasswordRequired, type KeyCache, type PasswordAction, type PasswordInfo } from './sync-password';
 
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
 
@@ -25,13 +26,14 @@ export async function nativeRequest(request: Request): Promise<Response> {
 }
 
 /** unavailable：当前不能同步的原因，例如网页客户端部署时没有设置配置目录。 */
-export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string; mode?: 'cloud' | 's3'; unavailable?: string };
+export type SyncStatus = { busy: boolean; message: string; error: boolean; lastSyncedAt?: number; lastSyncedAccount?: string; mode?: 'cloud' | 's3'; unavailable?: string; passwordRequired?: { accountId?: string } };
 export interface SyncClient {
   load(): Promise<S3Settings>;
   save(settings: S3Settings): Promise<void>;
   flush(): Promise<void>;
   run(settings: S3Settings, accountId?: string): Promise<void>;
   test(settings: S3Settings): Promise<void>;
+  password?(settings: S3Settings, accountId?: string, action?: PasswordAction): Promise<PasswordInfo>;
   subscribe(listener: (status: SyncStatus) => void): () => void;
 }
 const profileKey = 'miaoyan-editor.s3-profile.v1';
@@ -58,19 +60,22 @@ function profile(value: S3Settings): S3Settings {
 export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>, mobile = false): SyncClient & {
   fetchAsset(path: string): Promise<string | undefined>;
 } {
-  let config: S3Settings = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'miaoyan/v1', accessKeyId: '', secretAccessKey: '' };
+  let config: S3Settings = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'miaoyan/v2', accessKeyId: '', secretAccessKey: '' };
   try {
     const saved = JSON.parse(localStorage.getItem(profileKey) ?? '{}');
     for (const key of ['endpoint', 'bucket', 'region', 'prefix'] as const) if (typeof saved[key] === 'string') config[key] = saved[key];
   } catch { /* Optional connection profile does not affect notes. */ }
-  let loaded = false, hasSaved = false;
+  let loaded = false, hasSaved = false, customTarget: string | undefined;
   let reading: Promise<void> | undefined;
   let writes = Promise.resolve();
   async function load() {
     if (loaded) return;
     if (!('__TAURI_INTERNALS__' in window)) throw new Error('请在应用中保存 S3 连接配置');
     return reading ??= invoke<S3Settings | null>('sync_load_profile').then(saved => {
-      if (saved) { config = profile(saved); hasSaved = true; }
+      if (saved) {
+        config = profile(saved); hasSaved = true;
+        if (config.accessKeyId || config.secretAccessKey) customTarget = targetIdentity(config);
+      }
       loaded = true;
     }).finally(() => { reading = undefined; });
   }
@@ -82,9 +87,16 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
       if (!next.mode && config.mode) next.mode = config.mode;
       if (hasSaved && JSON.stringify(config) === JSON.stringify(next)) return;
       const switched = syncMode(config) !== syncMode(next);
+      const cleared = !next.accessKeyId.trim() && !next.secretAccessKey;
+      if (cleared && customTarget) {
+        await invoke('sync_cached_key', { target: await targetDigest(customTarget), forget: true });
+      }
       await invoke('sync_save_profile', { profile: next });
       config = next; hasSaved = true;
-      if (switched) publish({ mode: syncMode(next), message: '', error: false, lastSyncedAt: undefined, lastSyncedAccount: undefined });
+      if (cleared) customTarget = undefined;
+      else if (hasS3Connection(next)) customTarget = targetIdentity(next) ?? customTarget;
+      if (switched) publish({ mode: syncMode(next), message: '', error: false, lastSyncedAt: undefined, lastSyncedAccount: undefined, passwordRequired: undefined });
+      else if (status.passwordRequired && syncMode(next) === 's3') publish({ passwordRequired: undefined, message: '', error: false });
       // Native storage atomically saves the complete profile in the app's private config directory.
       try { localStorage.removeItem(profileKey); } catch { /* Legacy fields contain no credentials. */ }
     });
@@ -100,6 +112,34 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     setRequestHandler(nativeRequest);
     return next;
   }
+  async function accountConnections(accountId: string) {
+    const { concurrentReqs, ...grant } = await invoke<S3Connection & { concurrentReqs: number }>('account_sync_config', { accountId });
+    const legacy = { ...grant, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
+    // Keep the new vault within the prefix authorized by the temporary credentials.
+    return { legacy, current: { ...legacy, prefix: `${legacy.prefix}/vault-v2` } };
+  }
+  const targetDigest = (target: string) => sha256Hex(textEncoder.encode(target));
+  const keyCache = (accountId?: string): KeyCache => async (target, key) =>
+    invoke('sync_cached_key', { target: await targetDigest(target), key, accountId });
+  const resolveAttachmentKey = (storage: Storage) => openProtectedKey(storage, keyCache(), 'attachment');
+  function targetIdentity(connection: S3Connection) {
+    try { return syncTargetIdentity(connection); }
+    catch { return undefined; }
+  }
+  function matchesTarget(connection: S3Connection, target: string) {
+    return hasS3Connection(connection) && targetIdentity(connection) === target;
+  }
+  async function originalConnection(target: string, candidates: S3Connection[] = [config]) {
+    const match = candidates.find(candidate => matchesTarget(candidate, target));
+    if (match) return match;
+    const account = await invoke<{ profile: { id: string } } | null>('account_status').catch(() => null);
+    if (account) {
+      const { legacy, current } = await accountConnections(account.profile.id);
+      const match = [legacy, current].find(candidate => matchesTarget(candidate, target));
+      if (match) return match;
+    }
+    throw new Error('请先恢复原 S3 连接并下载待取附件，再切换同步目标');
+  }
   function redact(error: unknown, connection: S3Connection) {
     let message = error instanceof Error ? error.message : typeof error === 'string' ? error : '同步失败，请检查连接后重试';
     for (const secret of [connection.accessKeyId, connection.secretAccessKey]) if (secret) {
@@ -112,18 +152,51 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     await writes;
     await load();
     if (status.busy) throw new Error('同步正在进行，请稍后下载附件');
-    const connection = config;
-    const storage = createStore(normalizeSettings(connection));
-    if (syncMode(connection) !== 's3' || storage.identity() !== target) throw new Error('请使用原 S3 连接下载附件');
-    await connect(connection);
-    return storage;
-  });
+    return createStore(await connect(await originalConnection(target)));
+  }, resolveAttachmentKey);
+  async function restoreAttachments(connection: S3Connection, target: string) {
+    const checkpoint = book.data.sync;
+    if (checkpoint?.version !== 2 || checkpoint.target !== target || !checkpoint.placeholderCount) return;
+    const paths = Object.keys(await book.readAssetPlaceholders());
+    if (paths.length !== checkpoint.placeholderCount) throw new Error('附件占位索引与同步记录不匹配，已停止同步');
+    publish({ message: '正在下载原同步库的待取附件…' });
+    const storage = createStore(await connect(connection));
+    let key: Promise<CryptoKey> | undefined;
+    const fetcher = createAssetFetcher(book, async () => storage, () => key ??= resolveAttachmentKey(storage));
+    try {
+      for (const path of paths) await fetcher.fetchAsset(path);
+    } catch (error) {
+      throw new Error(redact(error, connection));
+    }
+  }
   return {
     fetchAsset: path => assets.fetchAsset(path).catch(error => { throw new Error(redact(error, config)); }),
     load: async () => { await writes.catch(() => {}); await load(); return { ...config }; },
     save,
     flush: () => writes,
     subscribe(listener) { listeners.add(listener); listener(status); return () => { listeners.delete(listener); }; },
+    async password(settings, accountId, action) {
+      if (status.busy) throw new Error('同步正在进行，请稍候');
+      publish({ busy: true, error: false, message: '正在连接 S3…' });
+      let connection: S3Connection = settings;
+      try {
+        await assets.drain();
+        await writes;
+        await load();
+        if (syncMode(config) !== (accountId ? 'cloud' : 's3')) throw new Error('存储方式已变更，请重新打开密码设置');
+        connection = accountId ? (await accountConnections(accountId)).current : profile(settings);
+        const result = await manageSyncPassword(await connect(connection), keyCache(accountId), action,
+          accountId ? () => invoke('account_check_sync', { accountId }) : undefined);
+        if (result.state === 'unlocked') publish({ passwordRequired: undefined, message: '同步密钥已解锁' });
+        else publish({ passwordRequired: { accountId }, message: syncPasswordRequired });
+        return result;
+      } catch (error) {
+        const message = redact(error, connection);
+        const label = accountId && Object.hasOwn(cloudErrors, message) ? cloudErrors[message]! : message;
+        publish({ error: true, message: label });
+        throw new Error(label);
+      } finally { publish({ busy: false }); }
+    },
     async test(settings) {
       if (status.busy) throw new Error('同步正在进行，请稍候');
       publish({ busy: true, error: false, message: '正在测试 S3 连接…' });
@@ -152,34 +225,54 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
         if (syncMode(config) !== (accountId ? 'cloud' : 's3')) throw new Error(accountId ? '请先切换至轻羽云存储' : '请先切换至 S3 同步');
         if (!('__TAURI_INTERNALS__' in window)) throw new Error('请在应用中使用 S3 同步');
         if (!await prepare()) throw new Error('当前输入尚未保存，请完成输入后再次同步');
+        const previous = config;
+        let legacy: S3Connection | undefined;
         if (accountId) {
           publish({ message: '正在连接轻羽云存储…' });
-          const { concurrentReqs, ...grant } = await invoke<S3Connection & { concurrentReqs: number }>('account_sync_config', { accountId });
-          connection = { ...grant, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
+          const grant = await accountConnections(accountId);
+          connection = grant.current;
+          legacy = grant.legacy;
         } else {
           connection = profile(settings);
-          await save({ ...connection, mode: undefined });
           connection = { ...connection, assetDownload: connection.assetDownload ?? defaultAssetDownload(mobile) };
         }
+        const checkpoint = book.data?.sync;
+        if (checkpoint?.version === 2 && checkpoint.placeholderCount && !matchesTarget(connection, checkpoint.target)) {
+          await restoreAttachments(await originalConnection(checkpoint.target, legacy ? [previous, legacy] : [previous]), checkpoint.target);
+        }
+        if (!accountId) await save({ ...profile(settings), mode: undefined });
         const next = await connect(connection);
         publish({ message: '正在连接 S3…' });
         const beforeCommit = accountId ? async () => {
           await invoke('account_check_sync', { accountId });
           return prepare();
         } : prepare;
-        const synchronize = () => syncNotebook(book, { ...next, ...(connection.assetDownload ? { assetDownload: connection.assetDownload } : {}) },
-          message => publish({ message }), beforeCommit);
+        const synchronize = async () => {
+          try {
+            return await syncNotebook(book, { ...next, ...(connection.assetDownload ? { assetDownload: connection.assetDownload } : {}) },
+              message => publish({ message }), beforeCommit, storage => openProtectedKey(storage, keyCache(accountId)));
+          } catch (error) {
+            if (error instanceof LegacySyncKey && checkpoint?.version === 2 && matchesTarget(connection, checkpoint.target)) {
+              await restoreAttachments(connection, checkpoint.target);
+            }
+            throw error;
+          }
+        };
         const result = await synchronize().catch(reason => {
           if (!(reason instanceof SyncSnapshotChanged)) throw reason;
           return synchronize();
         });
-        refresh(); publish({ lastSyncedAt: Date.now(), lastSyncedAccount: accountId, message: `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
+        refresh(); publish({ passwordRequired: undefined, lastSyncedAt: Date.now(), lastSyncedAccount: accountId, message: `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
       } catch (error) {
         if (error instanceof SyncSnapshotChanged) {
           publish({ message: error.message });
           throw error;
         }
         let message = redact(error, connection);
+        if (message === syncPasswordRequired) {
+          publish({ passwordRequired: { accountId }, message });
+          return;
+        }
         if (accountId && Object.hasOwn(cloudErrors, message)) message = cloudErrors[message];
         publish({ error: true, message });
         throw new Error(message);

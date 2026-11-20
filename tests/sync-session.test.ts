@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { syncNotebook } from '../src/sync';
 import type { S3Settings } from '../src/sync-store';
 import type { Notebook } from '../src/notebook';
+import { syncPasswordRequired } from '../src/sync-password';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../src/sync', () => ({ syncNotebook: vi.fn() }));
 const config = { endpoint: 'https://unit.invalid', bucket: 'test', region: 'us-east-1', prefix: 'test', accessKeyId: 'private-id', secretAccessKey: 'private-secret' };
@@ -113,6 +114,19 @@ it('passes the editor guard to commit and removes credentials from error message
   await expect(session.run(config)).rejects.toThrow('[已隐藏] [已隐藏]');
   expect(vi.mocked(syncNotebook).mock.calls[0][3]).toBe(prepare); expect(refresh).not.toHaveBeenCalled();
 });
+it('reports a locked sync target without finishing or failing the sync', async () => {
+  persisted = config;
+  const refresh = vi.fn(), states: SyncStatus[] = [];
+  vi.mocked(syncNotebook).mockRejectedValueOnce(new Error(syncPasswordRequired));
+  const session = createSyncSession({} as Notebook, refresh, () => true);
+  session.subscribe(status => states.push(status));
+  await session.run(config);
+  expect(states.at(-1)).toMatchObject({ busy: false, error: false, message: syncPasswordRequired, passwordRequired: {} });
+  expect(states.at(-1)?.lastSyncedAt).toBeUndefined();
+  expect(refresh).not.toHaveBeenCalled();
+  await session.save({ ...config, prefix: 'new-prefix' });
+  expect(states.at(-1)?.passwordRequired).toBeUndefined();
+});
 it('rejects manual sync in cloud mode, preserves the S3 profile, and allows it after reselecting S3', async () => {
   const session = createSyncSession({} as Notebook, vi.fn(), () => true);
   await expect(session.run(config)).rejects.toThrow('切换至 S3 同步');
@@ -136,7 +150,7 @@ it('uses cloud credentials for the scoped target and never saves them as a custo
     if (command === 'account_sync_config') return grant;
   });
   vi.mocked(syncNotebook).mockImplementation(async (_book, connection, _progress, beforeCommit) => {
-    expect(connection).toMatchObject({ prefix: 'repo/qingyu/v1', forcePathStyle: false, concurrency: 4 });
+    expect(connection).toMatchObject({ prefix: 'repo/qingyu/v1/vault-v2', forcePathStyle: false, concurrency: 4 });
     expect(await beforeCommit?.()).toBe(true);
     return { notes: 1, folders: 0, assets: 0, conflicts: 0 };
   });
@@ -144,7 +158,7 @@ it('uses cloud credentials for the scoped target and never saves them as a custo
   await session.run(config, 'account-id');
   expect(invoke).toHaveBeenCalledWith('account_sync_config', { accountId: 'account-id' });
   expect(invoke).toHaveBeenCalledWith('account_check_sync', { accountId: 'account-id' });
-  expect(invoke).toHaveBeenCalledWith('sync_set_target', { endpoint: config.endpoint, bucket: config.bucket, prefix: 'repo/qingyu/v1', forcePathStyle: false, timeout: 45, tlsVerify: true });
+  expect(invoke).toHaveBeenCalledWith('sync_set_target', { endpoint: config.endpoint, bucket: config.bucket, prefix: 'repo/qingyu/v1/vault-v2', forcePathStyle: false, timeout: 45, tlsVerify: true });
   expect(invoke).not.toHaveBeenCalledWith('sync_save_profile', expect.anything());
   expect(await session.load()).toEqual(persisted);
 });

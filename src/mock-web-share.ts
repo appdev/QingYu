@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import { CircleCheck, CircleX, Globe, Link, LoaderCircle } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import type { NoteShare } from './notebook';
@@ -40,13 +41,13 @@ export function mockWebShareActions(noteKey: string, title: string, text: string
   function publish() {
     if (pending.has(noteKey) || document.querySelector('.share-web-confirm')) return;
     const dialog = document.createElement('dialog'); dialog.className = 'share-web-confirm';
-    const heading = document.createElement('h2'); heading.id = 'share-web-confirm-title'; heading.textContent = `公开分享「${title}」？`;
+    const heading = document.createElement('h2'); heading.id = 'share-web-confirm-title'; heading.textContent = formatLabel('公开分享「{title}」？', { title });
     dialog.setAttribute('aria-labelledby', heading.id);
     const description = document.createElement('p'); description.id = 'share-web-confirm-description';
-    description.textContent = '正式发布后，获得链接的人可查看这篇笔记，直到你停止发布。当前仅模拟测试，不会上传或公开笔记。';
+    description.textContent = translatedLabel('正式发布后，获得链接的人可查看这篇笔记，直到你停止发布。当前仅模拟测试，不会上传或公开笔记。');
     dialog.setAttribute('aria-describedby', description.id);
-    const create = document.createElement('button'); create.type = 'button'; create.textContent = '创建链接';
-    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.onclick = () => dialog.close();
+    const create = document.createElement('button'); create.type = 'button'; create.textContent = translatedLabel('创建链接');
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = translatedLabel('取消'); cancel.onclick = () => dialog.close();
     create.onclick = () => {
       if (pending.has(noteKey)) return;
       create.disabled = true;
@@ -70,11 +71,11 @@ export function mockWebShareActions(noteKey: string, title: string, text: string
   }
 
   function preview() {
-    const dialog = document.createElement('dialog'); dialog.className = 'share-web-preview'; dialog.ariaLabel = '本地模拟预览';
-    const label = document.createElement('p'); label.className = 'share-unavailable'; label.textContent = '本地模拟预览 · 此链接不对外开放';
+    const dialog = document.createElement('dialog'); dialog.className = 'share-web-preview'; dialog.ariaLabel = translatedLabel('本地模拟预览');
+    const label = document.createElement('p'); label.className = 'share-unavailable'; label.textContent = translatedLabel('本地模拟预览 · 此链接不对外开放');
     const heading = document.createElement('h2'); heading.textContent = title;
     const body = document.createElement('p'); body.className = 'share-web-body'; body.textContent = text;
-    const close = document.createElement('button'); close.type = 'button'; close.className = 'button secondary-button'; close.textContent = '关闭'; close.autofocus = true; close.onclick = () => dialog.close();
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'button secondary-button'; close.textContent = translatedLabel('关闭'); close.autofocus = true; close.onclick = () => dialog.close();
     dialog.append(label, heading, body, close);
     dialog.addEventListener('close', () => { dialog.remove(); anchor.focus(); }, { once: true });
     document.body.append(dialog); dialog.showModal();
@@ -104,7 +105,7 @@ export function mockWebShareActions(noteKey: string, title: string, text: string
 export function mountMockWebShare(root: HTMLElement, noteKey: string, title: string, text: string, anchor: HTMLElement, store?: ShareStore) {
   const web = mockWebShareActions(noteKey, title, text, anchor, store);
   const hint = document.createElement('p'); hint.className = 'share-unavailable';
-  hint.textContent = '模拟测试 · 链接不对外开放。';
+  hint.textContent = translatedLabel('模拟测试 · 链接不对外开放。');
   const controls = document.createElement('div'); controls.className = 'share-web-controls';
   root.append(controls, hint);
   const closePanel = () => root.closest<HTMLElement>('.share-popover')?.hidePopover();
@@ -116,12 +117,12 @@ export function mountMockWebShare(root: HTMLElement, noteKey: string, title: str
       const heading = document.createElement('strong'), body = document.createElement('p');
       heading.textContent = title; body.textContent = text.slice(0, 240); preview.append(heading, body);
       const publish = document.createElement('button'); publish.type = 'button'; publish.className = 'button primary-button';
-      publish.disabled = Boolean(web.pending); publish.textContent = publish.disabled ? '正在创建链接…' : '发布网页…';
+      publish.disabled = Boolean(web.pending); publish.textContent = publish.disabled ? translatedLabel('正在创建链接…') : translatedLabel('发布网页…');
       publish.onclick = () => { closePanel(); web.publish(); };
       controls.append(preview, publish);
       return;
     }
-    const link = document.createElement('p'); link.className = 'share-web-link'; link.ariaLabel = '模拟分享链接'; link.title = url;
+    const link = document.createElement('p'); link.className = 'share-web-link'; link.ariaLabel = translatedLabel('模拟分享链接'); link.title = url;
     const prefix = document.createElement('span'), suffix = document.createElement('span');
     prefix.textContent = url.slice(0, -20); suffix.textContent = url.slice(-20); link.append(prefix, suffix);
     const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'button primary-button';

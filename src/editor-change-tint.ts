@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import { StateEffect, StateField, type EditorState, type Extension } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, type DecorationSet } from '@codemirror/view';
 import { replaceSource } from './format';
@@ -59,10 +60,10 @@ const receipt = ViewPlugin.define(view => {
     pill.className = 'editor-change-receipt';
     const text = pill.appendChild(doc.createElement('span'));
     text.setAttribute('role', 'status');
-    text.textContent = `${info.who}修改了 ${info.lines.length} 行`;
+    text.textContent = formatLabel('{person}修改了 {count} 行', { person: info.who, count: info.lines.length });
     const undo = pill.appendChild(doc.createElement('button'));
     undo.type = 'button';
-    undo.textContent = '撤销';
+    undo.textContent = translatedLabel('撤销');
     undo.onpointerdown = event => event.preventDefault();
     undo.onclick = () => {
       if (view.state.readOnly || view.compositionStarted) return;

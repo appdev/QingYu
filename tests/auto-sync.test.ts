@@ -42,6 +42,19 @@ it('joins a running manual sync, propagates its failure on exit and can retry', 
   publish({ busy: false, error: true, message: '连接失败' }); await failure;
   await auto.sync(); expect(client.run).toHaveBeenCalledTimes(2);
 });
+it('pauses background work until the sync key is unlocked', async () => {
+  const { auto, client, publish, error } = fixture();
+  await vi.advanceTimersByTimeAsync(0);
+  publish({ busy: false, error: false, message: '需要输入同步密码', passwordRequired: {} });
+  auto.changed();
+  await vi.advanceTimersByTimeAsync(180000);
+  await auto.sync();
+  expect(client.run).toHaveBeenCalledOnce();
+  expect(error).not.toHaveBeenCalled();
+  publish({ busy: false, error: false, message: '同步密钥已解锁' });
+  await vi.advanceTimersByTimeAsync(180000);
+  expect(client.run).toHaveBeenCalledTimes(2);
+});
 it('coalesces saved edits and queues one follow-up while another sync is running', async () => {
   const { auto, client, publish } = fixture(); await vi.advanceTimersByTimeAsync(0);
   auto.changed();

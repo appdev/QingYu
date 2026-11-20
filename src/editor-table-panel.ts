@@ -1,3 +1,4 @@
+import { markupLabel } from './ui-language';
 import { keepPanelTargetVisible, showEditorInputPanel } from './editor-viewport';
 
 type TableAction = { text: string; enabled: boolean; run?: () => void };
@@ -12,7 +13,7 @@ export function showTablePanel(cell: HTMLTableCellElement, groups: readonly Tabl
   const dialog = document.createElement('dialog');
   dialog.className = 'table-panel';
   dialog.setAttribute('aria-labelledby', 'editor-table-panel-title');
-  dialog.innerHTML = `<header><h2 id="editor-table-panel-title">表格</h2><button type="button" aria-label="关闭表格面板">×</button></header>
+  dialog.innerHTML = `<header><h2 id="editor-table-panel-title">${markupLabel('表格')}</h2><button type="button" aria-label="${markupLabel('关闭表格面板')}">×</button></header>
     <div class="table-panel-groups"></div>`;
   const events = new AbortController();
   function close(restore = false) {
@@ -61,7 +62,7 @@ export function showTablePanel(cell: HTMLTableCellElement, groups: readonly Tabl
     group.append(pill, caption);
     dialog.querySelector('.table-panel-groups')!.append(group);
   }
-  const remove = button(deleteTable, `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5"/></svg>删除表格`);
+  const remove = button(deleteTable, `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5"/></svg>${markupLabel('删除表格')}`);
   remove.className = 'table-panel-delete destructive';
   dialog.append(remove);
   dialog.querySelector('header button')!.addEventListener('click', () => close(true));

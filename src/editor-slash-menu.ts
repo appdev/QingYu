@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import { syntaxTree } from '@codemirror/language';
 import { EditorSelection, Prec, StateEffect, StateField, type EditorState, type Extension } from '@codemirror/state';
 import { EditorView, ViewPlugin, keymap } from '@codemirror/view';
@@ -85,7 +86,7 @@ export function slashQueryAt(state: EditorState) {
   const caret = state.selection.main.head;
   const line = state.doc.lineAt(caret);
   const before = line.text.slice(Math.max(0, caret - line.from - maxQuery - 1), caret - line.from);
-  const offset = Math.max(before.lastIndexOf('/'), before.lastIndexOf('、'));
+  const offset = before.lastIndexOf('/');
   if (offset < 0) return null;
   const from = caret - before.length + offset;
   const query = state.sliceDoc(from + 1, caret);
@@ -195,13 +196,22 @@ export function slashMenu({ host, run, canAttach }: SlashMenuOptions): Extension
   const panelView = ViewPlugin.fromClass(class {
     private panel = document.createElement('div');
     private signature = '';
+    private readonly shell: HTMLElement | null;
+    private readonly shellObserver?: MutationObserver;
 
     constructor(private view: EditorView) {
       this.panel.className = 'editor-slash-menu';
       this.panel.setAttribute('role', 'listbox');
-      this.panel.ariaLabel = '格式菜单';
+      this.panel.ariaLabel = translatedLabel('格式菜单');
       this.panel.hidden = true;
       (host ?? view.dom).append(this.panel);
+      const shell = this.shell = host ? null : view.dom.closest<HTMLElement>('#app-shell');
+      if (shell) {
+        this.shellObserver = new MutationObserver(() => {
+          if (!shell.hasAttribute('inert') && !view.hasFocus) this.panel.hidden = true;
+        });
+        this.shellObserver.observe(shell, { attributeFilter: ['inert'] });
+      }
     }
 
     update() {
@@ -219,8 +229,13 @@ export function slashMenu({ host, run, canAttach }: SlashMenuOptions): Extension
         write: result => { if (result?.offset) result.row.scrollLeft += result.offset; },
       });
       const menu = menuOf(view);
-      if (!menu || !view.hasFocus || view.compositionStarted) {
+      if (!menu || view.compositionStarted) {
         panel.hidden = true;
+        return;
+      }
+      if (!view.hasFocus) {
+        // Reconciliation can briefly drop focus before restoring the writing caret.
+        if (!this.shell?.hasAttribute('inert') || document.activeElement !== document.body) panel.hidden = true;
         return;
       }
       const signature = `${menu.commands.join()}|${menu.index}|${menu.recent}|${menu.callout}`;
@@ -236,7 +251,7 @@ export function slashMenu({ host, run, canAttach }: SlashMenuOptions): Extension
           button.dataset.command = id;
           button.setAttribute('role', 'option');
           button.ariaSelected = String(index === menu.index);
-          button.ariaLabel = `${named}，第 ${index + 1} 项，共 ${count} 项`;
+          button.ariaLabel = formatLabel('{name}，第 {index} 项，共 {count} 项', { name: named, index: index + 1, count });
           const label = document.createElement('span');
           label.className = 'slash-command-label';
           label.textContent = named;
@@ -264,6 +279,7 @@ export function slashMenu({ host, run, canAttach }: SlashMenuOptions): Extension
         key: panel,
         read: editor => ({ caret: editor.coordsAtPos(position), bounds: editor.scrollDOM.getBoundingClientRect() }),
         write: ({ caret, bounds }) => {
+          if (!view.hasFocus || view.state.field(field, false)?.menu?.to !== position || view.compositionStarted) return;
           panel.hidden = !caret || caret.bottom < bounds.top || caret.top > bounds.bottom;
           if (!caret || panel.hidden) return;
           const below = window.innerHeight - caret.bottom - 6;
@@ -282,7 +298,7 @@ export function slashMenu({ host, run, canAttach }: SlashMenuOptions): Extension
       });
     }
 
-    destroy() { this.panel.remove(); }
+    destroy() { this.shellObserver?.disconnect(); this.panel.remove(); }
   });
 
   return [

@@ -87,8 +87,16 @@ async fn logout(
     State(state): State<Arc<Service>>,
     request: std::result::Result<Json<Logout>, JsonRejection>,
 ) -> AccountResult<bool> {
-    let Logout { account_id, everywhere } = body(request)?;
-    Ok(Json(state.account.logout(session(&state)?, &account_id, everywhere).await?))
+    let Logout {
+        account_id,
+        everywhere,
+    } = body(request)?;
+    Ok(Json(
+        state
+            .account
+            .logout(session(&state)?, &account_id, everywhere, || Ok(()))
+            .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -102,7 +110,10 @@ async fn redeem(
     State(state): State<Arc<Service>>,
     request: std::result::Result<Json<Redeem>, JsonRejection>,
 ) -> AccountResult<u64> {
-    let Redeem { account_id, activation_code } = body(request)?;
+    let Redeem {
+        account_id,
+        activation_code,
+    } = body(request)?;
     Ok(Json(
         state
             .account

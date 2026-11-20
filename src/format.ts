@@ -311,7 +311,10 @@ export function formatTransaction(state: EditorState, action: Format) {
     const before = line.text.slice(indent).match(/^(?:#{1,6}[\t ]+|>[\t ]?|(?:[-*+]|\d+[.)])[\t ]+(?:\[[ xX]\][\t ]+)?)?/u)?.[0] ?? '';
     if (before !== prefix) changes.push({ from: start, to: start + before.length, insert: prefix });
   }
-  return state.update({ changes, scrollIntoView: true, annotations: Transaction.userEvent.of('input.format') });
+  const first = changes[0];
+  const selection = action === 'task' && range.empty && first && range.head >= first.from && range.head <= first.to
+    ? EditorSelection.cursor(first.from + prefix.length) : undefined;
+  return state.update({ changes, selection, scrollIntoView: true, annotations: Transaction.userEvent.of('input.format') });
 }
 
 export function taskMarker(state: EditorState, lineNumber: number) {

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { mountSettings } from '../src/settings-view';
 import { libraryLocation } from '../src/library-settings';
 import { preferences } from '../src/preferences';
+import { workflowText } from '../src/ui-language';
 import { invoke } from '@tauri-apps/api/core';
 import type { SyncClient } from '../src/sync-session';
 import { s3Defaults } from '../src/sync-store';
@@ -23,6 +25,40 @@ beforeEach(() => {
     showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
     close: { configurable: true, value(this: HTMLDialogElement, result = '') { this.returnValue = result; this.open = false; this.dispatchEvent(new Event('close')); } },
   });
+});
+
+it('sets, unlocks and resets the sync password from Storage & Sync', async () => {
+  const profile = { ...config, endpoint: 'https://s3.invalid', bucket: 'test', accessKeyId: 'test', secretAccessKey: 'test', mode: 's3' as const };
+  const password = vi.fn<NonNullable<SyncClient['password']>>();
+  const client: SyncClient = { load: async () => profile, save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), password,
+    subscribe(listener) { listener({ busy: false, error: false, message: '需要输入同步密码', passwordRequired: {} }); return () => {}; } };
+  const root = document.body.appendChild(document.createElement('div'));
+  const view = mountSettings(root, client, vi.fn());
+  try {
+    view.select('storage');
+    await view.loaded;
+    expect(root.querySelector('.settings-sync-status[aria-live="polite"]')?.textContent).toBe('需要输入同步密码');
+    const button = [...root.querySelectorAll('button')].find(button => button.textContent === '管理密码')!;
+    expect(button.disabled).toBe(false);
+    for (const [state, title] of [['new', '设置同步密码'], ['locked', '输入同步密码'], ['unlocked', '修改或重设同步密码']] as const) {
+      const info = { state, etag: state === 'new' ? null : '"etag"' };
+      password.mockResolvedValueOnce(info).mockResolvedValueOnce({ state: 'unlocked', etag: null });
+      button.click();
+      await vi.waitFor(() => expect(root.querySelector('.settings-password-form h2')?.textContent).toBe(title));
+      const form = root.querySelector<HTMLFormElement>('.settings-password-form')!;
+      const [entry, confirm] = form.querySelectorAll('input');
+      expect(confirm!.closest('label')!.hidden).toBe(state === 'locked');
+      entry!.value = 'a synthetic password';
+      if (state !== 'locked') {
+        form.dispatchEvent(new Event('submit', { cancelable: true }));
+        expect(form.querySelector('[role=alert]')?.textContent).toBe('两次输入的同步密码不一致');
+        confirm!.value = entry!.value;
+      }
+      form.dispatchEvent(new Event('submit', { cancelable: true }));
+      await vi.waitFor(() => expect(root.querySelector('.settings-password-form')).toBeNull());
+      expect(password).toHaveBeenLastCalledWith(expect.objectContaining({ prefix: profile.prefix }), undefined, { ...info, password: 'a synthetic password' });
+    }
+  } finally { view.destroy(); root.remove(); }
 });
 
 it('starts and stops the desktop MCP service and copies its current authenticated config', async () => {
@@ -111,6 +147,38 @@ it('starts and stops the desktop MCP service and copies its current authenticate
   }
 });
 
+it('refreshes MCP, shortcut and theme labels in the mounted settings view', async () => {
+  const ipc = vi.mocked(invoke), previousInvoke = ipc.getMockImplementation()!;
+  const previousLanguage = preferences.value.language;
+  ipc.mockImplementation(async (command, args) => {
+    if (command === 'local_mcp') return { url: 'http://127.0.0.1:49152/mcp', token: 'synthetic-token' } as never;
+    if (command === 'activation_shortcut_command') {
+      return { shortcut: 'Alt+Space', active: true, recording: false, error: '快捷键组合无效', defaultShortcut: '' } as never;
+    }
+    return previousInvoke(command, args);
+  });
+  const root = document.body.appendChild(document.createElement('div'));
+  const view = mountSettings(root, undefined, vi.fn());
+  const text = (selector: string) => root.querySelector(selector)?.textContent?.trim();
+  try {
+    view.select('ai');
+    await vi.waitFor(() => expect(text('#settings-mcp-heading')).toBe('客户端配置'));
+    await vi.waitFor(() => expect(text('.settings-shortcut-status')).toBe('快捷键组合无效'));
+    expect(text('[data-color-theme=forest] > span:last-child')).toBe('森林');
+    preferences.update({ language: 'fr' });
+    expect(text('#settings-mcp-heading')).toBe('Configuration du client');
+    expect(text('#settings-mcp-copy')).toBe('Copier la configuration');
+    expect(text('.settings-mcp-address')).toContain('http://127.0.0.1:49152/mcp');
+    expect(text('[data-color-theme=forest] > span:last-child')).toBe('Forêt');
+    expect(text('[name=previewFont] option[value=ui-serif]')).toBe('Avec empattements');
+    expect(text('#settings-panel-shortcuts [data-i18n="重命名"]')).toBe('Renommer');
+    expect(text('.settings-shortcut button')).toContain('Espace');
+    expect(text('.settings-shortcut-status')).toBe(workflowText('快捷键组合无效', 'fr'));
+  } finally {
+    view.destroy(); root.remove(); preferences.update({ language: previousLanguage }); ipc.mockImplementation(previousInvoke);
+  }
+});
+
 it('shows the current notes directory, changes it immediately and keeps it on cancellation or error', async () => {
   vi.mocked(libraryLocation).mockResolvedValue('/Users/test/Documents/Notes');
   const client: SyncClient = { load: async () => config, save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: fn => { fn({ busy: false, message: '', error: false }); return () => {}; } };
@@ -123,6 +191,7 @@ it('shows the current notes directory, changes it immediately and keeps it on ca
   const button = root.querySelector<HTMLButtonElement>('[aria-label="更改笔记位置"]')!;
   vi.mocked(libraryLocation).mockResolvedValueOnce('/Users/test/Documents/New'); button.click();
   await vi.waitFor(() => expect(root.textContent).toContain('~/Documents/New')); expect(libraryLocation).toHaveBeenLastCalledWith(true);
+  expect(root.querySelector('.settings-message')?.textContent).toBe('');
   vi.mocked(libraryLocation).mockResolvedValueOnce('/Users/test/Documents/New'); button.click();
   await vi.waitFor(() => expect(button.disabled).toBe(false)); expect(root.querySelector('.settings-message')?.textContent).toBe('');
   vi.mocked(libraryLocation).mockRejectedValueOnce(new Error('目录不可写')); button.click();

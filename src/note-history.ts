@@ -1,3 +1,4 @@
+import { formatLabel, markupLabel, translatedLabel } from './ui-language';
 import { Compartment, EditorState, StateEffect, Text } from '@codemirror/state';
 import { Decoration, EditorView } from '@codemirror/view';
 import { assetBase } from './attachments';
@@ -14,7 +15,7 @@ function day(timestamp: number) {
   const value = date.format(timestamp);
   return value === date.format(new Date()) ? '今天' : value === date.format(yesterday) ? '昨天' : value;
 }
-const heading = ({ id, updatedAt }: NoteVersion) => id === CURRENT ? '当前版本' : `${day(updatedAt)} ${time.format(updatedAt)}`;
+const heading = ({ id, updatedAt }: NoteVersion) => id === CURRENT ? translatedLabel('settings.update.currentVersion') : `${day(updatedAt)} ${time.format(updatedAt)}`;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 function showSourceComparison(doc: Text, changed: Set<number>) {
@@ -38,16 +39,16 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
   const root = book.root, noteId = note.id;
   const dialog = document.createElement('dialog');
   dialog.className = 'note-history';
-  dialog.innerHTML = `<aside class="history-sidebar"><header><h2 id="note-history-title">版本历史</h2><p class="history-note-title"></p></header>
-    <div class="history-versions" role="group" aria-label="历史版本"></div></aside>
-    <button class="history-close" type="button" aria-label="关闭版本历史" autofocus><span>×</span><span>完成</span></button>
-    <div class="history-state"><div role="status"><h3></h3><p></p></div><button type="button" class="button secondary-button" hidden>重试</button></div>
-    <section class="history-detail" aria-label="版本预览" hidden><header>
-      <button class="history-back" type="button" aria-label="返回版本列表">‹</button>
+  dialog.innerHTML = `<aside class="history-sidebar"><header><h2 id="note-history-title">${markupLabel('版本历史')}</h2><p class="history-note-title"></p></header>
+    <div class="history-versions" role="group" aria-label="${markupLabel('app.documentHistory')}"></div></aside>
+    <button class="history-close" type="button" aria-label="${markupLabel('关闭版本历史')}" autofocus><span>×</span><span>${markupLabel('done')}</span></button>
+    <div class="history-state"><div role="status"><h3></h3><p></p></div><button type="button" class="button secondary-button" hidden>${markupLabel('settings.editor.spellcheckRetryDownload')}</button></div>
+    <section class="history-detail" aria-label="${markupLabel('版本预览')}" hidden><header>
+      <button class="history-back" type="button" aria-label="${markupLabel('返回版本列表')}">‹</button>
       <div class="history-summary"><h3></h3><p></p></div>
-      <select aria-label="对比版本"></select><button class="history-restore button primary-button" type="button">恢复此版本</button>
+      <select aria-label="${markupLabel('对比版本')}"></select><button class="history-restore button primary-button" type="button">${markupLabel('恢复此版本')}</button>
     </header><p class="history-error" role="alert" hidden></p><div id="note-history-editor"></div></section>`;
-  dialog.ariaLabel = '版本历史';
+  dialog.ariaLabel = translatedLabel('版本历史');
   const $ = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
   const list = $('.history-versions'), state = $('.history-state'), summary = $('.history-summary p');
   const close = $<HTMLButtonElement>('.history-close'), back = $<HTMLButtonElement>('.history-back');
@@ -76,7 +77,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
   restore.onclick = async () => {
     if (restoring || selected === CURRENT) return;
     restoring = true; restore.disabled = compare.disabled = close.disabled = back.disabled = true;
-    restore.textContent = '正在恢复…';
+    restore.textContent = translatedLabel('正在恢复…');
     try {
       await book.restoreNoteVersion(noteId, selected, currentSource, root);
       dialog.close();
@@ -84,7 +85,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
     } catch (reason) {
       errorLine.textContent = message(reason); errorLine.hidden = false;
     } finally {
-      restoring = false; restore.textContent = '恢复此版本';
+      restoring = false; restore.textContent = translatedLabel('恢复此版本');
       restore.disabled = compare.disabled = close.disabled = back.disabled = false;
     }
   };
@@ -118,7 +119,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
     const token = ++request, id = selected, other = compare.value;
     const version = versions.find(entry => entry.id === id)!;
     $('.history-summary h3').textContent = heading(version);
-    summary.textContent = '正在读取…';
+    summary.textContent = translatedLabel('正在读取…');
     summary.removeAttribute('data-changes');
     errorLine.hidden = true; preview.hidden = true; restore.disabled = compare.disabled = true;
     try {
@@ -159,14 +160,14 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
       if (view === richView) marksInstalled = true;
       view.scrollDOM.scrollTop = 0;
       summary.toggleAttribute('data-changes', !other && added > 0);
-      summary.textContent = other && (added || removed) ? `新增 ${added} 行 · 移除 ${removed} 行`
+      summary.textContent = other && (added || removed) ? formatLabel('新增 {added} 行 · 移除 {removed} 行', { added, removed })
         : !added && !removed ? (id === CURRENT ? '当前正文' : '正文相同')
           : added ? `${added} 行与当前版本不同` : '所选版本缺少当前正文中的部分内容';
       restore.disabled = id === CURRENT || Boolean(book.current?.readOnly) || restoring;
       restore.hidden = Boolean(book.current?.readOnly);
     } catch (reason) {
       if (token !== request || !dialog.open) return;
-      summary.textContent = '无法显示该版本';
+      summary.textContent = translatedLabel('无法显示该版本');
       errorLine.textContent = message(reason); errorLine.hidden = false;
     } finally {
       if (token === request) compare.disabled = restoring;
@@ -192,7 +193,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
 
   async function load() {
     state.hidden = false; retry.hidden = true; detail.hidden = true; list.replaceChildren();
-    state.querySelector('h3')!.textContent = '正在读取历史版本…';
+    state.querySelector('h3')!.textContent = translatedLabel('正在读取历史版本…');
     state.querySelector('p')!.textContent = '';
     try {
       if (book.root !== root || book.current?.id !== noteId) throw new Error('笔记已切换，请重新打开版本历史');
@@ -200,8 +201,8 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
       const older = await book.noteVersions(noteId);
       if (!dialog.open) return;
       if (!older.length) {
-        state.querySelector('h3')!.textContent = '暂无历史版本';
-        state.querySelector('p')!.textContent = '编辑笔记后，先前的正文会出现在这里。';
+        state.querySelector('h3')!.textContent = translatedLabel('暂无历史版本');
+        state.querySelector('p')!.textContent = translatedLabel('编辑笔记后，先前的正文会出现在这里。');
         return;
       }
       versions = [current, ...older];
@@ -214,7 +215,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
           list.append(label, group); lastDay = date;
         }
         const row = document.createElement('button'); row.type = 'button'; row.dataset.version = version.id;
-        row.textContent = version.id === CURRENT ? '当前版本' : time.format(version.updatedAt);
+        row.textContent = version.id === CURRENT ? translatedLabel('settings.update.currentVersion') : time.format(version.updatedAt);
         if (version.id === CURRENT) {
           const updated = document.createElement('small');
           updated.textContent = time.format(version.updatedAt); row.append(updated);
@@ -228,7 +229,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
       select(older[0].id);
     } catch (reason) {
       if (!dialog.open) return;
-      state.querySelector('h3')!.textContent = '无法读取历史版本';
+      state.querySelector('h3')!.textContent = translatedLabel('无法读取历史版本');
       state.querySelector('p')!.textContent = message(reason); retry.hidden = false;
     }
   }

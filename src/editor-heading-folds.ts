@@ -1,3 +1,4 @@
+import { translatedLabel } from './ui-language';
 import { codeFolding, ensureSyntaxTree, foldEffect, foldedRanges, syntaxTree, unfoldAll, unfoldEffect } from '@codemirror/language';
 import { EditorState, Prec, StateEffect } from '@codemirror/state';
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view';
@@ -101,7 +102,7 @@ class HeadingFoldButton extends WidgetType {
     button.className = this.more ? 'qingyu-heading-more' : 'qingyu-heading-fold';
     if (this.more) button.textContent = '…';
     else button.ariaExpanded = String(!this.collapsed);
-    button.ariaLabel = button.title = this.collapsed ? '展开章节' : '收起章节';
+    button.ariaLabel = button.title = this.collapsed ? translatedLabel('editor.expandSection') : translatedLabel('收起章节');
     button.onmousedown = event => event.preventDefault();
     button.onclick = async event => {
       event.preventDefault();

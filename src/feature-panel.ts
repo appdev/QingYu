@@ -1,3 +1,4 @@
+import { translatedLabel } from './ui-language';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { native } from './preferences';
 import { showWindowWhenPainted } from './window-ready';
@@ -22,7 +23,7 @@ export function mountFeaturePanel(host: HTMLElement, title: string, close: () =>
   done.type = 'button';
   // 手机上和设置的「完成」一样是浮起胶囊；浏览器里的居中弹窗仍用次要按钮。
   done.className = document.documentElement.hasAttribute('data-mobile') ? 'button floating-button' : 'button secondary-button button-regular button-touch button-pill';
-  done.textContent = '完成'; done.onclick = close;
+  done.textContent = translatedLabel('done'); done.onclick = close;
   heading.textContent = title; header.append(done, heading);
   const content = document.createElement('div'); content.className = 'feature-panel-content';
   panel.append(header, content); host.append(panel);

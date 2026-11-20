@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { afterEach, expect, it, vi } from 'vitest';
 import { EditorView } from '@codemirror/view';
 import { createRichEditor } from '../src/rich-editor';

@@ -53,7 +53,7 @@ it('keeps buttons from restyling themselves anywhere else', () => {
   }
   const html = readFileSync('index.html', 'utf8');
   expect(html).toContain('<button id="cancel-folder" class="button secondary-button"');
-  expect(html).toContain('<button id="new-empty-note" class="button secondary-button">');
+  expect(html).toMatch(/<button id="new-empty-note" class="button secondary-button"(?:\s[^>]*)?>/);
 });
 
 it('opens an alert with the focus on itself, runs the default button on Return and leaves the rest secondary', () => {

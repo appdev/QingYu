@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { readFileSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Notebook } from '../src/notebook';

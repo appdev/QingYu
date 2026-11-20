@@ -1,3 +1,4 @@
+import { formatLabel } from './ui-language';
 import { showContextSheet } from './context-sheet';
 import { clamp, getSurface, glass, mix, Spring, type GlassSurface } from 'glassy-liquid';
 import { toolbarMenuGlass } from './toolbar-menu-glass';
@@ -12,7 +13,6 @@ const actionIcons: Record<string, string> = {
   删除: 'M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15m-8 4v7m4-7v7',
   置顶: 'M8 3h8l-1 6 3 4v2H6v-2l3-4zm4 12v7',
   取消置顶: 'M4 4l16 16M9 3h7l-1 6 3 4M6 13v2h7m-1 0v7',
-  '锁定笔记…': 'M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5z',
   复制笔记: 'M8 16H3V3h13v5M8 8h13v13H8zM15 11v7m-4-3h7',
   新建笔记: 'M12 4H4v16h16v-8m-10 2 1-4 8-8 3 3-8 8z',
   新建文件夹: 'M3 6h7l2 2h9v12H3zm9 4v7m-4-3h8',
@@ -253,7 +253,7 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
       menu.classList.add('toolbar-submenu');
       menu.style.width = `${inline.width}px`;
       const header = document.createElement('button');
-      header.type = 'button'; header.className = 'toolbar-submenu-header'; header.ariaLabel = `收起${inline.item.text}`;
+      header.type = 'button'; header.className = 'toolbar-submenu-header'; header.ariaLabel = formatLabel('收起{action}', { action: inline.item.text });
       const title = document.createElement('span'); title.textContent = inline.item.text;
       const icon = trigger.querySelector('.context-action-icon')?.cloneNode(true);
       if (icon) header.append(icon);

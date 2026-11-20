@@ -1,3 +1,4 @@
+import { markupLabel, translatedLabel } from './ui-language';
 import { CharCategory, findClusterBreak, type EditorState } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { closeSearchPanel, findNext, findPrevious, getSearchQuery, openSearchPanel, replaceAll, replaceNext, search, searchKeymap, SearchQuery, setSearchQuery } from '@codemirror/search';
@@ -29,22 +30,22 @@ function createFindPanel(view: EditorView) {
   const dom = doc.createElement('div');
   dom.className = 'qingyu-find';
   dom.setAttribute('role', 'search');
-  dom.ariaLabel = '在笔记中查找';
+  dom.ariaLabel = translatedLabel('在笔记中查找');
   dom.innerHTML = `<div class="qingyu-find-main">
     <div class="qingyu-find-field">
-      <button type="button" class="qingyu-find-options" aria-label="查找条件" aria-haspopup="menu" title="查找条件"><svg aria-hidden="true" viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="6" r="3.7"/><path d="m9 9 2.5 2.5m2.1-6 2.2 2.2L18 5.5"/></svg></button>
-      <input type="search" placeholder="查找" aria-label="查找" main-field="true" autocomplete="off">
-      <output aria-label="匹配数量" aria-live="polite" hidden></output>
-      <button type="button" class="qingyu-find-clear" aria-label="清除查找内容" title="清除" hidden>×</button>
+      <button type="button" class="qingyu-find-options" aria-label="${markupLabel('查找条件')}" aria-haspopup="menu" title="${markupLabel('查找条件')}"><svg aria-hidden="true" viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="6" r="3.7"/><path d="m9 9 2.5 2.5m2.1-6 2.2 2.2L18 5.5"/></svg></button>
+      <input type="search" placeholder="${markupLabel('查找')}" aria-label="${markupLabel('查找')}" main-field="true" autocomplete="off">
+      <output aria-label="${markupLabel('匹配数量')}" aria-live="polite" hidden></output>
+      <button type="button" class="qingyu-find-clear" aria-label="${markupLabel('清除查找内容')}" title="${markupLabel('清除')}" hidden>×</button>
     </div>
-    <div class="qingyu-find-steps"><button type="button" data-find="previous" aria-label="上一个匹配" title="上一个匹配"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M7 2 3 6l4 4"/></svg></button><button type="button" data-find="next" aria-label="下一个匹配" title="下一个匹配"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m5 2 4 4-4 4"/></svg></button></div>
-    <button type="button" class="qingyu-find-done">完成</button>
-    <label class="qingyu-find-replace-toggle"><input type="checkbox">替换</label>
+    <div class="qingyu-find-steps"><button type="button" data-find="previous" aria-label="${markupLabel('上一个匹配')}" title="${markupLabel('上一个匹配')}"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M7 2 3 6l4 4"/></svg></button><button type="button" data-find="next" aria-label="${markupLabel('下一个匹配')}" title="${markupLabel('下一个匹配')}"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m5 2 4 4-4 4"/></svg></button></div>
+    <button type="button" class="qingyu-find-done">${markupLabel('done')}</button>
+    <label class="qingyu-find-replace-toggle"><input type="checkbox">${markupLabel('替换')}</label>
   </div>
   <div class="qingyu-find-replace" hidden>
-    <input type="text" placeholder="替换" aria-label="替换为" autocomplete="off">
-    <div class="qingyu-find-steps"><button type="button" data-replace="one">替换</button><button type="button" data-replace="all">全部</button></div>
-    <button type="button" class="qingyu-find-done">完成</button>
+    <input type="text" placeholder="${markupLabel('替换')}" aria-label="${markupLabel('替换为')}" autocomplete="off">
+    <div class="qingyu-find-steps"><button type="button" data-replace="one">${markupLabel('替换')}</button><button type="button" data-replace="all">${markupLabel('app.outlineHeadingLevelsAllShort')}</button></div>
+    <button type="button" class="qingyu-find-done">${markupLabel('done')}</button>
   </div>`;
   const input = dom.querySelector<HTMLInputElement>('[main-field]')!;
   const substitution = dom.querySelector<HTMLInputElement>('.qingyu-find-replace input')!;

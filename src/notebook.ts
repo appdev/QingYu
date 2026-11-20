@@ -4,6 +4,7 @@ import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
 import type { AssetPlaceholders, AssetStat, AssetSync, StagedAsset } from './sync-files';
 import { ServerLibrary, ServerVersionConflict, type ServerSnapshot } from './server-library';
+import { uiText } from './ui-language';
 
 export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
@@ -502,30 +503,32 @@ export function visibleNotes(library: Library, folderId: string | null, query: s
 }
 
 const localDay = (now: Date, offset: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime();
-const listClock = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-const listWeekday = new Intl.DateTimeFormat('zh-CN', { weekday: 'long' });
-const listDate = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
-
-export function noteListDate(now: Date) {
+export function noteListDate(now: Date, locale = 'zh-CN') {
+  const listClock = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const listWeekday = new Intl.DateTimeFormat(locale, { weekday: 'long' });
+  const listDate = new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'numeric', day: 'numeric' });
+  const yesterdayLabel = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day');
   const [sixDaysAgo, yesterday, today, tomorrow] = [-6, -1, 0, 1].map(offset => localDay(now, offset));
   return (timestamp: number) => {
     if (timestamp >= today && timestamp < tomorrow) return listClock.format(timestamp);
-    if (timestamp >= yesterday && timestamp < today) return '昨天';
+    if (timestamp >= yesterday && timestamp < today) return yesterdayLabel;
     return timestamp >= sixDaysAgo && timestamp < today ? listWeekday.format(timestamp) : listDate.format(timestamp);
   };
 }
 
-export function groupNotes(notes: Note[], order = defaultNoteOrder, now = new Date()) {
+export function groupNotes(notes: Note[], order = defaultNoteOrder, now = new Date(), locale = 'zh-CN') {
   const currentYear = now.getFullYear();
   const [today, yesterday, week, month30] = [0, -1, -7, -30].map(offset => localDay(now, offset));
+  const yesterdayLabel = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day');
+  const pastDays = (count: number) => uiText('pastDays', locale).replace('{count}', count.toLocaleString(locale));
   const groups: { year: number; month: number; label: string; notes: Note[] }[] = [];
   for (const note of [...notes].sort((a, b) => compareNotes(order, a, b))) {
     const timestamp = order.key === 'createdAt' ? note.createdAt : note.updatedAt;
     const date = new Date(timestamp), year = note.pinned && !note.trashed ? 0 : date.getFullYear();
     const month = year ? date.getMonth() + 1 : 0;
-    const label = !year ? '置顶' : !order.grouped || order.key === 'title' ? '' : timestamp >= today ? '今天' : timestamp >= yesterday ? '昨天'
-      : timestamp >= week ? '过去 7 天' : timestamp >= month30 ? '过去 30 天'
-      : date.toLocaleDateString('zh-CN', { month: 'numeric', ...(year !== currentYear ? { year: 'numeric' } as const : {}) });
+    const label = !year ? uiText('pin', locale) : !order.grouped || order.key === 'title' ? '' : timestamp >= today ? uiText('menu.today', locale) : timestamp >= yesterday ? yesterdayLabel
+      : timestamp >= week ? pastDays(7) : timestamp >= month30 ? pastDays(30)
+      : date.toLocaleDateString(locale, { month: 'numeric', ...(year !== currentYear ? { year: 'numeric' } as const : {}) });
     const last = groups.at(-1);
     if (last?.label === label) last.notes.push(note);
     else groups.push({ year, month, label, notes: [note] });

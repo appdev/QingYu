@@ -1,3 +1,4 @@
+import { markupLabel, translatedLabel } from './ui-language';
 import { FileText, Folder, List, Search, TextSearch, X, type IconNode } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { markdownBody, noteText, noteTitle, plainMarkdownLine } from './document-text';
@@ -83,8 +84,8 @@ export function openQuickOpen({ library, commands, openNote, showAll, restore, c
   panel.className = 'search-picker quick-open';
   panel.popover = 'manual';
   panel.role = 'dialog';
-  panel.ariaLabel = '跳转到笔记';
-  panel.innerHTML = '<header class="search-picker-header"><input type="search" role="combobox" aria-label="跳转到笔记" aria-autocomplete="list" aria-controls="quick-open-results" placeholder="跳转到笔记，或输入命令"><kbd aria-hidden="true"></kbd><button class="icon-button" type="button" aria-label="关闭笔记跳转"></button></header><div id="quick-open-results" role="listbox" aria-label="搜索结果"></div><p role="status" hidden></p>';
+  panel.ariaLabel = translatedLabel('跳转到笔记');
+  panel.innerHTML = `<header class="search-picker-header"><input type="search" role="combobox" aria-label="${markupLabel('跳转到笔记')}" aria-autocomplete="list" aria-controls="quick-open-results" placeholder="${markupLabel('跳转到笔记，或输入命令')}"><kbd aria-hidden="true"></kbd><button class="icon-button" type="button" aria-label="${markupLabel('关闭笔记跳转')}"></button></header><div id="quick-open-results" role="listbox" aria-label="${markupLabel('app.workspaceSearch.results')}"></div><p role="status" hidden></p>`;
   const header = panel.querySelector('header')!, input = panel.querySelector('input')!;
   const list = panel.querySelector<HTMLDivElement>('#quick-open-results')!, closeButton = header.querySelector('button')!;
   const status = panel.querySelector('p')!;
@@ -155,7 +156,7 @@ export function openQuickOpen({ library, commands, openNote, showAll, restore, c
     }
     list.hidden = !options.length;
     status.hidden = Boolean(options.length);
-    status.textContent = pending ? '正在搜索笔记…' : value?.trim() ? '未找到匹配的笔记或命令' : '暂无笔记';
+    status.textContent = pending ? translatedLabel('正在搜索笔记…') : value?.trim() ? '未找到匹配的笔记或命令' : '暂无笔记';
     input.ariaExpanded = String(Boolean(options.length));
     highlight(Math.max(0, options.findIndex(button => button.dataset.row === previous)));
     list.scrollTop = scroll;

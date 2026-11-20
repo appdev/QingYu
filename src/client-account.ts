@@ -1,6 +1,7 @@
 import { callAccount, openPortal } from './account-client';
 import { emit, listen } from '@tauri-apps/api/event';
 import { formatStorageBytes } from './library-settings';
+import { markupLabel, bindLabels, localizeStatus, uiText, workflowText, type WorkflowMessage } from './ui-language';
 
 export const guestAccountIcon = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="4.4" r="2.8"/><path d="M1.9 13.5c0-2.7 2.7-4.6 6.1-4.6s6.1 1.9 6.1 4.6c0 .7-.5 1.1-1.2 1.1H3.1c-.7 0-1.2-.4-1.2-1.1Z"/></svg>';
 
@@ -14,11 +15,10 @@ type Redemption = { years: number; redeemedTime: number | string };
 type AccountPage = 'account' | 'personal' | 'signIn' | 'storage';
 const profileChanged = 'client-profile-changed';
 export type CloudSyncAccess = { accountId?: string; signedInAccountId?: string; reason: string };
-const dateTime = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 function accountDate(timestamp: number | string | null | undefined) {
   if (!timestamp) return '—';
   const date = new Date(typeof timestamp === 'number' ? timestamp * 1000 : timestamp);
-  return Number.isFinite(date.getTime()) ? dateTime.format(date) : '—';
+  return Number.isFinite(date.getTime()) ? date.toLocaleString(document.documentElement.lang || 'zh-CN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 }
 
 function accountPhoto(profile: AccountInfo['profile'] | undefined) {
@@ -35,6 +35,11 @@ export function sidebarAccount(button: HTMLButtonElement) {
   const person = avatar.firstElementChild!;
   const label = button.querySelector('.sidebar-account-name')!;
   let loading = false, refreshAgain = false;
+  let signedIn = false, displayName: string | undefined;
+  function refreshLanguage() {
+    label.textContent = displayName || workflowText(signedIn ? '轻羽账户' : '本地账户');
+    button.ariaLabel = [label.textContent, uiText('settings.title')].join(document.documentElement.lang === 'zh-CN' ? '，' : ', ');
+  }
   async function refresh() {
     if (loading) { refreshAgain = true; return; }
     loading = true;
@@ -46,8 +51,9 @@ export function sidebarAccount(button: HTMLButtonElement) {
       const first = Array.from(words[0] ?? '')[0] ?? '';
       const last = words.length > 1 ? Array.from(words.at(-1)!)[0] : '';
       const initials = (first + last).toUpperCase();
-      label.textContent = name || (profile ? '轻羽账户' : '本地账户');
-      button.ariaLabel = `${label.textContent}，设置`;
+      signedIn = Boolean(profile);
+      displayName = name;
+      refreshLanguage();
       avatar.replaceChildren(accountPhoto(profile) ?? (initials || person));
     } catch { /* Keep the last displayed identity until account status can be read. */ }
     finally {
@@ -58,6 +64,8 @@ export function sidebarAccount(button: HTMLButtonElement) {
   // App 的设置是独立窗口，用 Tauri 事件通知；网页客户端的设置在同一页面，用页面事件
   if ('__TAURI_INTERNALS__' in window) void listen(profileChanged, () => void refresh()).catch(() => {});
   else window.addEventListener(profileChanged, () => void refresh());
+  window.addEventListener('ui-language-change', refreshLanguage);
+  refreshLanguage();
   return refresh;
 }
 
@@ -99,85 +107,85 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   }
 
   const panel = mount('account', `
-    <div class="settings-identity"><span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span><strong data-account-name>本地账户</strong></div>
-    <h2>轻羽账号</h2>
+    <div class="settings-identity"><span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span><strong data-account-name>${markupLabel('本地账户')}</strong></div>
+    <h2 data-i18n="轻羽账号">轻羽账号</h2>
     <div class="client-list">
       <button type="button" class="settings-row settings-disclosure client-sign-in-entry" aria-haspopup="dialog" hidden>
-        <span class="settings-label"><span>登录轻羽</span><small>查看账号、套餐及云存储用量。</small></span>
+        <span class="settings-label"><span data-i18n="登录轻羽">登录轻羽</span><small data-i18n="查看账号、套餐及云存储用量。">查看账号、套餐及云存储用量。</small></span>
       </button>
       <div data-account-actions hidden>
-        <button type="button" class="settings-row settings-disclosure" data-settings-target="personal"><span class="settings-label"><span>个人信息</span></span></button>
-        <button type="button" class="settings-row settings-disclosure" data-settings-target="signIn"><span class="settings-label"><span>登录与安全</span></span></button>
-        <button type="button" class="settings-row" data-refresh-account><span class="settings-label"><span>刷新账户信息</span></span></button>
-        <button type="button" class="settings-row client-sign-out" aria-haspopup="dialog"><span class="settings-label"><span>退出登录</span></span></button>
+        <button type="button" class="settings-row settings-disclosure" data-settings-target="personal"><span class="settings-label"><span data-i18n="个人信息">个人信息</span></span></button>
+        <button type="button" class="settings-row settings-disclosure" data-settings-target="signIn"><span class="settings-label"><span data-i18n="登录与安全">登录与安全</span></span></button>
+        <button type="button" class="settings-row" data-refresh-account><span class="settings-label"><span data-i18n="刷新账户信息">刷新账户信息</span></span></button>
+        <button type="button" class="settings-row client-sign-out" aria-haspopup="dialog"><span class="settings-label"><span data-i18n="退出登录">退出登录</span></span></button>
       </div>
-      <button type="button" class="settings-row" data-retry hidden>重新读取账户</button>
+      <button type="button" class="settings-row" data-retry hidden data-i18n="重新读取账户">重新读取账户</button>
     </div>
     <div class="client-list client-storage-link">
-      <button type="button" class="settings-row settings-disclosure" data-settings-target="storage"><span class="settings-label"><span>存储与同步</span><small data-account-usage hidden></small></span></button>
+      <button type="button" class="settings-row settings-disclosure" data-settings-target="storage"><span class="settings-label"><span data-i18n="存储与同步">存储与同步</span><small data-account-usage hidden></small></span></button>
     </div>
-    <dialog class="client-sign-in" aria-label="登录轻羽">
-      <button type="button" class="client-text-button client-sign-in-close" aria-label="关闭登录">×</button>
+    <dialog class="client-sign-in" aria-label="登录轻羽" data-i18n-aria-label="登录轻羽">
+      <button type="button" class="client-text-button client-sign-in-close" aria-label="关闭登录" data-i18n-aria-label="关闭登录">×</button>
       <form novalidate>
         <header>
           <img src="/brand/qingyu-app.png" alt="">
-          <h2>登录轻羽</h2>
+          <h2 data-i18n="登录轻羽">登录轻羽</h2>
         </header>
         <fieldset>
-          <input type="email" name="username" aria-label="邮箱" placeholder="邮箱" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320" required>
-          <button type="button" class="client-text-button" data-change-email hidden>更改邮箱</button>
-          <input type="password" name="password" aria-label="密码" placeholder="密码" autocomplete="current-password" maxlength="4096" hidden>
+          <input type="email" name="username" aria-label="邮箱" data-i18n-aria-label="邮箱" placeholder="邮箱" data-i18n-placeholder="邮箱" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320" required>
+          <button type="button" class="client-text-button" data-change-email hidden data-i18n="更改邮箱">更改邮箱</button>
+          <input type="password" name="password" aria-label="密码" data-i18n-aria-label="密码" placeholder="密码" data-i18n-placeholder="密码" autocomplete="current-password" maxlength="4096" hidden>
           <p class="client-account-status" role="status"></p>
-          <button type="submit" class="button primary-button" disabled>继续</button>
+          <button type="submit" class="button primary-button" disabled>${markupLabel('继续')}</button>
         </fieldset>
         <footer>
-          <p>通过轻羽门户管理账号。</p>
-          <button type="button" class="client-text-button" data-portal="register">创建账号</button>
-          <button type="button" class="client-text-button" data-portal="reset">找回密码</button>
+          <p data-i18n="通过轻羽门户管理账号。">通过轻羽门户管理账号。</p>
+          <button type="button" class="client-text-button" data-portal="register" data-i18n="创建账号">创建账号</button>
+          <button type="button" class="client-text-button" data-portal="reset" data-i18n="找回密码">找回密码</button>
         </footer>
       </form>
     </dialog>`);
   const personal = mount('personal', `
     <div class="client-list" data-account-details hidden>
-      <div class="settings-row"><span class="settings-label"><span>头像</span></span><span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span></div>
-      <div class="settings-row"><span class="settings-label"><span>显示名</span></span><span data-display-name></span></div>
-      <button type="button" class="settings-row" data-portal="account"><span class="settings-label"><span>在轻羽门户管理个人信息</span></span><span aria-hidden="true">↗</span></button>
+      <div class="settings-row"><span class="settings-label"><span data-i18n="头像">头像</span></span><span class="settings-avatar" aria-hidden="true">${guestAccountIcon}</span></div>
+      <div class="settings-row"><span class="settings-label"><span data-i18n="显示名">显示名</span></span><span data-display-name></span></div>
+      <button type="button" class="settings-row" data-portal="account"><span class="settings-label"><span data-i18n="在轻羽门户管理个人信息">在轻羽门户管理个人信息</span></span><span aria-hidden="true">↗</span></button>
     </div>
-    <p data-account-required hidden>请先登录轻羽。</p>`);
+    <p data-account-required hidden data-i18n="请先登录轻羽。">请先登录轻羽。</p>`);
   const security = mount('signIn', `
     <div class="client-list" data-account-details hidden>
-      <div class="settings-row"><span class="settings-label"><span>登录方式</span></span><span>轻羽账号</span></div>
-      <div class="settings-row"><span class="settings-label"><span>邮箱</span><small data-profile-email></small></span><span data-email-verification></span></div>
-      <button type="button" class="settings-row" data-portal="account"><span class="settings-label"><span>在轻羽门户管理密码</span></span><span aria-hidden="true">↗</span></button>
-      <button type="button" class="settings-row client-sign-out" aria-haspopup="dialog" data-logout-all><span class="settings-label"><span>退出所有客户端</span></span></button>
+      <div class="settings-row"><span class="settings-label"><span data-i18n="登录方式">登录方式</span></span><span data-i18n="轻羽账号">轻羽账号</span></div>
+      <div class="settings-row"><span class="settings-label"><span data-i18n="邮箱">邮箱</span><small data-profile-email></small></span><span data-email-verification></span></div>
+      <button type="button" class="settings-row" data-portal="account"><span class="settings-label"><span data-i18n="在轻羽门户管理密码">在轻羽门户管理密码</span></span><span aria-hidden="true">↗</span></button>
+      <button type="button" class="settings-row client-sign-out" aria-haspopup="dialog" data-logout-all><span class="settings-label"><span data-i18n="退出所有客户端">退出所有客户端</span></span></button>
     </div>
-    <p data-account-required hidden>请先登录轻羽。</p>`);
+    <p data-account-required hidden data-i18n="请先登录轻羽。">请先登录轻羽。</p>`);
   const storage = mount('storage', `
-    <h2>套餐与空间</h2>
+    <h2 data-i18n="套餐与空间">套餐与空间</h2>
     <div class="client-list" data-storage-sign-in hidden>
-      <button type="button" class="settings-row settings-disclosure" data-settings-target="account"><span class="settings-label"><span>登录轻羽</span><small>登录后查看套餐与用量。</small></span></button>
+      <button type="button" class="settings-row settings-disclosure" data-settings-target="account"><span class="settings-label"><span data-i18n="登录轻羽">登录轻羽</span><small data-i18n="登录后查看套餐与用量。">登录后查看套餐与用量。</small></span></button>
     </div>
-    <button type="button" class="client-text-button" data-retry hidden>重新读取账户</button>
+    <button type="button" class="client-text-button" data-retry hidden data-i18n="重新读取账户">重新读取账户</button>
     <div data-account-details hidden>
       <div class="client-list">
         <div class="client-usage">
-          <output data-usage></output><progress max="1" value="0" aria-label="云存储用量"></progress>
-          <small data-usage-unavailable hidden>用量暂不可用，请刷新。</small>
+          <output data-usage></output><progress max="1" value="0" aria-label="云存储用量" data-i18n-aria-label="云存储用量"></progress>
+          <small data-usage-unavailable hidden data-i18n="用量暂不可用，请刷新。">用量暂不可用，请刷新。</small>
         </div>
-        <div class="settings-row"><span class="settings-label"><span>到期时间</span><small data-subscription></small></span><span data-subscription-expiry></span></div>
-        <button type="button" class="settings-row settings-disclosure" data-open-redeem aria-expanded="false"><span class="settings-label"><span>兑换激活码</span><small data-redeem-policy hidden>请先验证邮箱。</small></span></button>
+        <div class="settings-row"><span class="settings-label"><span data-i18n="到期时间">到期时间</span><small data-subscription></small></span><span data-subscription-expiry></span></div>
+        <button type="button" class="settings-row settings-disclosure" data-open-redeem aria-expanded="false"><span class="settings-label"><span data-i18n="兑换激活码">兑换激活码</span><small data-redeem-policy hidden data-i18n="请先验证邮箱。">请先验证邮箱。</small></span></button>
         <form class="client-inline-form client-redeem" hidden>
-          <input aria-label="激活码" name="activationCode" placeholder="激活码" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096" required>
-          <button type="button" class="client-text-button" data-cancel-redeem>取消</button>
-          <button type="submit" class="client-text-button">兑换</button>
+          <input aria-label="激活码" data-i18n-aria-label="激活码" name="activationCode" placeholder="激活码" data-i18n-placeholder="激活码" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096" required>
+          <button type="button" class="client-text-button" data-cancel-redeem data-i18n="取消">取消</button>
+          <button type="submit" class="client-text-button" data-i18n="兑换">兑换</button>
         </form>
-        <button type="button" class="settings-row" data-portal="verify" hidden><span class="settings-label"><span>验证邮箱</span></span><span aria-hidden="true">↗</span></button>
-        <button type="button" class="settings-row" data-refresh-storage><span class="settings-label"><span>刷新套餐与用量</span></span></button>
-        <button type="button" class="settings-row" data-portal="purchase"><span class="settings-label"><span>购买或续费</span></span><span aria-hidden="true">↗</span></button>
+        <button type="button" class="settings-row" data-portal="verify" hidden><span class="settings-label"><span data-i18n="验证邮箱">验证邮箱</span></span><span aria-hidden="true">↗</span></button>
+        <button type="button" class="settings-row" data-refresh-storage><span class="settings-label"><span data-i18n="刷新套餐与用量">刷新套餐与用量</span></span></button>
+        <button type="button" class="settings-row" data-portal="purchase"><span class="settings-label"><span data-i18n="购买或续费">购买或续费</span></span><span aria-hidden="true">↗</span></button>
       </div>
-      <h2>兑换记录</h2>
-      <ul class="client-list client-redemptions" aria-label="兑换记录"></ul>
-      <button type="button" class="client-text-button" data-retry-history hidden>重新读取兑换记录</button>
+      <h2 data-i18n="兑换记录">兑换记录</h2>
+      <ul class="client-list client-redemptions" aria-label="兑换记录" data-i18n-aria-label="兑换记录"></ul>
+      <button type="button" class="client-text-button" data-retry-history hidden data-i18n="重新读取兑换记录">重新读取兑换记录</button>
     </div>`);
   const sections = { account: panel, personal, signIn: security, storage };
   const accountSections = Object.values(sections);
@@ -203,8 +211,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   confirmation.innerHTML = `<h2 id="client-logout-title"></h2>
     <p id="client-logout-description"></p><p class="client-account-status" role="status"></p>
     <div class="client-logout-actions">
-      <button type="button" data-cancel-logout>取消</button>
-      <button type="button" class="client-sign-out" data-confirm-logout>退出登录</button>
+      <button type="button" data-cancel-logout data-i18n="取消">取消</button>
+      <button type="button" class="client-sign-out" data-confirm-logout>${markupLabel('退出登录')}</button>
     </div>`;
   (panel.closest('.settings') ?? pages.account.parentElement ?? pages.account).append(confirmation);
   const cancelLogout = confirmation.querySelector<HTMLButtonElement>('[data-cancel-logout]')!;
@@ -232,11 +240,14 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   let accountRevision = 0;
   let refreshing = false;
   let busy = false, disposed = false;
+  const applyLabels = [...accountSections, confirmation].map(bindLabels);
+  const statusCopy = new WeakMap<Element, string>();
 
   function showMessage(text = '', error = false) {
     const container = activePage ? sections[activePage] : panel;
     const target = signIn.open ? signInMessage : confirmation.open ? confirmationStatus : container.querySelector<HTMLElement>(':scope > [role=status]')!;
-    target.textContent = text;
+    statusCopy.set(target, text);
+    target.textContent = localizeStatus(text);
     if (error) target.dataset.error = 'true';
     else delete target.dataset.error;
   }
@@ -252,7 +263,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     password.value = '';
     password.hidden = !next;
     change.hidden = !next;
-    submit.textContent = next ? '登录' : '继续';
+    submit.textContent = workflowText(next ? '登录' : '继续');
     updateSubmit();
     if (focus) (next ? password : email).focus();
   }
@@ -312,8 +323,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     updateSubmit();
     const data = info?.profile;
     const name = data
-      ? data.displayName?.trim() || data.name?.trim() || '轻羽账户'
-      : '本地账户';
+      ? data.displayName?.trim() || data.name?.trim() || workflowText('轻羽账户')
+      : workflowText('本地账户');
     const tabName = tab.querySelector('strong');
     if (tabName) { tabName.textContent = name; tab.ariaLabel = name; }
     for (const avatar of [tab, panel, personal].flatMap(container => [...container.querySelectorAll('.settings-avatar')])) {
@@ -333,21 +344,21 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     accountUsage.textContent = usage ? capacity : '';
     personal.querySelector('[data-display-name]')!.textContent = data ? name : '';
     security.querySelector('[data-profile-email]')!.textContent = data ? data.email || '—' : '';
-    security.querySelector('[data-email-verification]')!.textContent = data ? data.emailVerified ? '已验证' : '未验证' : '';
+    security.querySelector('[data-email-verification]')!.textContent = data ? workflowText(data.emailVerified ? '已验证' : '未验证') : '';
     const verified = plan?.emailVerified ?? data?.emailVerified;
     const needsVerification = Boolean(plan && plan.emailVerificationRequired !== false && !verified);
     cloudSync?.({
       accountId: plan?.active && !needsVerification ? data?.id : undefined,
       signedInAccountId: data?.id,
-      reason: !data ? '请登录轻羽' : !plan ? '请刷新套餐与用量'
-        : !plan.active ? '套餐未开通或已到期' : needsVerification ? '请先验证邮箱' : '',
+      reason: localizeStatus(!data ? '请登录轻羽' : !plan ? '请刷新套餐与用量'
+        : !plan.active ? '套餐未开通或已到期' : needsVerification ? '请先验证邮箱' : ''),
     });
     if (!data) return;
-    storage.querySelector('[data-usage]')!.textContent = '已用 ' + capacity;
+    storage.querySelector('[data-usage]')!.textContent = workflowText('已用 {capacity}').replace('{capacity}', () => capacity);
     storage.querySelector<HTMLElement>('[data-usage-unavailable]')!.hidden = !plan?.active || needsVerification || !!usage;
     meter.value = usage && usage.quotaBytes > 0 ? Math.min(1, usage.usedBytes / usage.quotaBytes) : 0;
-    storage.querySelector('[data-subscription]')!.textContent = !plan ? '套餐暂不可用，请刷新。'
-      : plan.active ? '套餐有效' : '套餐未开通或已到期';
+    storage.querySelector('[data-subscription]')!.textContent = workflowText(!plan ? '套餐暂不可用，请刷新。'
+      : plan.active ? '套餐有效' : '套餐未开通或已到期');
     storage.querySelector('[data-subscription-expiry]')!.textContent = accountDate(plan?.expiresAt);
     storage.querySelector<HTMLElement>('[data-redeem-policy]')!.hidden = !needsVerification;
     storage.querySelector<HTMLElement>('[data-portal=verify]')!.hidden = !needsVerification;
@@ -377,9 +388,10 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     info = next;
   }
 
-  function historyNote(text: string) {
+  function historyNote(text: WorkflowMessage) {
     const item = document.createElement('li');
-    item.className = 'settings-row'; item.textContent = text;
+    item.className = 'settings-row'; item.textContent = workflowText(text);
+    statusCopy.set(item, text);
     historyList.replaceChildren(item);
   }
 
@@ -399,7 +411,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
         const item = document.createElement('li');
         item.className = 'settings-row';
         const label = document.createElement('span'); label.className = 'settings-label';
-        const years = document.createElement('span'); years.textContent = `${record.years} 年`;
+        const years = document.createElement('span'); years.dataset.years = String(record.years);
+        years.textContent = workflowText('{years} 年').replace('{years}', String(record.years));
         const date = document.createElement('small'); date.textContent = accountDate(record.redeemedTime);
         label.append(years, date); item.append(label);
         return item;
@@ -485,14 +498,16 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   };
   change.onclick = () => { showMessage(); passwordStep(false, true); };
 
+  function updateLogoutLabels(everywhere: boolean) {
+    confirmation.querySelector('h2')!.textContent = workflowText(everywhere ? '退出所有客户端？' : '退出登录？');
+    confirmation.querySelector('#client-logout-description')!.textContent = workflowText(everywhere
+      ? '所有轻羽客户端都需要重新登录。' : '退出后需要重新登录才能同步。此设备上的笔记会保留。');
+    confirmLogout.textContent = workflowText(everywhere ? '全部退出' : '退出登录');
+  }
   function confirmSignOut(trigger: HTMLButtonElement) {
     if (busy || !info || confirmation.open) return;
     logoutTrigger = trigger;
-    const everywhere = trigger === logoutAll;
-    confirmation.querySelector('h2')!.textContent = everywhere ? '退出所有客户端？' : '退出登录？';
-    confirmation.querySelector('#client-logout-description')!.textContent = everywhere
-      ? '所有轻羽客户端都需要重新登录。' : '退出后需要重新登录才能同步。此设备上的笔记会保留。';
-    confirmLogout.textContent = everywhere ? '全部退出' : '退出登录';
+    updateLogoutLabels(trigger === logoutAll);
     confirmationStatus.textContent = '';
     confirmation.showModal();
     cancelLogout.focus();
@@ -510,7 +525,17 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     const accountId = info?.profile.id, everywhere = logoutTrigger === logoutAll;
     if (!accountId || !confirmation.open) return;
     void run(async () => {
-      const revoked = await callAccount<boolean>('account_logout', { accountId, everywhere });
+      let revoked: boolean;
+      try {
+        revoked = await callAccount<boolean>('account_logout', { accountId, everywhere });
+      } catch (reason) {
+        if (reason !== 'sync_key_remove_failed') throw reason;
+        if (!disposed) {
+          setInfo(null);
+          showMessage('已退出登录，但无法清除本机同步密钥。', true);
+        }
+        return;
+      }
       if (disposed) return;
       setInfo(null);
       showMessage(everywhere ? '已退出所有客户端。'
@@ -545,7 +570,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
         if (disposed) return;
         setInfo(next);
         showMessage(next?.profile.id === accountId && next.subscription
-          ? `已兑换 ${years} 年套餐。` : '兑换成功，请刷新账户查看套餐。');
+          ? workflowText('已兑换 {years} 年套餐。').replace('{years}', String(years)) : '兑换成功，请刷新账户查看套餐。');
       } catch {
         if (!disposed) showMessage('兑换成功，请刷新账户查看套餐。');
       }
@@ -575,8 +600,24 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     if (confirmation.open) confirmation.close();
   }
   window.addEventListener('focus', refreshOnFocus);
+  for (const apply of applyLabels) apply();
   void run(() => readAccount(false), '正在读取账户…');
   return {
+    refreshLanguage() {
+      for (const apply of applyLabels) apply();
+      submit.textContent = workflowText(email.readOnly ? '登录' : '继续');
+      for (const container of [...accountSections, confirmation]) {
+        for (const label of container.querySelectorAll('[role=status], .client-redemptions li')) {
+          const source = statusCopy.get(label);
+          if (source && label.textContent) label.textContent = localizeStatus(source);
+        }
+      }
+      for (const label of historyList.querySelectorAll<HTMLElement>('[data-years]')) {
+        label.textContent = workflowText('{years} 年').replace('{years}', label.dataset.years!);
+      }
+      if (confirmation.open) updateLogoutLabels(logoutTrigger === logoutAll);
+      render();
+    },
     show(section: string | undefined) {
       const next = section && Object.hasOwn(sections, section) ? section as AccountPage : undefined;
       if (next !== activePage) {

@@ -1,3 +1,4 @@
+import { translatedLabel } from './ui-language';
 import { GFM, parser } from '@lezer/markdown';
 import DOMPurify from 'dompurify';
 import { invoke } from '@tauri-apps/api/core';
@@ -130,7 +131,7 @@ async function renderPicture(request: PictureRequest, look: Look) {
   const prefix = passage.text.slice(0, 24_000);
   body.append(await pictureContent(prefix, passage.startsAtTitle, request)); card.append(body);
   if (look.mark) {
-    const mark = document.createElement('div'); mark.className = 'note-picture-mark'; mark.textContent = '轻羽 QingYu'; card.append(mark);
+    const mark = document.createElement('div'); mark.className = 'note-picture-mark'; mark.textContent = translatedLabel('轻羽 QingYu'); card.append(mark);
   }
   scene.append(card); document.body.append(scene);
   try {
@@ -160,8 +161,8 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
   const content = document.createElement('div'); content.className = 'note-picture-controls';
   const preview = document.createElement('img'); preview.className = 'note-picture-preview'; preview.alt = '导出的笔记图片预览'; preview.hidden = true;
   const status = document.createElement('p'); status.className = 'note-picture-status'; status.role = 'status';
-  const backgrounds = document.createElement('div'); backgrounds.className = 'note-picture-backgrounds'; backgrounds.role = 'group'; backgrounds.ariaLabel = '背景';
-  const label = document.createElement('span'); label.textContent = '背景'; if (!detailed) backgrounds.append(label);
+  const backgrounds = document.createElement('div'); backgrounds.className = 'note-picture-backgrounds'; backgrounds.role = 'group'; backgrounds.ariaLabel = translatedLabel('背景');
+  const label = document.createElement('span'); label.textContent = translatedLabel('背景'); if (!detailed) backgrounds.append(label);
   const swatches = Object.entries(scenes).map(([key, name]) => {
     const scene = key as Scene;
     const button = document.createElement('button'); button.type = 'button'; button.ariaLabel = name; button.title = name;
@@ -177,9 +178,9 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
   function saveLook() { try { localStorage.setItem(configKey, JSON.stringify({ scene: look.scene, mark: look.mark })); } catch { /* This render remains usable. */ } }
   if (detailed) {
     const options = document.createElement('div'); options.className = 'note-picture-options';
-    const mode = document.createElement('div'); mode.role = 'group'; mode.ariaLabel = '图片外观'; mode.className = 'note-picture-mode';
+    const mode = document.createElement('div'); mode.role = 'group'; mode.ariaLabel = translatedLabel('图片外观'); mode.className = 'note-picture-mode';
     const light = document.createElement('button'), dark = document.createElement('button');
-    light.type = dark.type = 'button'; light.textContent = '浅色'; dark.textContent = '深色';
+    light.type = dark.type = 'button'; light.textContent = translatedLabel('settings.theme.light'); dark.textContent = translatedLabel('settings.theme.dark');
     const updateMode = () => { light.ariaPressed = String(!look.dark); dark.ariaPressed = String(look.dark); };
     light.onclick = () => { look.dark = false; updateMode(); void draw(); }; dark.onclick = () => { look.dark = true; updateMode(); void draw(); };
     updateMode(); mode.append(light, dark);
@@ -224,7 +225,7 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
           const link = document.createElement('a'); link.href = imageURL; link.download = filename; link.click();
         }
         if (action !== 'share') { label.data = action === 'copy' ? '已复制' : '已保存'; setTimeout(() => { label.data = title; }, 1500); }
-      } catch (err) { if (!(err instanceof DOMException && err.name === 'AbortError')) status.textContent = '操作未完成，请重试。'; }
+      } catch (err) { if (!(err instanceof DOMException && err.name === 'AbortError')) status.textContent = translatedLabel('操作未完成，请重试。'); }
     };
     (detailed && action === 'save' ? content : buttons).append(button);
     return button;
@@ -234,10 +235,10 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     const version = ++generation;
     actions.forEach(button => { button.disabled = true; });
     for (const { scene, button } of swatches) button.ariaPressed = String(scene === look.scene);
-    status.textContent = '正在生成图片…';
+    status.textContent = translatedLabel('正在生成图片…');
     const next = await renderPicture(request, { ...look }).catch(() => null);
     if (version !== generation || !area.isConnected) return;
-    if (!next) { status.textContent = next === null ? '无法生成图片。' : '没有可分享的内容。'; return; }
+    if (!next) { status.textContent = next === null ? translatedLabel('无法生成图片。') : translatedLabel('没有可分享的内容。'); return; }
     result = next;
     if (imageURL) URL.revokeObjectURL(imageURL);
     imageURL = URL.createObjectURL(next.blob);
@@ -251,9 +252,9 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
 
 export function showNotePicture(request: PictureRequest, restoreFocus: () => void) {
   return openFeaturePanel({
-    title: '分享为图片',
+    title: translatedLabel('分享为图片'),
     mount: (dialog, close) => ({
-      dispose: mountFeaturePanel(dialog, '分享为图片', close, root => mountNotePicture(root, request, true)),
+      dispose: mountFeaturePanel(dialog, translatedLabel('分享为图片'), close, root => mountNotePicture(root, request, true)),
     }),
     restoreFocus,
     openWindow: async () => {

@@ -6,6 +6,11 @@ import { createStore, normalizeSettings, openKey, testS3Connection } from '../sr
 import * as core from '../src/vendor/mdsync/core';
 import { mockAssetDisk } from './fixtures/sync-assets';
 import { createAssetFetcher, downloadAsset } from '../src/asset-fetch';
+import { manageSyncPassword, openProtectedKey, type KeyCache } from '../src/sync-password';
+import { createSyncSession } from '../src/sync-session';
+import { invoke } from '@tauri-apps/api/core';
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
 vi.hoisted(() => {
   Object.assign(globalThis, { window: globalThis });
@@ -110,6 +115,89 @@ it('validates S3 transport options and keeps secure defaults for existing profil
 const sync = (book: Notebook) => syncNotebook(book, config);
 async function paired() { const a = newBook(), b = newBook(); await sync(a.book); await sync(b.book); return [a, b] as const; }
 
+it('uses a fresh v2 prefix with two devices, conditionally resets its password and preserves the old prefix', async () => {
+  const old = newBook(), a = newBook(), b = newBook({ ...original, activeId: 'note-b', notes: [original.notes[1]!] });
+  await sync(old.book);
+  const oldObjects = new Map(server.objects);
+  const target = normalizeSettings({ ...config, prefix: `${config.prefix}-v2-${crypto.randomUUID()}` });
+  const store = createStore(target);
+  function deviceCache(): KeyCache {
+    const keys = new Map<string, string>();
+    return async (id, key) => { if (key) keys.set(id, key); return keys.get(id) ?? null; };
+  }
+  const cacheA = deviceCache(), cacheB = deviceCache(), cacheC = deviceCache();
+  const run = (book: Notebook, cache: KeyCache) => syncNotebook(book, target, undefined, undefined, storage => openProtectedKey(storage, cache));
+  const password = 'initial-cafe\u0301-密码-phrase', newPassword = 'replacement-密码-phrase';
+  await expect(run(a.book, cacheA)).rejects.toThrow('需要输入同步密码');
+  expect(await store.get('miaoyan-key.json')).toBeNull();
+  const setup = await manageSyncPassword(target, cacheA);
+  expect(setup.state).toBe('new');
+  const creations = await Promise.allSettled([
+    manageSyncPassword(target, cacheA, { ...setup, password }),
+    manageSyncPassword(target, cacheB, { ...setup, password }),
+  ]);
+  expect(creations.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  const [unlocked, locked] = creations[0]!.status === 'fulfilled' ? [cacheA, cacheB] : [cacheB, cacheA];
+  const envelope = () => server.objects.get(`${target.prefix}/miaoyan-key.json`)!;
+  const keyInfo = () => JSON.parse(new TextDecoder().decode(envelope().bytes));
+  expect(keyInfo()).toMatchObject({ version: 2, protection: 'password', kdf: { name: 'PBKDF2-SHA256', iterations: 600000, normalization: 'NFC' } });
+  expect(keyInfo()).not.toHaveProperty('key');
+  expect(new TextDecoder().decode(envelope().bytes)).not.toContain(password);
+  await run(a.book, unlocked);
+  await expect(run(b.book, locked)).rejects.toThrow('需要输入同步密码');
+  const unlock = await manageSyncPassword(target, locked);
+  expect(unlock.state).toBe('locked');
+  await expect(manageSyncPassword(target, locked, { ...unlock, password: 'incorrect-password' })).rejects.toThrow('密码错误或密钥文件已损坏');
+  await manageSyncPassword(target, locked, { ...unlock, password: password.normalize('NFC') });
+  await run(b.book, locked);
+  expect(b.book.data.notes).toHaveLength(a.book.data.notes.length);
+  expect(b.book.data.notes).toEqual(expect.arrayContaining(a.book.data.notes));
+  const before = keyInfo();
+  const changes = new Map(server.objects);
+  const reset = await manageSyncPassword(target, unlocked);
+  expect(reset.state).toBe('unlocked');
+  await manageSyncPassword(target, unlocked, { ...reset, password: newPassword });
+  expect(keyInfo()).toMatchObject({ keyId: before.keyId });
+  expect(keyInfo().kdf.salt).not.toBe(before.kdf.salt);
+  expect(keyInfo().nonce).not.toBe(before.nonce);
+  for (const [name, before] of changes) if (name !== `${target.prefix}/miaoyan-key.json`) expect(server.objects.get(name)).toBe(before);
+  await expect(manageSyncPassword(target, locked, { ...reset, password })).rejects.toThrow('状态已变更');
+  await run(b.book, locked);
+  const after = await manageSyncPassword(target, cacheC);
+  await expect(manageSyncPassword(target, cacheC, { ...after, password })).rejects.toThrow('密码错误或密钥文件已损坏');
+  await manageSyncPassword(target, cacheC, { ...after, password: newPassword });
+  const other = { ...target, prefix: `${target.prefix}-other` };
+  server.objects.set(`${other.prefix}/miaoyan-key.json`, envelope());
+  await expect(openProtectedKey(createStore(other), cacheC)).rejects.toThrow('需要输入同步密码');
+  const foreign = await manageSyncPassword(other, cacheC);
+  await expect(manageSyncPassword(other, cacheC, { ...foreign, password: newPassword })).rejects.toThrow('密码错误或密钥文件已损坏');
+  for (const [name, before] of oldObjects) expect(server.objects.get(name)).toBe(before);
+  await expect(manageSyncPassword(normalizeSettings(config), cacheA)).rejects.toThrow('旧密钥格式');
+  await expect(openKey(store)).rejects.toThrow('Web 部署端请使用独立同步前缀');
+}, 15_000);
+
+it('still unlocks v2 key files written before the NFC marker', async () => {
+  const target = normalizeSettings(config);
+  const password = 'legacy cafe\u0301 password';
+  const salt = core.randomBytes(16) as Uint8Array<ArrayBuffer>, nonce = core.randomBytes(12) as Uint8Array<ArrayBuffer>;
+  const raw = core.randomBytes(32) as Uint8Array<ArrayBuffer>, keyId = await core.sha256Hex(raw);
+  const material = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 600_000 },
+    material, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const wrapped = await crypto.subtle.encrypt({
+    name: 'AES-GCM', iv: nonce, additionalData: encoder.encode(JSON.stringify(['miaoyan-key.json', 2, target.prefix, keyId])),
+  }, key, raw);
+  await createStore(target).putIfAbsent('miaoyan-key.json', encoder.encode(JSON.stringify({
+    version: 2, protection: 'password', keyId,
+    kdf: { name: 'PBKDF2-SHA256', iterations: 600_000, salt: Buffer.from(salt).toString('base64') },
+    nonce: Buffer.from(nonce).toString('base64'), wrapped: Buffer.from(wrapped).toString('base64'),
+  })));
+  const cache = vi.fn<KeyCache>().mockResolvedValue(null);
+  const info = await manageSyncPassword(target, cache);
+  await expect(manageSyncPassword(target, cache, { ...info, password })).resolves.toMatchObject({ state: 'unlocked' });
+  expect(cache).toHaveBeenLastCalledWith(createStore(target).identity(), Buffer.from(raw).toString('base64'));
+});
+
 describe('full library mapping', () => {
   it('preserves names, pin and recoverable trash across mappings and sync', async () => {
     const [a, b] = await paired();
@@ -150,6 +238,70 @@ describe('full library mapping', () => {
 
 describe('MDSync application synchronization', () => {
   const assetsBook = (initial: Asset[]) => mockAssetDisk(newBook().book, initial);
+  it.each(['cloud', 's3'] as const)('recovers v1 on-demand attachments before the mobile %s upgrade', async mode => {
+    const a = assetsBook([{ path: 'document.pdf', bytes: Array<number>(1_000_000).fill(7), modified: 1 }]);
+    const b = assetsBook([]);
+    vi.spyOn(b.book, 'root', 'get').mockReturnValue('/test-library');
+    const old = { ...config, prefix: 'upgrade-old' };
+    const next = { ...config, mode, prefix: mode === 'cloud' ? 'upgrade-old/vault-v2' : 'upgrade-new' };
+    await syncNotebook(a.book, old);
+    await syncNotebook(b.book, { ...old, assetDownload: 'on-demand' });
+    expect(b.placeholders()['document.pdf']).toBeDefined();
+    const previous = new Map(server.objects);
+    let profile = { ...old, mode };
+    const keys = new Map<string, string>();
+    const native = vi.mocked(invoke);
+    vi.stubGlobal('__TAURI_INTERNALS__', {});
+    native.mockImplementation(async (command, args, options) => {
+      if (command === 'sync_load_profile') return profile as never;
+      if (command === 'sync_save_profile') { profile = (args as { profile: typeof profile }).profile; return; }
+      if (command === 'account_sync_config') return { ...old, concurrentReqs: 2 } as never;
+      if (command === 'sync_cached_key') {
+        const { target, key } = args as { target: string; key?: string };
+        if (key) keys.set(target, key);
+        return (keys.get(target) ?? null) as never;
+      }
+      if (command === 'sync_request') {
+        const encoded = (options?.headers as Record<string, string>)['x-qingyu-request']!;
+        const { hasBody, ...request } = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+        const reply = await server.handle({ ...request, ...(hasBody ? { body: (args as Uint8Array).slice().buffer } : {}) });
+        const header = encoder.encode(JSON.stringify({ status: reply.status, headers: reply.headers }));
+        const bytes = new Uint8Array(4 + header.length + reply.arrayBuffer.byteLength);
+        new DataView(bytes.buffer).setUint32(0, header.length);
+        bytes.set(header, 4);
+        bytes.set(new Uint8Array(reply.arrayBuffer), 4 + header.length);
+        return bytes.buffer as never;
+      }
+    });
+    try {
+      const session = createSyncSession(b.book, () => {}, () => true, true);
+      const account = mode === 'cloud' ? 'test-owner' : undefined;
+      // A custom target might already have been edited. Returning to the old target must still offer recovery.
+      if (mode === 's3') {
+        await expect(session.run(old)).rejects.toThrow('旧密钥格式');
+        expect(b.placeholders()).toEqual({});
+      }
+      await session.run(next, account);
+      expect(b.placeholders()).toEqual({});
+      expect(b.assets()).toEqual(a.assets());
+      const state = await session.password!(next, account);
+      await session.password!(next, account, { ...state, password: 'test upgrade password' });
+      await session.run(next, account);
+      expect(b.book.data.sync?.target).toBe(createStore(normalizeSettings(next)).identity());
+      expect(server.objects.has(`${next.prefix}/manifest.json.enc`)).toBe(true);
+      for (const [path, object] of previous) expect(server.objects.get(path)).toBe(object);
+      if (mode === 's3') {
+        const target = await core.sha256Hex(encoder.encode(createStore(normalizeSettings(next)).identity()));
+        await session.save({ ...next, accessKeyId: '' });
+        expect(native).not.toHaveBeenCalledWith('sync_cached_key', { target, forget: true });
+        await session.save({ ...next, accessKeyId: '', secretAccessKey: '' });
+        expect(native).toHaveBeenCalledWith('sync_cached_key', { target, forget: true });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      native.mockReset();
+    }
+  });
   it('keeps fresh large attachments as placeholders through remote edits, renames and deletes', async () => {
     const large = Array<number>(1_000_000).fill(88);
     const a = assetsBook([{ path: 'a.pdf', bytes: large, modified: Date.now() },

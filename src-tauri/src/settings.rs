@@ -1,4 +1,58 @@
+#[cfg(desktop)]
+use tauri::menu::MenuItemKind;
 use tauri::{Emitter, Manager};
+
+#[cfg(desktop)]
+#[derive(Clone)]
+pub struct NativeMenuLabels(Vec<(MenuItemKind<tauri::Wry>, String)>);
+
+#[cfg(desktop)]
+impl NativeMenuLabels {
+    pub fn capture(menu: &tauri::menu::Menu<tauri::Wry>) -> tauri::Result<Self> {
+        fn collect(
+            items: Vec<MenuItemKind<tauri::Wry>>,
+            labels: &mut Vec<(MenuItemKind<tauri::Wry>, String)>,
+        ) -> tauri::Result<()> {
+            for item in items {
+                let label = match &item {
+                    MenuItemKind::Submenu(submenu) => {
+                        collect(submenu.items()?, labels)?;
+                        submenu.text()?
+                    }
+                    MenuItemKind::MenuItem(item) => item.text()?,
+                    MenuItemKind::Predefined(item) => item.text()?,
+                    _ => continue,
+                };
+                if !label.is_empty() {
+                    labels.push((item, label));
+                }
+            }
+            Ok(())
+        }
+        let mut labels = Vec::new();
+        collect(menu.items()?, &mut labels)?;
+        Ok(Self(labels))
+    }
+
+    pub fn apply(&self, labels: &std::collections::HashMap<String, String>) -> tauri::Result<()> {
+        for (entry, source) in &self.0 {
+            let Some(label) = labels.get(source) else {
+                continue;
+            };
+            if label.is_empty() || label.len() > 512 || label.chars().any(char::is_control) {
+                continue;
+            }
+            let label = label.replace('&', "&&");
+            match entry {
+                MenuItemKind::Submenu(item) => item.set_text(&label)?,
+                MenuItemKind::MenuItem(item) => item.set_text(&label)?,
+                MenuItemKind::Predefined(item) => item.set_text(&label)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
 
 #[tauri::command]
 pub async fn open_settings(app: tauri::AppHandle, section: Option<String>) -> Result<(), String> {
@@ -116,6 +170,7 @@ pub fn apply_preferences(
     always_on_top: bool,
     note_text_size: Option<u16>,
     menu_bar: Option<bool>,
+    menu_labels: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     let theme = match appearance.as_str() {
         "system" => None,
@@ -141,9 +196,23 @@ pub fn apply_preferences(
             eprintln!("菜单栏图标未能更新：{reason}");
         }
     }
+    #[cfg(desktop)]
+    if let Some(labels) = menu_labels {
+        app.state::<NativeMenuLabels>()
+            .apply(&labels)
+            .map_err(|error| error.to_string())?;
+        crate::menu_bar::apply_labels(&app, &labels)?;
+        if let (Some(window), Some(title)) =
+            (app.get_webview_window("settings"), labels.get("设置…"))
+        {
+            window
+                .set_title(title.trim_end_matches(['…', '.']))
+                .map_err(|error| error.to_string())?;
+        }
+    }
     #[cfg(mobile)]
     {
-        let _ = (app, theme, always_on_top, menu_bar);
+        let _ = (app, theme, always_on_top, menu_bar, menu_labels);
     }
     #[cfg(target_os = "macos")]
     if let (Some(size), Some(menu)) = (note_text_size, app.menu()) {
@@ -224,6 +293,7 @@ pub fn editor_menu_state(
     redo: bool,
     sections: bool,
     format: FormatMenuState,
+    tick_label: Option<String>,
 ) -> Result<(), String> {
     if !window.is_focused().map_err(|e| e.to_string())? {
         return Ok(());
@@ -278,11 +348,16 @@ pub fn editor_menu_state(
                 item.set_enabled(enabled).map_err(|e| e.to_string())?;
             }
             if item.id().as_ref() == "format-tick" {
-                let title = if format.ticked == Some(true) {
-                    "标为未完成"
-                } else {
-                    "标为已完成"
-                };
+                let title = tick_label
+                    .as_deref()
+                    .filter(|text| {
+                        !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_control)
+                    })
+                    .unwrap_or(if format.ticked == Some(true) {
+                        "标为未完成"
+                    } else {
+                        "标为已完成"
+                    });
                 if item.text().map_err(|e| e.to_string())? != title {
                     item.set_text(title).map_err(|e| e.to_string())?;
                 }
@@ -324,6 +399,8 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
             }
         }
     }
+    // AppKit's predefined About and Hide labels can include the app name.
+    let app_name_suffix = format!(" {}", app.package_info().name.trim());
     for (_index, entry) in menu.items()?.into_iter().enumerate() {
         let Some(submenu) = entry.as_submenu() else {
             continue;
@@ -407,7 +484,8 @@ pub fn install_menu(app: &tauri::App) -> tauri::Result<()> {
             let Some(item) = entry.as_predefined_menuitem() else {
                 continue;
             };
-            let title = match item.text()?.replace('&', "").as_str() {
+            let source = item.text()?.replace('&', "");
+            let title = match source.strip_suffix(&app_name_suffix).unwrap_or(&source) {
                 "About" => "关于轻羽",
                 "Services" => "服务",
                 "Hide" => "隐藏轻羽",

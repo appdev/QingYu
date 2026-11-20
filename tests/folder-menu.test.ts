@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { folderMenuItems } from '../src/folder-menu';

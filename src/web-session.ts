@@ -1,3 +1,4 @@
+import { translatedLabel } from './ui-language';
 const enabled = () => document.querySelector('meta[name="qingyu-web-auth"][content="enabled"]') !== null;
 const expiredLogin = () => '/login.html?expired=1' + (location.hash.startsWith('#note=') ? location.hash : '');
 
@@ -16,7 +17,7 @@ export async function requireWebSession() {
     // Stop initialization while navigating, before browser drafts are displayed.
     await new Promise<never>(() => {});
   } catch (reason) {
-    document.body.textContent = '无法验证登录状态，请检查网络后刷新页面。';
+    document.body.textContent = translatedLabel('无法验证登录状态，请检查网络后刷新页面。');
     throw reason;
   }
 }

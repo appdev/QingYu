@@ -1,3 +1,4 @@
+import { markupLabel, translatedLabel } from './ui-language';
 import { invoke } from '@tauri-apps/api/core';
 import './calendar.css';
 
@@ -24,16 +25,16 @@ export function setupCalendar(getTitle: () => string) {
     if (dialog) { if (!dialog.open) dialog.showModal(); return; }
     dialog = document.createElement('dialog'); dialog.id = 'calendar-dialog'; dialog.setAttribute('aria-labelledby', 'calendar-title');
     dialog.innerHTML = `<form>
-      <h2 id="calendar-title">创建日程</h2>
-      <label for="event-title">标题</label><input id="event-title" required maxlength="400" autocomplete="off">
-      <label for="event-start">开始时间</label><input id="event-start" type="datetime-local" required min="1970-01-02T00:00" max="9999-12-30T23:59">
-      <label for="event-end">结束时间</label><input id="event-end" type="datetime-local" required min="1970-01-02T00:00" max="9999-12-30T23:59">
-      <label for="event-reminder">提醒</label><select id="event-reminder"><option value="">不提醒</option><option value="0">日程开始时</option><option value="5">提前 5 分钟</option><option value="15" selected>提前 15 分钟</option><option value="30">提前 30 分钟</option><option value="60">提前 1 小时</option><option value="1440">提前 1 天</option><option value="custom">自定义</option></select>
-      <div id="event-custom" hidden><label for="event-minutes">提前多少分钟</label><input id="event-minutes" type="number" min="0" max="40320" step="1" value="15"></div>
-      <label for="event-notes">备注（可选）</label><textarea id="event-notes" rows="3" maxlength="20000"></textarea>
-      <p class="calendar-help">按当前设备时区创建。Apple / Android 保存到系统日历；Windows / Linux 需在默认日历软件中确认导入。提醒通知由日历软件和系统设置控制。</p>
+      <h2 id="calendar-title">${markupLabel('创建日程')}</h2>
+      <label for="event-title">${markupLabel('noteTitleHint')}</label><input id="event-title" required maxlength="400" autocomplete="off">
+      <label for="event-start">${markupLabel('开始时间')}</label><input id="event-start" type="datetime-local" required min="1970-01-02T00:00" max="9999-12-30T23:59">
+      <label for="event-end">${markupLabel('结束时间')}</label><input id="event-end" type="datetime-local" required min="1970-01-02T00:00" max="9999-12-30T23:59">
+      <label for="event-reminder">${markupLabel('提醒')}</label><select id="event-reminder"><option value="">${markupLabel('不提醒')}</option><option value="0">${markupLabel('日程开始时')}</option><option value="5">${markupLabel('提前 5 分钟')}</option><option value="15" selected>${markupLabel('提前 15 分钟')}</option><option value="30">${markupLabel('提前 30 分钟')}</option><option value="60">${markupLabel('提前 1 小时')}</option><option value="1440">${markupLabel('提前 1 天')}</option><option value="custom">${markupLabel('settings.theme.custom')}</option></select>
+      <div id="event-custom" hidden><label for="event-minutes">${markupLabel('提前多少分钟')}</label><input id="event-minutes" type="number" min="0" max="40320" step="1" value="15"></div>
+      <label for="event-notes">${markupLabel('备注（可选）')}</label><textarea id="event-notes" rows="3" maxlength="20000"></textarea>
+      <p class="calendar-help">${markupLabel('按当前设备时区创建。Apple / Android 保存到系统日历；Windows / Linux 需在默认日历软件中确认导入。提醒通知由日历软件和系统设置控制。')}</p>
       <p id="event-feedback" role="status" aria-live="polite"></p>
-      <div class="dialog-actions"><button id="event-cancel" class="button secondary-button" type="button">取消</button><button id="event-save" class="button primary-button" type="submit">保存到日历</button></div>
+      <div class="dialog-actions"><button id="event-cancel" class="button secondary-button" type="button">${markupLabel('取消')}</button><button id="event-save" class="button primary-button" type="submit">${markupLabel('保存到日历')}</button></div>
     </form>`;
     document.body.append(dialog);
     const current = dialog;
@@ -61,9 +62,9 @@ export function setupCalendar(getTitle: () => string) {
         const value = calendarEvent(title.value, notes.value, start.value, end.value, reminder.value === 'custom' ? minutes.value : reminder.value);
         if (reminder.value === 'custom' && minutes.value === '') throw new Error('请输入提前提醒的分钟数');
         busy = true; form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('input, button, select, textarea').forEach(control => { control.disabled = true; });
-        feedback.textContent = '正在保存，请完成系统日历授权…'; feedback.dataset.error = 'false';
+        feedback.textContent = translatedLabel('正在保存，请完成系统日历授权…'); feedback.dataset.error = 'false';
         feedback.textContent = await invoke<string>('create_calendar_event', { event: value });
-        saved = true; save.hidden = true; cancel.textContent = '完成';
+        saved = true; save.hidden = true; cancel.textContent = translatedLabel('done');
       } catch (reason) {
         feedback.textContent = reason instanceof Error ? reason.message : String(reason); feedback.dataset.error = 'true';
       } finally {

@@ -1,13 +1,15 @@
 import { themeNames, themePalette, type Theme } from './themes';
 import { dailyTitleStyles, type DailyNoteSettings } from './daily-note';
+import { isAppLanguage, type AppLanguage } from './vendor/markra/shared/i18n';
 
 export const preferencesKey = 'miaoyan-editor.preferences.v1';
 export const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
 export const sizes = [12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 24, 26, 28] as const;
-export const noteTextSizes = [13, 15, 17, 20, 24] as const;
+export const noteTextSizes = Array.from({ length: 12 }, (_, index) => 13 + index);
 export const syncIntervals = [1, 3, 5, 10, 15, 30, 60] as const;
 export type Preferences = DailyNoteSettings & {
   version: 1;
+  language: AppLanguage | 'system';
   appearance: 'system' | 'light' | 'dark';
   theme: Theme;
   buttonDisplay: 'always' | 'hover';
@@ -24,7 +26,7 @@ export type Preferences = DailyNoteSettings & {
   cloudSyncAccount: string;
 };
 export const defaults: Preferences = {
-  version: 1, appearance: 'system', theme: 'default', buttonDisplay: 'always', alwaysOnTop: false, menuBar: true,
+  version: 1, language: 'system', appearance: 'system', theme: 'default', buttonDisplay: 'always', alwaysOnTop: false, menuBar: true,
   sortCheckedItems: true, previewWidth: 1000,
   todayFolder: '', todayTitle: 'long', todayOpenOnLaunch: false,
   previewFont: 'system', previewFontSize: mobile ? 17 : noteTextSizes[0],
@@ -33,7 +35,7 @@ export const defaults: Preferences = {
 export function parsePreferences(value: unknown): Preferences {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('设置数据无效');
   const p = { ...defaults, ...value };
-  if (p.version !== 1 || !['system', 'light', 'dark'].includes(p.appearance)
+  if (p.version !== 1 || !(p.language === 'system' || isAppLanguage(p.language)) || !['system', 'light', 'dark'].includes(p.appearance)
     || typeof p.theme !== 'string' || !Object.hasOwn(themeNames, p.theme)
     || !['always', 'hover'].includes(p.buttonDisplay) || typeof p.alwaysOnTop !== 'boolean' || typeof p.menuBar !== 'boolean'
     || typeof p.sortCheckedItems !== 'boolean'
@@ -43,7 +45,7 @@ export function parsePreferences(value: unknown): Preferences {
     || !syncIntervals.includes(p.syncInterval) || typeof p.autoSyncS3 !== 'boolean'
     || typeof p.autoSyncCloudAccount !== 'string' || p.autoSyncCloudAccount.length > 512 || /[\x00-\x1f]/.test(p.autoSyncCloudAccount)
     || typeof p.cloudSyncAccount !== 'string' || p.cloudSyncAccount.length > 512 || /[\x00-\x1f]/.test(p.cloudSyncAccount)
-    || !sizes.includes(p.previewFontSize as typeof sizes[number])
+    || (!sizes.includes(p.previewFontSize as typeof sizes[number]) && (mobile || !noteTextSizes.includes(p.previewFontSize)))
     || typeof p.previewFont !== 'string' || !p.previewFont.trim() || p.previewFont.length > 200 || /[\x00-\x1f]/.test(p.previewFont)) throw new Error('设置数据无效');
   if (!mobile) p.previewFontSize = noteTextSizes.find(size => size >= p.previewFontSize) ?? noteTextSizes.at(-1)!;
   // Keep only known fields; connection credentials never belong in preferences.
@@ -72,6 +74,21 @@ export class PreferenceStore {
   }
 }
 export const preferences = new PreferenceStore(localStorage);
+export function systemLanguage(languages: readonly string[]): AppLanguage {
+  for (const tag of languages) {
+    try {
+      const { language, script, region } = new Intl.Locale(tag.replaceAll('_', '-'));
+      if (language === 'zh') return script === 'Hant' || !script && ['TW', 'HK', 'MO'].includes(region ?? '') ? 'zh-TW' : 'zh-CN';
+      if (language === 'pt') return 'pt-BR';
+      if (isAppLanguage(language)) return language;
+    } catch { /* Ignore malformed locale identifiers. */ }
+  }
+  return 'en';
+}
+export function interfaceLanguage(): AppLanguage {
+  const language = preferences.value.language;
+  return language === 'system' ? systemLanguage([...navigator.languages, navigator.language]) : language;
+}
 export function changeNoteTextSize(action: 'bigger' | 'smaller' | 'actual') {
   const current = preferences.value.previewFontSize;
   const index = noteTextSizes.findIndex(size => size === current);
@@ -124,6 +141,8 @@ if (window.nativeAppearance && appShell) {
 }
 function apply() {
   const p = preferences.value, root = document.documentElement, preview = previewPreferences();
+  const language = interfaceLanguage(), languageChanged = root.lang !== language;
+  root.lang = language;
   const theme = preview.dark ? 'dark' : 'light';
   root.dataset.theme = theme;
   const colors = themePalette(p.theme, preview.dark);
@@ -140,8 +159,10 @@ function apply() {
   document.body?.classList.toggle('darkmode', preview.dark);
   updateNativeAppearance();
   window.dispatchEvent(new Event('preferences-applied'));
+  if (languageChanged) window.dispatchEvent(new Event('ui-language-change'));
 }
 preferences.subscribe(apply); appearance.addEventListener('change', apply); apply();
+window.addEventListener('languagechange', apply);
 window.addEventListener('storage', event => {
   if (event.key !== preferencesKey || !event.newValue) return;
   try { preferences.receive(JSON.parse(event.newValue)); } catch { /* Keep the last valid live settings. */ }

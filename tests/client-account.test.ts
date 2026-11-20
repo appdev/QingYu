@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { invoke } from '@tauri-apps/api/core';
@@ -45,6 +46,35 @@ it('uses the sidebar guest icon for every signed-out settings avatar', async () 
     expect(avatars).toHaveLength(3);
     for (const avatar of avatars) expect(avatar.innerHTML).toBe(expected);
   } finally { controller.destroy(); root.remove(); }
+});
+
+it('updates the account form language without resetting the current sign-in step', async () => {
+  vi.mocked(invoke).mockResolvedValue(null);
+  const { root, pages } = accountPages();
+  const tab = root.appendChild(document.createElement('button'));
+  const controller = mountClientAccount(pages, tab, vi.fn());
+  const previous = document.documentElement.lang;
+  try {
+    const entry = pages.account.querySelector<HTMLButtonElement>('.client-sign-in-entry')!;
+    await vi.waitFor(() => expect(entry.hidden).toBe(false));
+    entry.click();
+    const dialog = pages.account.querySelector('dialog')!;
+    const email = dialog.querySelector<HTMLInputElement>('[name=username]')!;
+    const password = dialog.querySelector<HTMLInputElement>('[name=password]')!;
+    email.value = 'test@example.invalid';
+    dialog.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+    expect(password.hidden).toBe(false);
+    document.documentElement.lang = 'en';
+    controller.refreshLanguage();
+    expect(dialog.ariaLabel).toBe('Sign in to QingYu');
+    expect(email.value).toBe('test@example.invalid');
+    expect(password.hidden).toBe(false);
+    expect(dialog.querySelector('[type=submit]')?.textContent).toBe('Sign In');
+  } finally {
+    document.documentElement.lang = previous;
+    controller.destroy();
+    root.remove();
+  }
 });
 
 it('submits only after the password step and updates or clears the account card', async () => {

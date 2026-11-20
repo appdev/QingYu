@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import type { EditorView } from '@codemirror/view';
 import { findNoteRelations, linkMentionLine, sameRelationInputs, type NoteRelations, type RelationLine, type RelationNote } from './note-relations';
 import type { Library, Note } from './notebook';
@@ -17,7 +18,7 @@ export function createNoteRelationsFooter(actions: {
   let changed: { note: RelationNote; before: string; after: string } | undefined;
   try { expanded = localStorage.getItem(expandedKey) === 'true'; } catch { /* Optional visual preference. */ }
   const footer = document.createElement('section'), summary = document.createElement('button'), details = document.createElement('div');
-  footer.className = 'note-relations'; footer.ariaLabel = '笔记引用'; footer.contentEditable = 'false';
+  footer.className = 'note-relations'; footer.ariaLabel = translatedLabel('笔记引用'); footer.contentEditable = 'false';
   summary.className = 'note-relations-summary'; summary.type = 'button';
   details.className = 'note-relations-details';
   footer.append(summary, details);
@@ -78,7 +79,7 @@ export function createNoteRelationsFooter(actions: {
           excerpt.append(line.text.slice(from)); row.append(excerpt);
           if (mention) {
             const link = button('添加链接', () => { void linkLine(note, line); }, 'note-relation-link');
-            link.ariaLabel = `在${note.title}第 ${line.number} 行添加链接`;
+            link.ariaLabel = formatLabel('在{title}第 {line} 行添加链接', { title: note.title, line: line.number });
             row.append(link);
           }
           card.append(row);

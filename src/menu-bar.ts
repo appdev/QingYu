@@ -6,6 +6,7 @@ import { CircleCheck, CirclePlus, Pin, Settings, SquarePen } from 'lucide';
 import type { MenuBarNote, MenuBarReply, MenuBarRequest, MenuBarSections } from './menu-bar-model';
 import { connectPreferences } from './settings-bridge';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { bindLabels, localizeStatus, uiText, workflowText } from './ui-language';
 
 // 菜单栏面板：打字新建笔记或查找，回车保存，⌘回车（Windows/Linux 是 Ctrl+回车）保存后在主窗口打开。
 // 笔记都由主窗口去读写，这里只发请求。
@@ -30,12 +31,12 @@ export function mountMenuBar(root: HTMLElement, host: MenuBarPanelHost) {
   const field = root.appendChild(doc.createElement('label')); field.className = 'menu-bar-field';
   field.append(createLucideIcon(doc, SquarePen, ''));
   const input = field.appendChild(doc.createElement('input'));
-  input.type = 'text'; input.placeholder = '新建笔记或搜索'; input.ariaLabel = '新建笔记或搜索';
+  input.type = 'text';
   input.setAttribute('role', 'combobox'); input.setAttribute('aria-controls', 'menu-bar-list'); input.setAttribute('aria-expanded', 'true');
   input.autocomplete = 'off'; input.spellcheck = false;
   root.appendChild(doc.createElement('div')).className = 'menu-bar-divider';
   const list = root.appendChild(doc.createElement('div'));
-  list.className = 'menu-bar-list'; list.id = 'menu-bar-list'; list.setAttribute('role', 'listbox'); list.ariaLabel = '笔记';
+  list.className = 'menu-bar-list'; list.id = 'menu-bar-list'; list.setAttribute('role', 'listbox');
   root.appendChild(doc.createElement('div')).className = 'menu-bar-divider';
   const footer = root.appendChild(doc.createElement('div')); footer.className = 'menu-bar-footer';
   const button = (text: string, run: () => Promise<void>) => {
@@ -43,11 +44,22 @@ export function mountMenuBar(root: HTMLElement, host: MenuBarPanelHost) {
     element.type = 'button'; element.className = 'button quiet-button'; element.textContent = text; element.onclick = () => { void run().catch(show); };
     return element;
   };
-  button('打开轻羽', host.openMain);
+  const open = button('', host.openMain);
   const settings = button('', host.openSettings);
-  settings.classList.add('menu-bar-settings'); settings.ariaLabel = '设置'; settings.title = '设置…';
+  settings.classList.add('menu-bar-settings');
   settings.append(createLucideIcon(doc, Settings, ''));
-  button('退出', host.quit).title = '退出轻羽';
+  const quit = button('', host.quit);
+
+  function refreshLanguage() {
+    input.placeholder = input.ariaLabel = workflowText('新建笔记或搜索');
+    list.ariaLabel = uiText('notes');
+    open.textContent = workflowText('打开轻羽');
+    settings.ariaLabel = uiText('settings.title');
+    settings.title = workflowText('设置…');
+    quit.textContent = workflowText('退出');
+    quit.title = workflowText('退出轻羽');
+    render();
+  }
 
   const typing = () => Boolean(input.value.trim());
   const rows = () => sections.matches.length || typing() ? sections.matches : [...sections.pinned, ...sections.recent];
@@ -74,27 +86,27 @@ export function mountMenuBar(root: HTMLElement, host: MenuBarPanelHost) {
       const row = list.appendChild(doc.createElement('div'));
       row.className = 'menu-bar-row menu-bar-action menu-bar-saved'; row.setAttribute('role', 'status');
       row.append(createLucideIcon(doc, CircleCheck, ''));
-      row.appendChild(doc.createElement('span')).textContent = `已保存“${saved}”`;
+      row.appendChild(doc.createElement('span')).textContent = workflowText('已保存“{name}”').replace('{name}', () => saved);
     }
     if (failure) {
-      const error = list.appendChild(doc.createElement('p')); error.className = 'menu-bar-error'; error.setAttribute('role', 'alert'); error.textContent = failure;
+      const error = list.appendChild(doc.createElement('p')); error.className = 'menu-bar-error'; error.setAttribute('role', 'alert'); error.textContent = localizeStatus(failure);
     }
     if (typing()) {
       const create = list.appendChild(doc.createElement('button'));
       create.type = 'button'; create.className = 'menu-bar-row menu-bar-action'; create.setAttribute('role', 'option'); create.tabIndex = -1;
       create.setAttribute('aria-selected', String(highlight === 0));
       create.append(createLucideIcon(doc, CirclePlus, 'menu-bar-create-icon'));
-      create.appendChild(doc.createElement('span')).textContent = `新建笔记“${input.value.trim()}”`;
+      create.appendChild(doc.createElement('span')).textContent = workflowText('新建笔记“{name}”').replace('{name}', () => input.value.trim());
       create.appendChild(doc.createElement('kbd')).textContent = '↩';
       create.onclick = () => { void capture(false); };
-      if (sections.matches.length) list.append(header('笔记'));
+      if (sections.matches.length) list.append(header(uiText('notes')));
       sections.matches.forEach((note, index) => list.append(noteRow(note, index + 1)));
     } else if (!sections.pinned.length && !sections.recent.length) {
-      const empty = list.appendChild(doc.createElement('p')); empty.className = 'menu-bar-empty'; empty.textContent = '置顶或编辑过的笔记会显示在这里。';
+      const empty = list.appendChild(doc.createElement('p')); empty.className = 'menu-bar-empty'; empty.textContent = workflowText('置顶或编辑过的笔记会显示在这里。');
     } else {
-      if (sections.pinned.length) list.append(header('置顶'));
+      if (sections.pinned.length) list.append(header(uiText('pin')));
       sections.pinned.forEach((note, index) => list.append(noteRow(note, index)));
-      if (sections.recent.length) list.append(header('最近'));
+      if (sections.recent.length) list.append(header(workflowText('最近')));
       sections.recent.forEach((note, index) => list.append(noteRow(note, sections.pinned.length + index)));
     }
     list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
@@ -172,7 +184,8 @@ export function mountMenuBar(root: HTMLElement, host: MenuBarPanelHost) {
     void refresh();
   }
   opened();
-  return { opened, refresh };
+  refreshLanguage();
+  return { opened, refresh, refreshLanguage };
 }
 
 if (document.querySelector('#menu-bar-root')) {
@@ -196,5 +209,8 @@ if (document.querySelector('#menu-bar-root')) {
     fit(height) { if (height !== fitted) { fitted = height; void invoke('menu_bar_fit', { height }).catch(() => {}); } },
   });
   await listen('menu-bar-shown', () => panel.opened(), { target: 'menubar' });
+  const localizeLabels = bindLabels(document.head);
+  localizeLabels();
+  window.addEventListener('ui-language-change', () => { localizeLabels(); panel.refreshLanguage(); });
   void connectPreferences().catch(() => {});
 }

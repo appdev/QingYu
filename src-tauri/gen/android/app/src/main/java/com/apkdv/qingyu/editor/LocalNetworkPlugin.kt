@@ -1,4 +1,4 @@
-package app.miaoyan.editor.prototype
+package com.apkdv.qingyu.editor
 
 import android.Manifest
 import android.app.Activity

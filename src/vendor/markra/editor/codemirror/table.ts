@@ -1,3 +1,4 @@
+import { translatedLabel } from '../../../../ui-language';
 import {
   activeTableCell,
   clearTableSelection,
@@ -1197,7 +1198,7 @@ const tableEdgeSelection = ViewPlugin.fromClass(class {
     };
     const input = table.ownerDocument.createElement("textarea");
     input.className = "markra-table-edge-input";
-    input.ariaLabel = "在表格后输入";
+    input.ariaLabel = translatedLabel('在表格后输入');
     input.tabIndex = -1;
     input.rows = 1;
     input.spellcheck = false;

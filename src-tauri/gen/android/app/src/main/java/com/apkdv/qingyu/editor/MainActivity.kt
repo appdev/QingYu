@@ -1,4 +1,4 @@
-package app.miaoyan.editor.prototype
+package com.apkdv.qingyu.editor
 
 import android.content.Context
 import android.content.res.Configuration

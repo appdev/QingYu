@@ -72,9 +72,10 @@ export function startAutoSync(client: SyncClient, blocked: () => boolean, error:
       if (status.busy) { await joinCurrent(); return; }
       if (syncMode(settings) === 'cloud') {
         const id = schedule?.value.autoSyncCloudAccount;
-        if (id) await client.run(settings, id);
+        if (id && status.passwordRequired?.accountId !== id) await client.run(settings, id);
         return;
       }
+      if (status.passwordRequired && !status.passwordRequired.accountId) return;
       if (schedule?.value.autoSyncS3 === false || !hasS3Connection(settings)) return;
       await client.run(settings);
     })().finally(() => {

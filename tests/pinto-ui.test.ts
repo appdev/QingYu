@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { mountSettings, type SettingsSection } from '../src/settings-view';
 import { preferences, PreferenceStore, previewPreferences } from '../src/preferences';
 import { themeNames, themePalette } from '../src/themes';
-import { showLockNotePanel, showShare } from '../src/reference-panels';
+import { showShare } from '../src/reference-panels';
 import { formatTransaction } from '../src/format';
 import { EditorState } from '@codemirror/state';
 import { groupNotes, noteListDate, type Note } from '../src/notebook';
@@ -84,8 +85,8 @@ it('previews settings while searching and only changes history after choosing a 
   expect(root.querySelector('h1')?.textContent).toBe('通用');
   root.querySelector<HTMLButtonElement>('.settings-back')!.click();
   expect(root.querySelector('h1')?.textContent).toBe('外观');
-  query('Bucket');
-  expect(root.querySelector('.settings-search-results button')?.textContent).toBe('Bucket存储与同步');
+  query('存储桶');
+  expect(root.querySelector('.settings-search-results button')?.textContent).toBe('存储桶存储与同步');
   expect(root.querySelector('h1')?.textContent).toBe('存储与同步');
   query('S3 同步');
   root.querySelector<HTMLButtonElement>('.settings-search-results button')!.click();
@@ -117,20 +118,20 @@ it('shows the hosted MCP address and keeps local API controls in the desktop app
   }
 });
 
-it('adjusts note text live with the five slider stops and navigates back and forward', () => {
+it('adjusts note text live in one-point increments and navigates back and forward', () => {
   const root = document.body.appendChild(document.createElement('div')), view = mountSettings(root, sync, vi.fn());
   view.select('appearance');
   const slider = root.querySelector<HTMLInputElement>('input[name=previewFontSize]')!;
   expect(slider.getAttribute('aria-valuetext')).toBe('13 pt');
-  expect(slider.max).toBe('4');
-  slider.value = '3'; slider.dispatchEvent(new Event('input', { bubbles: true }));
-  expect(slider.getAttribute('aria-valuetext')).toBe('20 pt');
-  expect(previewPreferences().size).toBe(20);
-  expect(new PreferenceStore(localStorage).value.previewFontSize).toBe(20);
-  preferences.update({ previewFontSize: 22 });
-  expect(slider.getAttribute('aria-valuetext')).toBe('24 pt');
-  expect(slider.max).toBe('4');
-  expect(root.querySelectorAll('.appearance-size-stops i')).toHaveLength(5);
+  expect(slider.max).toBe('11');
+  slider.value = '1'; slider.dispatchEvent(new Event('input', { bubbles: true }));
+  expect(slider.getAttribute('aria-valuetext')).toBe('14 pt');
+  expect(previewPreferences().size).toBe(14);
+  slider.value = '8'; slider.dispatchEvent(new Event('input', { bubbles: true }));
+  expect(new PreferenceStore(localStorage).value.previewFontSize).toBe(21);
+  preferences.update({ previewFontSize: 23 });
+  expect(slider.getAttribute('aria-valuetext')).toBe('23 pt');
+  expect(root.querySelectorAll('.appearance-size-stops i')).toHaveLength(12);
   expect(root.querySelectorAll('.mode-picture[data-mode=system] .mode-window')).toHaveLength(2);
 
   root.querySelector<HTMLButtonElement>('.settings-back')!.click();
@@ -173,10 +174,9 @@ it('shows the parent of the current desktop settings page independently of navig
   view.destroy();
 });
 
-it('shows sharing tabs with mock web publishing and keeps unavailable lock operations disabled', async () => {
+it('shows sharing tabs with mock web publishing', async () => {
   platform.native = true;
   Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value() {} });
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value() { this.open = true; } });
   const anchor = document.createElement('button'); document.body.append(anchor);
   showShare(anchor, '<unsafe>', '<script>not markup</script>', vi.fn(), { title: '<unsafe>', source: '测试图片' });
   const panel = document.querySelector('.share-popover')!;
@@ -198,12 +198,7 @@ it('shows sharing tabs with mock web publishing and keeps unavailable lock opera
   expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('发送');
   tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
   expect(panel.querySelector('[aria-selected=true]')!.textContent).toBe('图片');
-  showLockNotePanel();
-  const lock = document.querySelector('.reference-lock')!;
-  expect(lock.getAttribute('aria-label')).toBe('设置密码');
-  expect(lock.querySelectorAll('input:disabled')).toHaveLength(3);
-  expect(lock.querySelector('header button:disabled')!.textContent).toBe('完成');
-  delete (HTMLElement.prototype as Partial<HTMLElement>).showPopover; delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal;
+  delete (HTMLElement.prototype as Partial<HTMLElement>).showPopover;
 });
 
 it.each([['title', '# text'], ['subheading', '### text'], ['list', '- text'], ['ordered', '1. text'], ['codeblock', '\n```\ntext\n```\n'], ['divider', '\n---\n'] ] as const)('applies %s through the existing editor transaction path', (format, expected) => {

@@ -1,7 +1,7 @@
 import { defaultKeymap, historyKeymap, isolateHistory } from '@codemirror/commands';
 import { autocompletion, closeCompletion } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
-import { EditorSelection, EditorState, Transaction, type ChangeSet } from '@codemirror/state';
+import { Compartment, EditorSelection, EditorState, Transaction, type ChangeSet } from '@codemirror/state';
 import { EditorView, ViewPlugin, drawSelection, keymap, placeholder, tooltips, type ViewUpdate } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -33,6 +33,7 @@ import { noteHeadingOffset } from './note-links';
 import type { PictureRange } from './note-picture';
 import { checklistSorting } from './editor-checklist';
 import type { createNoteRelationsFooter } from './editor-note-relations';
+import { localizeStatus, uiText } from './ui-language';
 import 'katex/dist/katex.min.css';
 import './rich-editor.css';
 
@@ -195,13 +196,17 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
     const changes = pending; pending = undefined;
     onChange(changes);
   }
+  const language = new Compartment();
+  const editorLabels = () => [
+    readOnly ? [] : placeholder(uiText('noteTitleHint')),
+    EditorView.contentAttributes.of({ 'aria-label': readOnly ? 'Markdown 预览' : uiText('editor'), spellcheck: 'false', autocapitalize: 'off' }),
+  ];
   const extensions = () => [
     noteLinkExists ? wikiLinkAvailability.of(noteLinkExists) : [],
     EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly),
     EditorView.lineWrapping, drawSelection(), selectionInColumn,
     // 对应 Pinto 的 titleHintText：空笔记里提示第一行就是标题，只在光标在里面时显示（样式见 rich-editor.css）。
-    readOnly ? [] : placeholder('标题'),
-    EditorView.contentAttributes.of({ 'aria-label': readOnly ? 'Markdown 预览' : '所见即所得编辑区', spellcheck: 'false', autocapitalize: 'off' }),
+    language.of(editorLabels()),
     editorFind,
     EditorView.scrollMargins.of(view => ({
       top: parseFloat(getComputedStyle(view.scrollDOM).scrollPaddingTop) || 0,
@@ -306,7 +311,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         const frame = [(bounds.left - (viewport?.offsetLeft ?? 0)) * scale, (bounds.top - (viewport?.offsetTop ?? 0)) * scale,
           bounds.width * scale, bounds.height * scale];
         const enabled = lineSections.map(section => section.filter(item => item.enabled));
-        const sections = enabled.map(section => section.map(({ text, symbol, destructive }) => ({ text, symbol, destructive })));
+        const sections = enabled.map(section => section.map(({ text, symbol, destructive }) => ({ text: localizeStatus(text), symbol, destructive })));
         const actions = enabled.flat();
         void invoke<number | null>('show_table_handle_menu', { menu: { frame, sections } }).then(index => {
           restoreFocus();
@@ -577,6 +582,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
       return foldAllHeadings(view, expanded, () => active && id === documentId);
     },
     requestMeasure() { view.requestMeasure(); },
+    refreshLanguage() { view.dispatch({ effects: language.reconfigure(editorLabels()) }); },
     /** 正文被外部来源从 `before` 改成了现在的内容：标出改动的行。 */
     markChanges(before: string, who?: string) { return active ? markChanges(view, before, who) : 0; },
   };

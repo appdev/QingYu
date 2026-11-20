@@ -15,6 +15,7 @@ import { setupSidebarResize } from './sidebar-resize';
 import { dismissPopupMenu, showMenu } from './popup-menu';
 import { ArrowUpDown, CalendarDays, Check, Folder as FolderIcon, FolderPlus, Inbox, Link as LinkIcon, Search, SquarePen, Trash2, X } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { formatLabel, translatedLabel, uiText } from './ui-language';
 
 const pageDepth = { folders: 0, notes: 1, note: 2 } as const;
 type MobilePage = keyof typeof pageDepth;
@@ -143,12 +144,12 @@ export function createSidebar(getBook: () => Notebook, actions: {
     footer.prepend(account);
     folderToolbar.prepend(footer);
     $('.titlebar').prepend(toggle);
-    toggle.title = toggle.ariaLabel = '返回笔记列表';
+    toggle.title = toggle.ariaLabel = translatedLabel('返回笔记列表');
     toggle.setAttribute('aria-controls', 'notes-pane');
     toggle.removeAttribute('aria-expanded'); toggle.removeAttribute('aria-pressed');
     foldersBack.hidden = false; foldersBack.innerHTML = backIcon;
     editFolders.type = 'button'; editFolders.id = 'edit-folders'; editFolders.className = 'icon-button';
-    editFolders.textContent = '编辑'; editFolders.ariaLabel = '编辑文件夹';
+    editFolders.textContent = translatedLabel('menu.edit'); editFolders.ariaLabel = translatedLabel('编辑文件夹');
     editFolders.setAttribute('aria-controls', 'folder-list');
     editFolders.onclick = async () => { if (await folderMenu.finishRename()) setFolderEditing(!editingFolders()); };
     folderToolbar.append($('#new-folder-button'), editFolders);
@@ -158,7 +159,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     searchField.append(createLucideIcon(document, Search, ''), search);
     // 和 Pinto 一样，搜索时收起顶栏，右侧的今日笔记和新建换成一个关闭按钮。
     const cancelSearch = document.createElement('button');
-    cancelSearch.type = 'button'; cancelSearch.className = 'icon-button mobile-search-cancel'; cancelSearch.ariaLabel = '取消搜索';
+    cancelSearch.type = 'button'; cancelSearch.className = 'icon-button mobile-search-cancel'; cancelSearch.ariaLabel = translatedLabel('取消搜索');
     cancelSearch.append(createLucideIcon(document, X, ''));
     cancelSearch.onclick = () => endMobileSearch(true);
     bottom.append(searchField, today, compose, cancelSearch); $('#library-sidebar').append(bottom);
@@ -174,7 +175,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (documentColumn.inert) navigate('note');
   }, async change(mutate, reload) {
     if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') { actions.error('笔记库正在处理其他操作，请完成后重试'); return; }
-    const focused = list.contains(document.activeElement);
+    const focusedNote = document.activeElement?.closest<HTMLElement>('.note-row')?.dataset.noteId;
     document.body.dataset.libraryBusy = 'true'; shell.inert = true;
     try {
       try { await mutate(); }
@@ -185,10 +186,15 @@ export function createSidebar(getBook: () => Notebook, actions: {
           if (!notes.some(note => note.id === getBook().data.activeId)) await actions.select(notes[0]?.id ?? null);
         }
         refresh();
-        if (focused) list.querySelector<HTMLElement>('[aria-selected=true]')?.focus({ preventScroll: true });
       }
     } catch (error) { actions.error(error instanceof Error ? error.message : String(error)); }
-    finally { document.body.dataset.libraryBusy = 'false'; shell.inert = false; }
+    finally {
+      document.body.dataset.libraryBusy = 'false'; shell.inert = false;
+      if (focusedNote) {
+        const row = noteRows().find(row => row.dataset.noteId === focusedNote) ?? list.querySelector<HTMLElement>('[aria-selected=true]');
+        row?.focus({ preventScroll: true });
+      }
+    }
   } });
   const folderMenu = createFolderMenu(getBook, { create: newFolder, createNote: id => newNote('', id), error: actions.error, change: changeFolder, mobile, reorder(id, direction, apply) {
     const rows = folderRows(getBook().data.folders, expanded, folderOrder);
@@ -267,12 +273,12 @@ export function createSidebar(getBook: () => Notebook, actions: {
     }
     if (innerWidth > 900) {
       const showFolders = layout.columns === 'all';
-      toggle.ariaLabel = toggle.title = showFolders ? '隐藏文件夹栏' : layout.columns === 'list' ? '显示文件夹栏' : '显示笔记列表';
+      toggle.ariaLabel = toggle.title = translatedLabel(showFolders ? '隐藏文件夹栏' : layout.columns === 'list' ? '显示文件夹栏' : '显示笔记列表');
       toggle.setAttribute('aria-expanded', String(showFolders));
       toggle.setAttribute('aria-controls', layout.columns === 'note' ? 'library-sidebar' : 'folder-pane');
       toggle.removeAttribute('aria-pressed');
     } else {
-      toggle.ariaLabel = toggle.title = '切换笔记列表';
+      toggle.ariaLabel = toggle.title = translatedLabel('切换笔记列表');
       toggle.setAttribute('aria-expanded', String(layout.columns !== 'note'));
       toggle.setAttribute('aria-controls', 'library-sidebar');
       toggle.setAttribute('aria-pressed', String(layout.columns !== 'all'));
@@ -345,7 +351,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (!editFolders) return;
     folderPane.toggleAttribute('data-editing-folders', editing);
     editFolders.replaceChildren(editing ? createLucideIcon(document, Check, '') : '编辑');
-    editFolders.ariaLabel = editing ? '完成编辑' : '编辑文件夹';
+    editFolders.ariaLabel = editing ? translatedLabel('完成编辑') : translatedLabel('编辑文件夹');
     refresh();
   }
   const routeState = (next: MobilePage) => ({ qingyuNavigation: { page: next, folderId, trash } satisfies MobileRoute });
@@ -399,7 +405,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (editingFolders()) {
       if (!id) button.disabled = true;
       else {
-        button.ariaLabel = `编辑文件夹 ${name}`;
+        button.ariaLabel = formatLabel('编辑文件夹 {name}', { name });
         button.setAttribute('aria-haspopup', 'menu');
         const more = document.createElement('span'); more.className = 'folder-edit-more'; more.ariaHidden = 'true';
         more.innerHTML = '<svg viewBox="0 0 24 24"><use href="#toolbar-ellipsis"/></svg>';
@@ -448,7 +454,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const focusedNote = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-note-id]')?.dataset.noteId;
     // 正在侧栏里改文件夹名时不重建列表，否则输入框会被换掉；改完会再刷新一次。
     const renaming = Boolean(folders.querySelector('.renaming:not([data-committing]) .rename-folder'));
-    if (!renaming) folders.replaceChildren(folderRow(null, '全部笔记', getBook().data.notes.filter(note => !note.trashed).length));
+    if (!renaming) folders.replaceChildren(folderRow(null, uiText('allNotes'), getBook().data.notes.filter(note => !note.trashed).length));
     if (!renaming) for (const { folder, depth, hasChildren } of folderRows(getBook().data.folders, expanded, folderOrder)) {
       const entry = document.createElement('div'); entry.className = 'folder-entry';
       const row = folderRow(folder.id, folder.name, visibleNotes(getBook().data, folder.id, '').length);
@@ -457,7 +463,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       if (hasChildren) {
         row.setAttribute('aria-expanded', String(expanded.has(folder.id)));
         const disclosure = document.createElement('button'); disclosure.type = 'button'; disclosure.className = 'folder-disclosure';
-        disclosure.ariaLabel = `${expanded.has(folder.id) ? '折叠' : '展开'}文件夹 ${folder.name}`; disclosure.setAttribute('aria-expanded', String(expanded.has(folder.id)));
+        disclosure.ariaLabel = formatLabel(expanded.has(folder.id) ? '折叠文件夹 {name}' : '展开文件夹 {name}', { name: folder.name }); disclosure.setAttribute('aria-expanded', String(expanded.has(folder.id)));
         disclosure.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 2 4 4-4 4"/></svg>';
         disclosure.onclick = () => { void toggleFolder(folder.id); };
         entry.append(disclosure);
@@ -465,7 +471,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       if (!mobile && !editingFolders() && !getBook().external) {
         // Pinto 的 RowMenuButton：鼠标移到行上时，计数的位置换成「⋯」，打开和右键相同的菜单。
         const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-row-more';
-        more.tabIndex = -1; more.ariaHidden = 'true'; more.title = '文件夹选项';
+        more.tabIndex = -1; more.ariaHidden = 'true'; more.title = translatedLabel('文件夹选项');
         more.innerHTML = '<svg viewBox="0 0 17 17" aria-hidden="true"><circle cx="8.5" cy="8.5" r="7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="5.1" cy="8.5" r="1.05" fill="currentColor"/><circle cx="8.5" cy="8.5" r="1.05" fill="currentColor"/><circle cx="11.9" cy="8.5" r="1.05" fill="currentColor"/></svg>';
         more.onclick = async () => {
           const bounds = more.getBoundingClientRect();
@@ -476,7 +482,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       folders.append(entry);
     }
     if (!renaming) {
-      const trashRow = folderRow(null, '废纸篓', getBook().data.notes.filter(note => note.trashed).length, true);
+      const trashRow = folderRow(null, uiText('trash'), getBook().data.notes.filter(note => note.trashed).length, true);
       trashRow.dataset.trash = 'true'; folders.append(trashRow);
     }
     const notes = notesIn(folderId);
@@ -489,9 +495,10 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const visibleIds = new Set(notes.map(note => note.id));
     selectedNotes = new Set([...selectedNotes].filter(id => visibleIds.has(id)));
     if (selectionAnchor && !visibleIds.has(selectionAnchor)) selectionAnchor = null;
-    const name = trash ? '废纸篓' : getBook().data.folders.find(folder => folder.id === folderId)?.name ?? '全部笔记';
+    const name = trash ? uiText('trash') : getBook().data.folders.find(folder => folder.id === folderId)?.name ?? uiText('allNotes');
     $('#notes-heading').textContent = name;
-    $('#notes-count').textContent = `${notes.length} 篇笔记`;
+    const locale = document.documentElement.lang || 'zh-CN';
+    $('#notes-count').textContent = uiText('notesCount').replace('{count}', notes.length.toLocaleString(locale));
     for (const cleanup of thumbnailCleanups.splice(0)) cleanup();
     list.replaceChildren();
     list.toggleAttribute('data-show-folders', !folderId);
@@ -499,7 +506,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     // 移到笔记库废纸篓的文件夹：App 移动端和网页客户端都在这里恢复（桌面 App 用的是系统废纸篓）
     if ((mobile || getBook().server) && trash && archived.length) {
       const group = document.createElement('section'), heading = document.createElement('h3');
-      heading.className = 'notes-year'; heading.textContent = '文件夹';
+      heading.className = 'notes-year'; heading.textContent = uiText('folders');
       group.append(heading);
       for (const name of archived) {
         if (search.value && !name.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())) continue;
@@ -507,7 +514,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
         row.className = 'trash-folder-row';
         title.textContent = name;
         restore.type = 'button'; restore.className = 'button quiet-button button-touch';
-        restore.textContent = '恢复文件夹'; restore.ariaLabel = `恢复文件夹 ${name}`;
+        restore.textContent = translatedLabel('恢复文件夹'); restore.ariaLabel = formatLabel('恢复文件夹 {name}', { name });
         restore.onclick = () => {
           void changeFolder(() => getBook().folderAction('restore-folder', null, name))
             .catch(reason => actions.error(reason instanceof Error ? reason.message : String(reason)));
@@ -517,8 +524,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
       }
       if (group.childElementCount > 1) list.append(group);
     }
-    const date = noteListDate(now);
-    for (const { label, notes: grouped } of groupNotes(notes, { ...order, grouped: groupsByDate(groupingKey()) }, now)) {
+    const date = noteListDate(now, locale);
+    for (const { label, notes: grouped } of groupNotes(notes, { ...order, grouped: groupsByDate(groupingKey()) }, now, locale)) {
       const group = document.createElement('section'); group.role = 'group'; group.setAttribute('aria-label', label);
       if (label) {
         const heading = document.createElement('h3'); heading.className = 'notes-year'; heading.textContent = label;
@@ -583,7 +590,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     }
     if (!notes.length) {
       const empty = document.createElement('p'); empty.className = 'notes-empty';
-      empty.textContent = search.value.trim() ? '未找到匹配的笔记' : trash ? '废纸篓为空' : '此文件夹还没有笔记'; list.append(empty);
+      empty.textContent = uiText(search.value.trim() ? 'noMatch' : trash ? 'emptyTrash' : 'noNotes'); list.append(empty);
     }
     if (focusedNote) list.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(focusedNote)}"]`)?.focus({ preventScroll: true });
     if (mobile) { list.scrollTop = listTop; folders.scrollTop = foldersTop; }
@@ -629,7 +636,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       if (await selectFolder(created)) folderMenu.rename(created);
       return;
     }
-    $('#folder-dialog-title').textContent = parentId === 'default' ? '新建文件夹' : '新建子文件夹';
+    $('#folder-dialog-title').textContent = parentId === 'default' ? translatedLabel('app.newMarkdownFolder') : translatedLabel('新建子文件夹');
     folderError.textContent = ''; folderName.value = ''; createFolder.disabled = true; dialog.showModal(); folderName.focus();
   }
   $('#folder-form').onsubmit = async event => {
@@ -639,7 +646,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       await changeFolder(async () => { await getBook().createFolder(folderName.value, newFolderParent); });
       dialog.close();
     } catch (error) {
-      folderError.textContent = error instanceof DOMException ? '保存失败，文件夹尚未创建' : error instanceof Error ? error.message : '文件夹创建失败';
+      folderError.textContent = error instanceof DOMException ? translatedLabel('保存失败，文件夹尚未创建') : error instanceof Error ? error.message : '文件夹创建失败';
       folderName.focus();
     }
   };

@@ -1,3 +1,4 @@
+import { formatLabel, markupLabel, translatedLabel } from './ui-language';
 import { isolateHistory } from '@codemirror/commands';
 import { syntaxTree } from '@codemirror/language';
 import { Prec, type EditorState } from '@codemirror/state';
@@ -8,8 +9,6 @@ import { firstDateYear, lastDateYear, lineNoteDates, noteDateLabel, type NoteDat
 const literalNodes = new Set(['InlineCode', 'FencedCode', 'CodeBlock', 'Link', 'Autolink', 'URL', 'WikiLink',
   'WikiCard', 'Image', 'Table', 'Frontmatter', 'HTMLBlock', 'HTMLTag', 'Comment', 'InlineMath', 'BlockMath']);
 const civilKey = (date: Date) => date.toISOString().slice(0, 10);
-const monthLabel = new Intl.DateTimeFormat('zh-CN', { timeZone: 'UTC', year: 'numeric', month: 'long' });
-const fullDateLabel = new Intl.DateTimeFormat('zh-CN', { timeZone: 'UTC', dateStyle: 'full' });
 const firstDay = Date.UTC(firstDateYear, 0, 1), lastDay = Date.UTC(lastDateYear, 11, 31);
 
 function titleLine(state: EditorState) {
@@ -38,8 +37,11 @@ function lineDates(state: EditorState, number: number, title: number) {
 
 function showDatePicker(anchor: HTMLElement, date: Date, choose: (date: Date) => void, restore: () => void, closed: () => void) {
   const doc = anchor.ownerDocument, panel = doc.createElement('div');
-  panel.className = 'note-date-picker'; panel.popover = 'auto'; panel.role = 'dialog'; panel.ariaLabel = '选择日期';
-  panel.innerHTML = '<header><button type="button" aria-label="上个月">‹</button><strong aria-live="polite"></strong><button type="button" aria-label="下个月">›</button></header><div class="note-date-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="note-date-days" role="group" aria-label="日期"></div>';
+  const locale = doc.documentElement.lang || undefined;
+  const monthLabel = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', year: 'numeric', month: 'long' });
+  const fullDateLabel = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', dateStyle: 'full' });
+  panel.className = 'note-date-picker'; panel.popover = 'auto'; panel.role = 'dialog'; panel.ariaLabel = translatedLabel('选择日期');
+  panel.innerHTML = `<header><button type="button" aria-label="${markupLabel('上个月')}">‹</button><strong aria-live="polite"></strong><button type="button" aria-label="${markupLabel('下个月')}">›</button></header><div class="note-date-week" aria-hidden="true"><span>${markupLabel('一')}</span><span>${markupLabel('二')}</span><span>${markupLabel('三')}</span><span>${markupLabel('四')}</span><span>${markupLabel('五')}</span><span>${markupLabel('六')}</span><span>${markupLabel('日')}</span></div><div class="note-date-days" role="group" aria-label="${markupLabel('日期')}"></div>`;
   const [previous, next] = panel.querySelectorAll<HTMLButtonElement>('header button');
   const heading = panel.querySelector('strong')!, days = panel.querySelector('.note-date-days')!;
   let cursor = date;
@@ -121,7 +123,7 @@ class DateChip extends WidgetType {
     chip.className = 'note-date-chip'; chip.dataset.tone = this.tone;
     chip.textContent = this.label; chip.title = civilKey(this.match.date);
     if (chip instanceof HTMLButtonElement) {
-      chip.type = 'button'; chip.ariaHasPopup = 'dialog'; chip.ariaLabel = `${this.label}，${chip.title}，更改日期`;
+      chip.type = 'button'; chip.ariaHasPopup = 'dialog'; chip.ariaLabel = formatLabel('{date}，{type}，更改日期', { date: this.label, type: chip.title });
       chip.onmousedown = event => { if (event.button === 0) event.preventDefault(); };
       chip.onclick = () => { view.plugin(dates)?.openPicker(chip, this.match); };
     }

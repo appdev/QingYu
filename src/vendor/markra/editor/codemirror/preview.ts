@@ -23,6 +23,7 @@ import {
   type MarkraSyntaxNode,
 } from "./renderers.ts";
 import {
+  isFootnoteDefinitionNode,
   readMarkdownLinkDestination,
   readMarkdownLinkReferences,
   resolveAutolinkTarget,
@@ -645,6 +646,7 @@ function buildDecorations(
     }
     const standaloneUrl =
       node.name === "URL" &&
+      !isFootnoteDefinitionNode(state, node.node) &&
       parentName !== "Autolink" &&
       parentName !== "Image" &&
       parentName !== "Link";

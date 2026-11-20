@@ -7,14 +7,15 @@ import { loadRemoteBytes, sha256Hex, type Storage } from './vendor/mdsync/core';
 export async function downloadAsset(
   storage: Storage, hash: string, size: number,
   load: typeof loadRemoteBytes = loadRemoteBytes,
+  resolveKey = openKey,
 ) {
-  const key = await openKey(storage);
+  const key = await resolveKey(storage);
   const bytes = await load({ storage, key }, hash, size);
   if (!bytes || bytes.length !== size || await sha256Hex(bytes) !== hash) throw new Error('附件内容校验失败');
   return bytes;
 }
 
-export function createAssetFetcher(book: Notebook, connect: (target: string) => Promise<Storage>) {
+export function createAssetFetcher(book: Notebook, connect: (target: string) => Promise<Storage>, resolveKey = openKey) {
   const pending = new Map<string, Promise<string | undefined>>();
   const waiting: (() => void)[] = [];
   let active = 0;
@@ -44,7 +45,7 @@ export function createAssetFetcher(book: Notebook, connect: (target: string) => 
           if (!base || entry.hash !== base.hash || entry.size !== base.size || entry.mtime !== base.mtime) {
             throw new Error('附件占位与同步基线不匹配');
           }
-          const bytes = await downloadAsset(await connect(target), entry.hash, entry.size);
+          const bytes = await downloadAsset(await connect(target), entry.hash, entry.size, loadRemoteBytes, resolveKey);
           await book.materializeAsset(root, path, entry.hash, bytes);
           return entry.hash;
         })().then(resolve, reject);

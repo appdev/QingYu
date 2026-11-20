@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createNoteMenu, noteInformation } from '../src/note-menu';
 import { Notebook } from '../src/notebook';
@@ -23,6 +24,7 @@ it.each([
   const menu = createNoteMenu(() => book, { save: async () => true, change: async run => { await run(); }, error: vi.fn() });
   await menu('other', 200, 100);
   expect(document.querySelector('[aria-label="导出"]')).toBeNull();
+  expect(document.querySelector('[aria-label="锁定笔记…"]')).toBeNull();
   const item = [...document.querySelectorAll<HTMLButtonElement>('.note-context-menu [role=menuitem]')]
     .find(button => button.ariaLabel?.startsWith('在') && button.ariaLabel.endsWith('中显示'));
   expect(item?.ariaLabel ?? null).toBe(label);
@@ -64,6 +66,19 @@ it.each([false, true])('shows the toolbar actions with icons and a divider befor
     await menu(book.current!.id, 200, 100);
     expect(document.querySelector('.note-context-menu [aria-label="版本历史…"]')).not.toBeNull();
   }
+});
+
+it('groups pin, duplicate and share in the desktop note row menu', async () => {
+  const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# Note');
+  const menu = createNoteMenu(() => book, {
+    save: async () => true, change: async run => { await run(); }, error: vi.fn(),
+    openNoteWindow: async () => {}, share: vi.fn(),
+  });
+  await menu(book.current.id, 200, 100);
+  const items = [...document.querySelectorAll<HTMLElement>('.note-context-menu[role="menu"] > :is(button, hr)')];
+  expect(items.slice(0, 6).map(item => item.ariaLabel ?? item.tagName)).toEqual([
+    '在新窗口打开笔记', 'HR', '置顶', '复制笔记', '分享…', 'HR',
+  ]);
 });
 
 it('moves from a desktop note row using the sidebar folder hierarchy and order', async () => {
@@ -119,7 +134,7 @@ it.each([false, true])('opens a mobile folder sheet with working cancel and move
     const open = async () => {
       await menu(note.id, 0, 0, trashed ? 'move' : undefined);
       if (!trashed) {
-        expect(document.querySelector('.context-sheet [aria-label$="中显示"], .context-sheet [aria-label="导出"]')).toBeNull();
+        expect(document.querySelector('.context-sheet [aria-label$="中显示"], .context-sheet [aria-label="导出"], .context-sheet [aria-label="锁定笔记…"]')).toBeNull();
         document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="移动"]')!.click();
       }
       return vi.waitFor(() => {

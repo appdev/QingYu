@@ -1,3 +1,4 @@
+import { markupLabel } from './ui-language';
 import {
   Bold, Highlighter, IndentDecrease, IndentIncrease, Italic, List, ListMinus, ListOrdered,
   MessageSquareText, Minus, Strikethrough, TextQuote, Underline, X,
@@ -32,7 +33,7 @@ export function openEditorFormatPanel(
   dialog.className = 'format-panel';
   dialog.id = 'editor-format-panel';
   dialog.setAttribute('aria-labelledby', 'editor-format-panel-title');
-  dialog.innerHTML = '<header><h2 id="editor-format-panel-title">格式</h2><button type="button" aria-label="关闭格式面板"></button></header><div class="format-panel-styles" role="group" aria-label="段落样式"></div>';
+  dialog.innerHTML = `<header><h2 id="editor-format-panel-title">${markupLabel('格式')}</h2><button type="button" aria-label="${markupLabel('关闭格式面板')}"></button></header><div class="format-panel-styles" role="group" aria-label="${markupLabel('段落样式')}"></div>`;
   const closeButton = dialog.querySelector<HTMLButtonElement>('header button')!;
   closeButton.append(createLucideIcon(doc, X, 'format-panel-icon'));
   const controls = new Map<PanelFormat, HTMLButtonElement>();

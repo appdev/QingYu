@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { changeNoteTextSize, defaults, fontCSS, isDark, noteTextSizeShortcut, parsePreferences, preferences, preferencesKey, PreferenceStore, previewPreferences, settingsShortcut } from '../src/preferences';
+import { changeNoteTextSize, defaults, fontCSS, isDark, noteTextSizeShortcut, parsePreferences, preferences, preferencesKey, PreferenceStore, previewPreferences, settingsShortcut, systemLanguage } from '../src/preferences';
 import { mountSettings } from '../src/settings-view';
 import { openSettings } from '../src/open-settings';
 import { libraryKey } from '../src/notebook';
 import type { SyncClient, SyncStatus } from '../src/sync-session';
 import { s3Defaults } from '../src/sync-store';
+import { workflowText } from '../src/ui-language';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
 beforeEach(() => { document.querySelector('meta[name="qingyu-web-auth"]')?.remove(); localStorage.clear(); preferences.update({}, true); document.body.replaceChildren(); });
@@ -45,6 +47,13 @@ it('web client settings keep sync settings on the deployment and never load brow
     sync.click();
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/web/sync', expect.objectContaining({ method: 'POST', body: '{}' })));
     expect(fetch).toHaveBeenCalledWith('/api/web/sync/profile', expect.objectContaining({ method: 'PUT' }));
+    preferences.update({ language: 'en' });
+    expect(root.querySelector('#settings-tab-account')?.textContent).toBe('Profile');
+    expect(root.querySelector('.settings-sync-now')?.textContent).toBe('Sync now');
+    expect(root.querySelector('[name=endpoint]')?.getAttribute('type')).toBe('url');
+    expect(root.querySelector<HTMLInputElement>('[name=endpoint]')?.value).toBe('https://s3.example.test');
+    view.select('account');
+    expect(root.querySelector('.client-sign-in-entry .settings-label > span')?.textContent).toBe('Sign in to QingYu');
   } finally { view.destroy(); marker.remove(); vi.unstubAllGlobals(); }
 });
 it('shows saved browser note sizes and omits settings that require a native host', async () => {
@@ -67,6 +76,48 @@ it('shows saved browser note sizes and omits settings that require a native host
 });
 
 describe('preferences persistence', () => {
+  it('changes the Web UI language and stores it separately from notes', () => {
+    const root = document.body.appendChild(document.createElement('div'));
+    const library = JSON.stringify({ notes: [{ source: '# 中文\n\n**Markdown stays intact.**' }] });
+    localStorage.setItem(libraryKey, library);
+    const view = mountSettings(root, undefined, vi.fn());
+    try {
+      view.select('general');
+      const control = root.querySelector<HTMLSelectElement>('[name=language]')!;
+      expect(control.value).toBe('system');
+      expect(control.options).toHaveLength(12);
+      control.value = 'en';
+      control.dispatchEvent(new Event('change'));
+      expect(document.documentElement.lang).toBe('en');
+      expect(root.querySelector('.settings-desktop-title')?.textContent).toBe('General');
+      expect(control.closest('.settings-row')?.querySelector('label > span')?.textContent).toBe('Language');
+      expect(new PreferenceStore(localStorage).value.language).toBe('en');
+      expect(localStorage.getItem(libraryKey)).toBe(library);
+      expect(() => parsePreferences({ version: 1, language: 'unknown' })).toThrow();
+    } finally { view.destroy(); }
+  });
+
+  it('follows preferred locales until the user chooses a language', () => {
+    expect(systemLanguage(['ar', 'zh-HK'])).toBe('zh-TW');
+    expect(systemLanguage(['zh-Hans-HK'])).toBe('zh-CN');
+    expect(systemLanguage(['pt-PT'])).toBe('pt-BR');
+    expect(systemLanguage(['ar', 'invalid locale'])).toBe('en');
+    const languages = Object.getOwnPropertyDescriptor(navigator, 'languages')!;
+    try {
+      Object.defineProperty(navigator, 'languages', { configurable: true, value: ['ja-JP', 'en-US'] });
+      window.dispatchEvent(new Event('languagechange'));
+      expect(document.documentElement.lang).toBe('ja');
+      preferences.update({ language: 'de' });
+      window.dispatchEvent(new Event('languagechange'));
+      expect(document.documentElement.lang).toBe('de');
+      preferences.update({ language: 'system' });
+      expect(document.documentElement.lang).toBe('ja');
+    } finally {
+      Object.defineProperty(navigator, 'languages', languages);
+      preferences.update({}, true);
+    }
+  });
+
   it('loads folder choices and persists the daily options', async () => {
     const root = document.createElement('div'); document.body.append(root);
     const client: SyncClient = { load: vi.fn().mockResolvedValue({}), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), subscribe: () => () => {} };
@@ -75,7 +126,7 @@ describe('preferences persistence', () => {
       view.select('today');
       const folder = root.querySelector<HTMLSelectElement>('[name=todayFolder]')!;
       const title = root.querySelector<HTMLSelectElement>('[name=todayTitle]')!;
-      await vi.waitFor(() => expect([...folder.options].map(item => item.text)).toEqual(['每日笔记', '项目']));
+      await vi.waitFor(() => expect([...folder.options].map(item => item.text)).toEqual([workflowText('每日笔记'), '项目']));
       expect(root.querySelector('[name=todayTemplate]')).toBeNull();
       for (const [element, value] of [[folder, 'project'], [title, 'iso']] as const) {
         element.value = value; element.dispatchEvent(new Event('change'));
@@ -137,12 +188,12 @@ it('keeps inline settings modal, contains editor shortcuts, and preserves a sync
   window.dispatchEvent(new PopStateEvent('popstate')); expect(document.querySelector('.settings-inline')).toBeNull(); expect(shell.inert).toBe(true);
   back.mockRestore(); delete (HTMLDialogElement.prototype as Partial<HTMLDialogElement>).showModal;
 });
-it('moves legacy desktop note sizes to Pinto stops and steps only note text', () => {
-  expect(parsePreferences({ previewFontSize: 16, previewFont: 'Menlo' })).toMatchObject({ previewFontSize: 17, previewFont: 'Menlo' });
+it('clamps legacy desktop note sizes and changes note text by one point', () => {
+  expect(parsePreferences({ previewFontSize: 16, previewFont: 'Menlo' })).toMatchObject({ previewFontSize: 16, previewFont: 'Menlo' });
   expect(parsePreferences({ previewFontSize: 28 }).previewFontSize).toBe(24);
   preferences.update({ previewFontSize: 16 });
-  changeNoteTextSize('bigger'); expect(previewPreferences().size).toBe(20);
-  changeNoteTextSize('smaller'); expect(previewPreferences().size).toBe(17);
+  changeNoteTextSize('bigger'); expect(previewPreferences().size).toBe(17);
+  changeNoteTextSize('smaller'); expect(previewPreferences().size).toBe(16);
   changeNoteTextSize('actual'); expect(previewPreferences().size).toBe(13);
   changeNoteTextSize('smaller'); expect(previewPreferences().size).toBe(13);
 });
@@ -199,7 +250,7 @@ it('switches tabs with arrows and saves controls without a settings footer', asy
   publish({ busy: true, message: '正在连接', error: false }); expect(root.querySelector<HTMLInputElement>('[name="bucket"]')!.disabled).toBe(true);
   publish({ busy: false, message: '连接失败', error: true }); expect(root.querySelector<HTMLInputElement>('[name="bucket"]')!.disabled).toBe(false);
   expect(root.querySelector('.settings-footer, .settings-reset')).toBeNull();
-  expect(root.querySelectorAll('#settings-panel-general .settings-select-icon')).toHaveLength(2);
+  expect(root.querySelectorAll('#settings-panel-general .settings-select-icon')).toHaveLength(3);
   view.destroy(); expect(root.children).toHaveLength(0);
 });
 
@@ -218,7 +269,7 @@ it('autosaves S3 fields, removes the save button, and displays redacted sync err
   await vi.waitFor(() => expect(status.textContent).toBe('认证失败 [已隐藏] [已隐藏]'));
   expect(status.dataset.error).toBe('true'); expect(button.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); expect(button.disabled).toBe(false);
   secret.value = ''; secret.dispatchEvent(new Event('input', { bubbles: true })); button.click();
-  await vi.waitFor(() => expect(status.textContent).toBe('请填写Secret Access Key')); expect(run).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => expect(status.textContent).toBe('请填写访问密钥')); expect(run).toHaveBeenCalledTimes(1);
   save.mockRejectedValueOnce(new Error('系统凭据存储已锁定')); secret.value = 'retry-secret'; secret.dispatchEvent(new Event('input', { bubbles: true }));
   await vi.waitFor(() => expect(status.textContent).toContain('凭据存储已锁定'));
   view.destroy();

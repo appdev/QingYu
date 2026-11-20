@@ -96,7 +96,7 @@ pub fn local_network_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("local-network")
         .setup(|app, api| {
             app.manage(LocalNetwork(api.register_android_plugin(
-                "app.miaoyan.editor.prototype",
+                "com.apkdv.qingyu.editor",
                 "LocalNetworkPlugin",
             )?));
             Ok(())

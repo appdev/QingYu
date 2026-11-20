@@ -7,6 +7,7 @@ import { createStore, normalizeSettings, type S3Settings } from '../src/sync-sto
 import * as core from '../src/vendor/mdsync/core';
 import { mockAssetDisk } from './fixtures/sync-assets';
 import type { Asset } from '../src/sync-files';
+import { manageSyncPassword, openProtectedKey, type KeyCache } from '../src/sync-password';
 
 vi.hoisted(() => {
   Object.assign(globalThis, { window: globalThis });
@@ -23,6 +24,47 @@ function device(library = fixture) {
   const book = new Notebook(storage, '');
   return { ...mockAssetDisk(book), storage, setFail: (next: boolean) => { fail = next; } };
 }
+
+it.skipIf(!process.env.MIAOYAN_S3_CONFIG)('syncs v2 through a fresh S3 prefix over HTTP', async () => {
+  const settings = JSON.parse(await readFile(process.env.MIAOYAN_S3_CONFIG!, 'utf8')) as S3Settings;
+  const config = normalizeSettings({ ...settings, prefix: `${settings.prefix}/test-v2-${crypto.randomUUID()}` });
+  core.setRequestHandler(async request => {
+    const response = await fetch(request.url, { method: request.method, headers: request.headers, body: request.body,
+      signal: AbortSignal.timeout(10_000), redirect: 'error' });
+    const arrayBuffer = await response.arrayBuffer();
+    return { status: response.status, headers: Object.fromEntries(response.headers), arrayBuffer, text: new TextDecoder().decode(arrayBuffer), json: {} };
+  });
+  function deviceCache(): KeyCache {
+    const keys = new Map<string, string>();
+    return async (target, key) => { if (key) keys.set(target, key); return keys.get(target) ?? null; };
+  }
+  const cacheA = deviceCache(), cacheB = deviceCache(), cacheC = deviceCache();
+  const a = device(), b = device({ ...fixture, activeId: 'second', notes: [fixture.notes[1]!] }), store = createStore(config);
+  const sync = (book: Notebook, cache: KeyCache) => syncNotebook(book, config, undefined, undefined, remote => openProtectedKey(remote, cache));
+  const password = 'initial synthetic password', replacement = 'replacement synthetic password';
+  try {
+    await expect(sync(a.book, cacheA)).rejects.toThrow('需要输入同步密码');
+    await manageSyncPassword(config, cacheA, { ...await manageSyncPassword(config, cacheA), password });
+    await a.book.save('# 仅由 A 上传的笔记');
+    await sync(a.book, cacheA);
+    await expect(sync(b.book, cacheB)).rejects.toThrow('需要输入同步密码');
+    const unlock = await manageSyncPassword(config, cacheB);
+    await expect(manageSyncPassword(config, cacheB, { ...unlock, password: 'invalid synthetic password' })).rejects.toThrow('密码错误');
+    await manageSyncPassword(config, cacheB, { ...unlock, password });
+    await sync(b.book, cacheB);
+    expect(b.book.data.notes.find(note => note.id === 'first')?.source).toBe(a.book.current.source);
+    const reset = await manageSyncPassword(config, cacheA);
+    expect(reset.etag).toBeTruthy();
+    await manageSyncPassword(config, cacheA, { ...reset, password: replacement });
+    await expect(manageSyncPassword(config, cacheB, { ...reset, password })).rejects.toThrow('状态已变更');
+    await sync(b.book, cacheB);
+    const third = await manageSyncPassword(config, cacheC);
+    await expect(manageSyncPassword(config, cacheC, { ...third, password })).rejects.toThrow('密码错误');
+    await manageSyncPassword(config, cacheC, { ...third, password: replacement });
+  } finally {
+    for (const key of await store.list('')) await store.delete(key);
+  }
+}, 30_000);
 
 describe.skipIf(!process.env.MIAOYAN_S3_CONFIG)('real S3 integration (explicit private config only)', () => {
   it('validates atomic writes, full libraries, conflicts, concurrent writers, durable retries and native transport preparation', async () => {

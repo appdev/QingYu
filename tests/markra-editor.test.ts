@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { EditorState, Text } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { foldedRanges, forceParsing } from '@codemirror/language';
@@ -586,6 +587,8 @@ it.each([null, 1, 'unavailable'] as const)('uses the native iOS grip menu and ha
   const source = '| 功能 |\n| --- |\n| 清单 |';
   const root = document.body.appendChild(document.createElement('div'));
   const mobile = document.documentElement.hasAttribute('data-mobile');
+  const language = document.documentElement.lang;
+  document.documentElement.lang = 'en';
   document.documentElement.setAttribute('data-mobile', '');
   const native = vi.fn(async () => {
     if (result === 'unavailable') throw new Error('Unsupported iOS');
@@ -604,8 +607,8 @@ it.each([null, 1, 'unavailable'] as const)('uses the native iOS grip menu and ha
     grip.click();
     expect(native).toHaveBeenCalledWith('show_table_handle_menu', { menu: {
       frame: [40, 60, 44, 44], sections: [[
-        { text: '在左侧插入列', symbol: 'arrow.left', destructive: false }, { text: '在右侧插入列', symbol: 'arrow.right', destructive: false },
-      ], [], [{ text: '删除表格', symbol: 'trash', destructive: true }]],
+        { text: 'Insert Column Left', symbol: 'arrow.left', destructive: false }, { text: 'Add column to the right', symbol: 'arrow.right', destructive: false },
+      ], [], [{ text: 'Delete table', symbol: 'trash', destructive: true }]],
     } }, undefined);
     if (result === 'unavailable') {
       const menu = await vi.waitFor(() => {
@@ -620,6 +623,7 @@ it.each([null, 1, 'unavailable'] as const)('uses the native iOS grip menu and ha
     if (result !== 1) expect(document.activeElement).toBe(cell);
   } finally {
     view.destroy(); root.remove(); vi.unstubAllGlobals(); document.documentElement.toggleAttribute('data-mobile', mobile);
+    document.documentElement.lang = language;
   }
 });
 
@@ -1462,6 +1466,26 @@ it('refreshes missing-note underlines without replacing a table or moving its ca
   }
 });
 
+it('keeps footnote text editable without treating it as a reference link', () => {
+  const footnote = '建议七点前到，九点以后游客就多了。';
+  const url = 'https://example.com/reference';
+  const source = `正文[^1]，以及 [资料][ref]。\n\n[^1]: ${footnote}\n\n[ref]: ${url}`;
+  const root = document.body.appendChild(document.createElement('div'));
+  const { view, activate } = createRichEditor(root, () => {});
+  try {
+    activate(source, 'footnote-definition');
+    const definition = root.querySelector('.cm-markra-footnote-definition')!;
+    expect(definition.textContent).toBe(`1${footnote}`);
+    expect(definition.querySelector('a, .cm-markra-link-icon')).toBeNull();
+    expect(root.querySelector('.cm-markra-footnote-reference button')?.textContent).toBe('1');
+    expect(root.querySelector(`a[href="${url}"]`)?.textContent).toBe('资料');
+
+    view.focus();
+    view.dispatch({ selection: { anchor: source.indexOf(footnote) + 2 } });
+    expect(runMarkraCommand(view, 'link.open')).toBe(false);
+  } finally { view.destroy(); root.remove(); }
+});
+
 it('opens rendered prose links on release and reveals their Markdown only in the address', () => {
   const url = 'https://example.com/long-address';
   const label = '设计文档说明';
@@ -1866,6 +1890,29 @@ it('shows the language once while idle and reveals both editable fences only in 
     expect(labels()).toEqual(['ts', 'sql']);
     expect(view.state.doc.toString()).toBe(source.replace('```js', '```ts'));
   } finally { view.destroy(); root.remove(); }
+});
+
+it('places the caret after the checkbox when accepting /task on an empty line', () => {
+  const source = '# 标题\n\n正文\n\n';
+  const root = document.body.appendChild(document.createElement('div'));
+  const host = document.body.appendChild(document.createElement('div'));
+  const { view, activate } = createRichEditor(root, () => {}, { suggestionsHost: host });
+  try {
+    activate(source, 'slash-task');
+    view.focus();
+    view.dispatch({
+      changes: { from: source.length, insert: '/task' },
+      selection: { anchor: source.length + '/task'.length },
+      userEvent: 'input.type',
+    });
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(view.state.doc.toString()).toBe(source + '- [ ] ');
+    const task = root.querySelector('.cm-markra-task-checkbox');
+    expect(task?.closest('.cm-line')?.getAttribute('data-markra-list-source')).toBe('hidden');
+    expect(view.state.selection.main.head).toBe(view.state.doc.length);
+    view.dispatch(view.state.replaceSelection('第一项'));
+    expect(view.state.doc.toString()).toBe(source + '- [ ] 第一项');
+  } finally { view.destroy(); root.remove(); host.remove(); }
 });
 
 it('turns typed checkbox shorthand into a task only in editable prose', () => {

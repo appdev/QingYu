@@ -1,3 +1,4 @@
+import { translatedLabel } from '../../../../ui-language';
 import { isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
 import {
@@ -153,7 +154,7 @@ class CalloutHeaderWidget extends WidgetType {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "markra-callout-type-button";
-      button.ariaLabel = "更改标注类型";
+      button.ariaLabel = translatedLabel('更改标注类型');
       button.setAttribute("aria-haspopup", "menu");
       button.append(icon);
       button.onmousedown = event => event.preventDefault();

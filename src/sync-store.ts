@@ -17,7 +17,7 @@ export function validateS3Options(settings: S3Connection) {
 export function syncMode(settings: S3Settings): SyncMode {
   return settings.mode ?? ([settings.endpoint, settings.bucket, settings.accessKeyId, settings.secretAccessKey].some(value => value?.trim()) ? 's3' : 'cloud');
 }
-export function normalizeSettings(settings: S3Connection): core.Config {
+function normalizeTarget(settings: S3Connection): core.Config {
   validateS3Options(settings);
   const endpoint = new URL(settings.endpoint.trim());
   if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) throw new Error('S3 地址需要使用 HTTPS');
@@ -25,9 +25,16 @@ export function normalizeSettings(settings: S3Connection): core.Config {
   const bucket = settings.bucket.trim(), prefix = settings.prefix.trim().replace(/^\/+|\/+$/g, '');
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new Error('Bucket 名称无效');
   if (!prefix || prefix.split('/').some(part => !/^[A-Za-z0-9._-]+$/.test(part) || part === '.' || part === '..')) throw new Error('请输入独立同步前缀，仅支持字母、数字、点、下划线和短横线');
-  if (!settings.accessKeyId.trim() || !settings.secretAccessKey) throw new Error('请填写 S3 访问凭证');
   return { ...core.defaultS3Config(), ...settings, endpoint: endpoint.href.replace(/\/+$/, ''), bucket, prefix, region: settings.region.trim() || 'us-east-1',
     accessKeyId: settings.accessKeyId.trim(), concurrency: settings.concurrency ?? 2, forcePathStyle: settings.forcePathStyle ?? true };
+}
+export function normalizeSettings(settings: S3Connection): core.Config {
+  const config = normalizeTarget(settings);
+  if (!config.accessKeyId || !config.secretAccessKey) throw new Error('请填写 S3 访问凭证');
+  return config;
+}
+export function syncTargetIdentity(settings: S3Connection) {
+  return core.createS3Adapter(normalizeTarget(settings)).identity();
 }
 export async function testS3Connection(settings: S3Connection) {
   const config = normalizeSettings(settings), sign = core.createS3Signer(config);
@@ -57,15 +64,16 @@ export async function testS3Connection(settings: S3Connection) {
 }
 export function createStore(config: core.Config): core.Storage {
   const store = core.createS3Adapter(config), sign = core.createS3Signer(config);
-  store.putManifest = async (body, etag) => {
-    const headers: Record<string, string> = etag === null ? { 'If-None-Match': '*' } : { 'If-Match': etag };
-    const signed = await sign({ method: 'PUT', key: `${config.prefix}/${core.REMOTE_MANIFEST_KEY}`, headers, body });
-    const reply = await core.requestUrl({ ...signed, method: 'PUT', body: body.slice().buffer as ArrayBuffer });
-    if (reply.status === 409 || reply.status === 412) return false;
-    if (reply.status < 200 || reply.status >= 300) throw new Error(`S3 条件写入失败（HTTP ${reply.status}）`);
-    return true;
-  };
+  store.putManifest = (body, etag) => putSyncObject(config, core.REMOTE_MANIFEST_KEY, body, etag, sign);
   return store;
+}
+export async function putSyncObject(config: core.Config, path: string, body: Uint8Array, etag: string | null, sign = core.createS3Signer(config)) {
+  const headers: Record<string, string> = etag === null ? { 'If-None-Match': '*' } : { 'If-Match': etag };
+  const signed = await sign({ method: 'PUT', key: `${config.prefix}/${path}`, headers, body });
+  const reply = await core.requestUrl({ ...signed, method: 'PUT', body: body.slice().buffer as ArrayBuffer });
+  if (reply.status === 409 || reply.status === 412) return false;
+  if (reply.status < 200 || reply.status >= 300) throw new Error(`S3 条件写入失败（HTTP ${reply.status}）`);
+  return true;
 }
 export async function openKey(store: core.Storage) {
   const path = 'miaoyan-key.json';
@@ -79,6 +87,11 @@ export async function openKey(store: core.Storage) {
   }
   if (!bytes) throw new Error('无法读取同步密钥');
   const value = JSON.parse(new TextDecoder().decode(bytes));
+  if (value?.version === 2 && value.protection === 'password') throw new Error('该同步库受 App 同步密码保护，Web 部署端请使用独立同步前缀');
+  return importBucketKey(value);
+}
+
+export async function importBucketKey(value: { version?: number; protection?: string; key?: unknown } | null) {
   if (value?.version !== 1 || value.protection !== 'bucket-permissions' || typeof value.key !== 'string') throw new Error('远端同步密钥格式无效');
   const raw = Uint8Array.from(atob(value.key), char => char.charCodeAt(0));
   if (raw.length !== 32) throw new Error('远端同步密钥格式无效');

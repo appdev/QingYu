@@ -17,7 +17,8 @@ import { createSidebar } from './sidebar';
 import { changeNoteTextSize, noteTextSizeShortcut, preferences, settingsShortcut, native, mobile } from './preferences';
 import { connectPreferences, hostSync } from './settings-bridge';
 import { connectEditorHistoryMenu, connectMobileEditorHistory, refreshEditorHistory } from './editor-history-menu';
-import { accountSyncNotices, createSyncSession } from './sync-session';
+import { accountSyncNotices, createSyncSession, type SyncStatus } from './sync-session';
+import { syncPasswordRequired } from './sync-password';
 import { openSettings } from './open-settings';
 import { sidebarAccount } from './client-account';
 import { dailyNoteChoices } from './daily-note';
@@ -41,7 +42,10 @@ import { createNoteRelationsFooter } from './editor-note-relations';
 import { hostMenuBar } from './menu-bar-host';
 import { isLocalAsset } from './server-assets';
 import type { PictureRange, PictureRequest } from './note-picture';
+import { translatedLabel, bindLabels, localizeStatus, localizeSyncError, uiText, workflowText } from './ui-language';
 
+const localizeLabels = bindLabels(document);
+localizeLabels();
 await requireWebSession();
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
@@ -49,14 +53,14 @@ const workspace = $('#workspace');
 // 对照 Pinto ShareLinkChrome：已分享的笔记在正文右上角显示「已分享」，点按复制链接。
 const shareMarker = document.createElement('button');
 shareMarker.type = 'button'; shareMarker.id = 'note-share-marker'; shareMarker.hidden = true;
-shareMarker.title = '点按复制此笔记的分享链接。'; shareMarker.ariaLabel = '已分享，复制链接';
+shareMarker.title = translatedLabel('点按复制此笔记的分享链接。'); shareMarker.ariaLabel = translatedLabel('已分享，复制链接');
 shareMarker.append(createLucideIcon(document, LinkIcon, ''), '已分享');
 shareMarker.onclick = () => { const url = notebook.current?.share?.url; if (url) void copyShareLink(url); };
 $('.titlebar').append(shareMarker);
 document.documentElement.dataset.platform = native && /Mac/.test(navigator.platform) ? 'macos' : 'other';
 const saveStatus = $('#save-status');
 function setStatus(message: string, error = false) {
-  saveStatus.textContent = message;
+  saveStatus.textContent = localizeStatus(message);
   document.body.dataset.statusError = String(error);
 }
 const windowLabel = native ? getCurrentWindow().label : 'main';
@@ -67,7 +71,9 @@ const noteWindow = documentWindow && (windowLabel.startsWith('document-note-') |
 if (noteWindow) {
   $('#app-shell').dataset.noteWindow = '';
   $('#library-sidebar').hidden = $('#sidebar-button').hidden = $('#new-empty-note').hidden = true;
-  $('#empty-note p').textContent = '找不到这篇笔记';
+  const message = $('#empty-note p');
+  message.dataset.i18n = 'missingNote';
+  message.textContent = uiText('missingNote');
 }
 const canAddAttachments = native || serverLibrary;
 const notebook = new Notebook({ getItem: key => documentWindow || serverLibrary ? null : localStorage.getItem(key), setItem: (key, value) => {
@@ -171,22 +177,24 @@ function mountNoteAssetImage(noteId: string, image: HTMLImageElement, frame: HTM
 }
 let syncBusy = false;
 $('#sync-button').hidden = documentWindow || !native;
-syncSession.subscribe(status => {
+function renderSyncState(status: SyncStatus) {
   syncBusy = status.busy;
   const button = $('#sync-button');
   // 未登录、账号未就绪不算同步出错，按钮不显示红点。
   const failed = status.error && !accountSyncNotices.has(status.message);
   button.dataset.state = status.busy ? 'syncing' : failed ? 'error' : status.lastSyncedAt ? 'synced' : 'idle';
-  const label = status.busy ? '正在同步…' : status.message || '存储与同步';
-  button.title = `${label}\n点击查看同步设置`;
+  const message = status.passwordRequired ? syncPasswordRequired : status.message || '存储与同步';
+  const label = status.busy ? workflowText('正在同步…') : failed ? localizeSyncError(message) : localizeStatus(message);
+  button.title = label + '\n' + workflowText('点击查看同步设置');
   button.setAttribute('aria-label', label);
   document.body.dataset.syncBusy = String(status.busy);
   if (status.busy) setStatus(status.message || '正在同步，请稍候…');
+  else if (status.passwordRequired) setStatus(syncPasswordRequired);
   showSyncState(status, failed);
-});
+}
+let lastSyncState: SyncStatus;
+syncSession.subscribe(status => { lastSyncState = status; renderSyncState(status); });
 // 账号行用转圈和红点表示同步状态，空闲时可悬停查看失败原因或上次同步时间。
-const syncTime = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' });
-const syncDay = new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' });
 function showSyncState(status: { busy: boolean; message: string; lastSyncedAt?: number }, failed: boolean) {
   const account = document.querySelector<HTMLElement>('#sidebar-account');
   const indicator = account?.querySelector<HTMLElement>('.sidebar-account-spinner');
@@ -194,11 +202,14 @@ function showSyncState(status: { busy: boolean; message: string; lastSyncedAt?: 
   indicator.dataset.state = status.busy ? 'syncing' : failed ? 'error' : 'idle';
   if (status.busy) { account.removeAttribute('title'); return; }
   let tip = '';
-  if (failed) tip = `同步失败：${status.message}`;
+  if (failed) tip = workflowText('同步失败：{message}').replace('{message}', () => localizeStatus(status.message));
   else if (status.lastSyncedAt) {
     const at = new Date(status.lastSyncedAt);
     const today = at.toDateString() === new Date().toDateString();
-    tip = `上次同步：${today ? '今天' : syncDay.format(at)} ${syncTime.format(at)}`;
+    const locale = document.documentElement.lang;
+    const day = today ? uiText('menu.today') : at.toLocaleDateString(locale, { month: 'numeric', day: 'numeric' });
+    const time = at.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+    tip = workflowText('上次同步：{date}').replace('{date}', day + ' ' + time);
   }
   if (tip) account.title = tip;
   else account.removeAttribute('title');
@@ -317,8 +328,8 @@ const editorSource = (source: string) => source.replace(/\r\n?/g, '\n');
 
 function refreshTitle(force = false) {
   const note = displayedNoteId === notebook.current?.id ? notebook.current : draftDuringSync?.previous;
-  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: view.state.doc.toString() }) : '未选择笔记';
-  $('#word-count').textContent = showingNote ? `${view.state.doc.length.toLocaleString('zh-CN')} 字符` : '';
+  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: view.state.doc.toString() }) : uiText('noSelection');
+  $('#word-count').textContent = showingNote ? uiText('characterCount').replace('{count}', view.state.doc.length.toLocaleString(document.documentElement.lang)) : '';
 }
 function saveDraft(includeTitle = false) {
   const write = draftWrites.then(() => persistDraft(includeTitle));
@@ -454,9 +465,8 @@ function blankNote() {
 function updateCompose() {
   if (mobile) return;
   const compose = $<HTMLButtonElement>('#new-note-button'), off = blankNote();
-  if (compose.disabled === off) return;
   compose.disabled = off;
-  compose.title = off ? '这篇新笔记还是空的' : '新建笔记（⌘N）';
+  compose.title = off ? uiText('blankNote') : `${uiText('newNote')}（⌘N）`;
 }
 
 async function selectNote(id: string | null, fromHistory?: number) {
@@ -605,7 +615,7 @@ $('#note-more-button').onclick = event => {
   void sidebar?.showCurrentMenu(Math.max(8, box.right - 250), box.bottom + 6, event.detail === 0);
 };
 const untickButton = document.createElement('button');
-untickButton.textContent = '取消勾选全部任务';
+untickButton.textContent = translatedLabel('取消勾选全部任务');
 untickButton.role = 'menuitem';
 untickButton.dataset.format = 'untick';
 untickButton.onclick = () => {
@@ -620,8 +630,8 @@ const moveItemButtons = ([true, false] as const).map(up => {
   const button = document.createElement('button');
   button.type = 'button';
   button.role = 'menuitem';
-  button.textContent = up ? '上移项目' : '下移项目';
-  button.title = up ? '上移项目 ⌃⌘↑' : '下移项目 ⌃⌘↓';
+  button.textContent = up ? translatedLabel('上移项目') : translatedLabel('下移项目');
+  button.title = up ? translatedLabel('上移项目') + ' ⌃⌘↑' : translatedLabel('下移项目') + ' ⌃⌘↓';
   button.onclick = () => {
     const editor = currentWritingEditor();
     closeMenu();
@@ -765,7 +775,7 @@ bindChecklistTool(quickChecklist);
 const quickTable = tableButton.cloneNode(true) as HTMLButtonElement;
 quickTable.removeAttribute('id');
 quickTable.className = 'mobile-table-button';
-quickTable.title = quickTable.ariaLabel = '表格';
+quickTable.title = quickTable.ariaLabel = translatedLabel('表格');
 quickTable.querySelector('svg')!.insertAdjacentHTML('beforeend', `
   <g class="mobile-table-badge">
     <rect x="11.7" y="12.4" width="11.7" height="8" rx="4" fill="var(--toolbar-button-fill)" stroke="var(--toolbar-button-fill)" stroke-width="2"/>
@@ -777,7 +787,7 @@ bindTableTool(quickTable);
 const quickLink = document.createElement('button');
 quickLink.type = 'button';
 quickLink.hidden = true;
-quickLink.ariaLabel = '添加链接';
+quickLink.ariaLabel = translatedLabel('添加链接');
 quickLink.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
   <path d="m10 8 3.4-3.4a4.2 4.2 0 0 1 5.9 5.9l-3.4 3.4a4.2 4.2 0 0 1-5.9 0m4 2-3.4 3.4a4.2 4.2 0 0 1-5.9-5.9L8.1 10a4.2 4.2 0 0 1 5.9 0"/>
 </svg>`;
@@ -794,9 +804,10 @@ attachmentInput.type = 'file'; attachmentInput.multiple = true; attachmentInput.
 document.body.append(attachmentInput);
 const attachButton = $<HTMLButtonElement>('#attach-button');
 attachButton.setAttribute('aria-haspopup', 'menu');
-const attachMenuLabel = canAddAttachments ? '添加附件' : '插入链接';
+const attachMenuKey = canAddAttachments ? 'attach' : 'insertLink';
 if (!canAddAttachments) {
-  attachButton.title = attachButton.ariaLabel = attachMenuLabel;
+  attachButton.dataset.i18nTitle = attachButton.dataset.i18nAriaLabel = attachMenuKey;
+  attachButton.title = attachButton.ariaLabel = uiText(attachMenuKey);
   attachButton.replaceChildren(createLucideIcon(document, LinkIcon, ''));
 }
 function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
@@ -827,7 +838,7 @@ function openAttachmentMenu(anchor: HTMLButtonElement, keyboard: boolean) {
     ] : []),
     { text: '链接到笔记…', icon: icon(NotebookIcon), run: linkNote },
     { text: '添加链接', icon: icon(LinkIcon), run: () => applyFormat('link') },
-  ], { anchor, keyboard, label: attachMenuLabel, onError: message => setStatus(message, true), restoreFocus: focusEditor });
+  ], { anchor, keyboard, label: uiText(attachMenuKey), onError: message => setStatus(message, true), restoreFocus: focusEditor });
 }
 function attachFromKeyboard() {
   if (!currentWritingEditor()) return;
@@ -844,7 +855,7 @@ mobileToolsGroup.append(quickAttach);
 const dismissKeyboard = document.createElement('button');
 dismissKeyboard.type = 'button';
 dismissKeyboard.className = 'dismiss-keyboard';
-dismissKeyboard.ariaLabel = '隐藏键盘';
+dismissKeyboard.ariaLabel = translatedLabel('隐藏键盘');
 dismissKeyboard.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="19" height="12" rx="2"/><path d="M6 7h.1M10 7h.1m4 0h.1m4 0h.1M6 11h.1m3.9 0h4m4 0h.1m-8.6 7.5 2.5 2.5 2.5-2.5"/></svg>';
 dismissKeyboard.onclick = () => (document.activeElement as HTMLElement | null)?.blur();
 mobileTools.append(dismissKeyboard);
@@ -955,7 +966,7 @@ function toggleQuickOpen() {
         { title: '导入文件…', icon: FileDown, keywords: ['import files'], run: () => chooseImport(false) },
         { title: '导入文件夹…', icon: FileDown, keywords: ['import folder'], run: () => chooseImport(true) },
       );
-      return rows.concat({ title: '设置…', icon: Settings, shortcut: '⌘,', keywords: ['settings', 'preferences'], run: () => $('#settings-button').click() });
+      return rows.concat({ title: uiText('menu.settings'), icon: Settings, shortcut: '⌘,', keywords: ['settings', 'preferences'], run: () => $('#settings-button').click() });
     },
     async openNote(note) {
       if (notebook.root !== root || !notebook.data.notes.some(item => item.id === note.id && !item.trashed) || !await selectNote(note.id)) return;
@@ -1118,7 +1129,9 @@ document.documentElement.toggleAttribute('data-web', !native);
 if ((mobile || !native || document.documentElement.dataset.platform === 'macos') && !documentWindow) {
   if (native && !mobile) $('#app-shell').dataset.macSidebarFoot = '';
   const account = $<HTMLButtonElement>('#sidebar-account');
-  if (!native && mobile) account.title = account.ariaLabel = '设置';
+  if (!native && mobile) {
+    account.title = account.ariaLabel = uiText('settings.title');
+  }
   account.onclick = () => { void showSettings(!mobile && (native || serverLibrary) ? 'account' : undefined).catch(() => setStatus('无法打开设置', true)); };
   if (native || serverLibrary) {
     const refreshAccount = sidebarAccount(account);
@@ -1147,6 +1160,18 @@ sidebar = createSidebar(() => notebook, {
   reload: () => showCurrentNote(Boolean(notebook.current)), status: setStatus, error: message => setStatus(message, true),
 }, mobile);
 showCurrentNote(showingNote);
+window.addEventListener('ui-language-change', () => {
+  localizeLabels();
+  if (lastSyncState) renderSyncState(lastSyncState);
+  if (!native && mobile && !documentWindow) {
+    const account = $('#sidebar-account');
+    account.title = account.ariaLabel = uiText('settings.title');
+  }
+  sidebar?.refresh();
+  richEditor.refreshLanguage();
+  refreshTitle();
+  updateCompose();
+});
 if (!notebook.loadError) {
   if (!documentWindow && preferences.value.todayOpenOnLaunch) await openTodayNote();
   else void saveDraft();

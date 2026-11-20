@@ -26,6 +26,16 @@ class TaskWidget extends WidgetType {
     );
   }
 
+  coordsAt(dom: HTMLElement, offset: number) {
+    if (offset === 0) return null;
+    // CodeMirror's default widget bounds exclude the gap before the task text.
+    const rect = dom.getBoundingClientRect();
+    const style = getComputedStyle(dom);
+    const gap = parseFloat(style.marginInlineEnd);
+    const end = style.direction === "rtl" ? rect.left - gap : rect.right + gap;
+    return new DOMRect(end, rect.top, 0, rect.height);
+  }
+
   ignoreEvent(event: Event) {
     if (event.type === "contextmenu") return false;
     if (event instanceof KeyboardEvent && event.type === "keydown" &&

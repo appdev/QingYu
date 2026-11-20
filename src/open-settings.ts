@@ -4,6 +4,7 @@ import { openFeaturePanel } from './feature-panel';
 import { mountSettings, type SettingsSection } from './settings-view';
 import type { SyncClient } from './sync-session';
 import type { DailyNoteChoices } from './daily-note';
+import { uiText } from './ui-language';
 
 let inline: ReturnType<typeof mountSettings> | undefined;
 function showSection(section: SettingsSection) {
@@ -18,7 +19,7 @@ function showSection(section: SettingsSection) {
 export async function openSettings(client: SyncClient | undefined, section?: SettingsSection, loadDaily?: () => DailyNoteChoices) {
   if (inline) { if (section) showSection(section); return; }
   await openFeaturePanel({
-    title: '设置',
+    title: uiText('settings.title'),
     className: 'settings-inline',
     animated: mobile,
     dragHandle: mobile ? '.settings-header' : undefined,

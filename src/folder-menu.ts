@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import { showMenu, type MenuItem } from './popup-menu';
 import { noteTitle, visibleNotes, type Notebook } from './notebook';
 import { noteText } from './document-text';
@@ -46,9 +47,9 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     if (!folder || folder.id === 'default' || folder.path === '' || !label || label.querySelector('input')) return;
     // A native WebKit button hides nested text fields from accessibility; edit in a group instead.
     const editor = document.createElement('div'); editor.className = row!.className + ' renaming'; editor.style.cssText = row!.style.cssText;
-    editor.role = 'group'; editor.ariaLabel = '重命名文件夹'; editor.dataset.folderId = id;
+    editor.role = 'group'; editor.ariaLabel = translatedLabel('app.renameMarkdownFolder'); editor.dataset.folderId = id;
     editor.append(...row!.childNodes); row!.replaceWith(editor);
-    const input = document.createElement('input'); input.className = 'rename-folder'; input.ariaLabel = '文件夹名称'; input.value = folder.name; input.maxLength = 80;
+    const input = document.createElement('input'); input.className = 'rename-folder'; input.ariaLabel = translatedLabel('文件夹名称'); input.value = folder.name; input.maxLength = 80;
     label.replaceChildren(input); input.focus(); input.select();
     let finishing = false;
     let completion: Promise<boolean> | undefined;
@@ -95,11 +96,11 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     // 移到笔记库自己的废纸篓，之后在废纸篓里恢复；App 移动端和网页客户端共用
     const confirmLocalTrash = (name: string) => {
       const dialog = document.createElement('dialog'), title = document.createElement('h2'), message = document.createElement('p');
-      title.id = 'folder-trash-title'; title.textContent = '移到废纸篓？';
-      message.textContent = `「${name}」和里面的笔记会移到废纸篓。`;
+      title.id = 'folder-trash-title'; title.textContent = translatedLabel('移到废纸篓？');
+      message.textContent = formatLabel('「{name}」和里面的笔记会移到废纸篓。', { name });
       dialog.setAttribute('aria-labelledby', title.id);
       const confirm = document.createElement('button'), cancel = document.createElement('button');
-      cancel.textContent = '取消'; confirm.textContent = '移到废纸篓'; confirm.className = 'destructive-button';
+      cancel.textContent = translatedLabel('取消'); confirm.textContent = translatedLabel('moveToTrash'); confirm.className = 'destructive-button';
       cancel.onclick = () => dialog.close();
       confirm.onclick = () => { dialog.close(); void run('trash-local').catch(report); };
       dialog.addEventListener('close', () => { dialog.remove(); restoreFocus(); }, { once: true });
@@ -181,7 +182,7 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
       }
       const title = document.createElement('strong'), count = document.createElement('p');
       title.textContent = book.data.folders.find(folder => folder.id === id)?.name ?? '全部笔记';
-      count.textContent = `${notes.length} 篇笔记`;
+      count.textContent = formatLabel('notesCount', { count: notes.length });
       if (cards.childElementCount) preview.append(cards);
       preview.append(title, count);
     }

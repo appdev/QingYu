@@ -6,6 +6,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { keepEditorFocusForTouchButtons } from './editor-viewport';
 import { editorItemMove, moveEditorItem, taskMarker, toggleTask, untickChecklist, type Format } from './format';
 import { showMenu } from './popup-menu';
+import { markupLabel, uiText, workflowText } from './ui-language';
 
 type HistoryAction = 'undo' | 'redo';
 type FormatAction = Format | 'move-up' | 'move-down' | 'tick' | 'untick';
@@ -52,7 +53,7 @@ export const editorHistoryMenuUpdates = ViewPlugin.define(view => {
     const after = view.state.doc;
     const toast = doc.createElement('div');
     toast.className = 'editor-history-notice';
-    toast.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="currentColor"/><path d="m6 10 2.5 2.5L14 7" fill="none" stroke="var(--primary-ink)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span role="status"></span><button type="button">撤销</button>';
+    toast.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="currentColor"/><path d="m6 10 2.5 2.5L14 7" fill="none" stroke="var(--primary-ink)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span role="status"></span><button type="button">${markupLabel('撤销')}</button>`;
     const button = toast.querySelector('button')!;
     button.onpointerdown = event => event.preventDefault();
     if (doc.documentElement.hasAttribute('data-mobile')) keepEditorFocusForTouchButtons(toast);
@@ -109,7 +110,7 @@ export function connectMobileEditorHistory(button: HTMLButtonElement, currentEdi
       if (currentEditor() === view && view.state.doc === doc && focused instanceof HTMLElement && view.contentDOM.contains(focused)) focused.focus({ preventScroll: true });
     };
     const run = () => { if (currentEditor() === view && view.state.doc === doc) runEditorHistory(view, 'redo'); };
-    void showMenu([{ text: '重做', run }], { anchor: button, label: '撤销与重做', restoreFocus: restore });
+    void showMenu([{ text: uiText('menu.redo'), run }], { anchor: button, label: '撤销与重做', restoreFocus: restore });
   };
   button.onpointerdown = event => {
     if (!event.isPrimary || event.button !== 0) return;
@@ -169,7 +170,8 @@ export async function connectEditorHistoryMenu(formatEditor?: {
         untick: Boolean(text && untickChecklist(text.view.state, text.line.from)),
         moves: [true, false].map(up => Boolean(text && !text.checkbox && editorItemMove(text.view, up))),
       };
-      const payload = { undo: available('undo'), redo: available('redo'), sections, format };
+      const tickLabel = workflowText(format.ticked ? '标为未完成' : '标为已完成');
+      const payload = { undo: available('undo'), redo: available('redo'), sections, format, tickLabel };
       const snapshot = JSON.stringify(payload);
       if (snapshot === sent) return;
       sent = snapshot;
@@ -197,5 +199,6 @@ export async function connectEditorHistoryMenu(formatEditor?: {
   }, { target: getCurrentWindow().label });
   for (const event of ['focusin', 'focusout', 'input', 'compositionstart', 'compositionend']) document.addEventListener(event, schedule);
   window.addEventListener('focus', () => { sent = ''; schedule(); });
+  window.addEventListener('ui-language-change', schedule);
   schedule();
 }

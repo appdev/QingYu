@@ -307,13 +307,6 @@ html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=fa
 .share-web-preview::backdrop { background: var(--overlay); }
 .share-web-preview h2, .share-web-body { overflow-wrap: anywhere; }
 .share-web-body { white-space: pre-wrap; line-height: 1.6; }
-.reference-panel { padding: 0; width: min(720px,calc(100% - 32px)); height: min(520px,calc(100% - 32px)); background: var(--settings-ground); color: var(--ink); border: 1px solid var(--line); border-radius: 22px; font: 13px var(--font); box-shadow: 0 20px 60px var(--shadow-modal); }
-.reference-panel::backdrop { background: var(--overlay); }
-.reference-panel header { display: flex; height: 56px; padding: 12px 20px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
-.reference-panel h2 { font-size: 15px; margin: 0; }
-.reference-panel input:disabled { opacity: .45; }
-.reference-panel-content { display: flex; height: calc(100% - 56px); }
-.reference-panel-content main { display: grid; gap: 16px; align-content: center; justify-items: center; flex: 1; padding: 24px; }
 .note-history {
   width: min(900px, calc(100% - 32px)); height: min(600px, calc(100dvh - 32px));
   padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 22px;
@@ -429,12 +422,6 @@ html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=fa
 }
 .note-history[data-compact] .history-detail[data-current] .history-restore { display: none; }
 .note-history[data-compact] .history-detail:not([data-current]):has(.history-restore:not([hidden])) { padding-bottom: 60px; }
-.reference-lock { width: min(440px,calc(100% - 32px)); height: auto; }
-.reference-lock main { justify-items: stretch; gap: 12px; }
-.reference-lock main p { margin: 0; }
-.reference-unavailable { color: var(--muted); line-height: 1.4; }
-.reference-lock label { display: grid; gap: 8px; width: 100%; }
-.reference-lock input { border: 1px solid var(--line); background: var(--control-fill); color: inherit; border-radius: 8px; height: 32px; }
 
 /* 已分享标记，对照 Pinto ShareLinkChrome.marker：标题栏下沿往下 10px、右侧 14px，
    胶囊最小高 24px、左右内边距 9px，caption 字号加 medium 字重，次要文字色配三级填充。 */

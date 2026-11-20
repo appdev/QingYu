@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { afterEach, expect, it, vi } from 'vitest';
 import { answerMenuBar } from '../src/menu-bar-host';
 import { menuBarSections, quickCapture, type MenuBarReply, type MenuBarSections } from '../src/menu-bar-model';

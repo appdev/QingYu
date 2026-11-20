@@ -1,3 +1,4 @@
+import { formatLabel, markupLabel, translatedLabel } from './ui-language';
 import { invoke } from '@tauri-apps/api/core';
 import { CircleX, Clipboard, Globe, Image, Link, Share2 } from 'lucide';
 import { native } from './preferences';
@@ -16,14 +17,14 @@ export function showNoteLinkPicker(anchor: HTMLElement, choices: PickerChoices, 
   panel.className = 'search-picker note-link-picker';
   panel.popover = 'auto';
   panel.role = 'dialog';
-  panel.ariaLabel = '链接到笔记';
+  panel.ariaLabel = translatedLabel('链接到笔记');
   const search = document.createElement('input');
   search.type = 'search'; search.placeholder = panel.ariaLabel;
-  search.ariaLabel = '搜索可链接的笔记';
+  search.ariaLabel = translatedLabel('搜索可链接的笔记');
   search.setAttribute('role', 'combobox');
   search.setAttribute('aria-autocomplete', 'list');
   const list = document.createElement('div');
-  list.id = 'note-link-choices'; list.role = 'listbox'; list.ariaLabel = '可链接的笔记';
+  list.id = 'note-link-choices'; list.role = 'listbox'; list.ariaLabel = translatedLabel('可链接的笔记');
   search.setAttribute('aria-controls', list.id);
   let highlighted: string | undefined, chosen = false, shown = choices(''), options: HTMLButtonElement[] = [];
   const selected = () => shown.find(choice => choice.target === highlighted) ?? shown[0];
@@ -53,7 +54,7 @@ export function showNoteLinkPicker(anchor: HTMLElement, choices: PickerChoices, 
     list.replaceChildren(...options);
     if (!options.length) {
       const empty = document.createElement('p');
-      empty.textContent = search.value.trim() ? '没有匹配的笔记' : '没有其他笔记';
+      empty.textContent = search.value.trim() ? translatedLabel('没有匹配的笔记') : translatedLabel('没有其他笔记');
       list.append(empty);
     }
     list.scrollTop = 0;
@@ -99,28 +100,15 @@ export function confirmLinkedNote(title: string, create: () => void) {
   const dialog = document.createElement('dialog');
   dialog.className = 'missing-note-link';
   dialog.setAttribute('aria-labelledby', 'missing-note-link-title');
-  dialog.innerHTML = '<h2 id="missing-note-link-title"></h2><p>还没有这个标题的笔记。</p>';
-  dialog.querySelector('h2')!.textContent = `新建「${title}」？`;
+  dialog.innerHTML = `<h2 id="missing-note-link-title"></h2><p>${markupLabel('还没有这个标题的笔记。')}</p>`;
+  dialog.querySelector('h2')!.textContent = formatLabel('新建「{title}」？', { title });
   const confirm = document.createElement('button'), cancel = document.createElement('button');
-  confirm.type = cancel.type = 'button'; confirm.textContent = '新建笔记'; cancel.textContent = '取消';
+  confirm.type = cancel.type = 'button'; confirm.textContent = translatedLabel('newNote'); cancel.textContent = translatedLabel('取消');
   cancel.onclick = () => dialog.close();
   confirm.onclick = () => { dialog.close(); create(); };
   dialog.append(alertActions(confirm, cancel));
   dialog.addEventListener('close', () => dialog.remove(), { once: true });
   showAlert(dialog, confirm);
-}
-
-export function showLockNotePanel() {
-  const dialog = document.createElement('dialog'); dialog.className = 'reference-panel reference-lock';
-  dialog.ariaLabel = '设置密码';
-  const header = document.createElement('header'), heading = document.createElement('h2'), close = document.createElement('button');
-  heading.textContent = dialog.ariaLabel; close.textContent = '取消'; close.onclick = () => dialog.close();
-  const content = document.createElement('div'); content.className = 'reference-panel-content';
-  content.innerHTML = '<main><p>为锁定的笔记设置密码</p><label>密码<input type="password" disabled autocomplete="off"></label><label>确认密码<input type="password" disabled autocomplete="off"></label><label>密码提示（建议填写）<input disabled></label><p class="reference-unavailable">笔记加密服务尚未接入，当前不会设置密码或加密笔记。</p></main>';
-  const done = document.createElement('button'); done.textContent = '完成'; done.disabled = true; header.append(close, heading, done);
-  dialog.append(header, content); document.body.append(dialog);
-  dialog.addEventListener('keydown', event => event.stopPropagation());
-  dialog.addEventListener('close', () => dialog.remove(), { once: true }); dialog.showModal();
 }
 
 export function showShare(anchor: HTMLElement, title: string, text: string, report: (message: string) => void, picture?: import('./note-picture').PictureRequest, noteKey: string = crypto.randomUUID(), shareStore?: ShareStore) {
@@ -168,9 +156,9 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     return;
   }
 
-  const panel = document.createElement('div'); panel.className = 'share-popover'; panel.setAttribute('popover', 'auto'); panel.role = 'dialog'; panel.ariaLabel = '分享';
+  const panel = document.createElement('div'); panel.className = 'share-popover'; panel.setAttribute('popover', 'auto'); panel.role = 'dialog'; panel.ariaLabel = translatedLabel('share');
   panel.addEventListener('keydown', event => event.stopPropagation());
-  const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = '分享方式';
+  const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = translatedLabel('分享方式');
   const content = document.createElement('div'); content.role = 'tabpanel'; content.id = 'share-content';
   const modes = [
     { index: 0, title: '发送' },
@@ -191,7 +179,7 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     detail.textContent = ['发送笔记此刻的内容，之后的修改不会同步给收件人。', '模拟创建网页链接。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
     if (index === 0) {
       if (nativeShare || typeof navigator.share === 'function') {
-        const send = document.createElement('button'); send.textContent = '分享…'; send.className = 'button primary-button share-send';
+        const send = document.createElement('button'); send.textContent = translatedLabel('share') + '…'; send.className = 'button primary-button share-send';
         send.onclick = async () => {
           send.disabled = true;
           try { if (await sendCopy()) panel.hidePopover(); }
@@ -200,9 +188,9 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
         content.append(send);
       } else {
         const unavailable = document.createElement('p'); unavailable.className = 'share-unavailable';
-        unavailable.textContent = '当前环境不支持系统分享，可复制为纯文本后发送。'; content.append(unavailable);
+        unavailable.textContent = translatedLabel('当前环境不支持系统分享，可复制为纯文本后发送。'); content.append(unavailable);
       }
-      const copy = document.createElement('button'); copy.textContent = '复制为纯文本'; copy.className = 'share-copy';
+      const copy = document.createElement('button'); copy.textContent = translatedLabel('复制为纯文本'); copy.className = 'share-copy';
       copy.onclick = async () => { if (await copyText()) panel.hidePopover(); }; content.append(copy);
       return;
     } else if (index === 1) {
@@ -218,7 +206,7 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
         return;
       }
       const open = document.createElement('button');
-      open.type = 'button'; open.className = 'button primary-button button-wide'; open.textContent = '分享为图片…';
+      open.type = 'button'; open.className = 'button primary-button button-wide'; open.textContent = translatedLabel('分享为图片') + '…';
       open.onclick = async () => {
         panel.hidePopover();
         try {

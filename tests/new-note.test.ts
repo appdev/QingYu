@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { EditorView } from '@codemirror/view';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -58,12 +59,18 @@ it('hints “标题” in an empty note and drops the hint once there is text', 
   try {
     editor.activate('', 'blank');
     expect(root.querySelector('.cm-placeholder')?.textContent).toBe('标题');
+    document.documentElement.lang = 'en';
+    editor.refreshLanguage();
+    expect(root.querySelector('.cm-placeholder')?.textContent).toBe('Title');
     view.dispatch({ changes: { from: 0, insert: '买菜' } });
+    document.documentElement.lang = 'ja';
+    editor.refreshLanguage();
+    expect(view.state.doc.toString()).toBe('买菜');
     expect(root.querySelector('.cm-placeholder')).toBeNull();
     // 只读的笔记（如废纸篓里的）不提示。
     editor.activate('', 'read-only', undefined, undefined, true);
     expect(root.querySelector('.cm-placeholder')).toBeNull();
-  } finally { view.destroy(); root.remove(); }
+  } finally { document.documentElement.lang = 'zh-CN'; view.destroy(); root.remove(); }
 });
 
 it('lays out the empty line like the title so the caret lines up with the hint', () => {

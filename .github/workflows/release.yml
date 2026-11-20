@@ -29,6 +29,14 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.tag.outputs.commit }}
     steps:
+      - name: Check Android release signing secrets
+        env:
+          ANDROID_SIGNING_READY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
+        run: |
+          if [ "$ANDROID_SIGNING_READY" != true ]; then
+            echo '::error::Configure the Android signing secrets listed in README.md before running Release.'
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -136,11 +144,64 @@ jobs:
           releaseId: ${{ needs.prepare.outputs.release-id }}
           releaseDraft: true
           uploadUpdaterJson: false
+          tauriScript: npm run tauri
           releaseAssetNamePattern: QingYu_[version]_[platform]_[arch][setup][ext]
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
+  android:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Set up Android toolchain
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_21_X64/bin" >> "$GITHUB_PATH"
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
+          echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          rustup target add aarch64-linux-android
+      - run: npm ci
+      - name: Build Android arm64 release APK
+        run: npm run tauri -- android build --ci --target aarch64 --apk -- --locked
+      - name: Sign and verify APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          tools="$ANDROID_HOME/build-tools/37.0.0"
+          unsigned='src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk'
+          apk="$RUNNER_TEMP/QingYu_${RELEASE_TAG#v}_android_arm64.apk"
+          umask 077
+          keystore=$(mktemp "$RUNNER_TEMP/qingyu-keystore.XXXXXX")
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          "$tools/zipalign" -P 16 -f 4 "$unsigned" "$RUNNER_TEMP/qingyu-aligned.apk"
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$apk" "$RUNNER_TEMP/qingyu-aligned.apk"
+          "$tools/apksigner" verify "$apk"
+      - name: Upload APK to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/QingYu_${RELEASE_TAG#v}_android_arm64.apk" --clobber
+
   publish:
-    needs: [prepare, desktop]
+    needs: [prepare, desktop, android]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

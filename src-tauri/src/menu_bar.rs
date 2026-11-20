@@ -24,6 +24,23 @@ pub struct MenuBar {
     hidden_at: Mutex<Option<Instant>>,
     /// 最近一次打开时图标的位置，高度变化后按它重新摆放。
     anchor: Mutex<Option<tauri::Rect>>,
+    labels: Mutex<Option<crate::settings::NativeMenuLabels>>,
+}
+
+pub fn apply_labels(
+    app: &tauri::AppHandle,
+    labels: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let state = app.state::<MenuBar>();
+    let menu = state
+        .labels
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    if let Some(menu) = menu {
+        menu.apply(labels).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn shown(app: &tauri::AppHandle) -> bool {
@@ -37,6 +54,9 @@ pub fn set_shown(app: &tauri::AppHandle, on: bool) -> Result<(), String> {
     }
     if !on {
         app.remove_tray_by_id(TRAY);
+        if let Ok(mut labels) = app.state::<MenuBar>().labels.lock() {
+            *labels = None;
+        }
         if let Some(panel) = app.get_webview_window(PANEL) {
             hide_panel(&panel);
         }
@@ -95,6 +115,11 @@ pub fn set_shown(app: &tauri::AppHandle, on: bool) -> Result<(), String> {
         None => builder,
     };
     builder.build(app).map_err(|e| e.to_string())?;
+    *app.state::<MenuBar>()
+        .labels
+        .lock()
+        .map_err(|e| e.to_string())? =
+        Some(crate::settings::NativeMenuLabels::capture(&menu).map_err(|e| e.to_string())?);
     Ok(())
 }
 

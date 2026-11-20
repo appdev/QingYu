@@ -3,7 +3,7 @@ mod link_preview;
 
 #[cfg(all(feature = "app", target_os = "android"))]
 #[no_mangle]
-pub extern "system" fn Java_app_miaoyan_editor_prototype_MainActivity_initTlsVerifier<'local>(
+pub extern "system" fn Java_com_apkdv_qingyu_editor_MainActivity_initTlsVerifier<'local>(
     mut env: jni::EnvUnowned<'local>,
     _activity: jni::objects::JObject<'local>,
     context: jni::objects::JObject<'local>,
@@ -70,6 +70,10 @@ pub fn run() {
             settings::install_menu(app)?;
             #[cfg(desktop)]
             file_library::install_menu(app)?;
+            #[cfg(desktop)]
+            if let Some(menu) = app.menu() {
+                app.manage(settings::NativeMenuLabels::capture(&menu)?);
+            }
             // 主窗口在配置里是隐藏的，页面排好版后再显示；手机上没有这一步，直接显示。
             #[cfg(desktop)]
             file_library::workspace::show_when_ready(app.handle(), "main");
@@ -106,6 +110,7 @@ pub fn run() {
             sync_http::sync_request,
             sync_profile::sync_load_profile,
             sync_profile::sync_save_profile,
+            sync_profile::sync_cached_key,
             note_picture::note_picture_action,
             feature_window::open_feature_window,
             note_picture::note_share_text,

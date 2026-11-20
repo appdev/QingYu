@@ -3,7 +3,7 @@ import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { markdown } from '@codemirror/lang-markdown';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { matchSlashCommands, slashCalloutType, slashCommands, slashQueryAt } from '../src/editor-slash-menu';
+import { matchSlashCommands, slashCalloutType, slashCommands, slashMenu, slashQueryAt } from '../src/editor-slash-menu';
 import { createRichEditor } from '../src/rich-editor';
 
 vi.hoisted(() => {
@@ -28,7 +28,8 @@ it('finds the slash query only at a line start or after a space', () => {
   expect(queryIn('/')).toBe('');
   expect(queryIn('买菜 /ta')).toBe('ta');
   expect(queryIn('  /h2')).toBe('h2');
-  expect(queryIn('、清单')).toBe('清单');
+  expect(queryIn('、')).toBeUndefined();
+  expect(queryIn('、清单')).toBeUndefined();
   expect(queryIn('and/or')).toBeUndefined();
   expect(queryIn('https://example.com')).toBeUndefined();
   expect(queryIn('/ ')).toBeUndefined();
@@ -124,6 +125,37 @@ it('keeps a dismissed slash closed and leaves attach out when files cannot be ad
     expect(editor.rows()).toEqual([]);
     expect(editor.view.state.doc.toString()).toBe('/ta');
   } finally { editor.done(); }
+});
+
+it('keeps the desktop popup visible through temporary focus loss and closes it when focus stays elsewhere', async () => {
+  const shell = document.body.appendChild(document.createElement('main'));
+  shell.id = 'app-shell';
+  const outside = document.body.appendChild(document.createElement('button'));
+  const view = new EditorView({ parent: shell, extensions: [slashMenu({ run() {} })] });
+  const panel = shell.querySelector<HTMLElement>('.editor-slash-menu')!;
+  vi.spyOn(view, 'coordsAtPos').mockReturnValue({ left: 20, right: 20, top: 0, bottom: 0 });
+  try {
+    view.focus();
+    view.dispatch({ changes: { from: 0, insert: '/' }, selection: { anchor: 1 } });
+    await vi.waitFor(() => expect(panel.hidden).toBe(false));
+
+    shell.setAttribute('inert', '');
+    view.contentDOM.blur();
+    await vi.waitFor(() => expect(view.dom.classList.contains('cm-focused')).toBe(false));
+    expect(panel.hidden).toBe(false);
+    shell.removeAttribute('inert');
+    view.focus();
+    await vi.waitFor(() => expect(view.dom.classList.contains('cm-focused')).toBe(true));
+    expect(panel.hidden).toBe(false);
+
+    shell.setAttribute('inert', '');
+    view.contentDOM.blur();
+    await vi.waitFor(() => expect(view.dom.classList.contains('cm-focused')).toBe(false));
+    expect(panel.hidden).toBe(false);
+    outside.focus();
+    shell.removeAttribute('inert');
+    await vi.waitFor(() => expect(panel.hidden).toBe(true));
+  } finally { view.destroy(); shell.remove(); outside.remove(); }
 });
 
 it('inserts dividers, typed callouts and note links from the menu', () => {

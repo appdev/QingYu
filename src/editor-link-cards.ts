@@ -1,3 +1,4 @@
+import { formatLabel, translatedLabel } from './ui-language';
 import { syntaxTree } from '@codemirror/language';
 import { StateEffect, StateField, type EditorState, type Range } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
@@ -94,9 +95,9 @@ export function linkCards(open: (href: string) => void | Promise<void>, describe
       link.onclick = async event => {
         event.preventDefault();
         if (link.ariaBusy === 'true') return;
-        if (download) { link.ariaBusy = 'true'; download.textContent = '正在下载…'; }
+        if (download) { link.ariaBusy = 'true'; download.textContent = translatedLabel('正在下载…'); }
         try { await open(href); download?.remove(); download = undefined; }
-        catch { if (download) download.textContent = '点按重试'; }
+        catch { if (download) download.textContent = translatedLabel('点按重试'); }
         finally { link.removeAttribute('aria-busy'); }
       };
       const thumbnail = document.createElement('span');
@@ -122,7 +123,7 @@ export function linkCards(open: (href: string) => void | Promise<void>, describe
         if (size === undefined || !link.isConnected || link.ariaBusy === 'true') return;
         download = document.createElement('span');
         download.className = 'link-card-download';
-        download.textContent = `下载 · ${formatAssetSize(size)}`;
+        download.textContent = formatLabel('下载 · {size}', { size: formatAssetSize(size) });
         link.append(download);
       }).catch(() => undefined);
       if (kind === 'web' && web) void web.page(href).then(async info => {

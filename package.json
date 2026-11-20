@@ -9,7 +9,7 @@
     "build:web": "tsc --noEmit && vite build --mode web",
     "build:server-sync": "vite build --mode server-sync --ssr src/server-sync-worker.ts --outDir dist-sync",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "node tools/tauri.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.4",

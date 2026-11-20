@@ -66,12 +66,18 @@ function normalizeMarkdownLinkLabel(source: string) {
     .toLocaleLowerCase();
 }
 
+export function isFootnoteDefinitionNode(state: EditorState, node: MarkraSyntaxNode) {
+  const definition = node.name === "URL" ? node.parent : node;
+  const label = definition?.name === "LinkReference" ? definition.getChild("LinkLabel") : null;
+  return label !== null && /^\[\^[^\]\s]+\]$/u.test(state.sliceDoc(label.from, label.to));
+}
+
 export function readMarkdownLinkReferences(state: EditorState) {
   const references = new Map<string, string>();
 
   syntaxTree(state).iterate({
     enter(node) {
-      if (node.name !== "LinkReference") return;
+      if (node.name !== "LinkReference" || isFootnoteDefinitionNode(state, node.node)) return;
       const label = node.node.getChild("LinkLabel");
       const url = node.node.getChild("URL");
       if (!label || !url) return;
@@ -92,6 +98,7 @@ export function readMarkdownLinkDestination(
   node: MarkraSyntaxNode,
   references = readMarkdownLinkReferences(state),
 ) {
+  if (node.name === "URL" && isFootnoteDefinitionNode(state, node)) return null;
   const url = node.name === "URL" ? node : node.getChild("URL");
   if (url) {
     const source = unescapeMarkdown(state.sliceDoc(url.from, url.to).trim());

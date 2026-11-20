@@ -132,6 +132,10 @@ pub fn load(path: &Path) -> Result<Option<Profile>, String> {
 pub fn save(path: &Path, profile: &Profile) -> Result<(), String> {
     profile.validate()?;
     let value = serde_json::to_vec(profile).map_err(|_| "连接配置无效")?;
+    write_private(path, &value)
+}
+
+fn write_private(path: &Path, value: &[u8]) -> Result<(), String> {
     let directory = path.parent().ok_or("应用配置目录无效")?;
     fs::create_dir_all(directory).map_err(|_| "无法创建应用配置目录")?;
     #[cfg(unix)]
@@ -149,7 +153,7 @@ pub fn save(path: &Path, profile: &Profile) -> Result<(), String> {
             .set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|_| "无法保护 S3 配置文件")?;
     }
-    temp.write_all(&value)
+    temp.write_all(value)
         .map_err(|_| "S3 配置写入失败，原文件未修改")?;
     temp.as_file()
         .sync_all()
@@ -165,6 +169,162 @@ fn authorize(window: &tauri::WebviewWindow) -> Result<(), String> {
         return Err("连接配置仅由主窗口管理".into());
     }
     Ok(())
+}
+
+#[cfg(feature = "app")]
+#[derive(Serialize, Deserialize)]
+struct CachedKey {
+    key: String,
+    account_id: Option<String>,
+}
+
+#[cfg(feature = "app")]
+fn read_cached_key(path: &Path) -> Result<Option<CachedKey>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() <= 4096 => {}
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("无法读取本机同步密钥".into()),
+    }
+    let mut value = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(4097).read_to_end(&mut value))
+        .map_err(|_| "无法读取本机同步密钥")?;
+    Ok(serde_json::from_slice(&value).ok().or_else(|| {
+        serde_json::from_slice::<String>(&value)
+            .ok()
+            .map(|key| CachedKey {
+                key,
+                account_id: None,
+            })
+    }))
+}
+
+#[cfg(feature = "app")]
+fn forget_cached_key(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("无法清除本机同步密钥".into()),
+    }
+}
+
+#[cfg(feature = "app")]
+fn check_cache_directory(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        _ => Err("本机同步密钥目录无效".into()),
+    }
+}
+
+#[cfg(feature = "app")]
+pub(crate) fn forget_account_keys(config: &Path, account_id: &str) -> Result<(), String> {
+    let directory = config.join("sync-keys");
+    check_cache_directory(&directory)?;
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("无法清除本机同步密钥".into()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| "无法清除本机同步密钥")?;
+        if !entry
+            .file_type()
+            .map_err(|_| "无法清除本机同步密钥")?
+            .is_dir()
+        {
+            continue;
+        }
+        let path = profile_path(&entry.path());
+        if read_cached_key(&path)?
+            .is_some_and(|record| record.account_id.as_deref() == Some(account_id))
+        {
+            forget_cached_key(&path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub async fn sync_cached_key(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, crate::client_account::ClientAccount>,
+    target: String,
+    key: Option<String>,
+    account_id: Option<String>,
+    forget: Option<bool>,
+) -> Result<Option<String>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use tauri::Manager;
+
+    authorize(&window)?;
+    if target.len() != 64 || !target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("同步目标无效".into());
+    }
+    let directory = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "无法打开应用配置目录")?;
+    // The reserved profile filename keeps key files out of attachment scans.
+    let cache_root = directory.join("sync-keys");
+    let cache_directory = cache_root.join(target);
+    let path = profile_path(&cache_directory);
+    let valid_key = |value: &str| {
+        value.len() == 44 && STANDARD.decode(value).is_ok_and(|bytes| bytes.len() == 32)
+    };
+    let owner = account_id.clone();
+    let work = async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            check_cache_directory(&cache_root)?;
+            check_cache_directory(&cache_directory)?;
+            if forget.unwrap_or(false) {
+                forget_cached_key(&path)?;
+                return Ok(None);
+            }
+            if key.as_ref().is_some_and(|key| !valid_key(key)) {
+                return Err("本机同步密钥格式无效".into());
+            }
+            let previous = read_cached_key(&path)?;
+            let write = key.is_some()
+                || owner.as_ref().is_some_and(|owner| {
+                    previous
+                        .as_ref()
+                        .is_some_and(|record| record.account_id.as_ref() != Some(owner))
+                });
+            let Some(key) = key.or_else(|| previous.as_ref().map(|record| record.key.clone()))
+            else {
+                return Ok(None);
+            };
+            if !valid_key(&key) {
+                return Ok(None);
+            }
+            if write {
+                let record = CachedKey {
+                    key,
+                    account_id: owner.or_else(|| previous.and_then(|record| record.account_id)),
+                };
+                let value = serde_json::to_vec(&record).map_err(|_| "本机同步密钥格式无效")?;
+                write_private(&path, &value).map_err(|_| "无法保存本机同步密钥".to_string())?;
+                return Ok(Some(record.key));
+            }
+            Ok(Some(key))
+        })
+        .await
+        .map_err(|_| "本机同步密钥操作未完成".to_string())?
+    };
+    if let Some(account_id) = account_id {
+        let session =
+            crate::client_account::app_session(&window).map_err(|_| "请重新登录轻羽后同步")?;
+        state
+            .with_sync_account(session, &account_id, work)
+            .await
+            .map_err(|_| "请重新登录轻羽后同步".to_string())?
+    } else {
+        work.await
+    }
 }
 
 #[cfg(feature = "app")]
@@ -207,6 +367,33 @@ pub async fn sync_save_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "app")]
+    #[test]
+    fn forgets_only_the_signed_out_accounts_key_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = |target: &str| profile_path(&directory.path().join("sync-keys").join(target));
+        for (target, owner) in [
+            ("first", Some("owner")),
+            ("other", Some("other")),
+            ("custom", None),
+        ] {
+            let cache = CachedKey {
+                key: "fixture".into(),
+                account_id: owner.map(str::to_owned),
+            };
+            write_private(&path(target), &serde_json::to_vec(&cache).unwrap()).unwrap();
+        }
+        write_private(&path("unattributed"), b"\"legacy cache\"").unwrap();
+        forget_account_keys(directory.path(), "owner").unwrap();
+        assert!(!path("first").exists());
+        for target in ["other", "custom", "unattributed"] {
+            assert!(path(target).is_file());
+        }
+        forget_cached_key(&path("custom")).unwrap();
+        forget_cached_key(&path("custom")).unwrap();
+        assert!(!path("custom").exists());
+    }
 
     #[test]
     fn persists_complete_profiles_atomically_in_private_config_and_restores_after_restart() {

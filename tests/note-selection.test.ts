@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './fixtures/chinese-ui';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Notebook } from '../src/notebook';
@@ -154,6 +155,25 @@ it('right clicking outside the selection returns to a single-note menu', async (
   await vi.waitFor(() => expect(item('移到废纸篓')).not.toBeNull());
   expect(selected()).toEqual([notes[4].id]);
   expect(item('删除 3 篇笔记')).toBeNull();
+});
+
+it('pins and unpins the same note on consecutive shortcut presses', async () => {
+  const { book, row } = fixture();
+  const shell = document.querySelector<HTMLElement>('#app-shell')!;
+  const focus = HTMLElement.prototype.focus;
+  // jsdom allows focusing descendants of an inert element.
+  vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement, options) {
+    if (!shell.inert || !shell.contains(this)) focus.call(this, options);
+  });
+  const pressPin = () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'P', metaKey: true, shiftKey: true, bubbles: true, cancelable: true,
+  }));
+  row(0).focus();
+  pressPin();
+  await vi.waitFor(() => expect(book.current.pinned).toBe(true));
+  expect(document.activeElement).toBe(row(0));
+  pressPin();
+  await vi.waitFor(() => expect(book.current.pinned).toBe(false));
 });
 
 it('uses the selected range for the existing delete shortcut', async () => {

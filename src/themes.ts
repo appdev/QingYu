@@ -9,7 +9,7 @@ const colors = {
   forest: ['FAFBF9/111511','E8ECE5/1A1F1A','F2F4F0/161A16','DAE3D4/2A342A','1E261F/E2E8E0','55605A/A0AC9F','DDE3D9/2A322A','E9EDE6/232A23','FFFFFF/1C221C','EDF0EA/1F251F','F5F7F3/191E19','287045/6CC690'],
   contrast: ['FFFFFF/000000','FFFFFF/000000','FFFFFF/000000','FFE14D/4F4100','000000/FFFFFF','1F1F1F/E6E6E6','000000/FFFFFF','EBEBEB/262626','FFFFFF/000000','F0F0F0/1C1C1C','FFFFFF/000000','0033A0/FFD60A'],
 };
-export const themeNames = { default: '默认', paper: '纸张', sepia: '暖棕', slate: '岩灰', forest: '森林', contrast: '高对比度' };
+export const themeNames = { default: '默认', paper: '纸张', sepia: '暖棕', slate: '岩灰', forest: '森林', contrast: '高对比度' } as const;
 export type Theme = keyof typeof themeNames;
 export function themePalette(theme: Theme, dark: boolean) {
   const base = palette[dark ? 'dark' : 'light'];
