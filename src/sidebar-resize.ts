@@ -86,5 +86,5 @@ export function setupSidebarResize(shell: HTMLElement, getLayout: () => SidebarL
   shell.addEventListener('lostpointercapture', event => { if (drag?.id === event.pointerId) finish(true); });
   window.addEventListener('blur', () => finish(true));
   document.addEventListener('keydown', event => { if (drag && event.key === 'Escape') { event.preventDefault(); finish(true); } });
-  return { columns: external ? 'list' as const : saved.columns, update };
+  return { columns: external ? 'note' as const : saved.columns, update };
 }

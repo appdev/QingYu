@@ -68,6 +68,11 @@ const serverLibrary = isServerLibrary();
 let browserNoteId = serverLibrary && !mobile ? new URLSearchParams(location.hash.slice(1)).get('note') : null;
 const documentWindow = !mobile && (windowLabel.startsWith('document-') || Boolean(browserNoteId));
 const noteWindow = documentWindow && (windowLabel.startsWith('document-note-') || Boolean(browserNoteId));
+if (documentWindow && !noteWindow) {
+  $('#app-shell').dataset.externalWindow = '';
+  $('#app-shell').dataset.sidebar = 'note';
+  $('.sidebar-footer').hidden = true;
+}
 if (noteWindow) {
   $('#app-shell').dataset.noteWindow = '';
   $('#library-sidebar').hidden = $('#sidebar-button').hidden = $('#new-empty-note').hidden = true;

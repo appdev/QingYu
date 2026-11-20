@@ -129,7 +129,6 @@ pub fn run() {
             file_library::library_open,
             #[cfg(desktop)]
             file_library::api::desktop::local_mcp,
-            file_library::workspace::workspace_requests,
             file_library::workspace::workspace_open,
             file_library::workspace::workspace_open_note,
             file_library::workspace::workspace_window_ready,

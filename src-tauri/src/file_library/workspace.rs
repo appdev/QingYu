@@ -1,5 +1,7 @@
 //! Editor windows and their save-before-close lifecycle.
 use super::*;
+#[cfg(desktop)]
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
@@ -51,7 +53,11 @@ impl ExitRound {
 pub struct Workspace {
     documents: Mutex<HashMap<String, Document>>,
     notes: Mutex<HashMap<String, NoteWindow>>,
-    requests: Mutex<Vec<PathBuf>>,
+    // Some 表示已有任务按顺序处理系统发来的文件路径。
+    #[cfg(desktop)]
+    requests: Mutex<Option<VecDeque<PathBuf>>>,
+    #[cfg(desktop)]
+    file_requested: AtomicBool,
     pub(super) opening: Mutex<()>,
     quitting: AtomicBool,
     exit: Mutex<Option<ExitRound>>,
@@ -132,10 +138,65 @@ pub fn request(app: &tauri::AppHandle, paths: impl IntoIterator<Item = PathBuf>)
         let _ = show_library(app);
         return;
     }
-    if let Ok(mut pending) = app.state::<Workspace>().requests.lock() {
-        pending.extend(paths);
+    let state = app.state::<Workspace>();
+    state.file_requested.store(true, Ordering::Release);
+    take_first_show("main");
+    let Ok(mut requests) = state.requests.lock() else {
+        return;
+    };
+    if let Some(queue) = requests.as_mut() {
+        queue.extend(paths);
+        return;
     }
-    let _ = app.emit_to("main", "workspace-request", ());
+    *requests = Some(paths.into());
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Workspace>();
+        loop {
+            let path = {
+                let Ok(mut requests) = state.requests.lock() else {
+                    return;
+                };
+                match requests.as_mut().and_then(VecDeque::pop_front) {
+                    Some(path) => path,
+                    None => {
+                        *requests = None;
+                        return;
+                    }
+                }
+            };
+            if let Err(reason) = open_document(&app, &path) {
+                show_open_error(&app, format!("{}\n{reason}", path.display()));
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn show_open_error(app: &tauri::AppHandle, message: String) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSAlert, NSAlertStyle};
+    use objc2_foundation::NSString;
+
+    let _ = app.run_on_main_thread(move || {
+        if let Some(main) = MainThreadMarker::new() {
+            let alert = NSAlert::new(main);
+            alert.setAlertStyle(NSAlertStyle::Critical);
+            alert.setMessageText(&NSString::from_str("无法打开文件"));
+            alert.setInformativeText(&NSString::from_str(&message));
+            alert.runModal();
+        }
+    });
+}
+
+#[cfg(all(desktop, not(target_os = "macos")))]
+fn show_open_error(app: &tauri::AppHandle, message: String) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    app.dialog()
+        .message(message)
+        .title("无法打开文件")
+        .kind(MessageDialogKind::Error)
+        .show(|_| {});
 }
 
 pub fn show_library(app: &tauri::AppHandle) -> Result<()> {
@@ -344,21 +405,6 @@ pub fn exit_allowed(app: &tauri::AppHandle) -> bool {
                 .is_ok_and(|round| round.as_ref().is_some_and(|round| round.pending.is_empty()))
 }
 
-#[tauri::command]
-pub fn workspace_requests(
-    state: State<'_, Workspace>,
-    window: tauri::WebviewWindow,
-) -> Result<Vec<String>> {
-    main_window(&window)?;
-    Ok(state
-        .requests
-        .lock()
-        .map_err(error)?
-        .drain(..)
-        .map(|p| p.to_string_lossy().into())
-        .collect())
-}
-
 fn main_window(window: &tauri::WebviewWindow) -> Result<()> {
     if window.label() != "main" {
         return Err("只能在编辑器中打开外部文件".into());
@@ -530,6 +576,16 @@ fn take_first_show(label: &str) -> bool {
 #[cfg(desktop)]
 pub(crate) fn show_when_ready(app: &tauri::AppHandle, label: &str) {
     wait_first_show(label);
+    // Finder 的打开请求可能早于主窗口登记首次显示。
+    if label == "main"
+        && app
+            .state::<Workspace>()
+            .file_requested
+            .load(Ordering::Acquire)
+    {
+        take_first_show(label);
+        return;
+    }
     let (app, label) = (app.clone(), label.to_owned());
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -737,102 +793,107 @@ pub async fn workspace_open(
                 None => return Ok(None),
             },
         };
-        let path = path.canonicalize().map_err(error)?;
-        if !path.is_file() || !allowed(&path) {
-            return Err("请选择 Markdown 或文本文件".into());
-        }
-        let state = app.state::<Workspace>();
-        let _creation = state.opening.lock().map_err(error)?;
-        if state.quitting.load(Ordering::Acquire) {
-            return Err("应用正在退出，暂不能打开文件".into());
-        }
-        let owner = {
-            let docs = state.documents.lock().map_err(error)?;
-            document_owner(&docs, &path, "").or_else(|| directory_owner(&docs, &path))
-        };
-        let owner = owner.or_else(|| {
-            app.state::<FileLibrary>()
-                .0
-                .lock()
-                .ok()
-                .and_then(|library| library.as_ref().and_then(selected_path))
-                .filter(|current| current == &path)
-                .map(|_| "main".to_string())
-        });
-        if let Some(label) = owner {
-            let select = {
-                let mut docs = state.documents.lock().map_err(error)?;
-                if let Some(doc) = docs.get_mut(&label) {
-                    doc.pending.push(path);
-                    true
-                } else {
-                    false
-                }
-            };
-            focus(&app, &label)?;
-            if select {
-                app.emit_to(&label, "workspace-select-request", ())
-                    .map_err(error)?;
-            }
-            return Ok(Some(label));
-        }
-        let store = open_file(&path)?;
-        let title = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let label = format!("document-{}", id());
-        let root = store.root.clone();
-        let events = app.clone();
-        let target = label.clone();
-        let watch = external::Watch::start(root.clone(), false, move |result| {
-            if let Err(error) = result {
-                let _ = events.emit_to(
-                    &target,
-                    "workspace-watch-error",
-                    serde_json::json!({"root": root, "error": error}),
-                );
-            } else {
-                let _ = events.emit_to(&target, "workspace-files-changed", root.to_string_lossy());
-            }
-        })?;
-        state.documents.lock().map_err(error)?.insert(
-            label.clone(),
-            Document {
-                store,
-                pending: vec![],
-                _watch: watch,
-            },
-        );
-        let mut builder = tauri::WebviewWindowBuilder::new(
-            &app,
-            &label,
-            tauri::WebviewUrl::App("index.html?document=1".into()),
-        )
-        .title(title)
-        .inner_size(1120., 780.)
-        .min_inner_size(360., 420.)
-        .visible(false);
-        if let Some(main) = app.config().app.windows.first() {
-            if let (Some(width), Some(height)) = (main.min_width, main.min_height) {
-                builder = builder.min_inner_size(width, height);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        let builder = builder
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(18., 30.));
-        if let Err(reason) = builder.build() {
-            state.documents.lock().map_err(error)?.remove(&label);
-            return Err(error(reason));
-        }
-        show_when_ready(&app, &label);
-        Ok(Some(label))
+        open_document(&app, &path).map(Some)
     })
     .await
     .map_err(error)?
+}
+
+#[cfg(desktop)]
+fn open_document(app: &tauri::AppHandle, path: &Path) -> Result<String> {
+    let path = path.canonicalize().map_err(error)?;
+    if !path.is_file() || !allowed(&path) {
+        return Err("请选择 Markdown 或文本文件".into());
+    }
+    let state = app.state::<Workspace>();
+    let _creation = state.opening.lock().map_err(error)?;
+    if state.quitting.load(Ordering::Acquire) {
+        return Err("应用正在退出，暂不能打开文件".into());
+    }
+    let owner = {
+        let docs = state.documents.lock().map_err(error)?;
+        document_owner(&docs, &path, "").or_else(|| directory_owner(&docs, &path))
+    };
+    let owner = owner.or_else(|| {
+        app.state::<FileLibrary>()
+            .0
+            .lock()
+            .ok()
+            .and_then(|library| library.as_ref().and_then(selected_path))
+            .filter(|current| current == &path)
+            .map(|_| "main".to_string())
+    });
+    if let Some(label) = owner {
+        let select = {
+            let mut docs = state.documents.lock().map_err(error)?;
+            if let Some(doc) = docs.get_mut(&label) {
+                doc.pending.push(path);
+                true
+            } else {
+                false
+            }
+        };
+        focus(app, &label)?;
+        if select {
+            app.emit_to(&label, "workspace-select-request", ())
+                .map_err(error)?;
+        }
+        return Ok(label);
+    }
+    let store = open_file(&path)?;
+    let title = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let label = format!("document-{}", id());
+    let root = store.root.clone();
+    let events = app.clone();
+    let target = label.clone();
+    let watch = external::Watch::start(root.clone(), false, move |result| {
+        if let Err(error) = result {
+            let _ = events.emit_to(
+                &target,
+                "workspace-watch-error",
+                serde_json::json!({"root": root, "error": error}),
+            );
+        } else {
+            let _ = events.emit_to(&target, "workspace-files-changed", root.to_string_lossy());
+        }
+    })?;
+    state.documents.lock().map_err(error)?.insert(
+        label.clone(),
+        Document {
+            store,
+            pending: vec![],
+            _watch: watch,
+        },
+    );
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        tauri::WebviewUrl::App("index.html?document=1".into()),
+    )
+    .title(title)
+    .inner_size(1120., 780.)
+    .min_inner_size(360., 420.)
+    .visible(false);
+    if let Some(main) = app.config().app.windows.first() {
+        if let (Some(width), Some(height)) = (main.min_width, main.min_height) {
+            builder = builder.min_inner_size(width, height);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(18., 30.));
+    if let Err(reason) = builder.build() {
+        state.documents.lock().map_err(error)?.remove(&label);
+        return Err(error(reason));
+    }
+    show_when_ready(app, &label);
+    Ok(label)
 }
 
 fn commit(store: &mut DiskLibrary, next: Library, revision: u64) -> Result<Snapshot> {

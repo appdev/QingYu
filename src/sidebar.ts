@@ -4,7 +4,6 @@ import allIcon from '../public/miaoyan/icons/allNotes.svg?raw';
 import folderIcon from '../public/miaoyan/icons/folder.svg?raw';
 import newNoteIcon from '../public/miaoyan/icons/newNote.svg?raw';
 import folderPlusIcon from '../public/miaoyan/icons/folder-badge-plus.svg?raw';
-import sidebarIcon from '../public/miaoyan/icons/sidebar.svg?raw';
 import { defaultNoteOrder, groupNotes, isShared, noteListDate, noteTitle, visibleNotes, type Note, type Notebook, type NoteOrder } from './notebook';
 import { noteText } from './document-text';
 import { folderFit, nextSidebarLayout, type SidebarCommand, type SidebarLayout } from './sidebar-layout';
@@ -21,6 +20,12 @@ const pageDepth = { folders: 0, notes: 1, note: 2 } as const;
 type MobilePage = keyof typeof pageDepth;
 type MobileRoute = { page: MobilePage; folderId: string | null; trash: boolean };
 const backIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>';
+// Pinto uses sidebar.left on macOS; adapt the resting geometry from its Charm.swift for the webview.
+const sidebarIcon = `<svg viewBox="2 2 20 20" fill="none" stroke="currentColor" aria-hidden="true">
+  <rect x="2.8" y="5" width="18.4" height="14" rx="3.3" stroke-width="1.55"/>
+  <path d="M9 5v14" stroke-width="1.35"/>
+  <path d="M5.2 8.5h1.5m-1.5 2.2h1.5m-1.5 2.2h1.5" stroke-width="1" stroke-linecap="round"/>
+</svg>`;
 
 export function createSidebar(getBook: () => Notebook, actions: {
   select(id: string | null): Promise<boolean>;
@@ -44,10 +49,10 @@ export function createSidebar(getBook: () => Notebook, actions: {
 }, mobile = false) {
   const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
   const shell = $('#app-shell'), list = $('#notes-list'), folders = $('#folder-list');
+  const externalWindow = shell.hasAttribute('data-external-window');
   const folderPane = $('#folder-pane'), notesPane = $('#notes-pane'), documentColumn = $('#document-column');
   const folderToolbar = $('.folder-toolbar'), notesToolbar = $('.notes-toolbar');
   const desktopWeb = !mobile && document.documentElement.hasAttribute('data-web');
-  const desktopServices = desktopWeb || shell.hasAttribute('data-mac-sidebar-foot');
   const services = $('.sidebar-services'), footer = $('.sidebar-footer');
   const account = $<HTMLButtonElement>('#sidebar-account'), settings = $<HTMLButtonElement>('#settings-button');
   const logout = $('#logout-button');
@@ -243,14 +248,12 @@ export function createSidebar(getBook: () => Notebook, actions: {
     let restoreFooterFocus: HTMLElement | undefined;
     const wideList = innerWidth > 900 && layout.columns === 'list';
     const showServices = innerWidth > 900 && layout.columns !== 'note';
-    if (desktopServices) {
+    if (desktopWeb) {
       const servicesOwner = wideList ? notesPane : folderPane;
       if (services.parentElement !== servicesOwner) {
         servicesOwner.append(services);
         if (showServices && active instanceof HTMLElement && services.contains(active)) restoreFooterFocus = active;
       }
-    }
-    if (desktopWeb) {
       shell.toggleAttribute('data-web-sidebar-services', showServices);
       const owner = showServices ? services : footer;
       if (logout.parentElement !== owner) {
@@ -265,13 +268,18 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const toolbarOwner = wideList ? notesToolbar : folderPane;
     const restoreToolFocus = folderToolbar.parentElement !== toolbarOwner && folderToolbar.contains(active) && (wideList || layout.columns === 'all');
     if (folderToolbar.parentElement !== toolbarOwner) toolbarOwner.prepend(folderToolbar);
-    const parent = innerWidth <= 900
+    const parent = externalWindow ? shell : innerWidth <= 900
       ? layout.columns === 'note' ? $('.titlebar') : $('.notes-navigation')
       : layout.columns === 'note' ? $('.titlebar') : folderToolbar;
     if (toggle.parentElement !== parent) {
       parent.prepend(toggle);
     }
-    if (innerWidth > 900) {
+    if (externalWindow) {
+      toggle.ariaLabel = toggle.title = translatedLabel('切换笔记列表');
+      toggle.setAttribute('aria-expanded', String(layout.columns === 'list'));
+      toggle.setAttribute('aria-controls', 'notes-pane');
+      toggle.removeAttribute('aria-pressed');
+    } else if (innerWidth > 900) {
       const showFolders = layout.columns === 'all';
       toggle.ariaLabel = toggle.title = translatedLabel(showFolders ? '隐藏文件夹栏' : layout.columns === 'list' ? '显示文件夹栏' : '显示笔记列表');
       toggle.setAttribute('aria-expanded', String(showFolders));
@@ -362,8 +370,11 @@ export function createSidebar(getBook: () => Notebook, actions: {
     history.pushState(routeState(next), '');
     renderMobile(next, true);
   }
-  const changeLayout = (command: SidebarCommand) => applyLayout(nextSidebarLayout(layout, command));
-  const resizing = setupSidebarResize(shell, () => layout, applyLayout, actions.error, getBook().external, () => autoHidden ? 'all' : layout.columns);
+  const changeLayout = (command: SidebarCommand) => {
+    if (externalWindow && command === 'folders') return;
+    applyLayout(nextSidebarLayout(layout, externalWindow ? 'notes' : command));
+  };
+  const resizing = setupSidebarResize(shell, () => layout, applyLayout, actions.error, externalWindow, () => autoHidden ? 'all' : layout.columns);
   if (!mobile && innerWidth > 900 && !actions.noteWindow) layout = { ...layout, columns: resizing.columns };
   async function selectFolder(id: string | null, isTrash = false, openList = false) {
     if (!await folderMenu.finishRename()) return false;
@@ -715,7 +726,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     list.addEventListener('scroll', () => { frame ||= requestAnimationFrame(markStuck); }, { passive: true });
     new MutationObserver(() => { frame ||= requestAnimationFrame(markStuck); }).observe(list, { childList: true });
   }
-  toggle.onclick = () => mobile ? navigate('notes') : changeLayout(innerWidth <= 900 ? 'cycle' : layout.columns === 'note' ? 'notes' : 'folders');
+  toggle.onclick = () => mobile ? navigate('notes') : changeLayout(externalWindow || innerWidth <= 900 ? 'cycle' : layout.columns === 'note' ? 'notes' : 'folders');
   foldersBack.onclick = () => navigate('folders');
   toggle.onpointerdown = event => event.preventDefault();
   $('#sidebar-backdrop').onclick = () => changeLayout('notes');

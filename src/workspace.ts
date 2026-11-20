@@ -93,12 +93,5 @@ export async function setupWorkspace(windowLabel: string, actions: {
     const pending = await invoke<string | null>('workspace_ready');
     if (pending) await prepareExit(pending);
     if (actions.select) await receivePaths();
-  } else {
-    async function receive() {
-      try { queue.push(...await invoke<string[]>('workspace_requests')); await open(); }
-      catch (reason) { actions.error(String(reason)); }
-    }
-    await listen('workspace-request', receive, target);
-    await receive();
   }
 }

@@ -9,13 +9,12 @@ const listeners = vi.hoisted(() => [] as { name: string; handler: (event: { payl
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, handler, options) => { handlers.set(name, handler); listeners.push({ name, handler, target: options?.target }); return () => handlers.delete(name); }) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const disk: Library = { version: 1, activeId: 'external', folders: [{ id: 'default', name: 'Downloads', path: '' }], notes: [{ id: 'external', folderId: 'default', path: 'file.md', filename: 'file.md', title: 'file', source: 'original', createdAt: 1, updatedAt: 1 }] };
-let requests: string[], paths: string[];
+let paths: string[];
 beforeEach(() => {
-  vi.clearAllMocks(); handlers.clear(); listeners.length = 0; requests = []; paths = [];
+  vi.clearAllMocks(); handlers.clear(); listeners.length = 0; paths = [];
   document.body.innerHTML = '<div id="app-shell"><button id="workspace-back" hidden></button></div>';
   document.body.inert = false; delete document.body.dataset.libraryBusy; delete document.body.dataset.syncBusy;
   vi.mocked(invoke).mockImplementation(async command => {
-    if (command === 'workspace_requests') return requests.splice(0);
     if (command === 'workspace_paths') return paths.splice(0);
     if (command === 'workspace_open') return 'document-a';
     if (command === 'workspace_ready') return null;
@@ -111,21 +110,19 @@ it('delivers open, close and quit events only to their owning window, including 
   expect(invoke).toHaveBeenLastCalledWith('workspace_exit_reply', { id: 'quit-round', saved: true });
 });
 
-it('routes cold and later OS requests to independent windows without saving or replacing the current editor', async () => {
-  const current = actions(); requests.push('/Downloads/a.md', '/Downloads/b.md');
+it('keeps Cmd+O available in the library without saving or replacing the current editor', async () => {
+  const current = actions();
   document.body.dataset.syncBusy = 'true';
   await setupWorkspace('main', current);
-  expect(invoke).toHaveBeenCalledWith('workspace_open', { path: '/Downloads/a.md' });
-  expect(invoke).toHaveBeenCalledWith('workspace_open', { path: '/Downloads/b.md' });
+  expect(invoke).not.toHaveBeenCalled();
+  await handlers.get('library-command')!({ payload: 'workspace-open' });
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('workspace_open', { path: undefined });
   expect(current.save).not.toHaveBeenCalled(); expect(document.querySelector<HTMLButtonElement>('#workspace-back')!.hidden).toBe(true);
-  requests.push('/other/c.md'); await handlers.get('workspace-request')!({ payload: null });
-  expect(invoke).toHaveBeenCalledWith('workspace_open', { path: '/other/c.md' });
   expect(document.body.dataset.syncBusy).toBe('true');
 });
 
 it('keeps processing file requests after a rejected open and supports Cmd+O from document windows', async () => {
   const current = actions(); await setupWorkspace('document-a', current);
-  expect(invoke).not.toHaveBeenCalledWith('workspace_requests');
   vi.mocked(invoke).mockRejectedValueOnce('cannot read');
   await handlers.get('library-command')!({ payload: 'workspace-open' });
   expect(current.error).toHaveBeenCalledWith('cannot read');

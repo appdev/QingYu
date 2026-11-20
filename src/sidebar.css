@@ -100,6 +100,22 @@ html[data-platform='macos'] #app-shell[data-sidebar='list'] .notes-toolbar { pad
 #app-shell[data-note-window] .note-navigation { display: flex; align-items: center; gap: 6px; margin-inline-end: 12px; }
 #app-shell[data-note-window] .note-navigation .icon-button { width: 30px; height: 32px; }
 #app-shell[data-note-window] #document-column .titlebar { position: relative; z-index: 3; }
+#app-shell[data-external-window] { position: relative; --external-toggle-left: 14px; }
+html[data-platform='macos'] #app-shell[data-external-window] { --external-toggle-left: 94px; }
+#app-shell[data-external-window] > #sidebar-button {
+  position: absolute; z-index: 32; top: calc(var(--safe-area-top) + 8px); left: var(--external-toggle-left);
+  width: 36px; height: 36px; border-radius: 50%;
+}
+#app-shell[data-external-window] > #sidebar-button:is(:hover, [aria-expanded='true']) { background: var(--control-hover); }
+html #app-shell[data-external-window][data-sidebar='note'] #document-column .titlebar {
+  padding-left: calc(var(--external-toggle-left) + 44px);
+}
+@media (max-width: 900px) {
+  #app-shell[data-external-window] .notes-toolbar { padding-top: calc(var(--safe-area-top) + 52px); }
+}
+@media (min-width: 901px) {
+  html #app-shell[data-external-window][data-sidebar='list'] .notes-toolbar { padding-left: calc(var(--external-toggle-left) + 44px); }
+}
 #empty-note { flex: 1; display: grid; place-content: center; justify-items: center; gap: 14px; color: var(--muted); font-size: 15px; }
 #empty-note p { margin: 0; }
 #sidebar-backdrop { display: none; }
@@ -423,7 +439,7 @@ html[data-mobile] .folder-row input { -webkit-user-select: text; user-select: te
     body[data-sync-busy=true] .sidebar-account-spinner { animation: none; }
   }
   #app-shell:not([data-mobile-page]) .notes-toolbar { height: 52px; position: relative; gap: 8px; padding: 0 8px 0 20px; }
-  html[data-platform='macos'] #app-shell[data-sidebar='list']:not([data-mobile-page]) .notes-toolbar { padding-left: 100px; }
+  html[data-platform='macos'] #app-shell[data-sidebar='list']:not([data-mobile-page], [data-external-window]) .notes-toolbar { padding-left: 100px; }
   #app-shell:not([data-mobile-page]) .notes-toolbar > .folder-toolbar {
     justify-content: flex-start; gap: 0; margin: 0 auto 0 0; container-type: normal;
   }
@@ -682,14 +698,14 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
   #app-shell:not([data-mobile-page]) #notes-list::-webkit-scrollbar-track:vertical { margin-top: var(--notes-top); }
   html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) #notes-list { scroll-padding-top: calc(var(--notes-top) + 50px); }
   html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) #notes-list:has(.notes-year) { padding-top: calc(var(--notes-top) + 10px); }
-  /* 分组标题不再是白色色块；吸顶后才有背景模糊和底部细线，细线横贯整列。 */
+  /* 分组标题背景透明，吸顶后由底层提供模糊，并显示底部细线。 */
   /* 吸顶位置贴着标题栏底边（列表上内边距比标题栏多出的那段用负的 top 抵掉）。 */
   html #app-shell:not([data-mobile-page]) .notes-year { top: -4px; background: transparent; margin-inline: -10px; padding-inline: 16px; }
-  html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) .notes-year { top: -10px; }
+  html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) .notes-year { top: -10px; margin-inline: 0; }
   /* 对应 Pinto 的 NSTableView.floatsGroupRows：吸顶标题固定在一处，下一组到顶时直接换上，
      不会被往上推。分组只在逻辑上保留（role=group），不再限制标题的吸顶范围。 */
   #app-shell:not([data-mobile-page]) #notes-list > section { display: contents; }
-  /* 当前吸顶的标题浮在模糊和泛白上面、标题栏下面，只留横贯整列的细线；被换下的隐藏。 */
+  /* 当前吸顶的标题浮在模糊和泛白上面、标题栏下面；被换下的隐藏。 */
   html #app-shell:not([data-mobile-page]) .notes-year[data-stuck] { z-index: 2; box-shadow: 0 1px 0 var(--line); }
   html #app-shell:not([data-mobile-page]) .notes-year[data-covered] { visibility: hidden; }
   #app-shell:not([data-mobile-page]) .note-row[data-thumbnail] { padding-right: 83px; }
