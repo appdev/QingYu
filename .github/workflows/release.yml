@@ -63,7 +63,8 @@ jobs:
         run: |
           git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
-            if [ "$(git rev-parse "$RELEASE_TAG^{tree}")" != "$(git write-tree)" ]; then
+            # A repaired workflow can resume the draft; all artifacts still build from the tag.
+            if ! git diff --cached --quiet "$RELEASE_TAG^{tree}" -- . ':(exclude,top).github/workflows/release.yml'; then
               echo '::error::The existing tag points to different source; choose a new version'
               exit 1
             fi
@@ -168,7 +169,8 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
           echo "$JAVA_HOME_21_X64/bin" >> "$GITHUB_PATH"
           export JAVA_HOME="$JAVA_HOME_21_X64"
-          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+            'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
           echo "NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
           rustup target add aarch64-linux-android
       - run: npm ci
