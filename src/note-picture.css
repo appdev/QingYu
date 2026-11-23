@@ -86,3 +86,28 @@
   padding: 12px 16px max(22px, var(--safe-area-bottom)); background: var(--sidebar);
 }
 .note-picture-detailed .note-picture-copy-icon { width: 20px; height: 20px; }
+
+dialog.feature-panel-dialog.note-picture-macos-dialog {
+  height: fit-content; max-height: calc(100dvh - 32px); overflow: auto;
+  border-radius: 24px; box-shadow: 0 14px 48px rgb(0 0 0 / .24);
+}
+.note-picture-macos { height: auto; padding: 20px; grid-template-rows: none; gap: 14px; }
+.note-picture-macos .note-picture-controls { display: contents; }
+.note-picture-macos .note-picture-preview {
+  width: auto; max-height: min(400px, max(120px, calc(100dvh - 232px)));
+}
+.note-picture-macos .note-picture-status { margin-top: 0; }
+.note-picture-macos .note-picture-backgrounds { padding: 3px; }
+.note-picture-macos .note-picture-options, .note-picture-macos .note-picture-options label { min-height: 26px; }
+.note-picture-macos .note-picture-options label { flex-direction: row; font-size: 13px; }
+.note-picture-macos input[type=checkbox] { margin: 0; accent-color: var(--ink); }
+.note-picture-macos .note-picture-mode { padding: 2px; border-radius: 7px; }
+.note-picture-macos .note-picture-mode button { min-height: 22px; padding: 2px 10px; font-size: 13px; }
+.note-picture-macos .note-picture-actions { display: flex; gap: 8px; align-items: center; padding: 0; background: transparent; }
+.note-picture-macos .note-picture-actions .quiet-button { margin-inline-end: auto; }
+.note-picture-macos .note-picture-copy-icon { width: 16px; height: 16px; }
+
+@media (width < 400px) {
+  .note-picture-macos { padding-inline: 12px; }
+  .note-picture-macos .note-picture-actions .button-regular { padding-inline: 12px; }
+}

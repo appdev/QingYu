@@ -155,11 +155,12 @@ async function renderPicture(request: PictureRequest, look: Look) {
   } finally { scene.remove(); }
 }
 
-export function mountNotePicture(root: HTMLElement, request: PictureRequest, detailed = false) {
+export function mountNotePicture(root: HTMLElement, request: PictureRequest, detailed = false, closeMacDialog?: () => void) {
   const look = lookFromDevice();
   const area = document.createElement('div'); area.className = detailed ? 'note-picture note-picture-detailed' : 'note-picture';
+  if (closeMacDialog) area.classList.add('note-picture-macos');
   const content = document.createElement('div'); content.className = 'note-picture-controls';
-  const preview = document.createElement('img'); preview.className = 'note-picture-preview'; preview.alt = '导出的笔记图片预览'; preview.hidden = true;
+  let preview = document.createElement('img'); preview.className = 'note-picture-preview'; preview.alt = '导出的笔记图片预览'; preview.hidden = true;
   const status = document.createElement('p'); status.className = 'note-picture-status'; status.role = 'status';
   const backgrounds = document.createElement('div'); backgrounds.className = 'note-picture-backgrounds'; backgrounds.role = 'group'; backgrounds.ariaLabel = translatedLabel('背景');
   const label = document.createElement('span'); label.textContent = translatedLabel('背景'); if (!detailed) backgrounds.append(label);
@@ -173,7 +174,7 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     backgrounds.append(button); return { scene, button };
   });
   content.append(preview);
-  if (!detailed) content.append(status);
+  if (!detailed || closeMacDialog) content.append(status);
   content.append(backgrounds);
   function saveLook() { try { localStorage.setItem(configKey, JSON.stringify({ scene: look.scene, mark: look.mark })); } catch { /* This render remains usable. */ } }
   if (detailed) {
@@ -185,27 +186,35 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     light.onclick = () => { look.dark = false; updateMode(); void draw(); }; dark.onclick = () => { look.dark = true; updateMode(); void draw(); };
     updateMode(); mode.append(light, dark);
     const mark = document.createElement('label'), toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = look.mark;
-    toggle.role = 'switch';
+    if (!closeMacDialog) toggle.role = 'switch';
     toggle.onchange = () => { look.mark = toggle.checked; saveLook(); void draw(); }; mark.append(toggle, ' 轻羽标记');
     options.append(mode, mark); content.append(options);
   }
-  if (detailed) content.append(status);
+  if (detailed && !closeMacDialog) content.append(status);
   const buttons = document.createElement('div'); buttons.className = 'note-picture-actions';
+  if (closeMacDialog) {
+    const done = document.createElement('button');
+    done.type = 'button'; done.className = 'button quiet-button';
+    done.textContent = translatedLabel('done'); done.onclick = closeMacDialog;
+    buttons.append(done);
+  }
   const isMobile = document.documentElement.hasAttribute('data-mobile');
   const isMac = native && document.documentElement.dataset.platform === 'macos';
   const nativeImageShare = native && isMobile;
   const filename = pictureFilename(request.title);
   let result: Awaited<ReturnType<typeof renderPicture>>, imageURL = '', generation = 0;
   // 原生手机通过系统分享存图；浏览器可直接下载。
-  const actionOrder = detailed ? (nativeImageShare ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const) : ['copy', 'save', 'share'] as const;
+  const actionOrder = !detailed || closeMacDialog ? ['copy', 'save', 'share'] as const
+    : nativeImageShare ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const;
   const actions = actionOrder.map(action => {
     const button = document.createElement('button'); button.type = 'button'; button.disabled = true;
-    const title = { copy: '复制图片', save: '保存…', share: detailed ? '分享' : '分享…' }[action];
+    const title = { copy: closeMacDialog ? '复制' : '复制图片', save: '保存…', share: !detailed || closeMacDialog ? '分享…' : '分享' }[action];
     const label = document.createTextNode(title);
     if (detailed && action === 'copy') button.append(createLucideIcon(document, Copy, 'note-picture-copy-icon'));
     button.append(label); button.dataset.pictureAction = action;
     button.className = action === (detailed ? 'share' : 'copy') ? 'button primary-button' : 'button secondary-button';
-    if (detailed) {
+    if (closeMacDialog) button.classList.add('button-regular');
+    else if (detailed) {
       if (action === 'save') button.classList.add('button-regular', 'button-touch');
       else button.classList.add('button-big', 'button-wide');
     }
@@ -227,22 +236,41 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
         if (action !== 'share') { label.data = action === 'copy' ? '已复制' : '已保存'; setTimeout(() => { label.data = title; }, 1500); }
       } catch (err) { if (!(err instanceof DOMException && err.name === 'AbortError')) status.textContent = translatedLabel('操作未完成，请重试。'); }
     };
-    (detailed && action === 'save' ? content : buttons).append(button);
+    (detailed && !closeMacDialog && action === 'save' ? content : buttons).append(button);
     return button;
   });
   area.append(content, buttons); root.append(area);
   async function draw() {
     const version = ++generation;
-    actions.forEach(button => { button.disabled = true; });
+    if (!closeMacDialog || !result) {
+      actions.forEach(button => { button.disabled = true; });
+      status.textContent = translatedLabel('正在生成图片…');
+    }
     for (const { scene, button } of swatches) button.ariaPressed = String(scene === look.scene);
-    status.textContent = translatedLabel('正在生成图片…');
     const next = await renderPicture(request, { ...look }).catch(() => null);
     if (version !== generation || !area.isConnected) return;
     if (!next) { status.textContent = next === null ? translatedLabel('无法生成图片。') : translatedLabel('没有可分享的内容。'); return; }
+    const nextURL = URL.createObjectURL(next.blob);
+    if (closeMacDialog) {
+      const image = new Image();
+      image.className = preview.className;
+      image.alt = preview.alt;
+      image.src = nextURL;
+      const decoded = await image.decode().then(() => true, () => false);
+      const current = version === generation && area.isConnected;
+      if (!current || !decoded) {
+        URL.revokeObjectURL(nextURL);
+        if (current) status.textContent = translatedLabel('无法生成图片。');
+        return;
+      }
+      preview.replaceWith(image);
+      preview = image;
+    } else {
+      preview.src = nextURL; preview.hidden = false;
+    }
     result = next;
     if (imageURL) URL.revokeObjectURL(imageURL);
-    imageURL = URL.createObjectURL(next.blob);
-    preview.src = imageURL; preview.hidden = false;
+    imageURL = nextURL;
     status.textContent = next.fades ? (next.selected ? '选区过长，图片末尾会淡出。可缩小选区以显示全部。' : '笔记过长，图片末尾会淡出。可选择一段内容再分享。') : '';
     actions.forEach(button => { button.disabled = false; });
   }
@@ -251,13 +279,18 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
 }
 
 export function showNotePicture(request: PictureRequest, restoreFocus: () => void) {
+  const html = document.documentElement;
+  const macDialog = native && html.dataset.platform === 'macos' && !html.hasAttribute('data-mobile');
   return openFeaturePanel({
     title: translatedLabel('分享为图片'),
+    className: macDialog ? 'note-picture-macos-dialog' : undefined,
     mount: (dialog, close) => ({
-      dispose: mountFeaturePanel(dialog, translatedLabel('分享为图片'), close, root => mountNotePicture(root, request, true)),
+      dispose: macDialog
+        ? mountNotePicture(dialog, request, true, close)
+        : mountFeaturePanel(dialog, translatedLabel('分享为图片'), close, root => mountNotePicture(root, request, true)),
     }),
     restoreFocus,
-    openWindow: async () => {
+    openWindow: macDialog ? undefined : async () => {
       const { openPictureWindow } = await import('./picture-window');
       await openPictureWindow(request, restoreFocus);
     },

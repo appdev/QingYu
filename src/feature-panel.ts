@@ -35,13 +35,13 @@ export async function openFeaturePanel(options: {
   title: string;
   mount: (dialog: HTMLDialogElement, close: () => void) => DialogContent;
   restoreFocus?: () => void;
-  openWindow: () => Promise<void>;
+  openWindow?: () => Promise<void>;
   className?: string;
   animated?: boolean;
   dismissOnBackdrop?: boolean;
   dragHandle?: string;
 }) {
-  if (usesFeatureWindow()) { await options.openWindow(); return; }
+  if (options.openWindow && usesFeatureWindow()) { await options.openWindow(); return; }
   const previous = document.activeElement as HTMLElement | null;
   const dialog = document.createElement('dialog');
   dialog.className = 'feature-panel-dialog';
