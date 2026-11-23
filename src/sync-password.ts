@@ -1,5 +1,5 @@
-import { createStore, importBucketKey, putSyncObject } from './sync-store';
-import { importAesKey, REMOTE_MANIFEST_KEY, sha256Hex, type Config, type Storage } from './vendor/mdsync/core';
+import { createStore, importBucketKey, putSyncObject, type S3Config } from './sync-store';
+import { importAesKey, REMOTE_MANIFEST_KEY, sha256Hex, type Storage } from './vendor/mdsync/core';
 
 const path = 'miaoyan-key.json';
 const encoder = new TextEncoder();
@@ -78,7 +78,7 @@ function gcm(prefix: string, keyId: string, iv: Uint8Array<ArrayBuffer>, normali
   return { name: 'AES-GCM', iv, tagLength: 128, additionalData: encoder.encode(JSON.stringify(fields)) };
 }
 
-export async function manageSyncPassword(config: Config, cache: KeyCache, action?: PasswordAction, beforeWrite?: () => Promise<void>): Promise<PasswordInfo> {
+export async function manageSyncPassword(config: S3Config, cache: KeyCache, action?: PasswordAction, beforeWrite?: () => Promise<void>): Promise<PasswordInfo> {
   const store = createStore(config);
   const envelope = await readEnvelope(store);
   if (envelope && 'legacy' in envelope) throw new LegacySyncKey();

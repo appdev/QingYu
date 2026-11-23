@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { SyncSnapshotChanged, type Library } from './notebook';
 import type { AssetPlaceholders, AssetStat, StagedAsset } from './sync-files';
 import { syncNotebook } from './sync';
-import { normalizeSettings, s3Defaults, testS3Connection, type S3Connection } from './sync-store';
+import { normalizeSettings, s3Defaults, testS3Connection, withCloudCredentials, type S3Connection, type S3Grant } from './sync-store';
 import { setRequestHandler } from './vendor/mdsync/core';
 
 // Only the private server process owns these pipes. Browsers never run this entry point.
@@ -17,6 +17,7 @@ function request<T>(operation: string, args: object = {}): Promise<T> {
     const reply = await replies.next();
     if (reply.done) throw new Error('服务器同步会话已关闭');
     const value = JSON.parse(reply.value);
+    if (operation === 'credentials' && value.credentialError) throw new Error(value.credentialError);
     if (value.error === 'stale') throw new SyncSnapshotChanged();
     if (value.error) throw new Error('服务器笔记库未能处理同步请求');
     return value.value as T;
@@ -81,9 +82,14 @@ function requestWithoutVerification(url: string, method: string, headers: Record
 }
 
 async function run() {
-  const profile = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as S3Connection & { mode?: string };
+  const saved = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as S3Connection & { mode?: string };
+  if (saved.mode && saved.mode !== 's3' && saved.mode !== 'cloud') throw new Error('请先切换至 S3 同步');
+  async function credentials(rejectedKey?: string) {
+    const { concurrentReqs, ...grant } = await request<S3Grant & { concurrentReqs: number }>('credentials', { rejectedKey });
+    return { ...grant, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
+  }
+  const profile = saved.mode === 'cloud' ? withCloudCredentials(await credentials(), credentials) : saved;
   secrets.push(...[profile.accessKeyId, profile.secretAccessKey].filter(Boolean));
-  if (profile.mode && profile.mode !== 's3') throw new Error('请先切换至 S3 同步');
   const config = normalizeSettings(profile);
   const target = new URL(config.endpoint);
   if (!config.forcePathStyle) target.hostname = config.bucket + '.' + target.hostname;

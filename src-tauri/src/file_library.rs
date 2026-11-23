@@ -1856,27 +1856,36 @@ pub async fn library_open(
     Ok(snapshot)
 }
 
-// Probe before taking the library lock or touching its index: OS permission
-// prompts can leave directory opens waiting indefinitely.
+// Probe before taking the library lock or touching its index while the OS is asking for permission.
 #[cfg(any(feature = "app", test))]
 fn check_directory_access(
     root: PathBuf,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
     probe: impl FnOnce(&Path) -> io::Result<()> + Send + 'static,
 ) -> Result<()> {
-    let (send, receive) = std::sync::mpsc::channel();
-    let path = root.clone();
-    std::thread::Builder::new()
-        .name("library-access".into())
-        .spawn(move || {
-            let _ = send.send(probe(&path));
-        })
-        .map_err(error)?;
-    match receive.recv_timeout(timeout) {
-        Ok(result) => result.map_err(|reason| format!("无法读取笔记目录 {}：{reason}。请检查目录访问权限，或在设置中更改笔记位置。", root.display())),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!("读取笔记目录超时：{}。请检查系统的文件夹访问提示，完成后使用“文件 → 重新读取笔记文件夹”，或在设置中更改笔记位置。原笔记未被覆盖。", root.display())),
-        Err(reason) => Err(error(reason)),
-    }
+    let result = if let Some(timeout) = timeout {
+        let (send, receive) = std::sync::mpsc::channel();
+        let path = root.clone();
+        std::thread::Builder::new()
+            .name("library-access".into())
+            .spawn(move || {
+                let _ = send.send(probe(&path));
+            })
+            .map_err(error)?;
+        match receive.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err(format!("读取笔记目录超时：{}。请检查系统的文件夹访问提示，完成后使用“文件 → 重新读取笔记文件夹”，或在设置中更改笔记位置。原笔记未被覆盖。", root.display())),
+            Err(reason) => return Err(error(reason)),
+        }
+    } else {
+        probe(&root)
+    };
+    result.map_err(|reason| {
+        format!(
+            "无法读取笔记目录 {}：{reason}。请检查目录访问权限，或在设置中更改笔记位置。",
+            root.display()
+        )
+    })
 }
 
 #[cfg(any(feature = "app", test))]
@@ -1896,11 +1905,9 @@ fn read_library_directory(root: &Path) -> io::Result<()> {
 #[cfg(feature = "app")]
 async fn open_accessible_library(root: PathBuf, seed: Option<Library>) -> Result<DiskLibrary> {
     tauri::async_runtime::spawn_blocking(move || {
-        check_directory_access(
-            root.clone(),
-            std::time::Duration::from_secs(10),
-            read_library_directory,
-        )?;
+        // macOS can block this probe until the user answers the Documents access prompt.
+        let timeout = (!cfg!(target_os = "macos")).then_some(std::time::Duration::from_secs(10));
+        check_directory_access(root.clone(), timeout, read_library_directory)?;
         DiskLibrary::open(root, seed)
     })
     .await

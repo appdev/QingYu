@@ -255,7 +255,7 @@ describe('MDSync application synchronization', () => {
     native.mockImplementation(async (command, args, options) => {
       if (command === 'sync_load_profile') return profile as never;
       if (command === 'sync_save_profile') { profile = (args as { profile: typeof profile }).profile; return; }
-      if (command === 'account_sync_config') return { ...old, concurrentReqs: 2 } as never;
+      if (command === 'account_sync_config') return { ...old, concurrentReqs: 2, credentialsExpireAt: Date.now() / 1000 + 1200 } as never;
       if (command === 'sync_cached_key') {
         const { target, key } = args as { target: string; key?: string };
         if (key) keys.set(target, key);

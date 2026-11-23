@@ -205,24 +205,15 @@ impl ServerSync {
         Ok(())
     }
 
-    async fn worker_profile(&self, state: &Service, account: Option<&str>) -> std::result::Result<serde_json::Value, String> {
+    fn worker_profile(&self, account: Option<&str>) -> std::result::Result<serde_json::Value, String> {
         let profile = self.profile().map_err(|e| e.to_string())?;
         match account {
-            Some(account) => {
+            Some(_) => {
                 // 还没有保存过配置时和 App 一样默认是轻羽云存储
                 if !profile.as_ref().is_none_or(Profile::cloud) {
                     return Err("请先切换至轻羽云存储".into());
                 }
-                let session = ClientAccount::session_path(self.config().map_err(|e| e.to_string())?);
-                let grant = state
-                    .account
-                    .sync_config(session, account)
-                    .await
-                    .map_err(account_message)?;
-                let mut value = serde_json::to_value(grant).map_err(|e| e.to_string())?;
-                let concurrency = value["concurrentReqs"].as_u64().unwrap_or(2).clamp(1, 8);
-                value["concurrency"] = concurrency.into();
-                Ok(value)
+                Ok(json!({ "mode": "cloud" }))
             }
             None => {
                 let profile = profile.ok_or("请先填写 S3 连接配置")?;
@@ -235,8 +226,8 @@ impl ServerSync {
     }
 
     async fn run(&self, state: &Arc<Service>, account: Option<&str>) -> std::result::Result<Option<String>, String> {
-        let profile = self.worker_profile(state, account).await?;
-        self.spawn(state, profile, "sync").await
+        let profile = self.worker_profile(account)?;
+        self.spawn(state, profile, "sync", account).await
     }
 
     /// 测试连接：用表单里的配置跑一次读写删检查，不保存配置。
@@ -248,14 +239,15 @@ impl ServerSync {
         if profile.cloud() {
             return Err("请先切换至 S3 同步".into());
         }
-        self.spawn(state, serde_json::to_value(profile).map_err(|e| e.to_string())?, "test")
+        self.spawn(state, serde_json::to_value(profile).map_err(|e| e.to_string())?, "test", None)
             .await
             .map(|_| ())
     }
 
-    async fn spawn(&self, state: &Arc<Service>, profile: serde_json::Value, task: &'static str) -> std::result::Result<Option<String>, String> {
+    async fn spawn(&self, state: &Arc<Service>, profile: serde_json::Value, task: &'static str, account: Option<&str>) -> std::result::Result<Option<String>, String> {
         // 子进程从配置目录里的临时文件读取连接配置，用完即删
         let dir = self.config().map_err(|e| e.to_string())?.to_owned();
+        let cloud = account.map(|id| (ClientAccount::session_path(&dir), id.to_owned()));
         let file = tokio::task::spawn_blocking(move || -> Result<tempfile::TempPath> {
             let file = tempfile::NamedTempFile::new_in(&dir).map_err(error)?;
             #[cfg(unix)]
@@ -272,7 +264,7 @@ impl ServerSync {
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
         let (state, worker, path) = (state.clone(), self.worker.clone(), file.to_path_buf());
-        let result = tokio::task::spawn_blocking(move || run_worker(&state, &worker, &path, task))
+        let result = tokio::task::spawn_blocking(move || run_worker(&state, &worker, &path, task, cloud.as_ref()))
             .await
             .map_err(|e| e.to_string())?;
         drop(file);
@@ -320,6 +312,9 @@ impl ServerSync {
     rename_all_fields = "camelCase"
 )]
 enum Operation {
+    Credentials {
+        rejected_key: Option<String>,
+    },
     Snapshot,
     ReadAsset {
         asset: assets::AssetStat,
@@ -362,6 +357,7 @@ fn dispatch(
 ) -> Result<serde_json::Value> {
     let mut store = state.store.lock().map_err(error)?;
     let value = match op {
+        Operation::Credentials { .. } => return Err(error("credentials require a cloud sync session")),
         Operation::Snapshot => {
             store.reconcile(None)?;
             json!({ "value": { "library": store.data, "revision": store.revision,
@@ -456,7 +452,7 @@ impl Drop for Worker {
 }
 
 /// 成功时返回同步程序报告的完成提示。
-fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str) -> std::result::Result<Option<String>, String> {
+fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str, cloud: Option<&(PathBuf, String)>) -> std::result::Result<Option<String>, String> {
     let mut child = Worker(
         Command::new("node")
             .arg(worker)
@@ -482,8 +478,16 @@ fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str) -> std
             Operation::Finished { message } => finished = Some(message.clone()),
             _ => {}
         }
-        let response =
-            dispatch(state, &mut stage, op).unwrap_or_else(|_| json!({"error":"storage"}));
+        let response = if let (Operation::Credentials { rejected_key }, Some((session, account))) = (&op, cloud) {
+            match tokio::runtime::Handle::current().block_on(
+                state.account.sync_config(session.clone(), account, rejected_key.as_deref()),
+            ) {
+                Ok(grant) => json!({ "value": grant }),
+                Err(error) => json!({ "credentialError": account_message(error) }),
+            }
+        } else {
+            dispatch(state, &mut stage, op).unwrap_or_else(|_| json!({"error":"storage"}))
+        };
         serde_json::to_writer(&mut input, &response).map_err(|e| e.to_string())?;
         input.write_all(b"\n").map_err(|e| e.to_string())?;
         input.flush().map_err(|e| e.to_string())?;

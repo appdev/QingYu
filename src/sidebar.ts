@@ -726,7 +726,11 @@ export function createSidebar(getBook: () => Notebook, actions: {
     list.addEventListener('scroll', () => { frame ||= requestAnimationFrame(markStuck); }, { passive: true });
     new MutationObserver(() => { frame ||= requestAnimationFrame(markStuck); }).observe(list, { childList: true });
   }
-  toggle.onclick = () => mobile ? navigate('notes') : changeLayout(externalWindow || innerWidth <= 900 ? 'cycle' : layout.columns === 'note' ? 'notes' : 'folders');
+  toggle.onclick = event => {
+    if (mobile) return navigate('notes');
+    changeLayout(externalWindow || innerWidth <= 900 ? 'cycle' : layout.columns === 'note' ? 'notes' : 'folders');
+    if (externalWindow && event.detail > 0) toggle.blur();
+  };
   foldersBack.onclick = () => navigate('folders');
   toggle.onpointerdown = event => event.preventDefault();
   $('#sidebar-backdrop').onclick = () => changeLayout('notes');

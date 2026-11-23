@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { SyncSnapshotChanged, type Notebook } from './notebook';
 import { syncNotebook } from './sync';
-import { createStore, defaultAssetDownload, hasS3Connection, normalizeSettings, s3Defaults, syncMode, syncTargetIdentity, testS3Connection, validateS3Options, type S3Connection, type S3Settings } from './sync-store';
+import { createStore, defaultAssetDownload, hasS3Connection, normalizeSettings, s3Defaults, syncMode, syncTargetIdentity, testS3Connection, validateS3Options, withCloudCredentials, type S3Connection, type S3Grant, type S3Settings } from './sync-store';
 import { setRequestHandler, sha256Hex, type Request, type Response, type Storage } from './vendor/mdsync/core';
 import { createAssetFetcher } from './asset-fetch';
 import { LegacySyncKey, manageSyncPassword, openProtectedKey, syncPasswordRequired, type KeyCache, type PasswordAction, type PasswordInfo } from './sync-password';
@@ -113,10 +113,18 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     return next;
   }
   async function accountConnections(accountId: string) {
-    const { concurrentReqs, ...grant } = await invoke<S3Connection & { concurrentReqs: number }>('account_sync_config', { accountId });
-    const legacy = { ...grant, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
+    async function credentials(rejectedKey?: string) {
+      const { concurrentReqs, ...grant } = await invoke<S3Grant & { concurrentReqs: number }>('account_sync_config',
+        rejectedKey ? { accountId, rejectedKey } : { accountId });
+      return { ...grant, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
+    }
+    const legacy = await credentials();
     // Keep the new vault within the prefix authorized by the temporary credentials.
-    return { legacy, current: { ...legacy, prefix: `${legacy.prefix}/vault-v2` } };
+    const vault = (grant: S3Grant) => ({ ...grant, prefix: `${grant.prefix}/vault-v2` });
+    return {
+      legacy: withCloudCredentials(legacy, credentials),
+      current: withCloudCredentials(vault(legacy), async rejectedKey => vault(await credentials(rejectedKey))),
+    };
   }
   const targetDigest = (target: string) => sha256Hex(textEncoder.encode(target));
   const keyCache = (accountId?: string): KeyCache => async (target, key) =>

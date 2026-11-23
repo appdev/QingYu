@@ -47,9 +47,10 @@ export function advanceSessionAfterPush(state: State, result: Comparison, head: 
 export function advanceBaselineForPaths(previous: Head | null, head: Head, paths: ReadonlySet<string>, folders: readonly string[], scope: Scope): Head;
 export const VAULT_SPACE: { id: string; root: string; [key: string]: unknown };
 export class ConcurrentPushError extends Error {}
-export function createS3Adapter(config: Config): Storage;
+export type S3Request = { method: string; key: string; query?: Record<string, string>; headers?: Record<string, string>; body?: Uint8Array };
+export function createS3Adapter(config: Config, request?: (input: S3Request) => Promise<Response>): Storage;
 export function defaultS3Config(): Config;
-export function createS3Signer(config: Config): (input: { method: string; key: string; headers?: Record<string, string>; body?: Uint8Array }) => Promise<{ url: string; headers: Record<string, string> }>;
+export function createS3Signer(config: Config): (input: S3Request) => Promise<{ url: string; headers: Record<string, string> }>;
 export function setRequestHandler(handler: (request: Request) => Promise<Response>): void;
 export function requestUrl(request: Request): Promise<Response>;
 export function importAesKey(bytes: Uint8Array): Promise<CryptoKey>;

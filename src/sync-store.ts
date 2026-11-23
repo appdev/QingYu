@@ -1,8 +1,13 @@
 import * as core from './vendor/mdsync/core';
 export type SyncMode = 'cloud' | 's3';
 type S3Fields = Pick<core.Config, 'endpoint' | 'region' | 'bucket' | 'prefix' | 'accessKeyId' | 'secretAccessKey'>;
-export type S3Connection = S3Fields & Partial<Pick<core.Config, 'forcePathStyle' | 'concurrency'>> & { timeout?: number; tlsVerify?: boolean; assetDownload?: 'all' | 'on-demand' };
-export type S3Settings = S3Connection & { mode?: SyncMode };
+type S3Request = (input: core.S3Request) => Promise<core.Response>;
+export type S3Connection = S3Fields & Partial<Pick<core.Config, 'forcePathStyle' | 'concurrency'>> & {
+  timeout?: number; tlsVerify?: boolean; assetDownload?: 'all' | 'on-demand'; request?: S3Request;
+};
+export type S3Grant = S3Connection & { credentialsExpireAt: number };
+export type S3Config = core.Config & { request?: S3Request };
+export type S3Settings = Omit<S3Connection, 'request'> & { mode?: SyncMode };
 export const s3Defaults = { timeout: 45, tlsVerify: true, forcePathStyle: true, concurrency: 2, assetDownload: 'all' as const };
 export const defaultAssetDownload = (mobile: boolean) => mobile ? 'on-demand' as const : s3Defaults.assetDownload;
 export function hasS3Connection(settings: S3Settings) {
@@ -17,7 +22,7 @@ export function validateS3Options(settings: S3Connection) {
 export function syncMode(settings: S3Settings): SyncMode {
   return settings.mode ?? ([settings.endpoint, settings.bucket, settings.accessKeyId, settings.secretAccessKey].some(value => value?.trim()) ? 's3' : 'cloud');
 }
-function normalizeTarget(settings: S3Connection): core.Config {
+function normalizeTarget(settings: S3Connection): S3Config {
   validateS3Options(settings);
   const endpoint = new URL(settings.endpoint.trim());
   if (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname))) throw new Error('S3 地址需要使用 HTTPS');
@@ -28,7 +33,7 @@ function normalizeTarget(settings: S3Connection): core.Config {
   return { ...core.defaultS3Config(), ...settings, endpoint: endpoint.href.replace(/\/+$/, ''), bucket, prefix, region: settings.region.trim() || 'us-east-1',
     accessKeyId: settings.accessKeyId.trim(), concurrency: settings.concurrency ?? 2, forcePathStyle: settings.forcePathStyle ?? true };
 }
-export function normalizeSettings(settings: S3Connection): core.Config {
+export function normalizeSettings(settings: S3Connection): S3Config {
   const config = normalizeTarget(settings);
   if (!config.accessKeyId || !config.secretAccessKey) throw new Error('请填写 S3 访问凭证');
   return config;
@@ -62,15 +67,51 @@ export async function testS3Connection(settings: S3Connection) {
   catch (error) { failures.push(error); }
   if (failures.length) throw new Error(failures.map(error => error instanceof Error ? error.message : String(error)).join('\n'));
 }
-export function createStore(config: core.Config): core.Storage {
-  const store = core.createS3Adapter(config), sign = core.createS3Signer(config);
+export function withCloudCredentials(grant: S3Grant, refresh: (rejectedKey?: string) => Promise<S3Grant>): S3Connection {
+  const target = normalizeSettings(grant);
+  let current = grant, sign = core.createS3Signer(target);
+  let pending: Promise<void> | undefined;
+  function renew(rejectedKey?: string) {
+    return pending ??= refresh(rejectedKey).then(next => {
+      const config = normalizeSettings(next);
+      for (const key of ['endpoint', 'bucket', 'prefix', 'region', 'forcePathStyle'] as const) {
+        if (config[key] !== target[key]) throw new Error('轻羽存储目标已变更，请重新同步');
+      }
+      current = next;
+      sign = core.createS3Signer(config);
+    }).finally(() => { pending = undefined; });
+  }
+  async function send(input: core.S3Request) {
+    const grant = current;
+    const signed = await sign(input);
+    const reply = await core.requestUrl({ ...signed, method: input.method, body: input.body?.slice().buffer });
+    if (reply.status < 400) return { grant, reply };
+    let text = reply.text;
+    for (const secret of [grant.accessKeyId, grant.secretAccessKey]) {
+      text = text.replaceAll(secret, '[已隐藏]').replaceAll(encodeURIComponent(secret), '[已隐藏]');
+    }
+    return { grant, reply: { ...reply, text } };
+  }
+  return { ...grant, async request(input) {
+    if (pending || current.credentialsExpireAt * 1000 - Date.now() <= 120_000) await (pending ?? renew());
+    const { grant, reply } = await send(input);
+    if (![400, 401, 403].includes(reply.status) ||
+        !/<Code>\s*(?:ExpiredToken|InvalidToken|InvalidAccessKeyId)\s*<\/Code>/.test(reply.text)) return reply;
+    if (pending || current === grant) await (pending ?? renew(grant.accessKeyId));
+    return (await send(input)).reply;
+  } };
+}
+
+export function createStore(config: S3Config): core.Storage {
+  const store = core.createS3Adapter(config, config.request), sign = core.createS3Signer(config);
   store.putManifest = (body, etag) => putSyncObject(config, core.REMOTE_MANIFEST_KEY, body, etag, sign);
   return store;
 }
-export async function putSyncObject(config: core.Config, path: string, body: Uint8Array, etag: string | null, sign = core.createS3Signer(config)) {
+export async function putSyncObject(config: S3Config, path: string, body: Uint8Array, etag: string | null, sign = core.createS3Signer(config)) {
   const headers: Record<string, string> = etag === null ? { 'If-None-Match': '*' } : { 'If-Match': etag };
-  const signed = await sign({ method: 'PUT', key: `${config.prefix}/${path}`, headers, body });
-  const reply = await core.requestUrl({ ...signed, method: 'PUT', body: body.slice().buffer as ArrayBuffer });
+  const input = { method: 'PUT', key: `${config.prefix}/${path}`, headers, body };
+  const reply = config.request ? await config.request(input)
+    : await core.requestUrl({ ...await sign(input), method: 'PUT', body: body.slice().buffer as ArrayBuffer });
   if (reply.status === 409 || reply.status === 412) return false;
   if (reply.status < 200 || reply.status >= 300) throw new Error(`S3 条件写入失败（HTTP ${reply.status}）`);
   return true;

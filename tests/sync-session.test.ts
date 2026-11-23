@@ -144,7 +144,7 @@ it('rejects manual sync in cloud mode, preserves the S3 profile, and allows it a
 
 it('uses cloud credentials for the scoped target and never saves them as a custom S3 profile', async () => {
   persisted = { ...config, mode: 'cloud' };
-  const grant = { ...config, prefix: 'repo/qingyu/v1', accessKeyId: 'cloud-id', secretAccessKey: 'cloud-secret', forcePathStyle: false, concurrentReqs: 4 };
+  const grant = { ...config, prefix: 'repo/qingyu/v1', accessKeyId: 'cloud-id', secretAccessKey: 'cloud-secret', forcePathStyle: false, concurrentReqs: 4, credentialsExpireAt: Date.now() / 1000 + 1200 };
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === 'sync_load_profile') return persisted;
     if (command === 'account_sync_config') return grant;

@@ -6,7 +6,7 @@ use std::{
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
     sync::OnceLock,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 
@@ -17,6 +17,7 @@ const STORAGE_ERROR: &str = "secure_storage";
 const MAX_SESSION_BYTES: u64 = 64 * 1024;
 const MAX_CACHE_BYTES: u64 = 1024 * 1024;
 const ACCOUNT_CACHE_TTL: u64 = 24 * 60 * 60;
+const S3_REFRESH_WINDOW: u64 = 120;
 const SYNC_PREFIX: &str = "repo/qingyu/v1";
 type Result<T> = std::result::Result<T, AccountError>;
 
@@ -37,6 +38,13 @@ impl From<&'static str> for AccountError {
 pub struct ClientAccount {
     session: Mutex<AccountState>,
     client: OnceLock<Result<Client>>,
+    refresh_retry: Mutex<Option<RefreshRetry>>,
+}
+
+struct RefreshRetry {
+    after: Instant,
+    delay: Duration,
+    error: AccountError,
 }
 
 #[derive(Default)]
@@ -344,6 +352,7 @@ struct Service<'a> {
     origin: &'a str,
     client: &'a Client,
     session: PathBuf,
+    refresh_retry: &'a Mutex<Option<RefreshRetry>>,
 }
 
 impl Service<'_> {
@@ -433,8 +442,11 @@ impl Service<'_> {
         if status.as_u16() == 429 {
             return Err("rate_limited".into());
         }
-        if status.as_u16() == 503 {
+        if status.is_server_error() {
             return Err("temporarily_unavailable".into());
+        }
+        if status.as_u16() == 401 && path == "refresh" {
+            return Err("invalid_refresh_token".into());
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| "response_lost")? {
@@ -465,7 +477,6 @@ impl Service<'_> {
             }
             (401, "login_failed") => Err("login_failed".into()),
             (401, "invalid_token") => Err("invalid_token".into()),
-            (401, "invalid_refresh_token") => Err("invalid_refresh_token".into()),
             (403, "email_unverified") => Err("email_unverified".into()),
             (403, "subscription_required") => Err("subscription_required".into()),
             _ => Err("invalid_response".into()),
@@ -481,6 +492,10 @@ impl Service<'_> {
             self.clear_session()?;
             return Err("signed_out".into());
         }
+        let mut retry = self.refresh_retry.lock().await;
+        if let Some(retry) = retry.as_ref().filter(|retry| Instant::now() < retry.after) {
+            return Err(retry.error.clone());
+        }
         let result = self
             .send::<Tokens>(
                 "refresh",
@@ -495,15 +510,22 @@ impl Service<'_> {
             {
                 tokens
             }
-            Err(
-                error @ AccountError::Code("network" | "temporarily_unavailable" | "rate_limited"),
-            ) => return Err(error),
-            // The server might have consumed the old credential before the connection failed.
-            _ => {
+            Err(AccountError::Code("invalid_refresh_token")) => {
+                *retry = None;
                 self.clear_session()?;
                 return Err("signed_out".into());
             }
+            Err(error @ AccountError::Code("network" | "response_lost" | "rate_limited" | "temporarily_unavailable")) => {
+                let delay = retry.as_ref().map_or(Duration::from_secs(2), |previous| {
+                    (previous.delay * 2).min(Duration::from_secs(30))
+                });
+                *retry = Some(RefreshRetry { after: Instant::now() + delay, delay, error: error.clone() });
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+            Ok(_) => return Err("invalid_response".into()),
         };
+        *retry = None;
         if let Err(error) = persist(&self.session, access, tokens, saved.account_id) {
             self.clear_session()?;
             return Err(error);
@@ -660,12 +682,14 @@ impl Service<'_> {
         &self,
         state: &mut AccountState,
         account_id: &str,
+        rejected_key: Option<&str>,
     ) -> Result<StorageConfig> {
         self.require_account(&state.access, account_id)?;
-        let minimum_expiry = now().saturating_add(60);
+        let minimum_expiry = now().saturating_add(S3_REFRESH_WINDOW);
         if let Some((id, config)) = &state.storage {
             if id == account_id
                 && config.credentials_expire_at > minimum_expiry
+                && rejected_key != Some(config.access_key_id.as_str())
                 && state
                     .access
                     .as_ref()
@@ -715,6 +739,7 @@ impl Service<'_> {
             return Err("invalid_response".into());
         }
         persist(&self.session, access, tokens, profile.id.clone())?;
+        *self.refresh_retry.lock().await = None;
         self.account_info(access, profile).await
     }
 
@@ -785,6 +810,7 @@ impl ClientAccount {
             origin: API_ORIGIN,
             client,
             session,
+            refresh_retry: &self.refresh_retry,
         })
     }
 
@@ -859,10 +885,10 @@ impl ClientAccount {
             .await
     }
 
-    pub async fn sync_config(&self, session: PathBuf, account_id: &str) -> Result<StorageConfig> {
+    pub async fn sync_config(&self, session: PathBuf, account_id: &str, rejected_key: Option<&str>) -> Result<StorageConfig> {
         let mut state = self.session.lock().await;
         self.service(session)?
-            .storage_config(&mut state, account_id)
+            .storage_config(&mut state, account_id, rejected_key)
             .await
     }
 
@@ -982,11 +1008,12 @@ pub async fn account_sync_config(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, ClientAccount>,
     account_id: String,
+    rejected_key: Option<String>,
 ) -> Result<StorageConfig> {
     if window.label() != "main" {
         return Err("not_allowed".into());
     }
-    state.sync_config(app_session(&window)?, &account_id).await
+    state.sync_config(app_session(&window)?, &account_id, rejected_key.as_deref()).await
 }
 
 #[cfg(feature = "app")]
@@ -1066,6 +1093,9 @@ mod tests {
                 if let Some(payload) = payload {
                     assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), payload);
                 }
+                if status == 0 {
+                    continue;
+                }
                 let body = response.to_string();
                 write!(stream, "HTTP/1.1 {status} Test\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
             }
@@ -1097,6 +1127,7 @@ mod tests {
             origin: &origin,
             client: &http,
             session: directory.path().join(".account/session.json"),
+            refresh_retry: &Mutex::default(),
         };
         let mut state = AccountState {
             access: Some(Access {
@@ -1185,6 +1216,7 @@ mod tests {
             origin: &origin,
             client: &http,
             session: directory.path().join(".account/session.json"),
+            refresh_retry: &Mutex::default(),
         };
         let mut state = AccountState {
             access: Some(Access {
@@ -1268,6 +1300,13 @@ mod tests {
                 200,
                 grant("second"),
             ),
+            (
+                "storage-config",
+                Some("access"),
+                Some(json!({})),
+                200,
+                grant("third"),
+            ),
         ]);
         let directory = tempfile::tempdir().unwrap();
         let http = client().unwrap();
@@ -1275,6 +1314,7 @@ mod tests {
             origin: &origin,
             client: &http,
             session: directory.path().join("session.json"),
+            refresh_retry: &Mutex::default(),
         };
         let mut state = AccountState {
             access: Some(Access {
@@ -1285,29 +1325,33 @@ mod tests {
             }),
             ..Default::default()
         };
-        let first = service.storage_config(&mut state, "one").await.unwrap();
+        let first = service.storage_config(&mut state, "one", None).await.unwrap();
         assert_eq!(first.prefix, "repo/qingyu/v1");
         assert_eq!(
             service
-                .storage_config(&mut state, "one")
+                .storage_config(&mut state, "one", None)
                 .await
                 .unwrap()
                 .access_key_id,
             "first"
         );
         assert!(matches!(
-            service.storage_config(&mut state, "two").await,
+            service.storage_config(&mut state, "two", None).await,
             Err(AccountError::Code("account_changed"))
         ));
-        state.storage.as_mut().unwrap().1.credentials_expire_at = now() + 30;
+        state.storage.as_mut().unwrap().1.credentials_expire_at = now() + 90;
         assert_eq!(
             service
-                .storage_config(&mut state, "one")
+                .storage_config(&mut state, "one", None)
                 .await
                 .unwrap()
                 .access_key_id,
             "second"
         );
+        for rejected_key in ["second", "second"] {
+            let grant = service.storage_config(&mut state, "one", Some(rejected_key)).await.unwrap();
+            assert_eq!(grant.access_key_id, "third");
+        }
         assert!(!service.session.exists());
         finished.join().unwrap();
     }
@@ -1388,6 +1432,7 @@ mod tests {
             origin: &origin,
             client: &http,
             session: session.clone(),
+            refresh_retry: &Mutex::default(),
         };
         let mut initial = None;
         let info = service
@@ -1510,6 +1555,7 @@ mod tests {
             origin: &origin,
             client: &http,
             session: session.clone(),
+            refresh_retry: &Mutex::default(),
         };
         let mut access = None;
         persist(
@@ -1567,13 +1613,10 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_refresh_discards_the_credential_and_requires_sign_in() {
-        let (origin, done) = mock_api(vec![(
-            "refresh",
-            None,
-            Some(json!({"refreshToken": "revoked"})),
-            401,
-            error("invalid_refresh_token"),
-        )]);
+        let responses = [(0, "response_lost"), (429, "rate_limited"), (502, "temporarily_unavailable"), (401, "invalid_token")];
+        let (origin, done) = mock_api(responses.into_iter().map(|(status, _)| (
+            "refresh", None, Some(json!({"refreshToken": "revoked"})), status, error("invalid_token"),
+        )).collect());
         let directory = tempfile::tempdir().unwrap();
         let session = directory.path().join(".account/session.json");
         save(
@@ -1590,7 +1633,15 @@ mod tests {
             origin: &origin,
             client: &http,
             session: session.clone(),
+            refresh_retry: &Mutex::default(),
         };
+        for (_, code) in &responses[..3] {
+            let expected = Err(AccountError::Code(code));
+            assert_eq!(service.refresh(&mut None).await, expected);
+            assert_eq!(load(&session).unwrap().unwrap().refresh_token, "revoked");
+            assert_eq!(service.refresh(&mut None).await, expected);
+            service.refresh_retry.lock().await.as_mut().unwrap().after = Instant::now();
+        }
         assert!(matches!(
             service.profile(&mut None).await,
             Err(AccountError::Code("signed_out"))

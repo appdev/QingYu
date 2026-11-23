@@ -106,7 +106,7 @@ html[data-platform='macos'] #app-shell[data-external-window] { --external-toggle
   position: absolute; z-index: 32; top: calc(var(--safe-area-top) + 8px); left: var(--external-toggle-left);
   width: 36px; height: 36px; border-radius: 50%;
 }
-#app-shell[data-external-window] > #sidebar-button:is(:hover, [aria-expanded='true']) { background: var(--control-hover); }
+#app-shell[data-external-window] > #sidebar-button:hover { background: var(--control-hover); }
 html #app-shell[data-external-window][data-sidebar='note'] #document-column .titlebar {
   padding-left: calc(var(--external-toggle-left) + 44px);
 }

@@ -94,7 +94,7 @@ fn blocked_directory_access_times_out_without_writing_files() {
     let (finished, done) = std::sync::mpsc::channel();
     let result = check_directory_access(
         root.path().into(),
-        std::time::Duration::from_millis(20),
+        Some(std::time::Duration::from_millis(20)),
         move |_| {
             wait.recv().unwrap();
             finished.send(()).unwrap();
@@ -114,12 +114,36 @@ fn blocked_directory_access_times_out_without_writing_files() {
 }
 
 #[test]
+fn untimed_directory_access_waits_for_permission_result() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().to_path_buf();
+    let (started, waiting) = std::sync::mpsc::channel();
+    let (decide, decision) = std::sync::mpsc::channel();
+    let probe = std::thread::spawn(move || {
+        check_directory_access(path, None, move |_| {
+            started.send(()).unwrap();
+            decision.recv().unwrap()
+        })
+    });
+    waiting.recv().unwrap();
+    assert!(!probe.is_finished());
+    decide.send(Ok(())).unwrap();
+    assert!(probe.join().unwrap().is_ok());
+    let error = check_directory_access(root.path().into(), None, |_| {
+        Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied"))
+    })
+    .unwrap_err();
+    assert!(error.contains("denied"));
+    assert!(!root.path().join(META).exists());
+}
+
+#[test]
 fn directory_access_checks_parents_without_creating_a_missing_library() {
     let root = tempfile::tempdir().unwrap();
     let missing = root.path().join("new/notes");
     check_directory_access(
         missing.clone(),
-        std::time::Duration::from_secs(1),
+        Some(std::time::Duration::from_secs(1)),
         read_library_directory,
     )
     .unwrap();
@@ -128,7 +152,7 @@ fn directory_access_checks_parents_without_creating_a_missing_library() {
     fs::write(&file, "keep").unwrap();
     assert!(check_directory_access(
         file,
-        std::time::Duration::from_secs(1),
+        Some(std::time::Duration::from_secs(1)),
         read_library_directory
     )
     .unwrap_err()

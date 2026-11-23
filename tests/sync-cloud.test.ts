@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { Notebook, libraryKey, type Library } from '../src/notebook';
 import { syncNotebook } from '../src/sync';
-import { createStore, normalizeSettings, type S3Settings } from '../src/sync-store';
+import { createStore, normalizeSettings, withCloudCredentials, type S3Settings } from '../src/sync-store';
 import * as core from '../src/vendor/mdsync/core';
 import { mockAssetDisk } from './fixtures/sync-assets';
 import type { Asset } from '../src/sync-files';
@@ -24,6 +24,41 @@ function device(library = fixture) {
   const book = new Notebook(storage, '');
   return { ...mockAssetDisk(book), storage, setFail: (next: boolean) => { fail = next; } };
 }
+
+it('rotates cloud credentials during sync and re-signs concurrent and conditional S3 requests', async () => {
+  const start = Date.now();
+  const time = vi.spyOn(Date, 'now').mockReturnValue(start);
+  const grant = { endpoint: 'https://s3.example.test', bucket: 'notes', prefix: 'repo/qingyu/v1',
+    region: 'us-east-1', accessKeyId: 'first-key', secretAccessKey: 'first-secret', credentialsExpireAt: start / 1000 + 600 };
+  const refresh = vi.fn(async (rejectedKey?: string) => ({
+    ...grant, accessKeyId: rejectedKey ? 'third-key' : 'second-key', credentialsExpireAt: Date.now() / 1000 + 600,
+  }));
+  const wire = vi.fn(async (request: core.Request) => {
+    const key = request.headers?.Authorization?.match(/Credential=([^/]+)/)?.[1];
+    const expired = request.method === 'PUT' && key === 'second-key';
+    const forbidden = request.url.endsWith('/forbidden');
+    return { status: expired || forbidden ? 403 : 200, headers: {},
+      arrayBuffer: new ArrayBuffer(0), text: expired ? '<Code>InvalidAccessKeyId</Code>' : forbidden ? '<Code>AccessDenied</Code>' : '', json: {} };
+  });
+  core.setRequestHandler(wire);
+  const store = createStore(normalizeSettings(withCloudCredentials(grant, refresh)));
+  try {
+    await store.get('before-sleep');
+    time.mockReturnValue(start + 490_000);
+    await Promise.all([store.get('after-wake'), store.get('second-read')]);
+    expect(refresh.mock.calls).toEqual([[undefined]]);
+    expect(wire.mock.calls.slice(1).map(([r]) => r.headers?.Authorization)).toEqual(
+      [expect.stringContaining('Credential=second-key/'), expect.stringContaining('Credential=second-key/')]);
+    const body = new Uint8Array([42]);
+    await expect(store.putManifest?.(body, '"version"')).resolves.toBe(true);
+    expect(refresh.mock.calls).toEqual([[undefined], ['second-key']]);
+    const [first, retry] = wire.mock.calls.slice(-2).map(([request]) => request);
+    expect(retry).toMatchObject({ url: first?.url, method: 'PUT', headers: { 'If-Match': '"version"', Authorization: expect.stringContaining('Credential=third-key/') } });
+    expect(retry?.body).toEqual(body.buffer);
+    await expect(store.get('forbidden')).rejects.toThrow('403');
+    expect(refresh).toHaveBeenCalledTimes(2);
+  } finally { time.mockRestore(); }
+});
 
 it.skipIf(!process.env.MIAOYAN_S3_CONFIG)('syncs v2 through a fresh S3 prefix over HTTP', async () => {
   const settings = JSON.parse(await readFile(process.env.MIAOYAN_S3_CONFIG!, 'utf8')) as S3Settings;
