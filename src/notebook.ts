@@ -29,7 +29,7 @@ export function validShare(share: unknown): share is NoteShare {
 }
 export { noteTitle } from './document-text';
 type LocalNoteName = { title: string | null; filename: string | null; localTitle: string; localFilename: string };
-export type Checkpoint = { target: string; state: State; localNoteNames?: Record<string, LocalNoteName> } & ({ version: 1 } | {
+export type Checkpoint = { target: string; state: State; cloudBinding?: string; localNoteNames?: Record<string, LocalNoteName> } & ({ version: 1 } | {
   version: 2; placeholderCount: number; placeholderDigest?: string;
 });
 export type Library = { version: 1; folders: Folder[]; notes: Note[]; activeId: string; sync?: Checkpoint };
@@ -427,7 +427,7 @@ export class Notebook {
       // Record what this device published without acknowledging remote changes it has yet to apply.
       if (published && JSON.stringify(current.sync) === JSON.stringify(expected.sync)) {
         const previous = current.sync?.target === checkpoint.target ? current.sync : undefined;
-        await this.commit({ ...current, sync: { ...(previous ?? { version: 1, target: checkpoint.target }), state: published } });
+        await this.commit({ ...current, sync: { ...(previous ?? { version: 1, target: checkpoint.target, cloudBinding: checkpoint.cloudBinding }), state: published } });
       }
       if (!ready) throw new Error('当前输入尚未保存，已保留本机内容，请完成输入后再次同步');
       throw new SyncSnapshotChanged();

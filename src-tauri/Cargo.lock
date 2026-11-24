@@ -2357,6 +2357,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3157,10 +3167,13 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "block2",
+ "bytes",
  "chardetng",
+ "chrono",
  "encoding_rs",
  "jni 0.22.4",
  "libc",
+ "md-5",
  "notify",
  "objc2",
  "objc2-app-kit",

@@ -8,11 +8,13 @@ export type Comparison = { remote: Head | null; snapshot: { files: Record<string
   diff: { localChanges: { path: string }[]; remoteChanges: { path: string }[];
     moves: { from: string; to: string; side: 'local' | 'remote' }[];
     converged: string[]; conflicts: { path: string; baselineHash: string | null; localHash: string; remoteHash: string }[] }; [key: string]: unknown };
-export type Request = { url: string; method: string; headers?: Record<string, string>; body?: ArrayBuffer };
+export type Request = { url: string; method: string; headers?: Record<string, string>; body?: ArrayBuffer; storageGeneration?: number };
 export type Response = { status: number; headers: Record<string, string>; arrayBuffer: ArrayBuffer; text: string; json: unknown };
 export type Config = { kind: string; endpoint: string; region: string; bucket: string; prefix: string;
   accessKeyId: string; secretAccessKey: string; forcePathStyle: boolean; concurrency: number };
 export interface Storage {
+  maxWholeObjectBytes?: number;
+  keyCacheIdentity?: string;
   identity(): string;
   get(key: string): Promise<Uint8Array | null>;
   getIfChanged?(key: string, etag: string | null): Promise<{ status: 'absent' | 'unchanged' } | { status: 'found'; body: Uint8Array; etag: string | null }>;
@@ -33,7 +35,7 @@ export type Adapter = { list(path: string): Promise<{ files: string[]; folders: 
   write(path: string, text: string): Promise<void>; mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>; rmdir(path: string, recursive?: boolean): Promise<void> };
 export type Dependencies = { space: typeof VAULT_SPACE; adapter: Adapter; storage: Storage; scope: Scope; key: CryptoKey;
-  state: State; maxFileBytes: number; concurrency: number; history?: { horizon: number | null } };
+  state: State; maxFileBytes: number; concurrency: number; chunkIds?: CryptoKey; history?: { horizon: number | null } };
 export type Context = { persistState(state: State): Promise<void>; getFreshState(): State;
   setProgress(message: string | null): void; reportProgressSoon(message: string | null): void;
   logInfo(operation: unknown, message: string): Promise<void> };
@@ -51,9 +53,11 @@ export type S3Request = { method: string; key: string; query?: Record<string, st
 export function createS3Adapter(config: Config, request?: (input: S3Request) => Promise<Response>): Storage;
 export function defaultS3Config(): Config;
 export function createS3Signer(config: Config): (input: S3Request) => Promise<{ url: string; headers: Record<string, string> }>;
+export function parseListObjects(xml: string): { objects: { key: string }[]; nextToken?: string };
 export function setRequestHandler(handler: (request: Request) => Promise<Response>): void;
 export function requestUrl(request: Request): Promise<Response>;
 export function importAesKey(bytes: Uint8Array): Promise<CryptoKey>;
+export function deriveChunkIds(bytes: Uint8Array): Promise<CryptoKey>;
 export function randomBytes(size: number): Uint8Array;
 export function sha256Hex(bytes: Uint8Array): Promise<string>;
 export const REMOTE_MANIFEST_KEY: string;

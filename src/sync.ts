@@ -1,7 +1,7 @@
 import { SyncSnapshotChanged, type Folder, type Library, type Notebook } from './notebook';
 import * as core from './vendor/mdsync/core';
 import { SyncFiles, scope, ownedPath, notePath, metaPath, folderPath, assetPath, assetRelative, MAX_ASSET_BYTES, type AssetPlaceholder, type NoteMeta } from './sync-files';
-import { createStore, normalizeSettings, openKey, type S3Connection } from './sync-store';
+import { createStore, normalizeSettings, openKey, syncChunkIds, type S3Connection } from './sync-store';
 
 const textEncoder = new TextEncoder();
 const AUTO_DOWNLOAD_BYTES = 1_000_000;
@@ -107,11 +107,19 @@ async function preserveConflicts(files: SyncFiles, deps: core.Dependencies, resu
 
 type SyncBook = Pick<Notebook, 'data' | 'loadError' | 'root' | 'assetRevision' | 'readSyncAssets' | 'readAssetPlaceholders' | 'readAsset' | 'stageAsset' | 'readStagedAsset' | 'releaseAssetStage' | 'commitSync'>;
 
-export async function syncNotebook(book: SyncBook, settings: S3Connection, progress: (message: string) => void = () => undefined, beforeCommit: () => boolean | Promise<boolean> = () => true, resolveKey = openKey) {
+export async function syncNotebook(book: SyncBook, settings: S3Connection, progress: (message: string) => void = () => undefined, beforeCommit: () => boolean | Promise<boolean> = () => true, resolveKey = openKey): Promise<{
+  conflicts: number; notes: number; folders: number; assets: number; notice?: string;
+}> {
   if (book.loadError) throw new Error('本机笔记库读取失败，已停止同步');
   const library = structuredClone(book.data);
   if (library.notes.some(note => note.readOnly)) throw new Error('笔记库含不可读或损坏的文件，已停止同步，避免上传不完整正文');
   const config = normalizeSettings(settings), storage = createStore(config), target = storage.identity();
+  const cloudBinding = config.cloud && await core.sha256Hex(textEncoder.encode(JSON.stringify([settings.accountId, config.cloud.repository])));
+  const previous = library.sync;
+  if (cloudBinding && previous?.cloudBinding && previous.cloudBinding !== cloudBinding) throw new Error('account_changed');
+  const changedDirectory = !!(cloudBinding && previous && previous.target !== target &&
+    (previous.cloudBinding || /\|users\/[0-9a-f-]+\/vault-v2$/.test(previous.target)));
+  const canUpload = settings.canUpload !== false && !changedDirectory;
   const saved = library.sync?.target === target ? library.sync.state : null;
   let state: core.State = saved ? structuredClone(saved) : { deviceId: crypto.randomUUID(), deviceName: '轻羽 QingYu', vaultId: null, baseline: null, hashCache: {} };
   const location = { root: book.root, revision: book.assetRevision };
@@ -154,11 +162,12 @@ export async function syncNotebook(book: SyncBook, settings: S3Connection, progr
   async function syncFiles() {
     progress('正在连接 S3…');
     const key = await resolveKey(storage);
+    const chunkIds = config.cloud ? syncChunkIds(key) : undefined;
     let conflictCount = 0;
     let originalEntries: Record<string, core.Entry> | undefined;
     for (let attempt = 0; attempt < 6; attempt++) {
       progress(attempt ? '远端发生变化，正在重新合并…' : '正在比较笔记库…');
-      const deps: core.Dependencies = { space: core.VAULT_SPACE, adapter: files, storage, scope, key, state,
+      const deps: core.Dependencies = { space: core.VAULT_SPACE, adapter: files, storage, scope, key, state, chunkIds,
         maxFileBytes: MAX_ASSET_BYTES, concurrency: config.concurrency, history: { horizon: null } };
       const context: core.Context = { persistState: async next => { state = next; deps.state = next; }, getFreshState: () => state,
         setProgress: () => undefined, reportProgressSoon: () => undefined, logInfo: async () => undefined };
@@ -250,7 +259,7 @@ export async function syncNotebook(book: SyncBook, settings: S3Connection, progr
         const merged = files.toLibrary(library.activeId);
         const { sync, count } = await files.assetChanges(originalEntries);
         let published: core.State | undefined;
-        if (result.diff.localChanges.length) {
+        if (canUpload && result.diff.localChanges.length) {
           progress('正在上传笔记…');
           const paths = result.diff.localChanges.map(change => change.path);
           const head = await core.pushPaths(deps, result, paths);
@@ -265,8 +274,11 @@ export async function syncNotebook(book: SyncBook, settings: S3Connection, progr
         progress('正在保存同步结果…');
         const ready = await beforeCommit();
         const placeholderCount = Object.keys(sync.placeholders).length;
-        await book.commitSync(merged, placeholderCount ? { version: 2, target, state, placeholderCount } : { version: 1, target, state }, library, sync, location, published, ready);
-        return { conflicts: conflictCount, notes: merged.notes.length, folders: merged.folders.length, assets: count };
+        const checkpoint = { target, state, ...(cloudBinding ? { cloudBinding } : {}) };
+        await book.commitSync(merged, placeholderCount ? { ...checkpoint, version: 2, placeholderCount } : { ...checkpoint, version: 1 }, library, sync, location, published, ready);
+        const notice = changedDirectory ? '云存储目录已变更，已确认新基线，下次同步可上传' :
+          settings.canUpload === false ? '轻羽云存储写入权益已到期，续费后可继续上传' : undefined;
+        return { conflicts: conflictCount, notes: merged.notes.length, folders: merged.folders.length, assets: count, notice };
       } catch (error) {
         if (error instanceof core.ConcurrentPushError) continue;
         if (error === staleAssetRevision && book.root === location.root) throw new SyncSnapshotChanged();

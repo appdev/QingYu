@@ -63,17 +63,19 @@ async fn status(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Login {
     username: String,
     password: String,
+    remember_device: Option<bool>,
 }
 
 async fn login(
     State(state): State<Arc<Service>>,
     request: std::result::Result<Json<Login>, JsonRejection>,
 ) -> AccountResult<crate::client_account::AccountInfo> {
-    let Login { username, password } = body(request)?;
-    Ok(Json(state.account.login(session(&state)?, &username, &password).await?))
+    let Login { username, password, remember_device } = body(request)?;
+    Ok(Json(state.account.login(session(&state)?, &username, &password, remember_device.unwrap_or(true)).await?))
 }
 
 #[derive(Deserialize)]
@@ -94,7 +96,7 @@ async fn logout(
     Ok(Json(
         state
             .account
-            .logout(session(&state)?, &account_id, everywhere, || Ok(()))
+            .logout(session(&state)?, &account_id, everywhere)
             .await?,
     ))
 }
@@ -109,7 +111,7 @@ struct Redeem {
 async fn redeem(
     State(state): State<Arc<Service>>,
     request: std::result::Result<Json<Redeem>, JsonRejection>,
-) -> AccountResult<u64> {
+) -> AccountResult<crate::client_account::Redeemed> {
     let Redeem {
         account_id,
         activation_code,

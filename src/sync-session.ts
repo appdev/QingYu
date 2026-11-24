@@ -8,14 +8,18 @@ import { LegacySyncKey, manageSyncPassword, openProtectedKey, syncPasswordRequir
 
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
 
-// 请求体和响应体都按原始字节走 IPC。地址、方法和签名头编码后放进 IPC 头；
-// 响应开头 4 字节是状态和响应头 JSON 的长度，后面跟 JSON，再后面是正文。
-export async function nativeRequest(request: Request): Promise<Response> {
-  const meta = textEncoder.encode(JSON.stringify({ url: request.url, method: request.method, headers: request.headers ?? {}, hasBody: Boolean(request.body) }));
+function ipcHeader(value: object) {
+  const meta = textEncoder.encode(JSON.stringify(value));
   let header = '';
   for (let offset = 0; offset < meta.length; offset += 8192) header += String.fromCharCode(...meta.subarray(offset, offset + 8192));
+  return btoa(header);
+}
+
+// 请求体和响应体都按原始字节走 IPC。响应开头是状态和响应头的长度、JSON，再后面是正文。
+export async function nativeRequest(request: Request): Promise<Response> {
+  const header = ipcHeader({ url: request.url, method: request.method, headers: request.headers ?? {}, hasBody: Boolean(request.body), storageGeneration: request.storageGeneration });
   const body = request.body ? new Uint8Array(request.body) : new Uint8Array(0);
-  const reply = new Uint8Array(await invoke<ArrayBuffer | number[]>('sync_request', body, { headers: { 'x-qingyu-request': btoa(header) } }));
+  const reply = new Uint8Array(await invoke<ArrayBuffer | number[]>('sync_request', body, { headers: { 'x-qingyu-request': header } }));
   const length = reply.length >= 4 ? new DataView(reply.buffer, reply.byteOffset, reply.byteLength).getUint32(0) : -1;
   if (length < 0 || 4 + length > reply.length) throw new Error('S3 响应格式无效');
   const { status, headers } = JSON.parse(textDecoder.decode(reply.subarray(4, 4 + length))) as Pick<Response, 'status' | 'headers'>;
@@ -33,6 +37,7 @@ export interface SyncClient {
   flush(): Promise<void>;
   run(settings: S3Settings, accountId?: string): Promise<void>;
   test(settings: S3Settings): Promise<void>;
+  cloudPasswordOnly?: boolean;
   password?(settings: S3Settings, accountId?: string, action?: PasswordAction): Promise<PasswordInfo>;
   subscribe(listener: (status: SyncStatus) => void): () => void;
 }
@@ -41,10 +46,23 @@ const fields = ['endpoint', 'bucket', 'region', 'prefix', 'accessKeyId', 'secret
 export const cloudErrors: Record<string, string> = {
   signed_out: '请重新登录轻羽后同步', account_changed: '登录账号已切换，请重新设置云同步',
   subscription_required: '轻羽套餐未开通或已到期', email_unverified: '请先在轻羽门户验证邮箱',
+  storage_expired: '轻羽云存储写入权益已到期，续费后可继续上传',
   storage_credentials_expiring: '存储凭据即将到期，请重试', network: '无法连接账号服务，请检查网络',
   response_lost: '未收到账号服务的响应，请重试', temporarily_unavailable: '轻羽存储暂不可用，请重试',
   invalid_response: '轻羽返回的存储配置无效，请重试', rate_limited: '请求过于频繁，请稍后重试',
+  session_expiring: '登录即将到期，请退出后重新登录轻羽',
+  quota_exceeded: '轻羽云存储空间不足，请释放空间或升级套餐',
+  storage_config_changed: '轻羽云存储配置已变更，请重新同步',
+  storage_busy: '轻羽云存储正在处理，请稍后重试',
+  storage_upload_failed: '轻羽云存储上传失败，请检查连接后重试',
+  storage_upload_expired: '轻羽云存储上传授权已过期，请重试',
+  invalid_request: '轻羽云存储拒绝了同步请求',
+  secure_storage: '无法读写本机数据仓库密钥',
 };
+export function cloudErrorMessage(message: string) {
+  const code = Object.keys(cloudErrors).find(code => code === message || message.endsWith(`: ${code}`));
+  return code ? cloudErrors[code]! : message;
+}
 /** 账号状态导致的失败：未登录、登录过期、账号切换、套餐或邮箱未就绪。自动同步遇到这些时不提示。 */
 export const accountSyncNotices: ReadonlySet<string> = new Set(['signed_out', 'account_changed', 'subscription_required', 'email_unverified'].map(code => cloudErrors[code]));
 function profile(value: S3Settings): S3Settings {
@@ -107,29 +125,41 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
   function publish(change: Partial<SyncStatus>) { status = { ...status, ...change }; for (const listener of listeners) listener(status); }
   async function connect(connection: S3Connection) {
     const next = normalizeSettings(connection);
-    await invoke('sync_set_target', { endpoint: next.endpoint, bucket: next.bucket, prefix: next.prefix, forcePathStyle: next.forcePathStyle,
+    await invoke('sync_set_target', { endpoint: next.endpoint, bucket: next.bucket,
+      prefix: next.cloud ? next.cloud.prefix.slice(0, -1) : next.prefix, forcePathStyle: next.forcePathStyle,
+      ...(next.cloud ? { readOnly: true, storageGeneration: next.cloud.storageGeneration } : {}),
       timeout: connection.timeout ?? s3Defaults.timeout, tlsVerify: connection.tlsVerify ?? s3Defaults.tlsVerify });
     setRequestHandler(nativeRequest);
     return next;
   }
   async function accountConnections(accountId: string) {
-    async function credentials(rejectedKey?: string) {
+    let generation: number | undefined;
+    async function credentials(rejectedKey?: string, begin = false) {
       const { concurrentReqs, ...grant } = await invoke<S3Grant & { concurrentReqs: number }>('account_sync_config',
-        rejectedKey ? { accountId, rejectedKey } : { accountId });
-      return { ...grant, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
+        { accountId, ...(rejectedKey ? { rejectedKey } : {}), ...(begin ? { begin: true } : { generation }) });
+      return { ...grant, accountId, concurrency: Math.max(1, Math.min(concurrentReqs || 2, 8)) };
     }
-    const legacy = await credentials();
+    const grant = await credentials(undefined, true);
+    generation = grant.protocolVersion === 2 ? grant.storageGeneration : undefined;
+    if (grant.protocolVersion === 2) return {
+      current: withCloudCredentials(grant, credentials, {
+        upload: (object, bytes) => invoke<number>('account_storage_upload', bytes, {
+          headers: { 'x-qingyu-upload': ipcHeader({ accountId, ...object }) },
+        }).catch(reason => { throw new Error(String(reason)); }),
+        delete: (configVersion, keys, generation) => invoke<void>('account_storage_delete', { accountId, configVersion, keys, generation })
+          .catch(reason => { throw new Error(String(reason)); }),
+      }),
+    };
     // Keep the new vault within the prefix authorized by the temporary credentials.
     const vault = (grant: S3Grant) => ({ ...grant, prefix: `${grant.prefix}/vault-v2` });
     return {
-      legacy: withCloudCredentials(legacy, credentials),
-      current: withCloudCredentials(vault(legacy), async rejectedKey => vault(await credentials(rejectedKey))),
+      legacy: withCloudCredentials(grant, credentials),
+      current: withCloudCredentials(vault(grant), async rejectedKey => vault(await credentials(rejectedKey))),
     };
   }
   const targetDigest = (target: string) => sha256Hex(textEncoder.encode(target));
   const keyCache = (accountId?: string): KeyCache => async (target, key) =>
     invoke('sync_cached_key', { target: await targetDigest(target), key, accountId });
-  const resolveAttachmentKey = (storage: Storage) => openProtectedKey(storage, keyCache(), 'attachment');
   function targetIdentity(connection: S3Connection) {
     try { return syncTargetIdentity(connection); }
     catch { return undefined; }
@@ -143,7 +173,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     const account = await invoke<{ profile: { id: string } } | null>('account_status').catch(() => null);
     if (account) {
       const { legacy, current } = await accountConnections(account.profile.id);
-      const match = [legacy, current].find(candidate => matchesTarget(candidate, target));
+      const match = [legacy, current].find(candidate => candidate && matchesTarget(candidate, target));
       if (match) return match;
     }
     throw new Error('请先恢复原 S3 连接并下载待取附件，再切换同步目标');
@@ -155,13 +185,17 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     }
     return message;
   }
+  const attachmentAccounts = new WeakMap<Storage, string | undefined>();
   const assets = createAssetFetcher(book, async target => {
     if (status.busy) throw new Error('同步正在进行，请稍后下载附件');
     await writes;
     await load();
     if (status.busy) throw new Error('同步正在进行，请稍后下载附件');
-    return createStore(await connect(await originalConnection(target)));
-  }, resolveAttachmentKey);
+    const connection = await originalConnection(target);
+    const store = createStore(await connect(connection));
+    attachmentAccounts.set(store, connection.accountId);
+    return store;
+  }, storage => openProtectedKey(storage, keyCache(attachmentAccounts.get(storage)), 'attachment'));
   async function restoreAttachments(connection: S3Connection, target: string) {
     const checkpoint = book.data.sync;
     if (checkpoint?.version !== 2 || checkpoint.target !== target || !checkpoint.placeholderCount) return;
@@ -170,7 +204,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
     publish({ message: '正在下载原同步库的待取附件…' });
     const storage = createStore(await connect(connection));
     let key: Promise<CryptoKey> | undefined;
-    const fetcher = createAssetFetcher(book, async () => storage, () => key ??= resolveAttachmentKey(storage));
+    const fetcher = createAssetFetcher(book, async () => storage, () => key ??= openProtectedKey(storage, keyCache(connection.accountId), 'attachment'));
     try {
       for (const path of paths) await fetcher.fetchAsset(path);
     } catch (error) {
@@ -191,16 +225,16 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
         await assets.drain();
         await writes;
         await load();
-        if (syncMode(config) !== (accountId ? 'cloud' : 's3')) throw new Error('存储方式已变更，请重新打开密码设置');
+        if (syncMode(config) !== (accountId ? 'cloud' : 's3')) throw new Error('存储方式已变更，请重新打开密钥设置');
         connection = accountId ? (await accountConnections(accountId)).current : profile(settings);
         const result = await manageSyncPassword(await connect(connection), keyCache(accountId), action,
-          accountId ? () => invoke('account_check_sync', { accountId }) : undefined);
-        if (result.state === 'unlocked') publish({ passwordRequired: undefined, message: '同步密钥已解锁' });
+          accountId ? () => invoke('account_check_sync', { accountId, ...(connection.cloud ? { generation: connection.cloud.storageGeneration } : {}) }) : undefined);
+        if (result.state === 'unlocked') publish({ passwordRequired: undefined, message: '数据仓库密钥已解锁' });
         else publish({ passwordRequired: { accountId }, message: syncPasswordRequired });
         return result;
       } catch (error) {
         const message = redact(error, connection);
-        const label = accountId && Object.hasOwn(cloudErrors, message) ? cloudErrors[message]! : message;
+        const label = accountId ? cloudErrorMessage(message) : message;
         publish({ error: true, message: label });
         throw new Error(label);
       } finally { publish({ busy: false }); }
@@ -252,8 +286,9 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
         const next = await connect(connection);
         publish({ message: '正在连接 S3…' });
         const beforeCommit = accountId ? async () => {
-          await invoke('account_check_sync', { accountId });
-          return prepare();
+          if (!await prepare()) return false;
+          await invoke('account_check_sync', { accountId, ...(next.cloud ? { generation: next.cloud.storageGeneration } : {}) });
+          return true;
         } : prepare;
         const synchronize = async () => {
           try {
@@ -270,7 +305,8 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
           if (!(reason instanceof SyncSnapshotChanged)) throw reason;
           return synchronize();
         });
-        refresh(); publish({ passwordRequired: undefined, lastSyncedAt: Date.now(), lastSyncedAccount: accountId, message: `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
+        refresh(); publish({ passwordRequired: undefined, lastSyncedAt: Date.now(), lastSyncedAccount: accountId,
+          message: result.notice ?? `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
       } catch (error) {
         if (error instanceof SyncSnapshotChanged) {
           publish({ message: error.message });
@@ -281,7 +317,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
           publish({ passwordRequired: { accountId }, message });
           return;
         }
-        if (accountId && Object.hasOwn(cloudErrors, message)) message = cloudErrors[message];
+        if (accountId) message = cloudErrorMessage(message);
         publish({ error: true, message });
         throw new Error(message);
       } finally { publish({ busy: false }); }

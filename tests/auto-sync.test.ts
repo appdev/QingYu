@@ -45,13 +45,13 @@ it('joins a running manual sync, propagates its failure on exit and can retry', 
 it('pauses background work until the sync key is unlocked', async () => {
   const { auto, client, publish, error } = fixture();
   await vi.advanceTimersByTimeAsync(0);
-  publish({ busy: false, error: false, message: '需要输入同步密码', passwordRequired: {} });
+  publish({ busy: false, error: false, message: '需要输入数据仓库密钥', passwordRequired: {} });
   auto.changed();
   await vi.advanceTimersByTimeAsync(180000);
   await auto.sync();
   expect(client.run).toHaveBeenCalledOnce();
   expect(error).not.toHaveBeenCalled();
-  publish({ busy: false, error: false, message: '同步密钥已解锁' });
+  publish({ busy: false, error: false, message: '数据仓库密钥已解锁' });
   await vi.advanceTimersByTimeAsync(180000);
   expect(client.run).toHaveBeenCalledTimes(2);
 });

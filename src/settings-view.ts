@@ -859,8 +859,11 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     const summary = row('storage', ['同步'], '', submit);
     const syncNote = summary.querySelector('small')!;
     const passwordButton = document.createElement('button'); passwordButton.type = 'button'; passwordButton.className = 'button settings-sync-action';
-    setLabel(passwordButton, ['管理密码']);
-    if (client.password) syncGroup.append(row('storage', ['同步密码'], ['旧前缀的数据仍由 S3 桶权限保护。'], passwordButton));
+    setLabel(passwordButton, ['管理密钥']);
+    const passwordRow = client.password
+      ? row('storage', ['数据仓库密钥'], ['数据仓库用于加密保存数据快照。同步时需要解锁密钥。'], passwordButton)
+      : undefined;
+    if (passwordRow) syncGroup.append(passwordRow);
     syncGroup.append(summary); storagePage.append(syncGroup, hint, status, errorBlock);
     const inputs = [...form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')];
     function values() {
@@ -929,6 +932,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
       test.disabled = disabled || submitting || cloud;
       submit.disabled = disabled || submitting || (cloud && !syncAccount.accountId) || Boolean(unavailable);
       passwordButton.disabled = disabled || submitting || !ready;
+      if (passwordRow) passwordRow.hidden = !!client.cloudPasswordOnly && !cloud;
       const lastSync = lastSyncedAccount === (cloud ? syncAccount.accountId : undefined) ? lastSyncedAt : undefined;
       syncNote.textContent = unavailable ? diagnostic(unavailable) : cloud && syncAccount.reason ? syncAccount.reason : syncing ? workflowText('正在同步…')
         : lastSync ? formatLabel('上次同步 {date}', { date: new Date(lastSync).toLocaleString(document.documentElement.lang || undefined, { dateStyle: 'short', timeStyle: 'short' }) })
@@ -1013,24 +1017,29 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
         if (activeMode === 's3' && !form.reportValidity()) return;
         const info = await managePassword(settings, accountId);
         if (disposed) return;
+        if (info.immutable && info.state === 'unlocked') {
+          showStatus('数据仓库密钥已解锁');
+          return;
+        }
         const dialog = document.createElement('dialog'); passwordDialog = dialog;
-        dialog.className = 'client-logout-confirmation';
+        dialog.className = 'alert-dialog';
         dialog.setAttribute('aria-labelledby', 'settings-sync-password-title');
         dialog.innerHTML = `<form class="settings-password-form">
           <h2 id="settings-sync-password-title"></h2>
-          <label><span data-i18n="同步密码"></span><input type="password" required maxlength="1024" autofocus></label>
-          <label data-confirm><span data-i18n="确认同步密码"></span><input type="password" autocomplete="new-password" maxlength="1024"></label>
-          <p role="alert" hidden></p>
-          <div class="client-logout-actions"><button type="button" data-i18n="取消"></button><button type="submit"></button></div>
+          <label><span data-i18n="数据仓库密钥"></span><input type="password" required autofocus></label>
+          <label data-confirm><span data-i18n="确认数据仓库密钥"></span><input type="password" autocomplete="new-password"></label>
+          <div role="alert" hidden></div>
+          <button type="button" data-i18n="取消"></button><button type="submit"></button>
         </form>`;
         const locked = info.state === 'locked';
-        const title = info.state === 'new' ? '设置同步密码' : locked ? '输入同步密码' : '修改或重设同步密码';
+        const title = info.state === 'new' ? '设置数据仓库密钥' : locked ? '输入数据仓库密钥' : '修改或重设数据仓库密钥';
         const passwordForm = dialog.querySelector('form')!;
         const [password, confirmation] = dialog.querySelectorAll('input');
         const [cancel, confirm] = dialog.querySelectorAll('button');
-        const message = dialog.querySelector('p')!;
+        const message = dialog.querySelector<HTMLElement>('[role="alert"]')!;
         setLabel(dialog.querySelector('h2')!, [title]);
-        setLabel(confirm, [locked ? '解锁' : '保存同步密码']);
+        setLabel(confirm, [locked ? '解锁' : 'menu.saveDocument']);
+        passwordForm.append(alertActions(confirm, cancel));
         password!.autocomplete = locked ? 'current-password' : 'new-password';
         confirmation!.required = !locked;
         confirmation!.closest('label')!.hidden = locked;
@@ -1043,7 +1052,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
           event.preventDefault();
           if (confirm!.disabled) return;
           if (!locked && password!.value.normalize('NFC') !== confirmation!.value.normalize('NFC')) {
-            message.hidden = false; message.textContent = workflowText('两次输入的同步密码不一致'); confirmation!.focus();
+            message.hidden = false; message.textContent = workflowText('两次输入的密钥不一致'); confirmation!.focus();
             return;
           }
           confirm!.disabled = cancel!.disabled = password!.disabled = confirmation!.disabled = true;

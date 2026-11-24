@@ -8,6 +8,8 @@ const MAX_BYTES: usize = 68 * 1024 * 1024;
 struct Target {
     bucket: Url,
     prefix: String,
+    read_only: bool,
+    storage: Option<(u64, tokio::sync::watch::Receiver<u64>)>,
 }
 
 impl Target {
@@ -57,11 +59,14 @@ impl Target {
         Ok(Self {
             bucket: url,
             prefix: format!("{prefix}/"),
+            read_only: false,
+            storage: None,
         })
     }
 
     fn allows(&self, url: &Url, method: &Method) -> bool {
-        if url.origin() != self.bucket.origin()
+        if self.read_only && ![Method::GET, Method::HEAD].contains(method)
+            || url.origin() != self.bucket.origin()
             || !url.username().is_empty()
             || url.password().is_some()
             || url.fragment().is_some()
@@ -132,16 +137,25 @@ pub fn sync_set_target(
     force_path_style: Option<bool>,
     timeout: Option<u64>,
     tls_verify: Option<bool>,
+    read_only: Option<bool>,
+    storage_generation: Option<u64>,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("不允许的同步窗口".into());
     }
-    let target = Target::new(
+    let mut target = Target::new(
         &endpoint,
         &bucket,
         &prefix,
         force_path_style.unwrap_or(true),
     )?;
+    target.read_only = read_only.unwrap_or(false);
+    if let Some(generation) = storage_generation {
+        use tauri::Manager;
+        let account = window.state::<crate::client_account::ClientAccount>();
+        let cancellation = account.watch_storage(generation).map_err(|_| "storage_config_changed")?;
+        target.storage = Some((generation, cancellation));
+    }
     let client = client(timeout.unwrap_or(45), tls_verify.unwrap_or(true))?;
     *state.target.lock().map_err(|_| "同步网络状态不可用")? = Some((target, client));
     Ok(())
@@ -182,13 +196,15 @@ struct RequestMeta {
     headers: HashMap<String, String>,
     #[serde(rename = "hasBody")]
     has_body: bool,
+    #[serde(rename = "storageGeneration")]
+    storage_generation: Option<u64>,
 }
 
 const REQUEST_HEADER: &str = "x-qingyu-request";
 
 // 附件最大 64 MiB，走 JSON 数字数组会膨胀成几百 MB。请求体和响应体都按原始字节传，
 // 请求的地址和签名头放在 IPC 头里，响应的状态和头放在字节流开头。
-fn decode_request(request: &tauri::ipc::Request<'_>) -> Result<Request, String> {
+fn decode_request(request: &tauri::ipc::Request<'_>) -> Result<(Request, Option<u64>), String> {
     use base64::Engine;
     let meta = request
         .headers()
@@ -206,12 +222,12 @@ fn decode_request(request: &tauri::ipc::Request<'_>) -> Result<Request, String> 
             serde_json::from_value(value.clone()).map_err(|_| "S3 请求内容无效")?
         }
     };
-    Ok(Request {
+    Ok((Request {
         url: meta.url,
         method: meta.method,
         headers: meta.headers,
         body: meta.has_body.then_some(body),
-    })
+    }, meta.storage_generation))
 }
 
 fn encode_response(response: Response) -> Result<Vec<u8>, String> {
@@ -236,14 +252,25 @@ pub async fn sync_request(
     if window.label() != "main" {
         return Err("不允许的同步窗口".into());
     }
-    let request = decode_request(&request)?;
+    let (request, generation) = decode_request(&request)?;
     let (target, client) = state
         .target
         .lock()
         .map_err(|_| "同步网络状态不可用")?
         .clone()
         .ok_or("请先配置同步目标")?;
-    let response = perform(&target, &client, request).await?;
+    let response = match &target.storage {
+        Some((expected, cancellation)) if generation == Some(*expected) => {
+            let mut cancellation = cancellation.clone();
+            tokio::select! {
+                biased;
+                _ = cancellation.changed() => return Err("storage_config_changed".into()),
+                response = perform(&target, &client, request) => response?,
+            }
+        }
+        None if generation.is_none() => perform(&target, &client, request).await?,
+        _ => return Err("storage_config_changed".into()),
+    };
     Ok(tauri::ipc::Response::new(encode_response(response)?))
 }
 
@@ -269,6 +296,7 @@ async fn perform(target: &Target, client: &Client, request: Request) -> Result<R
             "content-type",
             "x-amz-content-sha256",
             "x-amz-date",
+            "x-amz-security-token",
             "if-match",
             "if-none-match",
             "cache-control",

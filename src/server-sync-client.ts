@@ -1,6 +1,7 @@
 import { preferences } from './preferences';
-import { cloudErrors, type SyncClient, type SyncStatus } from './sync-session';
+import { cloudErrorMessage, cloudErrors, type SyncClient, type SyncStatus } from './sync-session';
 import type { S3Settings } from './sync-store';
+import type { PasswordInfo } from './sync-password';
 
 // 网页客户端的同步。用法和 App 的同步会话相同：设置页填写 S3 或选择轻羽云存储、测试连接、立即同步。
 // 区别只在执行位置：笔记在部署端的数据目录里，所以连接配置保存在部署端的配置目录，同步也由部署端运行。
@@ -40,7 +41,7 @@ export function createServerSyncClient(): SyncClient {
     if (status.busy && !server.busy && !server.error && !testing) dispatchEvent(new Event('web-sync-finished'));
     lastServer = JSON.stringify(server);
     if (held && held.server !== lastServer) held = undefined;
-    const message = held?.message ?? (server.error && Object.hasOwn(cloudErrors, server.message) ? cloudErrors[server.message] : server.message);
+    const message = held?.message ?? (server.error ? cloudErrorMessage(server.message) : server.message);
     emit({ busy: server.busy || testing, error: held?.error ?? server.error, message, lastSyncedAt: server.lastSyncedAt ?? undefined,
       lastSyncedAccount: server.lastSyncedAccount ?? undefined, unavailable: server.unavailable });
     return server;
@@ -84,6 +85,18 @@ export function createServerSyncClient(): SyncClient {
   async function save(settings: S3Settings) { await call('/profile', 'PUT', settings); }
 
   return {
+    cloudPasswordOnly: true,
+    async password(_settings, accountId, action) {
+      if (!accountId) throw new Error(cloudErrors.signed_out);
+      try {
+        const result = await call<PasswordInfo>('/password', 'POST', { accountId, action });
+        if (result.state === 'unlocked') hold('数据仓库密钥已解锁', false);
+        return result;
+      } catch (reason) {
+        const code = reason instanceof Error ? reason.message : String(reason);
+        throw new Error(cloudErrorMessage(code));
+      }
+    },
     async load() { return { ...emptyProfile, ...await call<S3Settings | null>('/profile') }; },
     save,
     async flush() {},

@@ -171,14 +171,14 @@ fn authorize(window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "app")]
+#[cfg(any(feature = "app", feature = "server"))]
 #[derive(Serialize, Deserialize)]
 struct CachedKey {
     key: String,
     account_id: Option<String>,
 }
 
-#[cfg(feature = "app")]
+#[cfg(any(feature = "app", feature = "server"))]
 fn read_cached_key(path: &Path) -> Result<Option<CachedKey>, String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_file() && meta.len() <= 4096 => {}
@@ -200,7 +200,7 @@ fn read_cached_key(path: &Path) -> Result<Option<CachedKey>, String> {
     }))
 }
 
-#[cfg(feature = "app")]
+#[cfg(any(feature = "app", feature = "server"))]
 fn forget_cached_key(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -209,7 +209,7 @@ fn forget_cached_key(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(feature = "app")]
+#[cfg(any(feature = "app", feature = "server"))]
 fn check_cache_directory(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => Ok(()),
@@ -218,32 +218,57 @@ fn check_cache_directory(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(feature = "app")]
-pub(crate) fn forget_account_keys(config: &Path, account_id: &str) -> Result<(), String> {
-    let directory = config.join("sync-keys");
-    check_cache_directory(&directory)?;
-    let entries = match fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) => return Err("无法清除本机同步密钥".into()),
-    };
-    for entry in entries {
-        let entry = entry.map_err(|_| "无法清除本机同步密钥")?;
-        if !entry
-            .file_type()
-            .map_err(|_| "无法清除本机同步密钥")?
-            .is_dir()
-        {
-            continue;
-        }
-        let path = profile_path(&entry.path());
-        if read_cached_key(&path)?
-            .is_some_and(|record| record.account_id.as_deref() == Some(account_id))
-        {
-            forget_cached_key(&path)?;
-        }
+#[cfg(any(feature = "app", feature = "server"))]
+pub(crate) fn cached_key(
+    directory: &Path,
+    target: &str,
+    key: Option<String>,
+    owner: Option<String>,
+    forget: bool,
+) -> Result<Option<String>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    if target.len() != 64 || !target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("同步目标无效".into());
     }
-    Ok(())
+    let cache_root = directory.join("sync-keys");
+    let cache_directory = cache_root.join(target);
+    let path = profile_path(&cache_directory);
+    let valid_key = |value: &str| {
+        value.len() == 44 && STANDARD.decode(value).is_ok_and(|bytes| bytes.len() == 32)
+    };
+    check_cache_directory(&cache_root)?;
+    check_cache_directory(&cache_directory)?;
+    let previous = read_cached_key(&path)?;
+    if previous.as_ref().and_then(|record| record.account_id.as_ref()).is_some_and(|id| Some(id) != owner.as_ref()) {
+        return Ok(None);
+    }
+    if forget {
+        forget_cached_key(&path)?;
+        return Ok(None);
+    }
+    if key.as_ref().is_some_and(|key| !valid_key(key)) {
+        return Err("本机同步密钥格式无效".into());
+    }
+    let write = key.is_some() || owner.as_ref().is_some_and(|id| {
+        previous.as_ref().is_some_and(|record| record.account_id.as_ref() != Some(id))
+    });
+    let Some(key) = key.or_else(|| previous.as_ref().map(|record| record.key.clone())) else {
+        return Ok(None);
+    };
+    if !valid_key(&key) {
+        return Ok(None);
+    }
+    if write {
+        let record = CachedKey {
+            key,
+            account_id: owner.or_else(|| previous.and_then(|record| record.account_id)),
+        };
+        let value = serde_json::to_vec(&record).map_err(|_| "本机同步密钥格式无效")?;
+        write_private(&path, &value).map_err(|_| "无法保存本机同步密钥".to_string())?;
+        return Ok(Some(record.key));
+    }
+    Ok(Some(key))
 }
 
 #[cfg(feature = "app")]
@@ -257,60 +282,13 @@ pub async fn sync_cached_key(
     account_id: Option<String>,
     forget: Option<bool>,
 ) -> Result<Option<String>, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
     use tauri::Manager;
-
     authorize(&window)?;
-    if target.len() != 64 || !target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("同步目标无效".into());
-    }
-    let directory = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "无法打开应用配置目录")?;
-    // The reserved profile filename keeps key files out of attachment scans.
-    let cache_root = directory.join("sync-keys");
-    let cache_directory = cache_root.join(target);
-    let path = profile_path(&cache_directory);
-    let valid_key = |value: &str| {
-        value.len() == 44 && STANDARD.decode(value).is_ok_and(|bytes| bytes.len() == 32)
-    };
+    let directory = app.path().app_config_dir().map_err(|_| "无法打开应用配置目录")?;
     let owner = account_id.clone();
     let work = async move {
         tauri::async_runtime::spawn_blocking(move || {
-            check_cache_directory(&cache_root)?;
-            check_cache_directory(&cache_directory)?;
-            if forget.unwrap_or(false) {
-                forget_cached_key(&path)?;
-                return Ok(None);
-            }
-            if key.as_ref().is_some_and(|key| !valid_key(key)) {
-                return Err("本机同步密钥格式无效".into());
-            }
-            let previous = read_cached_key(&path)?;
-            let write = key.is_some()
-                || owner.as_ref().is_some_and(|owner| {
-                    previous
-                        .as_ref()
-                        .is_some_and(|record| record.account_id.as_ref() != Some(owner))
-                });
-            let Some(key) = key.or_else(|| previous.as_ref().map(|record| record.key.clone()))
-            else {
-                return Ok(None);
-            };
-            if !valid_key(&key) {
-                return Ok(None);
-            }
-            if write {
-                let record = CachedKey {
-                    key,
-                    account_id: owner.or_else(|| previous.and_then(|record| record.account_id)),
-                };
-                let value = serde_json::to_vec(&record).map_err(|_| "本机同步密钥格式无效")?;
-                write_private(&path, &value).map_err(|_| "无法保存本机同步密钥".to_string())?;
-                return Ok(Some(record.key));
-            }
-            Ok(Some(key))
+            cached_key(&directory, &target, key, owner, forget.unwrap_or(false))
         })
         .await
         .map_err(|_| "本机同步密钥操作未完成".to_string())?
@@ -368,31 +346,17 @@ pub async fn sync_save_profile(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "app")]
     #[test]
-    fn forgets_only_the_signed_out_accounts_key_files() {
+    fn preserves_account_keys_and_only_restores_them_for_their_owner() {
         let directory = tempfile::tempdir().unwrap();
-        let path = |target: &str| profile_path(&directory.path().join("sync-keys").join(target));
-        for (target, owner) in [
-            ("first", Some("owner")),
-            ("other", Some("other")),
-            ("custom", None),
-        ] {
-            let cache = CachedKey {
-                key: "fixture".into(),
-                account_id: owner.map(str::to_owned),
-            };
-            write_private(&path(target), &serde_json::to_vec(&cache).unwrap()).unwrap();
+        let target = "a".repeat(64);
+        let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_owned();
+        let owner = Some("owner".into());
+        cached_key(directory.path(), &target, Some(key.clone()), owner.clone(), false).unwrap();
+        assert_eq!(cached_key(directory.path(), &target, None, owner, false).unwrap(), Some(key));
+        for owner in [None, Some("other".into())] {
+            assert!(cached_key(directory.path(), &target, None, owner, false).unwrap().is_none());
         }
-        write_private(&path("unattributed"), b"\"legacy cache\"").unwrap();
-        forget_account_keys(directory.path(), "owner").unwrap();
-        assert!(!path("first").exists());
-        for target in ["other", "custom", "unattributed"] {
-            assert!(path(target).is_file());
-        }
-        forget_cached_key(&path("custom")).unwrap();
-        forget_cached_key(&path("custom")).unwrap();
-        assert!(!path("custom").exists());
     }
 
     #[test]

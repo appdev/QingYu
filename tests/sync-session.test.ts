@@ -156,7 +156,7 @@ it('uses cloud credentials for the scoped target and never saves them as a custo
   });
   const session = createSyncSession({} as Notebook, vi.fn(), () => true);
   await session.run(config, 'account-id');
-  expect(invoke).toHaveBeenCalledWith('account_sync_config', { accountId: 'account-id' });
+  expect(invoke).toHaveBeenCalledWith('account_sync_config', { accountId: 'account-id', begin: true });
   expect(invoke).toHaveBeenCalledWith('account_check_sync', { accountId: 'account-id' });
   expect(invoke).toHaveBeenCalledWith('sync_set_target', { endpoint: config.endpoint, bucket: config.bucket, prefix: 'repo/qingyu/v1/vault-v2', forcePathStyle: false, timeout: 45, tlsVerify: true });
   expect(invoke).not.toHaveBeenCalledWith('sync_save_profile', expect.anything());

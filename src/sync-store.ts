@@ -2,12 +2,22 @@ import * as core from './vendor/mdsync/core';
 export type SyncMode = 'cloud' | 's3';
 type S3Fields = Pick<core.Config, 'endpoint' | 'region' | 'bucket' | 'prefix' | 'accessKeyId' | 'secretAccessKey'>;
 type S3Request = (input: core.S3Request) => Promise<core.Response>;
-export type S3Connection = S3Fields & Partial<Pick<core.Config, 'forcePathStyle' | 'concurrency'>> & {
-  timeout?: number; tlsVerify?: boolean; assetDownload?: 'all' | 'on-demand'; request?: S3Request;
+export type CloudUpload = { configVersion: number; storageGeneration?: number; key: string; ifMatch?: string; ifNoneMatch?: string };
+type CloudWrites = {
+  upload(object: CloudUpload, bytes: Uint8Array): Promise<number>;
+  delete(configVersion: number, keys: string[], generation?: number): Promise<void>;
 };
-export type S3Grant = S3Connection & { credentialsExpireAt: number };
-export type S3Config = core.Config & { request?: S3Request };
-export type S3Settings = Omit<S3Connection, 'request'> & { mode?: SyncMode };
+type CloudVault = CloudWrites & { configVersion: number; repository: string; prefix: string; storageGeneration?: number };
+export type S3Connection = S3Fields & Partial<Pick<core.Config, 'forcePathStyle' | 'concurrency'>> & {
+  timeout?: number; tlsVerify?: boolean; assetDownload?: 'all' | 'on-demand'; request?: S3Request; cloud?: CloudVault;
+  canUpload?: boolean; accountId?: string;
+};
+export type S3Grant = S3Connection & { credentialsExpireAt: number } & (
+  { protocolVersion?: undefined } |
+  { protocolVersion: 2; configVersion: number; provider: string; repository: string; sessionToken: string; storageGeneration?: number }
+);
+export type S3Config = core.Config & Pick<S3Connection, 'cloud' | 'request' | 'canUpload' | 'accountId'>;
+export type S3Settings = Omit<S3Connection, 'cloud' | 'request' | 'canUpload' | 'accountId'> & { mode?: SyncMode };
 export const s3Defaults = { timeout: 45, tlsVerify: true, forcePathStyle: true, concurrency: 2, assetDownload: 'all' as const };
 export const defaultAssetDownload = (mobile: boolean) => mobile ? 'on-demand' as const : s3Defaults.assetDownload;
 export function hasS3Connection(settings: S3Settings) {
@@ -67,13 +77,22 @@ export async function testS3Connection(settings: S3Connection) {
   catch (error) { failures.push(error); }
   if (failures.length) throw new Error(failures.map(error => error instanceof Error ? error.message : String(error)).join('\n'));
 }
-export function withCloudCredentials(grant: S3Grant, refresh: (rejectedKey?: string) => Promise<S3Grant>): S3Connection {
-  const target = normalizeSettings(grant);
+export function withCloudCredentials(grant: S3Grant, refresh: (rejectedKey?: string) => Promise<S3Grant>, writes?: CloudWrites): S3Connection {
+  const cloud = grant.protocolVersion === 2 && writes ? {
+    ...writes, configVersion: grant.configVersion, repository: grant.repository, prefix: grant.prefix, storageGeneration: grant.storageGeneration,
+  } : undefined;
+  if (grant.protocolVersion === 2 && !cloud) throw new Error('invalid_response');
+  const vault = (config: S3Grant) => cloud ? { ...config, prefix: `${cloud.prefix}vault-v2`, cloud } : config;
+  const target = normalizeSettings(vault(grant));
   let current = grant, sign = core.createS3Signer(target);
   let pending: Promise<void> | undefined;
   function renew(rejectedKey?: string) {
     return pending ??= refresh(rejectedKey).then(next => {
-      const config = normalizeSettings(next);
+      if (next.protocolVersion !== grant.protocolVersion || (grant.protocolVersion === 2 &&
+          (next.protocolVersion !== 2 || next.prefix !== grant.prefix || next.configVersion !== grant.configVersion ||
+           next.provider !== grant.provider || next.repository !== grant.repository ||
+           next.storageGeneration !== grant.storageGeneration))) throw new Error('storage_config_changed');
+      const config = normalizeSettings(vault(next));
       for (const key of ['endpoint', 'bucket', 'prefix', 'region', 'forcePathStyle'] as const) {
         if (config[key] !== target[key]) throw new Error('轻羽存储目标已变更，请重新同步');
       }
@@ -82,32 +101,86 @@ export function withCloudCredentials(grant: S3Grant, refresh: (rejectedKey?: str
     }).finally(() => { pending = undefined; });
   }
   async function send(input: core.S3Request) {
-    const grant = current;
-    const signed = await sign(input);
-    const reply = await core.requestUrl({ ...signed, method: input.method, body: input.body?.slice().buffer });
+    const grant = current, signer = sign;
+    if (grant.protocolVersion === 2) input = {
+      ...input,
+      key: await cloudObjectKey(target, input.key),
+      headers: { ...input.headers, 'x-amz-security-token': grant.sessionToken },
+    };
+    const signed = await signer(input);
+    const reply = await core.requestUrl({ ...signed, method: input.method, body: input.body?.slice().buffer, storageGeneration: cloud?.storageGeneration });
     if (reply.status < 400) return { grant, reply };
-    let text = reply.text;
-    for (const secret of [grant.accessKeyId, grant.secretAccessKey]) {
+    const code = /<Code>\s*([A-Za-z0-9_]+)\s*<\/Code>/.exec(reply.text)?.[1];
+    let text = grant.protocolVersion === 2 ? (code ? `<Code>${code}</Code>` : 'S3 request failed') : reply.text;
+    for (const secret of [grant.accessKeyId, grant.secretAccessKey, grant.protocolVersion === 2 ? grant.sessionToken : ''].filter(Boolean)) {
       text = text.replaceAll(secret, '[已隐藏]').replaceAll(encodeURIComponent(secret), '[已隐藏]');
     }
     return { grant, reply: { ...reply, text } };
   }
-  return { ...grant, async request(input) {
+  return { ...vault(grant), async request(input) {
+    if (cloud && input.method !== 'GET' && input.method !== 'HEAD') throw new Error('invalid_request');
     if (pending || current.credentialsExpireAt * 1000 - Date.now() <= 120_000) await (pending ?? renew());
-    const { grant, reply } = await send(input);
-    if (![400, 401, 403].includes(reply.status) ||
-        !/<Code>\s*(?:ExpiredToken|InvalidToken|InvalidAccessKeyId)\s*<\/Code>/.test(reply.text)) return reply;
-    if (pending || current === grant) await (pending ?? renew(grant.accessKeyId));
-    return (await send(input)).reply;
+    const sent = await send(input);
+    let reply = sent.reply;
+    if ([400, 401, 403].includes(reply.status) &&
+        /<Code>\s*(?:ExpiredToken|InvalidToken|InvalidAccessKeyId|InvalidSecurityToken|SecurityTokenExpired)\s*<\/Code>/.test(reply.text)) {
+      if (pending || current === sent.grant) await (pending ?? renew(sent.grant.accessKeyId));
+      reply = (await send(input)).reply;
+    }
+    if (cloud && input.method === 'GET' && input.key && reply.status === 403 && reply.text === '<Code>AccessDenied</Code>') {
+      // With prefix-scoped ListBucket, S3 can return 403 for an object that does not exist.
+      const prefix = await cloudObjectKey(target, input.key);
+      const listing = (await send({ method: 'GET', key: '', query: { 'list-type': '2', prefix, 'max-keys': '1' } })).reply;
+      if (listing.status === 200 && /<IsTruncated>\s*false\s*<\/IsTruncated>/.test(listing.text)) {
+        const page = core.parseListObjects(listing.text);
+        if (!page.nextToken && !page.objects.length) return { ...reply, status: 404, text: '<Code>NoSuchKey</Code>' };
+      }
+    }
+    return reply;
   } };
+}
+
+async function cloudObjectKey(config: S3Config, key: string) {
+  if (!config.cloud || !key) return key;
+  if (key === `${config.prefix}/miaoyan-key.json`) return `${config.cloud.prefix}miaoyan-key.json`;
+  const history = `${config.prefix}/history/`;
+  if (key.startsWith(history) && key.slice(history.length).includes('/')) {
+    return history + await core.sha256Hex(new TextEncoder().encode(key.slice(history.length))) + '.json.enc';
+  }
+  return key;
+}
+
+async function cloudPut(config: S3Config, path: string, body: Uint8Array, condition?: { etag: string | null }) {
+  if (config.canUpload === false) throw new Error('storage_expired');
+  const cloud = config.cloud!;
+  const key = await cloudObjectKey(config, `${config.prefix}/${path}`);
+  const status = await cloud.upload({ configVersion: cloud.configVersion, key, storageGeneration: cloud.storageGeneration,
+    ...(condition ? (condition.etag === null ? { ifNoneMatch: '*' } : { ifMatch: condition.etag }) : {}),
+  }, body);
+  if (condition && (status === 409 || status === 412)) return false;
+  if (status < 200 || status >= 300) throw new Error(`S3 写入失败（HTTP ${status}）`);
+  return true;
 }
 
 export function createStore(config: S3Config): core.Storage {
   const store = core.createS3Adapter(config, config.request), sign = core.createS3Signer(config);
+  if (config.cloud) {
+    const cloud = config.cloud;
+    store.maxWholeObjectBytes = 256 * 1024;
+    store.keyCacheIdentity = JSON.stringify(['qingyu-v2', config.accountId, cloud.repository]);
+    store.put = async (path, body) => { await cloudPut(config, path, body); };
+    store.putIfAbsent = (path, body) => cloudPut(config, path, body, { etag: null });
+    store.delete = async path => {
+      const keys = [await cloudObjectKey(config, `${config.prefix}/${path}`)];
+      if (cloud.storageGeneration === undefined) await cloud.delete(cloud.configVersion, keys);
+      else await cloud.delete(cloud.configVersion, keys, cloud.storageGeneration);
+    };
+  }
   store.putManifest = (body, etag) => putSyncObject(config, core.REMOTE_MANIFEST_KEY, body, etag, sign);
   return store;
 }
 export async function putSyncObject(config: S3Config, path: string, body: Uint8Array, etag: string | null, sign = core.createS3Signer(config)) {
+  if (config.cloud) return cloudPut(config, path, body, { etag });
   const headers: Record<string, string> = etag === null ? { 'If-None-Match': '*' } : { 'If-Match': etag };
   const input = { method: 'PUT', key: `${config.prefix}/${path}`, headers, body };
   const reply = config.request ? await config.request(input)
@@ -116,6 +189,14 @@ export async function putSyncObject(config: S3Config, path: string, body: Uint8A
   if (reply.status < 200 || reply.status >= 300) throw new Error(`S3 条件写入失败（HTTP ${reply.status}）`);
   return true;
 }
+
+const chunkKeys = new WeakMap<CryptoKey, CryptoKey>();
+export async function importSyncKey(raw: Uint8Array) {
+  const key = await core.importAesKey(raw);
+  chunkKeys.set(key, await core.deriveChunkIds(raw));
+  return key;
+}
+export function syncChunkIds(key: CryptoKey) { return chunkKeys.get(key); }
 export async function openKey(store: core.Storage) {
   const path = 'miaoyan-key.json';
   let bytes = await store.get(path);
@@ -128,7 +209,7 @@ export async function openKey(store: core.Storage) {
   }
   if (!bytes) throw new Error('无法读取同步密钥');
   const value = JSON.parse(new TextDecoder().decode(bytes));
-  if (value?.version === 2 && value.protection === 'password') throw new Error('该同步库受 App 同步密码保护，Web 部署端请使用独立同步前缀');
+  if (value?.version === 2 && value.protection === 'password') throw new Error('该同步库受 App 数据仓库密钥保护，Web 部署端请使用独立同步前缀');
   return importBucketKey(value);
 }
 
@@ -136,5 +217,5 @@ export async function importBucketKey(value: { version?: number; protection?: st
   if (value?.version !== 1 || value.protection !== 'bucket-permissions' || typeof value.key !== 'string') throw new Error('远端同步密钥格式无效');
   const raw = Uint8Array.from(atob(value.key), char => char.charCodeAt(0));
   if (raw.length !== 32) throw new Error('远端同步密钥格式无效');
-  return core.importAesKey(raw);
+  return importSyncKey(raw);
 }

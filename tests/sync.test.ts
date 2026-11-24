@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import { Notebook, libraryKey, type Library } from '../src/notebook';
 import { SyncFiles, scope, folderPath, metaPath, notePath, assetPath, assetRelative, type Asset } from '../src/sync-files';
 import { syncNotebook } from '../src/sync';
-import { createStore, normalizeSettings, openKey, testS3Connection } from '../src/sync-store';
+import { createStore, normalizeSettings, openKey, testS3Connection, withCloudCredentials, type S3Grant } from '../src/sync-store';
 import * as core from '../src/vendor/mdsync/core';
 import { mockAssetDisk } from './fixtures/sync-assets';
 import { createAssetFetcher, downloadAsset } from '../src/asset-fetch';
@@ -85,6 +86,98 @@ class S3 {
 }
 let server: S3;
 beforeEach(() => { server = new S3(); core.setRequestHandler(server.handle); });
+it('syncs a shared cloud prefix across devices with STS reads, conditional writes and bounded ciphertext', async () => {
+  const prefix = 'users/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/';
+  const grant: S3Grant = { ...config, prefix, protocolVersion: 2, configVersion: 7, provider: 's3',
+    repository: 'example-vault', sessionToken: 'synthetic-token', credentialsExpireAt: Date.now() / 1000 + 600 };
+  const reads = vi.fn(async (request: core.Request) => {
+    expect(request.method).toBe('GET');
+    expect(request.headers?.['x-amz-security-token']).toBe(grant.sessionToken);
+    expect(request.headers?.Authorization).toMatch(/SignedHeaders=[^,]+x-amz-security-token/);
+    const response = await server.handle(request);
+    return response.status === 404 ? { ...response, status: 403, text: '<Error><Code>AccessDenied</Code></Error>' } : response;
+  });
+  core.setRequestHandler(reads);
+  const upload = vi.fn(async ({ configVersion, key, ifMatch, ifNoneMatch }: import('../src/sync-store').CloudUpload, bytes: Uint8Array) => {
+    expect(configVersion).toBe(7);
+    expect(key.startsWith(prefix)).toBe(true);
+    const path = key.slice(prefix.length);
+    if (path === 'miaoyan-key.json') {
+      expect(ifNoneMatch).toBe('*');
+      expect(bytes.byteLength).toBeLessThanOrEqual(4096);
+    } else if (path === 'vault-v2/manifest.json.enc') {
+      expect(ifMatch || ifNoneMatch).toBeTruthy();
+      expect(bytes.byteLength).toBeLessThanOrEqual(4 * 1024 * 1024);
+    } else {
+      expect(path).toMatch(/^vault-v2\/(objects|chunks|recipes|history)\/[0-9a-f]{64}(?:\.json\.enc)?$/);
+      if (path.includes('/objects/')) expect(bytes.byteLength).toBeLessThanOrEqual(256 * 1024);
+    }
+    const response = await server.handle({ url: `https://unit.invalid/test/${key}`, method: 'PUT',
+      headers: ifMatch ? { 'If-Match': ifMatch } : ifNoneMatch ? { 'If-None-Match': ifNoneMatch } : {},
+      body: bytes.slice().buffer as ArrayBuffer });
+    return response.status;
+  });
+  const remove = vi.fn(async (_version: number, keys: string[]) => { for (const key of keys) server.objects.delete(key); });
+  const target = normalizeSettings(withCloudCredentials(grant, async () => { throw new Error('unexpected refresh'); }, { upload, delete: remove }));
+  const cache = (): KeyCache => {
+    const keys = new Map<string, string>();
+    return async (id, key) => { if (key) keys.set(id, key); return keys.get(id) ?? null; };
+  };
+  const cacheA = cache(), cacheB = cache();
+  const a = mockAssetDisk(newBook().book), b = mockAssetDisk(newBook().book);
+  const attachment: Asset = { path: '.attachments/near-limit.bin', modified: 1000, bytes: [...randomBytes(256 * 1024 - 1)] };
+  a.setAssets([attachment]);
+  const run = (book: Notebook, cache: KeyCache) => syncNotebook(book, target, undefined, undefined, storage => openProtectedKey(storage, cache));
+  const initial = await manageSyncPassword(target, cacheA);
+  expect(initial).toMatchObject({ state: 'new', immutable: true });
+  await manageSyncPassword(target, cacheA, { ...initial, password: 'synthetic repository password' });
+  await run(a.book, cacheA);
+  await expect(run(b.book, cacheB)).rejects.toThrow('需要输入数据仓库密钥');
+  await manageSyncPassword(target, cacheB, { ...await manageSyncPassword(target, cacheB), password: 'synthetic repository password' });
+  await run(b.book, cacheB);
+  expect(b.assets()).toEqual([attachment]);
+  for (const category of ['chunks', 'recipes', 'history']) {
+    expect([...server.objects.keys()].some(key => key.startsWith(`${prefix}vault-v2/${category}/`))).toBe(true);
+  }
+  const store = createStore(target);
+  expect(await store.putManifest!(Uint8Array.of(1), '"stale"')).toBe(false);
+  const before = upload.mock.calls.length;
+  await expect(manageSyncPassword(target, cacheA, { ...await manageSyncPassword(target, cacheA), password: 'new password' }))
+    .rejects.toThrow('云存储密钥设定后不可修改');
+  expect(upload).toHaveBeenCalledTimes(before);
+  const history = (await store.list('history/'))[0]!;
+  await store.delete(history);
+  expect(remove).toHaveBeenCalledWith(7, [`${prefix}vault-v2/${history}`]);
+
+  await b.book.createNote('default');
+  const remoteId = b.book.current.id;
+  await b.book.save('A note created by another device');
+  await run(b.book, cacheB);
+  await a.book.createNote('default');
+  const localId = a.book.current.id;
+  await a.book.save('An edit kept locally until renewal');
+  const writesBeforeExpiry = upload.mock.calls.length;
+  await expect(syncNotebook(a.book, { ...target, canUpload: false }, undefined, undefined, storage => openProtectedKey(storage, cacheA)))
+    .resolves.toMatchObject({ notice: '轻羽云存储写入权益已到期，续费后可继续上传' });
+  expect(upload).toHaveBeenCalledTimes(writesBeforeExpiry);
+  expect(a.book.data.notes.some(note => note.id === remoteId)).toBe(true);
+  expect(a.book.data.notes.some(note => note.id === localId)).toBe(true);
+  expect(b.book.data.notes.some(note => note.id === localId)).toBe(false);
+  await run(a.book, cacheA);
+  await run(b.book, cacheB);
+  expect(b.book.data.notes.some(note => note.id === localId)).toBe(true);
+
+  const newPrefix = 'users/bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee/';
+  server.objects.set(newPrefix + 'miaoyan-key.json', server.objects.get(prefix + 'miaoyan-key.json')!);
+  const noUpload = vi.fn(async () => { throw new Error('The previous sync binding must not write to the new directory'); });
+  const moved = withCloudCredentials({ ...grant, prefix: newPrefix, configVersion: 8 },
+    async () => { throw new Error('unexpected refresh'); }, { upload: noUpload, delete: remove });
+  await expect(syncNotebook(a.book, moved, undefined, undefined, storage => openProtectedKey(storage, cacheA)))
+    .resolves.toMatchObject({ notice: '云存储目录已变更，已确认新基线，下次同步可上传' });
+  expect(noUpload).not.toHaveBeenCalled();
+  expect(a.book.data.sync?.target).toContain(newPrefix);
+  expect(a.book.data.notes.some(note => note.id === localId)).toBe(true);
+});
 it('tests S3 read/write, ETag conditions and cleanup without creating a notebook or sync key', async () => {
   await testS3Connection({ ...config, timeout: 299, concurrency: 16 });
   expect(server.objects.size).toBe(0);
@@ -127,11 +220,12 @@ it('uses a fresh v2 prefix with two devices, conditionally resets its password a
   }
   const cacheA = deviceCache(), cacheB = deviceCache(), cacheC = deviceCache();
   const run = (book: Notebook, cache: KeyCache) => syncNotebook(book, target, undefined, undefined, storage => openProtectedKey(storage, cache));
-  const password = 'initial-cafe\u0301-密码-phrase', newPassword = 'replacement-密码-phrase';
-  await expect(run(a.book, cacheA)).rejects.toThrow('需要输入同步密码');
+  const password = 'e\u0301', newPassword = '钥'.repeat(350);
+  await expect(run(a.book, cacheA)).rejects.toThrow('需要输入数据仓库密钥');
   expect(await store.get('miaoyan-key.json')).toBeNull();
   const setup = await manageSyncPassword(target, cacheA);
   expect(setup.state).toBe('new');
+  await expect(manageSyncPassword(target, cacheA, { ...setup, password: '' })).rejects.toThrow('请输入数据仓库密钥');
   const creations = await Promise.allSettled([
     manageSyncPassword(target, cacheA, { ...setup, password }),
     manageSyncPassword(target, cacheB, { ...setup, password }),
@@ -144,10 +238,10 @@ it('uses a fresh v2 prefix with two devices, conditionally resets its password a
   expect(keyInfo()).not.toHaveProperty('key');
   expect(new TextDecoder().decode(envelope().bytes)).not.toContain(password);
   await run(a.book, unlocked);
-  await expect(run(b.book, locked)).rejects.toThrow('需要输入同步密码');
+  await expect(run(b.book, locked)).rejects.toThrow('需要输入数据仓库密钥');
   const unlock = await manageSyncPassword(target, locked);
   expect(unlock.state).toBe('locked');
-  await expect(manageSyncPassword(target, locked, { ...unlock, password: 'incorrect-password' })).rejects.toThrow('密码错误或密钥文件已损坏');
+  await expect(manageSyncPassword(target, locked, { ...unlock, password: 'incorrect-password' })).rejects.toThrow('密钥错误或密钥文件已损坏');
   await manageSyncPassword(target, locked, { ...unlock, password: password.normalize('NFC') });
   await run(b.book, locked);
   expect(b.book.data.notes).toHaveLength(a.book.data.notes.length);
@@ -164,13 +258,13 @@ it('uses a fresh v2 prefix with two devices, conditionally resets its password a
   await expect(manageSyncPassword(target, locked, { ...reset, password })).rejects.toThrow('状态已变更');
   await run(b.book, locked);
   const after = await manageSyncPassword(target, cacheC);
-  await expect(manageSyncPassword(target, cacheC, { ...after, password })).rejects.toThrow('密码错误或密钥文件已损坏');
+  await expect(manageSyncPassword(target, cacheC, { ...after, password })).rejects.toThrow('密钥错误或密钥文件已损坏');
   await manageSyncPassword(target, cacheC, { ...after, password: newPassword });
   const other = { ...target, prefix: `${target.prefix}-other` };
   server.objects.set(`${other.prefix}/miaoyan-key.json`, envelope());
-  await expect(openProtectedKey(createStore(other), cacheC)).rejects.toThrow('需要输入同步密码');
+  await expect(openProtectedKey(createStore(other), cacheC)).rejects.toThrow('需要输入数据仓库密钥');
   const foreign = await manageSyncPassword(other, cacheC);
-  await expect(manageSyncPassword(other, cacheC, { ...foreign, password: newPassword })).rejects.toThrow('密码错误或密钥文件已损坏');
+  await expect(manageSyncPassword(other, cacheC, { ...foreign, password: newPassword })).rejects.toThrow('密钥错误或密钥文件已损坏');
   for (const [name, before] of oldObjects) expect(server.objects.get(name)).toBe(before);
   await expect(manageSyncPassword(normalizeSettings(config), cacheA)).rejects.toThrow('旧密钥格式');
   await expect(openKey(store)).rejects.toThrow('Web 部署端请使用独立同步前缀');

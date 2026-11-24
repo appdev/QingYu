@@ -73,7 +73,7 @@ export async function hostSync(client: SyncClient) {
       else {
         if (!config || typeof config !== 'object' || (accountId !== undefined && typeof accountId !== 'string')) throw new Error('连接设置无效');
         if (action === 'password') {
-          if (!client.password || (passwordAction !== undefined && typeof passwordAction?.password !== 'string')) throw new Error('同步密码设置无效');
+          if (!client.password || (passwordAction !== undefined && typeof passwordAction?.password !== 'string')) throw new Error('数据仓库密钥设置无效');
           reply.password = await client.password(config, accountId, passwordAction);
         } else if (action === 'save') await client.save(config); else if (action === 'test') await client.test(config); else await client.run(config, accountId);
       }
@@ -114,7 +114,7 @@ export async function remoteSync(): Promise<SyncClient> {
     test: async config => { await request('test', config); },
     password: async (config, accountId, action) => {
       const { password } = await request('password', config, accountId, action);
-      if (!password) throw new Error('无法读取同步密码状态');
+      if (!password) throw new Error('无法读取数据仓库密钥状态');
       return password;
     },
     subscribe(listener) { listeners.add(listener); listener(status); return () => { listeners.delete(listener); }; },

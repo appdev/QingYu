@@ -78,13 +78,13 @@ it.skipIf(!process.env.MIAOYAN_S3_CONFIG)('syncs v2 through a fresh S3 prefix ov
   const sync = (book: Notebook, cache: KeyCache) => syncNotebook(book, config, undefined, undefined, remote => openProtectedKey(remote, cache));
   const password = 'initial synthetic password', replacement = 'replacement synthetic password';
   try {
-    await expect(sync(a.book, cacheA)).rejects.toThrow('需要输入同步密码');
+    await expect(sync(a.book, cacheA)).rejects.toThrow('需要输入数据仓库密钥');
     await manageSyncPassword(config, cacheA, { ...await manageSyncPassword(config, cacheA), password });
     await a.book.save('# 仅由 A 上传的笔记');
     await sync(a.book, cacheA);
-    await expect(sync(b.book, cacheB)).rejects.toThrow('需要输入同步密码');
+    await expect(sync(b.book, cacheB)).rejects.toThrow('需要输入数据仓库密钥');
     const unlock = await manageSyncPassword(config, cacheB);
-    await expect(manageSyncPassword(config, cacheB, { ...unlock, password: 'invalid synthetic password' })).rejects.toThrow('密码错误');
+    await expect(manageSyncPassword(config, cacheB, { ...unlock, password: 'invalid synthetic password' })).rejects.toThrow('密钥错误');
     await manageSyncPassword(config, cacheB, { ...unlock, password });
     await sync(b.book, cacheB);
     expect(b.book.data.notes.find(note => note.id === 'first')?.source).toBe(a.book.current.source);
@@ -94,7 +94,7 @@ it.skipIf(!process.env.MIAOYAN_S3_CONFIG)('syncs v2 through a fresh S3 prefix ov
     await expect(manageSyncPassword(config, cacheB, { ...reset, password })).rejects.toThrow('状态已变更');
     await sync(b.book, cacheB);
     const third = await manageSyncPassword(config, cacheC);
-    await expect(manageSyncPassword(config, cacheC, { ...third, password })).rejects.toThrow('密码错误');
+    await expect(manageSyncPassword(config, cacheC, { ...third, password })).rejects.toThrow('密钥错误');
     await manageSyncPassword(config, cacheC, { ...third, password: replacement });
   } finally {
     for (const key of await store.list('')) await store.delete(key);

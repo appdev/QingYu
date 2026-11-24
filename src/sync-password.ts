@@ -1,17 +1,17 @@
-import { createStore, importBucketKey, putSyncObject, type S3Config } from './sync-store';
-import { importAesKey, REMOTE_MANIFEST_KEY, sha256Hex, type Storage } from './vendor/mdsync/core';
+import { createStore, importBucketKey, importSyncKey, putSyncObject, type S3Config } from './sync-store';
+import { REMOTE_MANIFEST_KEY, sha256Hex, type Storage } from './vendor/mdsync/core';
 
 const path = 'miaoyan-key.json';
 const encoder = new TextEncoder();
 const iterations = 600_000;
 const kdf = { name: 'PBKDF2-SHA256', iterations } as const;
-export const syncPasswordRequired = '需要输入同步密码';
+export const syncPasswordRequired = '需要输入数据仓库密钥';
 export class LegacySyncKey extends Error {
   constructor() { super('该同步库使用旧密钥格式，请使用新的同步前缀'); }
 }
 const invalidEnvelope = '远端同步密钥文件格式无效';
 export type PasswordState = 'new' | 'locked' | 'unlocked';
-export type PasswordInfo = { state: PasswordState; etag: string | null };
+export type PasswordInfo = { state: PasswordState; etag: string | null; immutable?: true };
 export type PasswordAction = PasswordInfo & { password: string };
 export type KeyCache = (target: string, key?: string) => Promise<string | null>;
 
@@ -49,10 +49,16 @@ async function readEnvelope(store: Storage) {
 }
 
 async function cachedKey(store: Storage, cache: KeyCache, keyId: string) {
-  const saved = await cache(store.identity());
-  if (!saved) return null;
-  const raw = decode(saved, 32);
-  return await sha256Hex(raw) === keyId ? raw : null;
+  const identity = store.keyCacheIdentity ?? store.identity();
+  for (const target of new Set([identity, store.identity()])) {
+    const saved = await cache(target);
+    if (!saved) continue;
+    const raw = decode(saved, 32);
+    if (await sha256Hex(raw) !== keyId) continue;
+    if (target !== identity) await cache(identity, saved);
+    return raw;
+  }
+  return null;
 }
 
 export async function openProtectedKey(store: Storage, cache: KeyCache, purpose: 'sync' | 'attachment' = 'sync') {
@@ -63,7 +69,7 @@ export async function openProtectedKey(store: Storage, cache: KeyCache, purpose:
   }
   const raw = envelope && await cachedKey(store, cache, envelope.keyId);
   if (!raw) throw new Error(syncPasswordRequired);
-  return importAesKey(raw);
+  return importSyncKey(raw);
 }
 
 async function deriveKey(password: Uint8Array<ArrayBuffer>, salt: Uint8Array<ArrayBuffer>) {
@@ -85,35 +91,38 @@ export async function manageSyncPassword(config: S3Config, cache: KeyCache, acti
   const cached = envelope && await cachedKey(store, cache, envelope.keyId);
   const state: PasswordState = !envelope ? 'new' : cached ? 'unlocked' : 'locked';
   const etag = envelope?.etag ?? null;
-  if (!action) return { state, etag };
-  if (state !== action.state || etag !== action.etag) throw new Error('同步密码状态已变更，请重新打开密码设置');
+  const policy = config.cloud ? { immutable: true as const } : {};
+  if (!action) return { state, etag, ...policy };
+  if (state !== action.state || etag !== action.etag) throw new Error('数据仓库密钥状态已变更，请重新打开密钥设置');
+  if (config.cloud && state === 'unlocked') throw new Error('云存储密钥设定后不可修改');
   const normalization = state === 'locked' ? envelope?.normalization : 'NFC';
   const input = normalization ? action.password.normalize(normalization) : action.password;
   const password = encoder.encode(input);
-  if (!password.length || password.length > 1024 || (state !== 'locked' && Array.from(input).length < 12)) {
-    throw new Error('同步密码至少需要 12 个字符，且最多 1024 字节');
-  }
+  if (!password.length) throw new Error('请输入数据仓库密钥');
+  const repository = config.cloud?.repository ?? config.prefix;
+  const identity = store.keyCacheIdentity ?? store.identity();
   let raw: Uint8Array<ArrayBuffer>;
   if (envelope && !cached) {
     const kek = await deriveKey(password, envelope.salt);
     try {
-      raw = new Uint8Array(await crypto.subtle.decrypt(gcm(config.prefix, envelope.keyId, envelope.nonce, normalization), kek, envelope.wrapped));
+      raw = new Uint8Array(await crypto.subtle.decrypt(gcm(repository, envelope.keyId, envelope.nonce, normalization), kek, envelope.wrapped));
     } catch {
-      throw new Error('同步密码错误或密钥文件已损坏');
+      throw new Error('数据仓库密钥错误或密钥文件已损坏');
     }
     if (raw.length !== 32 || await sha256Hex(raw) !== envelope.keyId) throw new Error(invalidEnvelope);
   } else {
-    if (envelope && !envelope.etag) throw new Error('服务未返回 ETag，无法安全修改同步密码');
-    raw = cached ?? crypto.getRandomValues(new Uint8Array(32));
+    if (envelope && !envelope.etag) throw new Error('服务未返回 ETag，无法安全修改数据仓库密钥');
+    const previous = store.keyCacheIdentity && await cache(identity);
+    raw = cached ?? (previous ? decode(previous, 32) : crypto.getRandomValues(new Uint8Array(32)));
     const keyId = await sha256Hex(raw);
     const salt = crypto.getRandomValues(new Uint8Array(16)), nonce = crypto.getRandomValues(new Uint8Array(12));
     const kek = await deriveKey(password, salt);
-    const wrapped = await crypto.subtle.encrypt(gcm(config.prefix, keyId, nonce, normalization), kek, raw);
+    const wrapped = await crypto.subtle.encrypt(gcm(repository, keyId, nonce, normalization), kek, raw);
     const body = encoder.encode(JSON.stringify({ version: 2, protection: 'password', keyId,
       kdf: { ...kdf, salt: encode(salt), normalization }, nonce: encode(nonce), wrapped: encode(new Uint8Array(wrapped)) }));
     await beforeWrite?.();
-    if (!await putSyncObject(config, path, body, etag)) throw new Error('同步密码状态已变更，请重新打开密码设置');
+    if (!await putSyncObject(config, path, body, etag)) throw new Error('数据仓库密钥状态已变更，请重新打开密钥设置');
   }
-  if (!cached) await cache(store.identity(), encode(raw));
-  return { state: 'unlocked', etag: null };
+  if (!cached) await cache(identity, encode(raw));
+  return { state: 'unlocked', etag: null, ...policy };
 }

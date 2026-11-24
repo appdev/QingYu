@@ -5,10 +5,10 @@ use std::{
     fs::{self, DirBuilder, Metadata, OpenOptions},
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 const API_ORIGIN: &str = "https://api.qynotes.com";
 const PORTAL: &str = "https://qynotes.com";
@@ -20,6 +20,7 @@ const ACCOUNT_CACHE_TTL: u64 = 24 * 60 * 60;
 const S3_REFRESH_WINDOW: u64 = 120;
 const SYNC_PREFIX: &str = "repo/qingyu/v1";
 type Result<T> = std::result::Result<T, AccountError>;
+pub(crate) mod storage;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -34,11 +35,15 @@ impl From<&'static str> for AccountError {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ClientAccount {
-    session: Mutex<AccountState>,
-    client: OnceLock<Result<Client>>,
-    refresh_retry: Mutex<Option<RefreshRetry>>,
+    session: Arc<Mutex<AccountState>>,
+    client: Arc<OnceLock<Result<Client>>>,
+    refresh_retry: Arc<Mutex<Option<RefreshRetry>>>,
+    storage_retry: Arc<Mutex<std::collections::HashMap<String, (Instant, &'static str)>>>,
+    storage_generation: watch::Sender<u64>,
+    upload_batches: Arc<Mutex<Vec<storage::QueuedUpload>>>,
+    upload_confirmation: Arc<Mutex<()>>,
 }
 
 struct RefreshRetry {
@@ -77,6 +82,7 @@ impl<T> Cached<T> {
 
 struct Access {
     token: String,
+    memory_refresh_token: Option<String>,
     expires_at: u64,
     session_expires_at: u64,
     account_id: String,
@@ -116,7 +122,11 @@ struct Profile {
 struct Subscription {
     quota_bytes: u64,
     active: bool,
+    #[serde(default)]
+    paid: Option<bool>,
     expires_at: Option<AccountTimestamp>,
+    #[serde(default)]
+    quota_expires_at: Option<AccountTimestamp>,
     email_verified: bool,
     #[serde(default = "requires_email_by_default")]
     email_verification_required: bool,
@@ -144,12 +154,17 @@ enum AccountTimestamp {
 #[serde(rename_all = "camelCase")]
 pub struct Redemption {
     years: u64,
+    duration_days: Option<u64>,
+    quota_bytes: Option<u64>,
     redeemed_time: AccountTimestamp,
 }
 
-#[derive(Deserialize)]
-struct Redeemed {
+#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Redeemed {
     years: u64,
+    duration_days: Option<u64>,
+    quota_bytes: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -159,7 +174,7 @@ pub struct AccountInfo {
     usage: Option<Usage>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageConfig {
     endpoint: String,
@@ -170,8 +185,11 @@ pub struct StorageConfig {
     force_path_style: bool,
     concurrent_reqs: usize,
     credentials_expire_at: u64,
-    #[serde(skip_deserializing)]
-    prefix: &'static str,
+    prefix: String,
+    can_upload: Option<bool>,
+    storage_generation: u64,
+    #[serde(flatten)]
+    managed: Option<storage::Managed>,
 }
 
 #[derive(Deserialize)]
@@ -322,15 +340,19 @@ fn persist(
     access: &mut Option<Access>,
     tokens: Tokens,
     account_id: String,
+    remember: bool,
 ) -> Result<()> {
     let saved = SavedSession {
         refresh_token: tokens.refresh_token,
         session_expires_at: tokens.session_expires_at,
         account_id: account_id.clone(),
     };
-    save(path, &saved)?;
+    if remember {
+        save(path, &saved)?;
+    }
     *access = Some(Access {
         token: tokens.access_token,
+        memory_refresh_token: (!remember).then_some(saved.refresh_token),
         expires_at: tokens.expires_at,
         session_expires_at: tokens.session_expires_at,
         account_id,
@@ -353,6 +375,7 @@ struct Service<'a> {
     client: &'a Client,
     session: PathBuf,
     refresh_retry: &'a Mutex<Option<RefreshRetry>>,
+    storage_retry: &'a Mutex<std::collections::HashMap<String, (Instant, &'static str)>>,
 }
 
 impl Service<'_> {
@@ -415,6 +438,16 @@ impl Service<'_> {
         bearer: Option<&str>,
         body: Option<Value>,
     ) -> Result<T> {
+        let storage = matches!(
+            path,
+            "storage-config" | "upload-authorize" | "upload-complete" | "objects-delete"
+        );
+        if storage || path == "refresh" {
+            if let Some((_, code)) = self.storage_retry.lock().await.get(path)
+                .filter(|(until, _)| *until > Instant::now()) {
+                return Err((*code).into());
+            }
+        }
         let method = if body.is_some() {
             Method::POST
         } else {
@@ -439,6 +472,25 @@ impl Service<'_> {
             }
         })?;
         let status = response.status();
+        if storage && (status.as_u16() == 429 || status.is_server_error())
+            || path == "refresh" && status.as_u16() == 429
+        {
+            let rate_limited = status.as_u16() == 429;
+            let delay = response.headers().get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok().or_else(|| {
+                    chrono::DateTime::parse_from_rfc2822(value).ok()
+                        .map(|date| (date.timestamp().max(0) as u64).saturating_sub(now()))
+                }))
+                .or_else(|| storage.then_some(if rate_limited { 60 } else { 5 }));
+            if let Some(until) = delay.and_then(|delay| Instant::now().checked_add(Duration::from_secs(delay))) {
+                let code = if rate_limited { "rate_limited" } else { "temporarily_unavailable" };
+                let mut cooldowns = self.storage_retry.lock().await;
+                if cooldowns.get(path).is_none_or(|(previous, _)| *previous < until) {
+                    cooldowns.insert(path.to_owned(), (until, code));
+                }
+            }
+        }
         if status.as_u16() == 429 {
             return Err("rate_limited".into());
         }
@@ -448,9 +500,10 @@ impl Service<'_> {
         if status.as_u16() == 401 && path == "refresh" {
             return Err("invalid_refresh_token".into());
         }
+        let limit = if path == "upload-authorize" { 1024 * 1024 } else { 256 * 1024 };
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| "response_lost")? {
-            if bytes.len() + chunk.len() > 256 * 1024 {
+            if bytes.len() + chunk.len() > limit {
                 return Err("invalid_response".into());
             }
             bytes.extend_from_slice(&chunk);
@@ -477,18 +530,35 @@ impl Service<'_> {
             }
             (401, "login_failed") => Err("login_failed".into()),
             (401, "invalid_token") => Err("invalid_token".into()),
+            (401, "session_expiring") => Err("session_expiring".into()),
+            (400, "invalid_request") => Err("invalid_request".into()),
             (403, "email_unverified") => Err("email_unverified".into()),
             (403, "subscription_required") => Err("subscription_required".into()),
+            (403, "storage_expired") => Err("storage_expired".into()),
+            (409, "quota_exceeded") => Err("quota_exceeded".into()),
+            (409, "storage_config_changed") => Err("storage_config_changed".into()),
+            (409, "storage_busy") => Err("storage_busy".into()),
             _ => Err("invalid_response".into()),
         }
     }
 
     async fn refresh(&self, access: &mut Option<Access>) -> Result<()> {
-        *access = None;
-        let Some(saved) = load(&self.session)? else {
+        let memory = access.as_ref().and_then(|entry| {
+            Some(SavedSession {
+                refresh_token: entry.memory_refresh_token.clone()?,
+                session_expires_at: entry.session_expires_at,
+                account_id: entry.account_id.clone(),
+            })
+        });
+        let remember = memory.is_none();
+        let saved = match memory { Some(saved) => Some(saved), None => load(&self.session)? };
+        let Some(saved) = saved else {
+            *access = None;
             return Err("signed_out".into());
         };
+        if let Some(entry) = access { entry.expires_at = 0; }
         if saved.session_expires_at <= now() {
+            *access = None;
             self.clear_session()?;
             return Err("signed_out".into());
         }
@@ -506,12 +576,13 @@ impl Service<'_> {
         let tokens = match result {
             Ok(tokens)
                 if validate_tokens(&tokens).is_ok()
-                    && tokens.session_expires_at <= saved.session_expires_at =>
+                    && tokens.session_expires_at == saved.session_expires_at =>
             {
                 tokens
             }
             Err(AccountError::Code("invalid_refresh_token")) => {
                 *retry = None;
+                *access = None;
                 self.clear_session()?;
                 return Err("signed_out".into());
             }
@@ -526,7 +597,8 @@ impl Service<'_> {
             Ok(_) => return Err("invalid_response".into()),
         };
         *retry = None;
-        if let Err(error) = persist(&self.session, access, tokens, saved.account_id) {
+        if let Err(error) = persist(&self.session, access, tokens, saved.account_id, remember) {
+            *access = None;
             self.clear_session()?;
             return Err(error);
         }
@@ -556,13 +628,7 @@ impl Service<'_> {
             return result;
         }
         self.refresh(access).await?;
-        let result = self
-            .send(
-                path,
-                access.as_ref().map(|entry| entry.token.as_str()),
-                body,
-            )
-            .await;
+        let result = self.send(path, access.as_ref().map(|entry| entry.token.as_str()), body).await;
         if matches!(result, Err(AccountError::Code("invalid_token"))) {
             *access = None;
             self.clear_session()?;
@@ -573,8 +639,10 @@ impl Service<'_> {
 
     fn require_account(&self, access: &Option<Access>, account_id: &str) -> Result<()> {
         let matches = match access {
-            Some(access) => access.account_id == account_id,
-            None => load(&self.session)?.ok_or("signed_out")?.account_id == account_id,
+            Some(access) if access.session_expires_at > now() => access.account_id == account_id,
+            Some(_) => return Err("signed_out".into()),
+            None => load(&self.session)?.filter(|session| session.session_expires_at > now())
+                .ok_or("signed_out")?.account_id == account_id,
         };
         if !matches {
             return Err("account_changed".into());
@@ -698,21 +766,20 @@ impl Service<'_> {
                 return Ok(config.clone());
             }
         }
-        let mut config: StorageConfig = self
-            .authorized(&mut state.access, "storage-config", Some(json!({})))
+        let body = match rejected_key {
+            Some(key) if state.storage.as_ref().is_none_or(|(_, config)| config.managed.is_some()) => {
+                json!({ "rejectedKey": key })
+            }
+            _ => json!({}),
+        };
+        let reply: storage::ConfigReply = self
+            .authorized(&mut state.access, "storage-config", Some(body))
             .await?;
+        let config = reply.validate()?;
         self.require_account(&state.access, account_id)?;
         if config.credentials_expire_at <= minimum_expiry {
             return Err("storage_credentials_expiring".into());
         }
-        if !reqwest::Url::parse(&config.endpoint).is_ok_and(|endpoint| endpoint.scheme() == "https")
-            || config.region.trim().is_empty()
-            || config.access_key_id.trim().is_empty()
-            || config.secret_access_key.is_empty()
-        {
-            return Err("invalid_response".into());
-        }
-        config.prefix = SYNC_PREFIX;
         state.storage = Some((account_id.to_owned(), config.clone()));
         Ok(config)
     }
@@ -722,9 +789,13 @@ impl Service<'_> {
         access: &mut Option<Access>,
         username: &str,
         password: &str,
+        remember: bool,
     ) -> Result<AccountInfo> {
-        if access.is_some() || load(&self.session)?.is_some() {
+        if self.current_account(access)?.is_some() {
             return Err("already_signed_in".into());
+        }
+        if access.take().is_some() || load(&self.session)?.is_some() {
+            self.clear_session()?;
         }
         let tokens: Tokens = self
             .send(
@@ -738,7 +809,7 @@ impl Service<'_> {
         if profile.id.trim().is_empty() {
             return Err("invalid_response".into());
         }
-        persist(&self.session, access, tokens, profile.id.clone())?;
+        persist(&self.session, access, tokens, profile.id.clone(), remember)?;
         *self.refresh_retry.lock().await = None;
         self.account_info(access, profile).await
     }
@@ -755,7 +826,7 @@ impl Service<'_> {
                 Err(_) => None,
             };
         let usage = if subscription.as_ref().is_some_and(|plan| {
-            plan.active && (!plan.email_verification_required || plan.email_verified)
+            (plan.active || plan.paid.is_some()) && (!plan.email_verification_required || plan.email_verified)
         }) {
             match self.authorized(access, "usage", None).await {
                 Ok(usage) => Some(usage),
@@ -772,11 +843,11 @@ impl Service<'_> {
         })
     }
 
-    async fn redeem(&self, access: &mut Option<Access>, code: &str) -> Result<u64> {
+    async fn redeem(&self, access: &mut Option<Access>, code: &str) -> Result<Redeemed> {
         let redeemed: Redeemed = self
             .authorized(access, "redeem", Some(json!({ "activationCode": code })))
             .await?;
-        Ok(redeemed.years)
+        Ok(redeemed)
     }
 
     async fn logout(&self, access: &mut Option<Access>, everywhere: bool) -> Result<bool> {
@@ -811,15 +882,18 @@ impl ClientAccount {
             client,
             session,
             refresh_retry: &self.refresh_retry,
+            storage_retry: &self.storage_retry,
         })
     }
 
     pub async fn status(&self, session: PathBuf, force: bool) -> Result<Option<AccountInfo>> {
         let mut state = self.session.lock().await;
-        self.service(session)?.status(&mut state, force).await
+        let result = self.service(session)?.status(&mut state, force).await;
+        if matches!(result, Ok(None)) { self.invalidate_storage(); }
+        result
     }
 
-    pub async fn login(&self, session: PathBuf, username: &str, password: &str) -> Result<AccountInfo> {
+    pub async fn login(&self, session: PathBuf, username: &str, password: &str, remember: bool) -> Result<AccountInfo> {
         let username = username.trim();
         if username.len() > 320
             || !username.contains('@')
@@ -831,7 +905,8 @@ impl ClientAccount {
         }
         let mut state = self.session.lock().await;
         let service = self.service(session)?;
-        let info = service.login(&mut state.access, username, password).await?;
+        let info = service.login(&mut state.access, username, password, remember).await?;
+        self.invalidate_storage();
         state.cache = Some(AccountCache {
             account_id: info.profile.id.clone(),
             info: Some(Cached {
@@ -850,18 +925,24 @@ impl ClientAccount {
         session: PathBuf,
         account_id: &str,
         everywhere: bool,
-        after_logout: impl FnOnce() -> Result<()>,
     ) -> Result<bool> {
         let mut state = self.session.lock().await;
         let service = self.service(session)?;
+        if service.current_account(&state.access)?.is_none() {
+            self.invalidate_storage();
+            *state = AccountState::default();
+            service.clear_session()?;
+            return if everywhere { Err("signed_out".into()) } else { Ok(false) };
+        }
         service.require_account(&state.access, account_id)?;
+        self.invalidate_storage();
+        state.storage = None;
         let revoked = service.logout(&mut state.access, everywhere).await?;
         *state = AccountState::default();
-        after_logout()?;
         Ok(revoked)
     }
 
-    pub async fn redeem(&self, session: PathBuf, account_id: &str, activation_code: &str) -> Result<u64> {
+    pub async fn redeem(&self, session: PathBuf, account_id: &str, activation_code: &str) -> Result<Redeemed> {
         let code = activation_code.trim();
         if code.is_empty() || code.len() > 4096 || code.chars().any(char::is_control) {
             return Err("invalid_input".into());
@@ -874,6 +955,7 @@ impl ClientAccount {
         cache.info = None;
         cache.redemptions = None;
         service.save_cache(&state);
+        self.invalidate_storage();
         state.storage = None;
         Ok(years)
     }
@@ -885,22 +967,64 @@ impl ClientAccount {
             .await
     }
 
-    pub async fn sync_config(&self, session: PathBuf, account_id: &str, rejected_key: Option<&str>) -> Result<StorageConfig> {
-        let mut state = self.session.lock().await;
-        self.service(session)?
-            .storage_config(&mut state, account_id, rejected_key)
-            .await
+    fn invalidate_storage(&self) {
+        self.storage_generation.send_modify(|generation| *generation += 1);
     }
 
-    // App 在提交同步结果前用它确认账号没变；网页客户端在同步开始时取凭据就已校验账号
-    #[cfg_attr(not(feature = "app"), allow(dead_code))]
-    pub async fn check_sync(&self, session: PathBuf, account_id: &str) -> Result<()> {
+    pub(crate) fn watch_storage(&self, generation: u64) -> Result<watch::Receiver<u64>> {
+        let receiver = self.storage_generation.subscribe();
+        if *receiver.borrow() != generation { return Err("storage_config_changed".into()); }
+        Ok(receiver)
+    }
+
+    pub async fn sync_config(&self, session: PathBuf, account_id: &str, rejected_key: Option<&str>, begin: bool, generation: Option<u64>) -> Result<StorageConfig> {
+        let mut state = self.session.lock().await;
+        let service = self.service(session)?;
+        if let Some(generation) = generation { self.watch_storage(generation)?; }
+        let previous = state.storage.clone();
+        let result = async {
+            let can_upload = if begin {
+                service.require_account(&state.access, account_id)?;
+                let profile: Profile = service.authorized(&mut state.access, "me", None).await?;
+                if profile.id != account_id { return Err("account_changed".into()); }
+                let plan: Subscription = service.authorized(&mut state.access, "subscription", None).await?;
+                state.storage = None;
+                Some(plan.active && plan.quota_bytes > 0)
+            } else {
+                previous.as_ref().and_then(|(_, config)| config.can_upload)
+            };
+            let mut config = service.storage_config(&mut state, account_id, rejected_key).await?;
+            config.can_upload = can_upload;
+            Ok(config)
+        }.await;
+        let mut config = match result {
+            Ok(config) => config,
+            Err(error) => {
+                if matches!(error, AccountError::Code("storage_config_changed" | "storage_busy" | "signed_out" | "account_changed" | "session_expiring")) {
+                    self.invalidate_storage();
+                    state.storage = None;
+                }
+                return Err(error);
+            }
+        };
+        if previous.as_ref().is_some_and(|(id, previous)| id != account_id || !previous.same_storage(&config)
+            || previous.can_upload != config.can_upload) {
+            self.invalidate_storage();
+        }
+        config.storage_generation = *self.storage_generation.borrow();
+        state.storage = Some((account_id.to_owned(), config.clone()));
+        Ok(config)
+    }
+
+    // App 在提交同步结果前用它确认账号没变。
+    #[cfg(feature = "app")]
+    pub async fn check_sync(&self, session: PathBuf, account_id: &str, generation: Option<u64>) -> Result<()> {
         let state = self.session.lock().await;
+        if let Some(generation) = generation { self.watch_storage(generation)?; }
         self.service(session)?
             .require_account(&state.access, account_id)
     }
 
-    #[cfg(feature = "app")]
     pub(crate) async fn with_sync_account<T>(
         &self,
         session: PathBuf,
@@ -919,7 +1043,8 @@ pub fn portal_url(page: &str) -> Result<String> {
         "register" => "/signup/app-customers",
         "reset" => "/forget/app-customers",
         "purchase" => "/purchase",
-        "verify" | "account" => "/",
+        "verify" => "/",
+        "account" => "/account",
         _ => return Err("invalid_input".into()),
     };
     Ok(format!("{PORTAL}{path}"))
@@ -956,8 +1081,9 @@ pub async fn account_login(
     state: tauri::State<'_, ClientAccount>,
     username: String,
     password: String,
+    remember_device: Option<bool>,
 ) -> Result<AccountInfo> {
-    state.login(app_session(&window)?, &username, &password).await
+    state.login(app_session(&window)?, &username, &password, remember_device.unwrap_or(true)).await
 }
 
 #[cfg(feature = "app")]
@@ -968,14 +1094,7 @@ pub async fn account_logout(
     account_id: String,
     everywhere: bool,
 ) -> Result<bool> {
-    use tauri::Manager;
-    let config = window.path().app_config_dir().map_err(|_| STORAGE_ERROR)?;
-    state
-        .logout(app_session(&window)?, &account_id, everywhere, || {
-            crate::sync_profile::forget_account_keys(&config, &account_id)
-                .map_err(|_| "sync_key_remove_failed".into())
-        })
-        .await
+    state.logout(app_session(&window)?, &account_id, everywhere).await
 }
 
 #[cfg(feature = "app")]
@@ -985,7 +1104,7 @@ pub async fn account_redeem(
     state: tauri::State<'_, ClientAccount>,
     account_id: String,
     activation_code: String,
-) -> Result<u64> {
+) -> Result<Redeemed> {
     state.redeem(app_session(&window)?, &account_id, &activation_code).await
 }
 
@@ -1009,11 +1128,13 @@ pub async fn account_sync_config(
     state: tauri::State<'_, ClientAccount>,
     account_id: String,
     rejected_key: Option<String>,
+    begin: Option<bool>,
+    generation: Option<u64>,
 ) -> Result<StorageConfig> {
     if window.label() != "main" {
         return Err("not_allowed".into());
     }
-    state.sync_config(app_session(&window)?, &account_id, rejected_key.as_deref()).await
+    state.sync_config(app_session(&window)?, &account_id, rejected_key.as_deref(), begin.unwrap_or(false), generation).await
 }
 
 #[cfg(feature = "app")]
@@ -1022,11 +1143,12 @@ pub async fn account_check_sync(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, ClientAccount>,
     account_id: String,
+    generation: Option<u64>,
 ) -> Result<()> {
     if window.label() != "main" {
         return Err("not_allowed".into());
     }
-    state.check_sync(app_session(&window)?, &account_id).await
+    state.check_sync(app_session(&window)?, &account_id, generation).await
 }
 
 #[cfg(feature = "app")]
@@ -1128,9 +1250,11 @@ mod tests {
             client: &http,
             session: directory.path().join(".account/session.json"),
             refresh_retry: &Mutex::default(),
+            storage_retry: &Mutex::default(),
         };
         let mut state = AccountState {
             access: Some(Access {
+                memory_refresh_token: None,
                 token: "access".into(),
                 expires_at: now() + 3600,
                 session_expires_at: now() + 86_400 * 2,
@@ -1217,9 +1341,11 @@ mod tests {
             client: &http,
             session: directory.path().join(".account/session.json"),
             refresh_retry: &Mutex::default(),
+            storage_retry: &Mutex::default(),
         };
         let mut state = AccountState {
             access: Some(Access {
+                memory_refresh_token: None,
                 token: "access".into(),
                 expires_at: now() + 3600,
                 session_expires_at: now() + 7200,
@@ -1315,9 +1441,11 @@ mod tests {
             client: &http,
             session: directory.path().join("session.json"),
             refresh_retry: &Mutex::default(),
+            storage_retry: &Mutex::default(),
         };
         let mut state = AccountState {
             access: Some(Access {
+                memory_refresh_token: None,
                 token: "access".into(),
                 expires_at: now() + 3600,
                 session_expires_at: now() + 7200,
@@ -1354,6 +1482,88 @@ mod tests {
         }
         assert!(!service.session.exists());
         finished.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_v2_configuration_and_refreshes_rejected_sts_credentials() {
+        let prefix = "users/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/";
+        let make_grant = |key: &str, version: u64| json!({
+            "protocolVersion": 2, "provider": "tos", "endpoint": "https://reads.example.test",
+            "region": "us-east-1", "bucket": "shared", "prefix": prefix, "repository": "vault-one",
+            "configVersion": version, "accessKeyId": key, "secretAccessKey": "test-secret",
+            "sessionToken": "test-token", "credentialsExpireAt": chrono::DateTime::from_timestamp((now() + 600) as i64, 0).unwrap().to_rfc3339(),
+            "forcePathStyle": false, "readOnly": true, "uploadMode": "presigned", "deleteMode": "server",
+        });
+        let (origin, finished) = mock_api(vec![
+            ("storage-config", Some("access"), Some(json!({})), 200, ok(make_grant("first", 3))),
+            ("storage-config", Some("access"), Some(json!({"rejectedKey":"first"})), 200, ok(make_grant("second", 3))),
+            ("storage-config", Some("access"), Some(json!({"rejectedKey":"second"})), 401, error("session_expiring")),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        let http = client().unwrap();
+        let service = Service {
+            origin: &origin, client: &http, session: directory.path().join("session.json"),
+            refresh_retry: &Mutex::default(), storage_retry: &Mutex::default(),
+        };
+        let mut state = AccountState {
+            access: Some(Access {
+                memory_refresh_token: None,
+                token: "access".into(), expires_at: now() + 3600,
+                session_expires_at: now() + 7200, account_id: "one".into(),
+            }),
+            ..Default::default()
+        };
+        let config = service.storage_config(&mut state, "one", None).await.unwrap();
+        let config = serde_json::to_value(config).unwrap();
+        assert_eq!(config["prefix"], prefix);
+        assert_eq!(config["protocolVersion"], 2);
+        assert_eq!(config["configVersion"], 3);
+        assert_eq!(config["sessionToken"], "test-token");
+        let renewed = service.storage_config(&mut state, "one", Some("first")).await.unwrap();
+        assert_eq!(renewed.access_key_id, "second");
+        assert!(matches!(service.storage_config(&mut state, "one", Some("second")).await,
+            Err(AccountError::Code("session_expiring"))));
+        assert!(state.access.is_some());
+        finished.join().unwrap();
+
+        let mut invalid = make_grant("key", 3);
+        invalid["sessionToken"] = Value::Null;
+        assert!(serde_json::from_value::<storage::ConfigReply>(invalid).unwrap().validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_only_sign_in_rotates_refresh_tokens_without_persisting_them() {
+        let expiry = now() + 3600;
+        let (origin, finished) = mock_api(vec![(
+            "refresh", None, Some(json!({"refreshToken":"memory-refresh"})), 200,
+            ok(json!({"accessToken":"next-access","refreshToken":"next-refresh",
+                "expiresAt":now()+600,"sessionExpiresAt":expiry,"tokenType":"Bearer"})),
+        )]);
+        let directory = tempfile::tempdir().unwrap();
+        let http = client().unwrap();
+        let service = Service {
+            origin: &origin, client: &http, session: directory.path().join("session.json"),
+            refresh_retry: &Mutex::default(), storage_retry: &Mutex::default(),
+        };
+        let mut access = None;
+        persist(&service.session, &mut access, Tokens {
+            access_token: "memory-access".into(), refresh_token: "memory-refresh".into(),
+            expires_at: now() + 60, session_expires_at: expiry, token_type: "Bearer".into(),
+        }, "owner".into(), false).unwrap();
+        service.refresh(&mut access).await.unwrap();
+        assert_eq!(access.unwrap().memory_refresh_token.as_deref(), Some("next-refresh"));
+        assert!(!service.session.exists());
+        finished.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalidating_storage_wakes_active_transfers_and_rejects_queued_ones() {
+        let account = ClientAccount::default();
+        let mut watcher = account.watch_storage(0).unwrap();
+        account.invalidate_storage();
+        watcher.changed().await.unwrap();
+        assert!(matches!(account.watch_storage(0), Err(AccountError::Code("storage_config_changed"))));
+        assert!(account.watch_storage(1).is_ok());
     }
 
     #[tokio::test]
@@ -1433,10 +1643,11 @@ mod tests {
             client: &http,
             session: session.clone(),
             refresh_retry: &Mutex::default(),
+            storage_retry: &Mutex::default(),
         };
         let mut initial = None;
         let info = service
-            .login(&mut initial, user, "fixture-password")
+            .login(&mut initial, user, "fixture-password", true)
             .await
             .unwrap();
         assert_eq!(info.profile.id, "immutable-id");
@@ -1556,6 +1767,7 @@ mod tests {
             client: &http,
             session: session.clone(),
             refresh_retry: &Mutex::default(),
+            storage_retry: &Mutex::default(),
         };
         let mut access = None;
         persist(
@@ -1569,6 +1781,7 @@ mod tests {
                 token_type: "Bearer".into(),
             },
             "fixture".into(),
+            true,
         )
         .unwrap();
 
@@ -1588,7 +1801,7 @@ mod tests {
             })
         );
         assert_eq!(
-            service.redeem(&mut access, "fixture-code").await.unwrap(),
+            service.redeem(&mut access, "fixture-code").await.unwrap().years,
             1
         );
         let info = service.profile(&mut access).await.unwrap();
@@ -1634,6 +1847,7 @@ mod tests {
             client: &http,
             session: session.clone(),
             refresh_retry: &Mutex::default(),
+            storage_retry: &Mutex::default(),
         };
         for (_, code) in &responses[..3] {
             let expected = Err(AccountError::Code(code));

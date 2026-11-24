@@ -31,16 +31,17 @@ it('sets, unlocks and resets the sync password from Storage & Sync', async () =>
   const profile = { ...config, endpoint: 'https://s3.invalid', bucket: 'test', accessKeyId: 'test', secretAccessKey: 'test', mode: 's3' as const };
   const password = vi.fn<NonNullable<SyncClient['password']>>();
   const client: SyncClient = { load: async () => profile, save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(), password,
-    subscribe(listener) { listener({ busy: false, error: false, message: '需要输入同步密码', passwordRequired: {} }); return () => {}; } };
+    subscribe(listener) { listener({ busy: false, error: false, message: '需要输入数据仓库密钥', passwordRequired: {} }); return () => {}; } };
   const root = document.body.appendChild(document.createElement('div'));
   const view = mountSettings(root, client, vi.fn());
   try {
     view.select('storage');
     await view.loaded;
-    expect(root.querySelector('.settings-sync-status[aria-live="polite"]')?.textContent).toBe('需要输入同步密码');
-    const button = [...root.querySelectorAll('button')].find(button => button.textContent === '管理密码')!;
+    expect(root.querySelector('.settings-sync-status[aria-live="polite"]')?.textContent).toBe('需要输入数据仓库密钥');
+    const button = [...root.querySelectorAll('button')].find(button => button.textContent === '管理密钥')!;
     expect(button.disabled).toBe(false);
-    for (const [state, title] of [['new', '设置同步密码'], ['locked', '输入同步密码'], ['unlocked', '修改或重设同步密码']] as const) {
+    expect(button.closest('.settings-row')?.textContent).toContain('数据仓库用于加密保存数据快照。同步时需要解锁密钥。');
+    for (const [state, title] of [['new', '设置数据仓库密钥'], ['locked', '输入数据仓库密钥'], ['unlocked', '修改或重设数据仓库密钥']] as const) {
       const info = { state, etag: state === 'new' ? null : '"etag"' };
       password.mockResolvedValueOnce(info).mockResolvedValueOnce({ state: 'unlocked', etag: null });
       button.click();
@@ -48,15 +49,17 @@ it('sets, unlocks and resets the sync password from Storage & Sync', async () =>
       const form = root.querySelector<HTMLFormElement>('.settings-password-form')!;
       const [entry, confirm] = form.querySelectorAll('input');
       expect(confirm!.closest('label')!.hidden).toBe(state === 'locked');
-      entry!.value = 'a synthetic password';
+      expect(entry!.hasAttribute('maxlength')).toBe(false);
+      expect(confirm!.hasAttribute('maxlength')).toBe(false);
+      entry!.value = 'a';
       if (state !== 'locked') {
         form.dispatchEvent(new Event('submit', { cancelable: true }));
-        expect(form.querySelector('[role=alert]')?.textContent).toBe('两次输入的同步密码不一致');
+        expect(form.querySelector('[role=alert]')?.textContent).toBe('两次输入的密钥不一致');
         confirm!.value = entry!.value;
       }
       form.dispatchEvent(new Event('submit', { cancelable: true }));
       await vi.waitFor(() => expect(root.querySelector('.settings-password-form')).toBeNull());
-      expect(password).toHaveBeenLastCalledWith(expect.objectContaining({ prefix: profile.prefix }), undefined, { ...info, password: 'a synthetic password' });
+      expect(password).toHaveBeenLastCalledWith(expect.objectContaining({ prefix: profile.prefix }), undefined, { ...info, password: 'a' });
     }
   } finally { view.destroy(); root.remove(); }
 });

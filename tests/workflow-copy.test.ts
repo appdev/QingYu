@@ -48,7 +48,7 @@ it('localizes app-owned sync message headers and preserves paths, HTTP diagnosti
     expect(localizeStatus('写入测试失败（HTTP 403）' + body + '\n清理测试文件失败（HTTP 403）' + body)).toBe(
       workflowText('写入测试', 'fr') + ' échoué (HTTP 403)' + body + '\n'
       + workflowText('清理测试文件', 'fr') + ' échoué (HTTP 403)' + body);
-    expect(localizeStatus('同步密码设置无效')).toBe(workflowText('同步密码设置无效', 'fr'));
+    expect(localizeStatus('数据仓库密钥设置无效')).toBe(workflowText('数据仓库密钥设置无效', 'fr'));
     expect(markupLabel('运行中 · {url}', { url: 'http://example/?q=中文&x=<script>' })).toContain(
       'http://example/?q=中文&amp;x=&lt;script&gt;');
   } finally {

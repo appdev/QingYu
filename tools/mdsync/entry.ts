@@ -7,6 +7,8 @@ export { VAULT_SPACE } from '@/features/sync/remote/space';
 export { ConcurrentPushError } from '@/features/sync/remote/manifest';
 export { createS3Adapter, defaultS3Config } from '@/features/storage/backends/s3';
 export { createS3Signer } from '@/features/storage/backends/s3-signer';
+export { parseListObjects } from '@/features/storage/backends/s3-xml';
 export { importAesKey, randomBytes, sha256Hex } from '@/core/crypto/cipher';
+export { deriveChunkIds } from '@/core/crypto/chunk-ids';
 export { setRequestHandler, requestUrl } from './host';
 export { REMOTE_MANIFEST_KEY } from '@/core/constants';

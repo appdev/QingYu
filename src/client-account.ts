@@ -1,17 +1,19 @@
 import { callAccount, openPortal } from './account-client';
 import { emit, listen } from '@tauri-apps/api/event';
 import { formatStorageBytes } from './library-settings';
+import { alertActions } from './alert-dialog';
 import { markupLabel, bindLabels, localizeStatus, uiText, workflowText, type WorkflowMessage } from './ui-language';
 
 export const guestAccountIcon = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="4.4" r="2.8"/><path d="M1.9 13.5c0-2.7 2.7-4.6 6.1-4.6s6.1 1.9 6.1 4.6c0 .7-.5 1.1-1.2 1.1H3.1c-.7 0-1.2-.4-1.2-1.1Z"/></svg>';
 
 type AccountInfo = {
   profile: { id: string; name: string | null; displayName: string | null; email: string | null; emailVerified: boolean; avatar: string | null };
-  subscription: { active: boolean; expiresAt: number | string | null; quotaBytes: number; emailVerified: boolean; emailVerificationRequired: boolean } | null;
+  subscription: { active: boolean; paid?: boolean | null; expiresAt: number | string | null; quotaExpiresAt?: number | string | null; quotaBytes: number; emailVerified: boolean; emailVerificationRequired: boolean } | null;
   usage: { usedBytes: number; quotaBytes: number } | null;
 };
 
-type Redemption = { years: number; redeemedTime: number | string };
+type Redeemed = { years: number; durationDays?: number | null; quotaBytes?: number | null };
+type Redemption = Redeemed & { redeemedTime: number | string };
 type AccountPage = 'account' | 'personal' | 'signIn' | 'storage';
 const profileChanged = 'client-profile-changed';
 export type CloudSyncAccess = { accountId?: string; signedInAccountId?: string; reason: string };
@@ -135,6 +137,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
           <input type="email" name="username" aria-label="邮箱" data-i18n-aria-label="邮箱" placeholder="邮箱" data-i18n-placeholder="邮箱" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320" required>
           <button type="button" class="client-text-button" data-change-email hidden data-i18n="更改邮箱">更改邮箱</button>
           <input type="password" name="password" aria-label="密码" data-i18n-aria-label="密码" placeholder="密码" data-i18n-placeholder="密码" autocomplete="current-password" maxlength="4096" hidden>
+          <label class="client-remember-device" hidden><input type="checkbox" name="rememberDevice"> <span data-i18n="记住登录">记住登录</span></label>
           <p class="client-account-status" role="status"></p>
           <button type="submit" class="button primary-button" disabled>${markupLabel('继续')}</button>
         </fieldset>
@@ -173,12 +176,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
           <small data-usage-unavailable hidden data-i18n="用量暂不可用，请刷新。">用量暂不可用，请刷新。</small>
         </div>
         <div class="settings-row"><span class="settings-label"><span data-i18n="到期时间">到期时间</span><small data-subscription></small></span><span data-subscription-expiry></span></div>
-        <button type="button" class="settings-row settings-disclosure" data-open-redeem aria-expanded="false"><span class="settings-label"><span data-i18n="兑换激活码">兑换激活码</span><small data-redeem-policy hidden data-i18n="请先验证邮箱。">请先验证邮箱。</small></span></button>
-        <form class="client-inline-form client-redeem" hidden>
-          <input aria-label="激活码" data-i18n-aria-label="激活码" name="activationCode" placeholder="激活码" data-i18n-placeholder="激活码" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096" required>
-          <button type="button" class="client-text-button" data-cancel-redeem data-i18n="取消">取消</button>
-          <button type="submit" class="client-text-button" data-i18n="兑换">兑换</button>
-        </form>
+        <div class="settings-row" data-quota-expiry-row hidden><span class="settings-label" data-i18n="当前容量到期时间">当前容量到期时间</span><span data-quota-expiry></span></div>
+        <button type="button" class="settings-row settings-disclosure" data-open-redeem aria-haspopup="dialog"><span class="settings-label"><span data-i18n="兑换激活码">兑换激活码</span><small data-redeem-policy hidden data-i18n="请先验证邮箱。">请先验证邮箱。</small></span></button>
         <button type="button" class="settings-row" data-portal="verify" hidden><span class="settings-label"><span data-i18n="验证邮箱">验证邮箱</span></span><span aria-hidden="true">↗</span></button>
         <button type="button" class="settings-row" data-refresh-storage><span class="settings-label"><span data-i18n="刷新套餐与用量">刷新套餐与用量</span></span></button>
         <button type="button" class="settings-row" data-portal="purchase"><span class="settings-label"><span data-i18n="购买或续费">购买或续费</span></span><span aria-hidden="true">↗</span></button>
@@ -195,6 +194,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   const fields = form.querySelector('fieldset')!;
   const email = form.querySelector<HTMLInputElement>('[name=username]')!;
   const password = form.querySelector<HTMLInputElement>('[name=password]')!;
+  const remember = form.querySelector<HTMLInputElement>('[name=rememberDevice]')!;
   const submit = form.querySelector<HTMLButtonElement>('[type=submit]')!;
   const change = form.querySelector<HTMLButtonElement>('[data-change-email]')!;
   const closeSignIn = signIn.querySelector<HTMLButtonElement>('.client-sign-in-close')!;
@@ -214,7 +214,16 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       <button type="button" data-cancel-logout data-i18n="取消">取消</button>
       <button type="button" class="client-sign-out" data-confirm-logout>${markupLabel('退出登录')}</button>
     </div>`;
-  (panel.closest('.settings') ?? pages.account.parentElement ?? pages.account).append(confirmation);
+  const redeemDialog = document.createElement('dialog');
+  redeemDialog.className = 'alert-dialog';
+  redeemDialog.setAttribute('aria-labelledby', 'client-redeem-title');
+  redeemDialog.innerHTML = `<form class="client-redeem">
+    <h2 id="client-redeem-title" data-i18n="兑换激活码">兑换激活码</h2>
+    <input aria-label="激活码" data-i18n-aria-label="激活码" name="activationCode" placeholder="激活码" data-i18n-placeholder="激活码" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="4096" required autofocus>
+    <button type="button" data-cancel-redeem data-i18n="取消">取消</button>
+    <button type="submit" data-i18n="兑换">兑换</button>
+  </form>`;
+  (panel.closest('.settings') ?? pages.account.parentElement ?? pages.account).append(confirmation, redeemDialog);
   const cancelLogout = confirmation.querySelector<HTMLButtonElement>('[data-cancel-logout]')!;
   const confirmLogout = confirmation.querySelector<HTMLButtonElement>('[data-confirm-logout]')!;
   const confirmationStatus = confirmation.querySelector<HTMLElement>('[role=status]')!;
@@ -226,8 +235,10 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     tab.prepend(tabAvatar);
   }
   const redeem = storage.querySelector<HTMLButtonElement>('[data-open-redeem]')!;
-  const redeemForm = storage.querySelector<HTMLFormElement>('.client-redeem')!;
+  const redeemForm = redeemDialog.querySelector('form')!;
   const code = redeemForm.querySelector('input')!;
+  const [cancelRedeem, submitRedeem] = redeemForm.querySelectorAll('button');
+  redeemForm.append(alertActions(submitRedeem!, cancelRedeem!));
   const historyList = storage.querySelector('ul')!;
   const retryHistory = storage.querySelector<HTMLButtonElement>('[data-retry-history]')!;
   const meter = storage.querySelector('progress')!;
@@ -240,7 +251,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   let accountRevision = 0;
   let refreshing = false;
   let busy = false, disposed = false;
-  const applyLabels = [...accountSections, confirmation].map(bindLabels);
+  const applyLabels = [...accountSections, confirmation, redeemDialog].map(bindLabels);
   const statusCopy = new WeakMap<Element, string>();
 
   function showMessage(text = '', error = false) {
@@ -262,6 +273,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     password.required = next;
     password.value = '';
     password.hidden = !next;
+    remember.closest('label')!.hidden = !next;
     change.hidden = !next;
     submit.textContent = workflowText(next ? '登录' : '继续');
     updateSubmit();
@@ -276,6 +288,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     if (signIn.open) return;
     viewport?.removeEventListener('resize', fitSignIn);
     email.value = '';
+    remember.checked = false;
     passwordStep(false);
     signInMessage.textContent = '';
   }
@@ -304,15 +317,13 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   form.oninput = () => { showMessage(); updateSubmit(); };
 
 
-  function setRedeemOpen(open: boolean) {
-    redeemForm.hidden = !open;
-    redeem.ariaExpanded = String(open);
-    code.value = '';
-    if (open) code.focus();
+  function closeRedeem() {
+    if (redeemDialog.open) redeemDialog.close();
   }
 
   function render() {
     cancelLogout.disabled = confirmLogout.disabled = busy;
+    code.disabled = cancelRedeem!.disabled = submitRedeem!.disabled = busy;
     for (const container of accountSections) {
       for (const control of container.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input')) control.disabled = busy;
       for (const element of container.querySelectorAll<HTMLElement>('[data-account-details]')) element.hidden = !info;
@@ -338,7 +349,8 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     storage.querySelector<HTMLElement>('[data-storage-sign-in]')!.hidden = info !== null;
     const plan = info?.subscription;
     const usage = info?.usage;
-    const capacity = `${formatStorageBytes(usage?.usedBytes)} / ${formatStorageBytes(usage?.quotaBytes ?? plan?.quotaBytes)}`;
+    const quota = plan?.quotaBytes ?? usage?.quotaBytes;
+    const capacity = `${formatStorageBytes(usage?.usedBytes)} / ${formatStorageBytes(quota)}`;
     const accountUsage = panel.querySelector<HTMLElement>('[data-account-usage]')!;
     accountUsage.hidden = !usage;
     accountUsage.textContent = usage ? capacity : '';
@@ -347,23 +359,28 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     security.querySelector('[data-email-verification]')!.textContent = data ? workflowText(data.emailVerified ? '已验证' : '未验证') : '';
     const verified = plan?.emailVerified ?? data?.emailVerified;
     const needsVerification = Boolean(plan && plan.emailVerificationRequired !== false && !verified);
+    const canRead = !!plan && (plan.active || typeof plan.paid === 'boolean') && !needsVerification;
     cloudSync?.({
-      accountId: plan?.active && !needsVerification ? data?.id : undefined,
+      accountId: canRead ? data?.id : undefined,
       signedInAccountId: data?.id,
       reason: localizeStatus(!data ? '请登录轻羽' : !plan ? '请刷新套餐与用量'
-        : !plan.active ? '套餐未开通或已到期' : needsVerification ? '请先验证邮箱' : ''),
+        : needsVerification ? '请先验证邮箱' : !plan.active
+          ? (canRead ? '轻羽云存储写入权益已到期，续费后可继续上传' : '套餐未开通或已到期') : ''),
     });
     if (!data) return;
     storage.querySelector('[data-usage]')!.textContent = workflowText('已用 {capacity}').replace('{capacity}', () => capacity);
-    storage.querySelector<HTMLElement>('[data-usage-unavailable]')!.hidden = !plan?.active || needsVerification || !!usage;
-    meter.value = usage && usage.quotaBytes > 0 ? Math.min(1, usage.usedBytes / usage.quotaBytes) : 0;
+    storage.querySelector<HTMLElement>('[data-usage-unavailable]')!.hidden = !canRead || !!usage;
+    meter.value = usage && quota && quota > 0 ? Math.min(1, usage.usedBytes / quota) : 0;
     storage.querySelector('[data-subscription]')!.textContent = workflowText(!plan ? '套餐暂不可用，请刷新。'
-      : plan.active ? '套餐有效' : '套餐未开通或已到期');
+      : plan.active ? (plan.paid === false ? '免费套餐' : '套餐有效') : '套餐未开通或已到期');
     storage.querySelector('[data-subscription-expiry]')!.textContent = accountDate(plan?.expiresAt);
+    const quotaExpiry = accountDate(plan?.quotaExpiresAt);
+    storage.querySelector<HTMLElement>('[data-quota-expiry-row]')!.hidden = quotaExpiry === '—' || quotaExpiry === accountDate(plan?.expiresAt);
+    storage.querySelector('[data-quota-expiry]')!.textContent = quotaExpiry;
     storage.querySelector<HTMLElement>('[data-redeem-policy]')!.hidden = !needsVerification;
     storage.querySelector<HTMLElement>('[data-portal=verify]')!.hidden = !needsVerification;
     redeem.disabled = busy || needsVerification;
-    if (needsVerification && !redeemForm.hidden) setRedeemOpen(false);
+    if (needsVerification) closeRedeem();
   }
 
   function invalidateHistory() {
@@ -377,7 +394,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     const previous = info?.profile, current = next?.profile;
     if (previous?.id !== current?.id) {
       if (confirmation.open) confirmation.close();
-      setRedeemOpen(false);
+      closeRedeem();
       invalidateHistory();
     }
     if (info !== undefined && (previous?.id !== current?.id || previous?.avatar !== current?.avatar || previous?.email !== current?.email ||
@@ -412,7 +429,9 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
         item.className = 'settings-row';
         const label = document.createElement('span'); label.className = 'settings-label';
         const years = document.createElement('span'); years.dataset.years = String(record.years);
-        years.textContent = workflowText('{years} 年').replace('{years}', String(record.years));
+        years.textContent = record.durationDays == null ? workflowText('{years} 年').replace('{years}', String(record.years))
+          : workflowText('{days} 天').replace('{days}', String(record.durationDays));
+        if (record.quotaBytes != null) years.textContent += ` · ${formatStorageBytes(record.quotaBytes)}`;
         const date = document.createElement('small'); date.textContent = accountDate(record.redeemedTime);
         label.append(years, date); item.append(label);
         return item;
@@ -485,11 +504,11 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       return;
     }
     if (!password.value) return;
-    const username = email.value, secret = password.value;
+    const username = email.value, secret = password.value, rememberDevice = remember.checked;
     password.value = '';
     updateSubmit();
     void run(async () => {
-      setInfo(await callAccount<AccountInfo>('account_login', { username, password: secret }));
+      setInfo(await callAccount<AccountInfo>('account_login', { username, password: secret, rememberDevice }));
       if (disposed) return;
       signIn.close();
       resetSignIn();
@@ -525,17 +544,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     const accountId = info?.profile.id, everywhere = logoutTrigger === logoutAll;
     if (!accountId || !confirmation.open) return;
     void run(async () => {
-      let revoked: boolean;
-      try {
-        revoked = await callAccount<boolean>('account_logout', { accountId, everywhere });
-      } catch (reason) {
-        if (reason !== 'sync_key_remove_failed') throw reason;
-        if (!disposed) {
-          setInfo(null);
-          showMessage('已退出登录，但无法清除本机同步密钥。', true);
-        }
-        return;
-      }
+      const revoked = await callAccount<boolean>('account_logout', { accountId, everywhere });
       if (disposed) return;
       setInfo(null);
       showMessage(everywhere ? '已退出所有客户端。'
@@ -543,17 +552,23 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     }, '正在退出…');
   };
 
-  redeem.onclick = () => setRedeemOpen(redeemForm.hidden);
-  redeemForm.querySelector<HTMLButtonElement>('[data-cancel-redeem]')!.onclick = () => { setRedeemOpen(false); redeem.focus(); };
+  redeem.onclick = () => { redeemDialog.showModal(); code.focus(); };
+  cancelRedeem!.onclick = closeRedeem;
+  redeemDialog.onkeydown = event => { if (event.key === 'Escape') event.stopPropagation(); };
+  redeemDialog.onclose = () => {
+    if (redeemDialog.open) return;
+    code.value = '';
+    if (!disposed && activePage === 'storage') redeem.focus({ preventScroll: true });
+  };
   redeemForm.onsubmit = event => {
     event.preventDefault();
     const accountId = info?.profile.id;
     const activationCode = code.value.trim();
-    if (!accountId || busy || redeem.disabled || redeemForm.hidden || !activationCode) return;
-    setRedeemOpen(false);
+    if (!accountId || busy || redeem.disabled || !redeemDialog.open || !activationCode) return;
+    closeRedeem();
     void run(async () => {
-      let years: number;
-      try { years = await callAccount<number>('account_redeem', { accountId, activationCode }); }
+      let redeemed: Redeemed | number;
+      try { redeemed = await callAccount<Redeemed | number>('account_redeem', { accountId, activationCode }); }
       catch (reason) {
         if (reason === 'response_lost' || reason === 'invalid_response') {
           if (!disposed) {
@@ -569,8 +584,11 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
         const next = await callAccount<AccountInfo | null>('account_status', { force: true });
         if (disposed) return;
         setInfo(next);
+        const plan = typeof redeemed === 'number' ? { years: redeemed } : redeemed;
         showMessage(next?.profile.id === accountId && next.subscription
-          ? workflowText('已兑换 {years} 年套餐。').replace('{years}', String(years)) : '兑换成功，请刷新账户查看套餐。');
+          ? plan.durationDays == null ? workflowText('已兑换 {years} 年套餐。').replace('{years}', String(plan.years))
+            : workflowText('已兑换 {days} 天套餐。').replace('{days}', String(plan.durationDays))
+          : '兑换成功，请刷新账户查看套餐。');
       } catch {
         if (!disposed) showMessage('兑换成功，请刷新账户查看套餐。');
       }
@@ -596,7 +614,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   function leave() {
     if (signIn.open) signIn.close();
     resetSignIn();
-    setRedeemOpen(false);
+    closeRedeem();
     if (confirmation.open) confirmation.close();
   }
   window.addEventListener('focus', refreshOnFocus);
@@ -626,6 +644,6 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       }
       if (next === 'storage') void readHistory();
     },
-    destroy() { disposed = true; leave(); confirmation.remove(); window.removeEventListener('focus', refreshOnFocus); },
+    destroy() { disposed = true; leave(); confirmation.remove(); redeemDialog.remove(); window.removeEventListener('focus', refreshOnFocus); },
   };
 }

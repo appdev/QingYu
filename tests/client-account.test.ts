@@ -120,7 +120,7 @@ it('submits only after the password step and updates or clears the account card'
     controller.show('account');
     entry.click(); email.value = 'qa@example.invalid'; submit(); password.value = 'fixture-value'; submit();
     await vi.waitFor(() => expect(tab.ariaLabel).toBe('测试账号'));
-    expect(ipc).toHaveBeenCalledWith('account_login', { username: 'qa@example.invalid', password: 'fixture-value' });
+    expect(ipc).toHaveBeenCalledWith('account_login', { username: 'qa@example.invalid', password: 'fixture-value', rememberDevice: false });
     expect(dialog.open).toBe(false);
     expect(entry.hidden).toBe(true);
     expect(pages.storage.querySelector('[data-subscription]')?.textContent).toBe('套餐有效');
@@ -209,15 +209,27 @@ it('refreshes the plan and unavailable usage, redeems, and confirms all-client l
   const button = (selector: string) => root.querySelector<HTMLButtonElement>(selector)!;
   try {
     controller.show('storage');
-    const form = pages.storage.querySelector<HTMLFormElement>('.client-redeem')!;
+    const dialog = root.querySelector<HTMLDialogElement>('dialog[aria-labelledby="client-redeem-title"]')!;
+    const form = dialog.querySelector('form')!;
     const code = form.querySelector('input')!;
+    const entry = button('[data-open-redeem]');
     const redeem = () => {
-      button('[data-open-redeem]').click();
+      entry.click();
+      expect(dialog.open).toBe(true);
       code.value = ' fixture-code ';
       form.dispatchEvent(new Event('submit', { cancelable: true }));
+      expect(dialog.open).toBe(false);
     };
     await vi.waitFor(() => expect(pages.storage.querySelector('.client-redemptions li')?.textContent).toBe('暂无兑换记录'));
     expect(button('[data-portal=verify]').hidden).toBe(true);
+    entry.click();
+    expect(document.activeElement).toBe(code);
+    code.value = 'cancelled-code';
+    button('[data-cancel-redeem]').click();
+    expect(dialog.open).toBe(false);
+    expect(code.value).toBe('');
+    expect(document.activeElement).toBe(entry);
+    expect(ipc).not.toHaveBeenCalledWith('account_redeem', expect.anything());
     redeem();
     const status = pages.storage.querySelector('.settings-client-account > [role=status]');
     await vi.waitFor(() => expect(status?.textContent).toBe('该激活码已使用。'));

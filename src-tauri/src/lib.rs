@@ -102,6 +102,8 @@ pub fn run() {
             client_account::account_redeem,
             client_account::account_redemptions,
             client_account::account_sync_config,
+            client_account::storage::account_storage_upload,
+            client_account::storage::account_storage_delete,
             client_account::account_check_sync,
             client_account::account_open_portal,
             #[cfg(target_os = "android")]
