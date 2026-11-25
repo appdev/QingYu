@@ -2,6 +2,7 @@ import { translatedLabel } from './ui-language';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { native } from './preferences';
 import { showWindowWhenPainted } from './window-ready';
+import { bindVerticalPull } from './panel-pull';
 import './feature-panel.css';
 
 function usesFeatureWindow() {
@@ -51,9 +52,11 @@ export async function openFeaturePanel(options: {
   dialog.addEventListener('keydown', event => event.stopPropagation());
   document.body.append(dialog);
   let content: DialogContent;
+  let disposeDrag: (() => void) | undefined;
   function close() {
     if (dialog.inert) return;
     dialog.inert = true;
+    disposeDrag?.();
     function remove() {
       content.dispose();
       dialog.remove();
@@ -79,48 +82,36 @@ export async function openFeaturePanel(options: {
     const rect = dialog.getBoundingClientRect();
     if (event.clientX < rect.left || event.clientX >= rect.right || event.clientY < rect.top || event.clientY >= rect.bottom) dismiss();
   });
-  if (options.dragHandle) bindPanelDrag(dialog, options.dragHandle, dismiss);
+  if (options.dragHandle) disposeDrag = bindPanelDrag(dialog, options.dragHandle, dismiss);
   dialog.showModal();
   content.focus?.focus({ preventScroll: true });
 }
 
 function bindPanelDrag(root: HTMLDialogElement, handle: string, dismiss: () => void) {
-  let drag: { pointerId: number; startY: number; height: number } | undefined;
-  function move(clientY: number, startY: number, height: number) {
-    const offset = Math.min(height, Math.max(0, clientY - startY));
-    root.style.setProperty('--feature-sheet-transform', `translateY(${offset}px)`);
-    root.style.setProperty('--feature-backdrop-opacity', String(1 - offset / height));
-    return offset;
-  }
-  function endDrag(dismissed = false) {
-    drag = undefined;
-    root.removeAttribute('data-feature-dragging');
-    if (dismissed) { dismiss(); return; }
-    root.style.removeProperty('--feature-sheet-transform');
-    root.style.removeProperty('--feature-backdrop-opacity');
-  }
-  root.addEventListener('pointerdown', event => {
-    const target = event.target as HTMLElement;
-    const header = target.closest<HTMLElement>(handle);
-    if (!header || target.closest('button') || !event.isPrimary || event.button !== 0 || drag || root.inert) return;
-    if (root.getAnimations?.().some(animation => animation.playState === 'running')) return;
-    const height = root.getBoundingClientRect().height;
-    if (!height) return;
-    drag = { pointerId: event.pointerId, startY: event.clientY, height };
-    root.dataset.featureDragging = '';
-    header.setPointerCapture?.(event.pointerId);
+  const disposers = [...root.querySelectorAll<HTMLElement>(handle)].map(header => {
+    let height = 0;
+    return bindVerticalPull(header, {
+      canStart(event) {
+        if ((event.target as Element).closest('button') || root.inert || root.hasAttribute('data-feature-dragging')) return false;
+        if (root.getAnimations?.().some(animation => animation.playState === 'running')) return false;
+        height = root.getBoundingClientRect().height;
+        return height > 0;
+      },
+      move(offset) {
+        const y = Math.min(height, Math.max(0, offset));
+        root.dataset.featureDragging = '';
+        root.style.setProperty('--feature-sheet-transform', `translateY(${y}px)`);
+        root.style.setProperty('--feature-backdrop-opacity', String(1 - y / height));
+      },
+      finish(offset) {
+        root.removeAttribute('data-feature-dragging');
+        if (offset !== null && offset >= Math.min(120, height / 4)) { dismiss(); return; }
+        root.style.removeProperty('--feature-sheet-transform');
+        root.style.removeProperty('--feature-backdrop-opacity');
+      },
+    });
   });
-  root.addEventListener('pointermove', event => {
-    if (drag?.pointerId === event.pointerId) move(event.clientY, drag.startY, drag.height);
-  });
-  root.addEventListener('pointerup', event => {
-    if (drag?.pointerId !== event.pointerId) return;
-    const offset = move(event.clientY, drag.startY, drag.height);
-    endDrag(offset >= Math.min(120, drag.height / 4));
-  });
-  for (const type of ['pointercancel', 'lostpointercapture'] as const) root.addEventListener(type, event => {
-    if (drag?.pointerId === event.pointerId) endDrag();
-  });
+  return () => disposers.forEach(dispose => dispose());
 }
 
 export async function mountFeatureWindow(root: HTMLElement, mount: (close: () => void) => (() => void) | Promise<() => void>) {

@@ -13,6 +13,19 @@ pub async fn show_table_handle_menu(
     tauri_plugin_editor_menu::show(window.app_handle(), menu).await
 }
 
+/// iOS 工具栏按钮使用 UIMenu。
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn show_native_menu(
+    window: tauri::WebviewWindow,
+    menu: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if window.label() != "main" {
+        return Err("请在主窗口中打开菜单".into());
+    }
+    tauri_plugin_editor_menu::show_menu(window.app_handle(), menu).await
+}
+
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn table_clipboard_has_text(window: tauri::WebviewWindow) -> Result<bool, String> {

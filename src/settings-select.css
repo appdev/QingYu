@@ -1,0 +1,15 @@
+.settings-select > select[hidden] { display: none !important; }
+.settings-select-button { position: relative; }
+.settings-select-popup.glisse-select-popup {
+  position: fixed; inset: auto; margin: 0; padding: 0; width: min(200px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px); overflow: visible; border: 0; background: transparent;
+  box-shadow: none; color: var(--lg-foreground); touch-action: auto;
+}
+.glisse-select-popup::backdrop { background: transparent; }
+.glisse-select-popup .lg-menu-content { overflow: auto; max-height: inherit; border-radius: inherit; }
+.settings .glisse-select-popup .lg-menu-item { min-height: 32px; padding: 6px 12px; font: inherit; border-radius: 14px; }
+.glisse-select-popup .lg-menu-item { justify-content: space-between; }
+.glisse-select-popup .lg-menu-item[aria-checked=true]::after { content: '✓'; }
+@media (prefers-reduced-transparency: reduce) {
+  .glisse-select-popup > .lg-menu-surface { background: var(--context-menu-fill); backdrop-filter: none; }
+}

@@ -202,6 +202,10 @@ it('dismisses the sheet from its backdrop without leaving a settings history ent
 });
 
 it('tracks a header drag, resets on a short or cancelled pull, and dismisses on a long pull', async () => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    disconnect() {}
+  });
   const libraryRoute = { qingyuNavigation: { page: 'folders', folderId: null, trash: false } };
   history.replaceState(libraryRoute, '');
   await openSettings(client, 'sync');
@@ -216,7 +220,7 @@ it('tracks a header drag, resets on a short or cancelled pull, and dismisses on 
   pointer('pointerdown', 220);
   pointer('pointermove', 300);
   expect(root.hasAttribute('data-feature-dragging')).toBe(true);
-  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('translateY(80px)');
+  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('translateY(76px)');
   pointer('pointerup', 300);
   expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('');
   expect(root.open).toBe(true);
@@ -231,7 +235,7 @@ it('tracks a header drag, resets on a short or cancelled pull, and dismisses on 
   pointer('pointerdown', 220);
   pointer('pointermove', 380);
   pointer('pointerup', 380);
-  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('translateY(160px)');
+  expect(root.style.getPropertyValue('--feature-sheet-transform')).toBe('translateY(156px)');
   await vi.waitFor(() => expect(document.querySelector('.settings-inline')).toBeNull());
   expect(history.state).toEqual(libraryRoute);
 });

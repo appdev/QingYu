@@ -46,7 +46,7 @@
 .note-picture-options { display: flex; justify-content: space-between; align-items: center; }
 .note-picture-mode { display: flex; gap: 2px; border-radius: 8px; background: var(--control-fill); }
 .note-picture-mode button { background: transparent; }
-.note-picture-mode button[aria-pressed=true] { background: var(--settings-selection); }
+.note-picture-mode:not([data-tab-indicator]) button[aria-pressed=true] { background: var(--settings-selection); }
 
 .note-picture-detailed { height: 100%; grid-template-rows: minmax(0, 1fr) auto; gap: 0; }
 .note-picture-detailed .note-picture-controls {
@@ -65,7 +65,11 @@
 .note-picture-detailed .note-picture-options { gap: 8px; min-height: 44px; }
 .note-picture-detailed .note-picture-mode { padding: 3px; border-radius: 22px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
 /* 和 Pinto 的系统分段控件一样，选中项是浮起的白色胶囊。 */
-.note-picture-detailed .note-picture-mode button[aria-pressed=true] { background: var(--card); box-shadow: 0 1px 4px color-mix(in srgb, var(--ink) 14%, transparent); }
+.note-picture-detailed .note-picture-mode {
+  --tab-indicator-fill: var(--card);
+  --tab-indicator-shadow: 0 1px 4px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.note-picture-detailed .note-picture-mode:not([data-tab-indicator]) button[aria-pressed=true] { background: var(--tab-indicator-fill); box-shadow: var(--tab-indicator-shadow); }
 .note-picture-detailed .note-picture-mode button { min-height: 38px; padding-inline: 13px; border-radius: inherit; font-size: 14px; }
 .note-picture-detailed .note-picture-options label {
   min-height: 44px; display: flex; flex-direction: row-reverse; align-items: center; gap: 8px; font-size: 15px;
@@ -86,6 +90,23 @@
   padding: 12px 16px max(22px, var(--safe-area-bottom)); background: var(--sidebar);
 }
 .note-picture-detailed .note-picture-copy-icon { width: 20px; height: 20px; }
+
+html[data-mobile] dialog.feature-panel-dialog.note-picture-dialog {
+  height: fit-content;
+  max-height: min(var(--feature-height, 720px), calc(100dvh - var(--feature-gutter, 32px)));
+}
+html[data-mobile] .note-picture-dialog[open] { display: flex; flex-direction: column; }
+html[data-mobile] .note-picture-dialog .feature-panel { height: auto; }
+html[data-mobile] .note-picture-dialog .feature-panel-content { display: grid; }
+html[data-mobile] .note-picture-dialog .note-picture-detailed { height: auto; min-height: 0; }
+html[data-mobile] .note-picture-dialog .note-picture-controls { container-type: normal; }
+html[data-mobile] .note-picture-dialog .note-picture-preview { max-height: none; }
+
+@media (width < 780px) {
+  html[data-mobile]:not([data-web]) dialog.feature-panel-dialog.note-picture-dialog {
+    max-height: calc(100dvh - max(var(--feature-sheet-gap, 8px), var(--safe-area-top)));
+  }
+}
 
 dialog.feature-panel-dialog.note-picture-macos-dialog {
   height: fit-content; max-height: calc(100dvh - 32px); overflow: auto;

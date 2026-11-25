@@ -1,0 +1,32 @@
+.glass-toggle {
+  position: relative; display: inline-flex; flex: none; width: 38px; height: 22px; border-radius: 999px;
+  background: var(--switch-off); transition: background-color 160ms ease; cursor: pointer;
+}
+.settings-mobile .glass-toggle { -webkit-tap-highlight-color: transparent; }
+.glass-toggle:has(input:checked) { --glass-toggle-rest-x: 16px; background: var(--switch-on); }
+.glass-toggle:has(input:disabled) { opacity: .55; cursor: default; }
+.glass-toggle > input {
+  appearance: none; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0;
+  border-radius: inherit; background: transparent; pointer-events: none;
+}
+.glass-toggle-thumb {
+  position: absolute; inset: 2px auto auto 2px; width: 18px; height: 18px; border-radius: 50%; pointer-events: none;
+  --lb-fill: var(--switch-knob); --lb-transparency: 0; --lb-depth: .15;
+  box-shadow: 0 1px 3px var(--shadow);
+  transition: scale var(--fk-interactive), --lb-lens var(--fk-interactive), --lb-transparency var(--fk-interactive),
+    translate 230ms cubic-bezier(.2,.8,.3,1.2);
+}
+.glass-toggle-thumb.web-glass-knob { --web-glass-fill: var(--switch-knob); background: var(--web-glass-fill); }
+/* Outside a drag the native checkbox also reflects programmatic preference changes. */
+.glass-toggle-thumb:not([data-dragging]) { translate: var(--glass-toggle-rest-x, 0px) !important; }
+.glass-toggle-thumb[data-dragging] {
+  --lb-lens: 1; --lb-transparency: 1; --lb-depth: .45;
+  transition-property: scale, --lb-lens, --lb-transparency;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .glass-toggle-thumb[data-dragging] { scale: 1.45 1.5; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .glass-toggle, .glass-toggle-thumb { transition: none; }
+}
+.glass-toggle:has(> input:focus-visible) { outline: 2px solid var(--brand); outline-offset: 2px; }

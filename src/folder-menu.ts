@@ -1,5 +1,5 @@
 import { formatLabel, translatedLabel } from './ui-language';
-import { showMenu, type MenuItem } from './popup-menu';
+import { showMenu, type MenuItem, type MenuOptions } from './popup-menu';
 import { noteTitle, visibleNotes, type Notebook } from './notebook';
 import { noteText } from './document-text';
 import { CopyPlus, Folder, SquarePen, Trash2 } from 'lucide';
@@ -74,10 +74,11 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     // 这不是用户点走了，核对完焦点会还回来，不能当成改名完成。
     input.onblur = () => { if (!input.closest('[inert]')) void finish(); };
   }
-  const open = async (id: string | null, type: FolderType, clicked: boolean, x: number, y: number, editing = false) => {
+  const open = async (id: string | null, type: FolderType, clicked: boolean, position: Pick<MenuOptions, 'anchor' | 'at' | 'keyboard'>, editing = false, longPress = false) => {
     const book = getBook();
+    const withPreview = actions.mobile && clicked && !editing && longPress;
     // Pinto 的手机端在「全部笔记」「废纸篓」上长按，只有一个「新建文件夹」，预览就是这一行本身。
-    const libraryRow = actions.mobile && clicked && !editing && (type === 'all' || type === 'trash');
+    const libraryRow = withPreview && (type === 'all' || type === 'trash');
     const items = (libraryRow ? [{ text: '新建文件夹' }] as MenuItem[] : folderMenuItems(type, clicked)).filter(({ text }) => {
       if (editing) return ['', '重命名文件夹', '上移', '下移'].includes(text);
       // Finder、终端和新窗口依赖本机系统；复制和删除文件夹网页客户端由部署端的笔记库执行
@@ -162,7 +163,7 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
     }
     const menu = items.filter((item, index) => item.text || index > 0 && index < items.length - 1 && Boolean(items[index + 1].text));
     if (!menu.length) return;
-    const preview = actions.mobile && clicked && !editing ? document.createElement('article') : undefined;
+    const preview = withPreview ? document.createElement('article') : undefined;
     if (preview) preview.dataset.folderPreview = '';
     const row = findRow();
     if (preview && libraryRow) {
@@ -186,7 +187,7 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
       if (cards.childElementCount) preview.append(cards);
       preview.append(title, count);
     }
-    await showMenu(menu, { label: '文件夹操作', at: { x, y }, preview, previewAnchor: preview ? row : undefined, onError: actions.error, restoreFocus });
+    await showMenu(menu, { ...position, label: '文件夹操作', preview, previewAnchor: preview ? row : undefined, onError: actions.error, restoreFocus });
   };
   return { open, rename, finishRename: () => finishEdit?.() ?? Promise.resolve(true) };
 }

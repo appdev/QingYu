@@ -202,8 +202,7 @@ it('opens the list options as the same glass toolbar menu as the note menu and c
   more.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
   await vi.waitFor(() => expect(document.querySelector('[role=menu][aria-label="列表选项"]')).not.toBeNull());
   const menu = document.querySelector<HTMLElement>('[role=menu][aria-label="列表选项"]')!;
-  expect(menu.classList.contains('toolbar-context-menu')).toBe(true);
-  expect(menu.classList.contains('desktop-toolbar-menu')).toBe(true);
+  expect(menu.closest('.qlg-menu-surface')?.querySelector('.qlg-menu.qlg-glass')).not.toBeNull();
   expect(more.getAttribute('aria-expanded')).toBe('true');
   more.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
   await vi.waitFor(() => expect(document.querySelector('[role=menu][aria-label="列表选项"]')).toBeNull());

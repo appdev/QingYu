@@ -43,6 +43,7 @@
 .settings button { cursor: default; }
 .settings button:where(:not(.button, .primary-button, .secondary-button, .quiet-button)):hover { background: var(--control-hover); }
 .settings-tabs button:hover, .settings-search-results button:hover { background: var(--settings-selection); }
+.settings-tabs[data-tab-indicator] button[aria-selected='true'] { background: transparent; }
 .settings-pages { flex: 1; overflow-y: auto; scrollbar-width: thin; padding: 4px 32px 20px; }
 .settings-page:focus { outline: none; }
 .settings-shortcut { display: flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 80px; padding: 0 6px; border-radius: 14px; background: var(--control-fill); }
@@ -62,35 +63,6 @@
 .settings-label small { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .settings-control { flex-shrink: 0; max-width: 220px; min-width: 0; height: 26px; border: 0; border-radius: 13px; padding: 0 10px; background: var(--control-fill); }
 .settings :is(button, input, select):focus { outline: none; }
-.glass-toggle {
-  position: relative; display: inline-flex; flex: none; width: 38px; height: 22px; border-radius: 999px;
-  background: var(--switch-off); transition: background-color 160ms ease;
-}
-.glass-toggle:has(input:checked) { --glass-toggle-rest-x: 16px; background: var(--switch-on); }
-.glass-toggle:has(input:disabled) { opacity: .55; }
-.settings .glass-toggle > input {
-  appearance: none; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0;
-  border-radius: inherit; background: transparent; cursor: pointer; touch-action: pan-y;
-}
-.settings .glass-toggle > input:disabled { cursor: default; }
-.glass-toggle-thumb {
-  position: absolute; inset: 2px auto auto 2px; width: 18px; height: 18px; border-radius: 50%; pointer-events: none;
-  background: var(--switch-knob); box-shadow: 0 1px 3px var(--shadow);
-  translate: var(--glass-toggle-x, var(--glass-toggle-rest-x, 0px));
-  transition: translate 230ms cubic-bezier(.2,.8,.3,1.2), background-color 160ms ease;
-}
-.glass-toggle[data-pressed] .glass-toggle-thumb {
-  background: color-mix(in srgb, var(--switch-knob) 66%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--switch-knob) 82%, transparent), 0 1px 4px var(--shadow);
-  -webkit-backdrop-filter: blur(3px) saturate(150%); backdrop-filter: blur(3px) saturate(150%);
-}
-.glass-toggle[data-dragging] .glass-toggle-thumb { transition-property: background-color; }
-@media (prefers-reduced-transparency: reduce) {
-  .glass-toggle[data-pressed] .glass-toggle-thumb { background: var(--switch-knob); -webkit-backdrop-filter: none; backdrop-filter: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .glass-toggle, .glass-toggle-thumb { transition: none; }
-}
 .settings-message { margin: 0; padding: 0 32px 10px; font-size: 12px; }
 .settings-message:empty { display: none; }
 .settings:not(.settings-mobile) :is(.settings-pages, .settings-message) { padding-inline: 24px; }
@@ -228,7 +200,7 @@
   border-radius: 6px; background: transparent; color: var(--ink); font-size: 13px; text-align: end;
 }
 .settings .settings-select select { text-align-last: end; }
-.settings .settings-select .settings-select-button { min-height: 44px; font-size: 16px; }
+.settings-mobile .settings-select .settings-select-button { min-height: 44px; font-size: 16px; }
 .settings-select-button > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-select-icon {
   position: absolute; inset-inline-end: 0; display: grid; place-items: center; width: 20px; height: 20px;
@@ -301,12 +273,13 @@
 .appearance-text-group .settings-label > span { font-size: 13px; font-weight: 400; }
 .appearance-size { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .appearance-size-track { position: relative; display: grid; width: min(180px, 24vw); min-width: 40px; }
-.appearance-size-track input { appearance: none; width: 100%; height: 20px; padding: 0; margin: 0; background: transparent; cursor: pointer; }
-.appearance-size-track input::-webkit-slider-runnable-track { height: 5px; border-radius: 5px; background: linear-gradient(90deg, var(--brand) var(--size-progress), var(--control-fill) var(--size-progress)); }
-.appearance-size-track input::-moz-range-track { height: 5px; border-radius: 5px; background: linear-gradient(90deg, var(--brand) var(--size-progress), var(--control-fill) var(--size-progress)); }
-.appearance-size-track input::-webkit-slider-thumb { appearance: none; width: 20px; height: 16px; margin-top: -5.5px; border-radius: 10px; border: 0; background: var(--switch-knob); box-shadow: 0 1px 4px var(--shadow); }
-.appearance-size-track input::-moz-range-thumb { width: 20px; height: 16px; border-radius: 10px; border: 0; background: var(--switch-knob); box-shadow: 0 1px 4px var(--shadow); }
+.appearance-size-track > input { appearance: none; width: 100%; height: 20px; padding: 0; margin: 0; background: transparent; cursor: pointer; }
+.appearance-size-track > input::-webkit-slider-runnable-track { height: 5px; border-radius: 5px; background: linear-gradient(90deg, var(--brand) var(--size-progress), var(--control-fill) var(--size-progress)); }
+.appearance-size-track > input::-moz-range-track { height: 5px; border-radius: 5px; background: linear-gradient(90deg, var(--brand) var(--size-progress), var(--control-fill) var(--size-progress)); }
+.appearance-size-track > input::-webkit-slider-thumb { appearance: none; width: 20px; height: 16px; margin-top: -5.5px; border-radius: 10px; border: 0; background: var(--switch-knob); box-shadow: 0 1px 4px var(--shadow); }
+.appearance-size-track > input::-moz-range-thumb { width: 20px; height: 16px; border-radius: 10px; border: 0; background: var(--switch-knob); box-shadow: 0 1px 4px var(--shadow); }
 .appearance-size-stops { position: absolute; display: flex; justify-content: space-between; inset: auto 9px 1px; pointer-events: none; }
+.appearance-size-track > input[hidden], .appearance-size-track:has(.appearance-glisse-slider) .appearance-size-stops { display: none; }
 .appearance-size-stops i { width: 2px; height: 2px; border-radius: 50%; background: var(--muted); opacity: .55; }
 .appearance-size > span:first-child { font-size: 11px; }
 .appearance-size > span:nth-child(3) { font-size: 19px; }

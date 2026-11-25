@@ -118,7 +118,7 @@ function isLocalMarkdownAssetHref(href: string) {
   }
 }
 
-function isLocalMarkdownResourceHref(href: string) {
+function isLocalMarkdownResourceHref(href: string, includeDocuments = false) {
   const unwrapped = unwrappedMarkdownHref(href);
   if (!unwrapped || unwrapped.startsWith("#") || unwrapped.startsWith("//")) return false;
 
@@ -130,7 +130,7 @@ function isLocalMarkdownResourceHref(href: string) {
   if (!path) return false;
 
   try {
-    return !markdownDocumentExtensionPattern.test(decodeURI(path));
+    return includeDocuments || !markdownDocumentExtensionPattern.test(decodeURI(path));
   } catch {
     return false;
   }
@@ -687,14 +687,14 @@ export function parseMarkdownAssetReferences(markdown: string): MarkdownAssetRef
   return references;
 }
 
-export function parseMarkdownLocalResourceReferences(markdown: string): MarkdownLocalResourceReference[] {
+export function parseMarkdownLocalResourceReferences(markdown: string, includeDocuments = false): MarkdownLocalResourceReference[] {
   const references: MarkdownLocalResourceReference[] = [];
 
   traverseMarkdownNode(parseMarkdown(markdown), (node) => {
     if (
       (node.type !== "link" && node.type !== "image" && node.type !== "definition") ||
       typeof node.url !== "string" ||
-      !isLocalMarkdownResourceHref(node.url)
+      !isLocalMarkdownResourceHref(node.url, includeDocuments)
     ) {
       return;
     }

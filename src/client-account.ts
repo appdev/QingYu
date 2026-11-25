@@ -195,6 +195,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   const email = form.querySelector<HTMLInputElement>('[name=username]')!;
   const password = form.querySelector<HTMLInputElement>('[name=password]')!;
   const remember = form.querySelector<HTMLInputElement>('[name=rememberDevice]')!;
+  const rememberToggle = decorateGlisseToggle(remember);
   const submit = form.querySelector<HTMLButtonElement>('[type=submit]')!;
   const change = form.querySelector<HTMLButtonElement>('[data-change-email]')!;
   const closeSignIn = signIn.querySelector<HTMLButtonElement>('.client-sign-in-close')!;
@@ -644,6 +645,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       }
       if (next === 'storage') void readHistory();
     },
-    destroy() { disposed = true; leave(); confirmation.remove(); redeemDialog.remove(); window.removeEventListener('focus', refreshOnFocus); },
+    destroy() { disposed = true; rememberToggle?.destroy(); leave(); confirmation.remove(); redeemDialog.remove(); window.removeEventListener('focus', refreshOnFocus); },
   };
 }
+import { decorateGlisseToggle } from './glass-controls';

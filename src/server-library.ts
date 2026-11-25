@@ -72,6 +72,19 @@ export class ServerLibrary {
       return old && JSON.stringify(old) !== JSON.stringify(note);
     });
     if (!added.length && !changed.length) return undefined; // Selection is local to this browser.
+    if (intent === 'title-edit') {
+      const note = changed.find(candidate => {
+        const old = before.notes.find(old => old.id === candidate.id);
+        return old?.title !== candidate.title || old?.followTitle !== candidate.followTitle;
+      });
+      if (!note) throw new Error('笔记标题未发生变化');
+      const edits = changed.filter(candidate => before.notes.find(old => old.id === candidate.id)?.source !== candidate.source)
+        .map(({ id, source }) => ({ id, source }));
+      const snapshot = await request('/commands', { kind: 'editTitle', version: this.version, id: note.id,
+        title: note.title ?? null, followTitle: note.followTitle ?? null, edits });
+      this.clearDraft(note.id, note.source);
+      return snapshot;
+    }
     if (added.length + changed.length !== 1 || next.notes.length < before.notes.length) throw new Error('Web 每次只能提交一篇笔记的修改');
     const note = added[0] ?? changed[0];
     let body: object;

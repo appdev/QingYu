@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>轻羽 QingYu · 给文字，一处安静的地方</title>
+  <meta name="description" content="轻羽是一款本地优先的 Markdown 笔记应用。写起来像备忘录，存下来是普通的 .md 文件。支持 macOS、Windows、Linux 和 Android，免费使用。">
+  <meta name="theme-color" content="#fbf8f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141210" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="/site/favicon.png">
+  <link rel="apple-touch-icon" href="/site/apple-touch-icon.png">
+  <link rel="alternate" hreflang="zh-CN" href="https://qynotes.com/">
+  <link rel="alternate" hreflang="en" href="https://qynotes.com/en/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="轻羽 QingYu · 给文字，一处安静的地方">
+  <meta property="og:description" content="本地优先的 Markdown 笔记应用。写起来像备忘录，存下来是普通的 .md 文件。">
+  <meta property="og:image" content="https://qynotes.com/site/hero.webp">
+  <link rel="stylesheet" href="/site/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/site/icon.png" alt="">轻羽</a>
+    <nav class="nav-links" aria-label="页面导航">
+      <a href="#features">功能</a>
+      <a href="#mobile">手机版</a>
+      <a href="#sync">同步与隐私</a>
+      <a href="#download">下载</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+    <div class="nav-right">
+      <a class="lang" href="/en/" hreflang="en" lang="en">English</a>
+      <a class="lang" href="/login">登录</a>
+      <a class="button primary-button" href="#download">下载</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <img class="hero-icon" src="/site/icon.png" alt="轻羽图标" width="112" height="112">
+      <h1>给文字，<br>一处<em>安静</em>的地方。</h1>
+      <p class="lead">轻羽是一款本地优先的 Markdown 笔记应用。写起来像系统备忘录，不用记语法；文件就放在你的硬盘里，换个工具也能接着写。</p>
+      <div class="hero-actions">
+        <a class="button primary-button button-big" href="#download" data-primary-download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          <span>免费下载</span>
+        </a>
+        <a class="button secondary-button button-big" href="/login">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          登录账号
+        </a>
+      </div>
+      <p class="hero-meta">免费使用 · macOS / Windows / Linux / Android · 当前版本 <a href="https://github.com/appdev/QingYu/releases/latest" data-version data-release-notes target="_blank" rel="noopener">v0.1.3</a></p>
+      <div class="hero-shot reveal">
+        <img src="/site/hero.webp" width="1627" height="1173" alt="轻羽在 Mac 和 iPhone 上打开同一篇京都旅行笔记：左侧是文件夹和按日期分组的笔记列表，正文里有行程表格和待办清单">
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">为什么是轻羽</p>
+        <h2>好看和开放，不必二选一</h2>
+        <p>很多笔记应用要么好看但把内容锁在自己的数据库里，要么开放但写起来像在改代码。轻羽想两头都要。</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar reveal">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></div>
+          <h3>写的时候看不见符号</h3>
+          <p>标题、表格、待办、公式和流程图直接显示成排好版的样子。光标移到哪一行，那一行的 Markdown 才露出来。</p>
+        </div>
+        <div class="pillar reveal">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg></div>
+          <h3>笔记就是文件</h3>
+          <p>文件夹对应磁盘目录，每篇笔记都是独立的 .md 文件，不进私有数据库。用别的编辑器打开、备份都行，内容始终是你的。</p>
+        </div>
+        <div class="pillar reveal">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>端到端加密同步</h3>
+          <p>笔记在本机用你的同步密码加密后才上传，云端只看到密文。两台设备改了同一处，两份都会保留。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt">
+    <div class="wrap">
+      <div class="feature reveal">
+        <div class="feature-text">
+          <p class="eyebrow">写作体验</p>
+          <h2>该有的格式都有，<br>不用记一条语法</h2>
+          <p>熟悉的三栏布局：文件夹、按「今天 / 昨天 / 过去 7 天」分组的笔记列表、正文。用过系统备忘录就会用。</p>
+          <ul class="checks">
+            <li><b>表格直接点进单元格编辑</b>，待办点一下就勾上</li>
+            <li>脚注、数学公式和提示块随手就能插入</li>
+            <li><b>流程图和思维导图</b>直接画在笔记里（Mermaid、Markmap）</li>
+            <li>输入 <kbd>/</kbd> 打开斜杠菜单，选择要插入的内容</li>
+            <li>标题可以折叠，<kbd>⌘K</kbd> 跳到任意笔记，全文搜索会搜到正文</li>
+          </ul>
+        </div>
+        <div class="feature-shot">
+          <img src="/site/macos-dark.webp" width="1432" height="1033" loading="lazy" alt="深色模式下的轻羽 Mac 版，正文里的季度复盘笔记包含一张流程图">
+        </div>
+      </div>
+
+      <div class="feature flip reveal" id="mobile">
+        <div class="feature-text">
+          <p class="eyebrow">手机版</p>
+          <h2>按手机的习惯，<br>重新排了一遍</h2>
+          <p>不是把桌面版缩小。大标题、圆角分组、底部的搜索栏和新建按钮，都在拇指够得到的地方。</p>
+          <ul class="checks">
+            <li>编辑时底部浮出格式栏：文字样式、待办、表格、附件，一点就插入</li>
+            <li>浅色和深色跟随系统，<b>深色是纯黑底</b>，夜里看不刺眼</li>
+            <li>Android 和 iPhone 用同一套界面</li>
+          </ul>
+        </div>
+        <div class="feature-shot">
+          <img src="/site/iphone.webp" width="1547" height="1020" loading="lazy" alt="三台手机：笔记列表按日期分组；编辑京都笔记时只有当前标题行显示 ## 符号，底部浮着格式工具栏；同一篇笔记的深色模式">
+        </div>
+      </div>
+
+      <div class="feature reveal">
+        <div class="feature-text">
+          <p class="eyebrow">分享</p>
+          <h2>一篇笔记，<br>发出去是一张图</h2>
+          <p>选一张背景：山丘、海边、暮色、果园，或者纯色。预览后复制或保存，直接发到聊天或社交平台。</p>
+          <ul class="checks">
+            <li>笔记太长时，先选中一段，只分享这一段</li>
+            <li>也可以通过系统分享发出原文，或复制为纯文本</li>
+          </ul>
+        </div>
+        <div class="feature-shot">
+          <img src="/site/macos-share.webp" width="1432" height="1033" loading="lazy" alt="深色模式下的分享面板，京都笔记被排成一张暮色背景的图片，下方是背景选择和复制、保存、分享按钮">
+        </div>
+      </div>
+
+      <div class="feature flip reveal">
+        <div class="feature-text">
+          <p class="eyebrow">外观</p>
+          <h2>六套主题，<br>换一种心情写</h2>
+          <p>默认、纸张、暖棕、岩灰、森林和高对比度，每套都有浅色和深色，可以跟随系统切换。正文字体和字号也能单独调。</p>
+        </div>
+        <div class="feature-shot">
+          <img src="/site/macos-appearance.webp" width="1288" height="1135" loading="lazy" alt="轻羽的外观设置：跟随系统、浅色、深色三种模式，以及六套主题">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">更多细节</p>
+        <h2>小地方，也替你想过</h2>
+      </div>
+      <div class="grid">
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+          <h3>今日笔记</h3>
+          <p>点一下日历图标，打开或创建当天那一篇，适合写日记和每日待办。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
+          <h3>版本历史</h3>
+          <p>每次修改都留有旧版本，可以逐条对比，找回误删的段落。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>
+          <h3>废纸篓</h3>
+          <p>删掉的笔记连同原来所在的文件夹一起保留，随时能恢复。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+          <h3>菜单栏速记</h3>
+          <p>macOS 上关掉主窗口后，从菜单栏就能新建或查找笔记，回车保存。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 0 0 0-6z"/></svg>
+          <h3>全局快捷键</h3>
+          <p>默认 <kbd>⌥⌘M</kbd>，Windows 和 Linux 为 <kbd>Ctrl+Alt+M</kbd>，在任何地方唤起轻羽。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="12" rx="3"/><path d="M12 8V4M9 14h.01M15 14h.01"/></svg>
+          <h3>让 AI 读你的笔记</h3>
+          <p>需要时在设置里开启 MCP，Claude、Cursor 等 AI 工具就能读写你的本地笔记库。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>
+          <h3>11 种界面语言</h3>
+          <p>简繁中文、English、日本語、한국어，以及法、德、西、葡、意、俄语。</p>
+        </div>
+        <div class="cell reveal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2z"/><path d="M9 13h6M12 10l3 3-3 3"/></svg>
+          <h3>带上已有笔记</h3>
+          <p>现成的 Markdown 文件夹在「文件 → 更改笔记库位置」里直接打开，不用导入。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="sync" class="alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">同步与隐私</p>
+        <h2>不登录也能完整使用</h2>
+        <p>笔记默认只存在你选的本地文件夹里。需要多台设备时，再挑一种方式同步。</p>
+      </div>
+      <div class="sync">
+        <div class="sync-card reveal">
+          <span class="tag">省心</span>
+          <h3>轻羽云</h3>
+          <p>登录轻羽账号后开启。打开应用、保存笔记时会自动同步，之后每 3 分钟再同步一次。账号和存储空间在 <a href="https://qynotes.com/account" style="text-decoration:underline;text-underline-offset:3px">账号中心</a> 管理。</p>
+        </div>
+        <div class="sync-card reveal">
+          <span class="tag">自己掌控</span>
+          <h3>自定义 S3</h3>
+          <p>填入你自己的 S3 兼容存储，AWS、Cloudflare R2、MinIO 都行。数据放在哪、留多久，完全由你决定。</p>
+        </div>
+      </div>
+      <div class="flow reveal" aria-label="同步加密流程">
+        <span>在本机写作</span><i>→</i>
+        <span>用同步密码加密（AES-256-GCM）</span><i>→</i>
+        <span>云端只存密文</span><i>→</i>
+        <span>另一台设备解密</span>
+      </div>
+      <p class="note reveal">笔记、图片和附件都会加密。忘记同步密码又没有已解锁的设备时，云端数据将无法解开，请妥善保管。也可以只把笔记目录放进 iCloud Drive、坚果云或 Dropbox，交给网盘同步。</p>
+    </div>
+  </section>
+
+  <section id="download">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">下载</p>
+        <h2>选一台设备，开始写</h2>
+        <p>当前版本 <span data-version>v0.1.3</span>，发布于 <span data-release-date>2026 年 11 月 21 日</span>。</p>
+      </div>
+      <div class="downloads">
+        <div class="dl reveal" data-os="mac">
+          <svg class="os" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.37 12.6c-.02-2.3 1.88-3.4 1.97-3.46-1.07-1.57-2.74-1.78-3.33-1.8-1.42-.14-2.77.83-3.49.83-.72 0-1.83-.81-3.01-.79-1.55.02-2.98.9-3.78 2.29-1.61 2.8-.41 6.94 1.16 9.21.77 1.11 1.68 2.36 2.88 2.31 1.16-.05 1.6-.75 3-.75s1.79.75 3.01.72c1.25-.02 2.04-1.13 2.8-2.25.88-1.29 1.24-2.54 1.26-2.6-.03-.01-2.42-.93-2.45-3.68zM14.1 5.86c.64-.78 1.07-1.85.95-2.92-.92.04-2.03.61-2.69 1.38-.59.68-1.1 1.77-.96 2.82 1.02.08 2.07-.52 2.7-1.28z"/></svg>
+          <h3>macOS</h3>
+          <p class="req">Apple 芯片与 Intel</p>
+          <div class="links">
+            <a class="button primary-button button-regular" data-asset="mac-arm" href="https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_darwin_aarch64.dmg">Apple 芯片</a>
+            <a class="button secondary-button button-regular" data-asset="mac-x64" href="https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_darwin_x64.dmg">Intel</a>
+          </div>
+          <p class="mirror">国内加速：<a data-mirror="mac-arm" href="https://ghfast.top/https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_darwin_aarch64.dmg">Apple 芯片</a> · <a data-mirror="mac-x64" href="https://ghfast.top/https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_darwin_x64.dmg">Intel</a></p>
+        </div>
+        <div class="dl reveal" data-os="win">
+          <svg class="os" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.2H3zM11.4 3.9 21 2.5v8.7h-9.6zM3 12.2h7.4v7.2L3 18.4zM11.4 12.2H21v8.7l-9.6-1.4z"/></svg>
+          <h3>Windows</h3>
+          <p class="req">Windows 10 / 11 · x64</p>
+          <div class="links">
+            <a class="button primary-button button-regular" data-asset="win" href="https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_windows_x64-setup.exe">下载安装包</a>
+          </div>
+          <p class="mirror">国内加速：<a data-mirror="win" href="https://ghfast.top/https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_windows_x64-setup.exe">安装包</a></p>
+        </div>
+        <div class="dl reveal" data-os="linux">
+          <svg class="os" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m6 9 3 3-3 3M12 15h6"/></svg>
+          <h3>Linux</h3>
+          <p class="req">x64 · 需要 WebKitGTK 4.1</p>
+          <div class="links">
+            <a class="button primary-button button-regular" data-asset="linux-appimage" href="https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_linux_amd64.AppImage">AppImage</a>
+            <a class="button secondary-button button-regular" data-asset="linux-deb" href="https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_linux_amd64.deb">.deb</a>
+          </div>
+          <p class="mirror">国内加速：<a data-mirror="linux-appimage" href="https://ghfast.top/https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_linux_amd64.AppImage">AppImage</a> · <a data-mirror="linux-deb" href="https://ghfast.top/https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_linux_amd64.deb">.deb</a></p>
+        </div>
+        <div class="dl reveal" data-os="android">
+          <svg class="os" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18v-3a8 8 0 0 1 16 0v3z"/><path d="M7.5 8.5 5.5 5M16.5 8.5l2-3.5"/><circle cx="9" cy="13.5" r=".6" fill="currentColor"/><circle cx="15" cy="13.5" r=".6" fill="currentColor"/></svg>
+          <h3>Android</h3>
+          <p class="req">Android 7.0 及以上 · arm64</p>
+          <div class="links">
+            <a class="button primary-button button-regular" data-asset="android" href="https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_android_arm64.apk">下载 APK</a>
+          </div>
+          <p class="mirror">国内加速：<a data-mirror="android" href="https://ghfast.top/https://github.com/appdev/QingYu/releases/download/v0.1.3/QingYu_0.1.3_android_arm64.apk">APK</a></p>
+        </div>
+      </div>
+      <p class="release reveal">iOS 版暂未上架。历史版本见 <a href="https://github.com/appdev/QingYu/releases" target="_blank" rel="noopener">GitHub Releases</a>。</p>
+    </div>
+  </section>
+
+  <section id="faq" class="alt">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="eyebrow">常见问题</p>
+        <h2>你可能想知道</h2>
+      </div>
+      <div class="faq reveal">
+        <details>
+          <summary>轻羽收费吗？</summary>
+          <p>应用本身免费，代码以 GPL-3.0 协议开源。不注册账号也能使用全部写作功能。轻羽云是可选的同步服务，用自己的 S3 或网盘同步不需要任何费用。</p>
+        </details>
+        <details>
+          <summary>我的笔记存在哪里？</summary>
+          <p>存在你选择的本地文件夹里。文件夹就是磁盘上的目录，每篇笔记是一个普通的 .md 文件，图片和附件放在旁边。卸载轻羽之后，这些文件原样还在。</p>
+        </details>
+        <details>
+          <summary>忘了同步密码怎么办？</summary>
+          <p>同步密码只保存在你的设备上，服务端无法帮你找回。如果还有一台已经解锁的设备，可以在那里重新设置；如果都没有，云端的加密数据将无法解开，但每台设备本地的笔记文件不受影响。</p>
+        </details>
+        <details>
+          <summary>macOS 提示「无法打开」或「已损坏」？</summary>
+          <p>macOS 版暂未做 Apple 公证。第一次打开被拦截时，请到「系统设置 → 隐私与安全性」，在下方找到轻羽并点「仍要打开」。Windows 安装包暂未签名，可能看到 SmartScreen 提示，点「更多信息 → 仍要运行」即可。</p>
+        </details>
+        <details>
+          <summary>支持哪些 Markdown 语法？</summary>
+          <p>GitHub 风格的表格、任务列表和删除线，以及脚注、KaTeX 数学公式、提示块、Mermaid 流程图和 Markmap 思维导图。写好的文件放到其他 Markdown 工具里也能正常显示。</p>
+        </details>
+        <details>
+          <summary>有 iPhone 和 iPad 版吗？</summary>
+          <p>界面已经适配好了，但 iOS 版暂未上架，上架后会在这里提供下载。Android 可以直接下载 APK 安装。</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta">
+    <div class="wrap reveal">
+      <img src="/site/icon.png" alt="" width="88" height="88">
+      <h2>现在就开始写</h2>
+      <p>免费使用，你的文字永远是你的。</p>
+      <a class="button primary-button button-big" href="#download">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+        下载轻羽
+      </a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="about">
+      <a class="brand" href="/"><img src="/site/icon.png" alt="">轻羽 QingYu</a>
+      <p>本地优先的 Markdown 笔记应用。笔记存成普通的 .md 文件，放在你自己的硬盘上。</p>
+    </div>
+    <div>
+      <h4>产品</h4>
+      <ul>
+        <li><a href="#features">功能</a></li>
+        <li><a href="#download">下载</a></li>
+        <li><a href="https://github.com/appdev/QingYu/releases" target="_blank" rel="noopener">更新日志</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>账号</h4>
+      <ul>
+        <li><a href="https://qynotes.com/login">登录</a></li>
+        <li><a href="https://qynotes.com/account">账号中心</a></li>
+        <li><a href="https://qynotes.com/tickets">联系支持</a></li>
+      </ul>
+    </div>
+    <div>
+      <h4>开源</h4>
+      <ul>
+        <li><a href="https://github.com/appdev/QingYu" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://github.com/appdev/QingYu/issues" target="_blank" rel="noopener">反馈问题</a></li>
+        <li><a href="https://github.com/appdev/QingYu/blob/main/LICENSE" target="_blank" rel="noopener">GPL-3.0 许可证</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script src="/site/site.js" defer></script>
+</body>
+</html>

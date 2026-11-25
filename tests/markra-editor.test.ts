@@ -55,6 +55,33 @@ it('mounts editor suggestions in the mobile keyboard bar and closes link suggest
   }
 });
 
+it('flushes the draft when the editor loses focus without a compositionend event', async () => {
+  const root = document.body.appendChild(document.createElement('div'));
+  const nextNote = document.body.appendChild(document.createElement('button'));
+  const onChange = vi.fn();
+  const rects = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects');
+  Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [] });
+  const editor = createRichEditor(root, onChange);
+  const { view } = editor;
+  try {
+    editor.activate('正文', 'original-note');
+    view.focus();
+    editor.input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    view.dispatch({ changes: { from: view.state.doc.length, insert: '中文' } });
+    expect(editor.composing).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+
+    nextNote.focus();
+    await vi.waitFor(() => expect(editor.composing).toBe(false), { timeout: 300 });
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(view.state.doc.toString()).toBe('正文中文');
+  } finally {
+    view.destroy(); root.remove(); nextNote.remove();
+    if (rects) Object.defineProperty(Range.prototype, 'getClientRects', rects);
+    else Reflect.deleteProperty(Range.prototype, 'getClientRects');
+  }
+});
+
 it('keeps the selected text while applying multiple mobile formats and closing the panel', () => {
   const source = '# 标题\n\n中文正文';
   const root = document.body.appendChild(document.createElement('div'));
@@ -572,11 +599,11 @@ it('routes overlapping touch targets to the nearer grip and anchors its menu the
     column.getBoundingClientRect = () => new DOMRect(22, 0, 44, 44);
     column.firstElementChild!.getBoundingClientRect = () => new DOMRect(29, 14, 30, 16);
     column.dispatchEvent(new MouseEvent('click', { clientX: 23, clientY: 43, detail: 1 }));
-    expect(openMenu).toHaveBeenLastCalledWith(cell, 0, 78, 'row', row.getBoundingClientRect());
+    expect(openMenu).toHaveBeenLastCalledWith(cell, 0, 78, 'row', { anchor: row, keyboard: false });
     row.dispatchEvent(new MouseEvent('click', { clientX: 42, clientY: 31, detail: 1 }));
-    expect(openMenu).toHaveBeenLastCalledWith(cell, 22, 48, 'column', column.getBoundingClientRect());
+    expect(openMenu).toHaveBeenLastCalledWith(cell, 22, 48, 'column', { anchor: column, keyboard: false });
     column.click();
-    expect(openMenu).toHaveBeenLastCalledWith(cell, 22, 48, 'column', column.getBoundingClientRect());
+    expect(openMenu).toHaveBeenLastCalledWith(cell, 22, 48, 'column', { anchor: column, keyboard: true });
   } finally {
     controls.destroy();
     document.documentElement.toggleAttribute('data-mobile', mobile);
@@ -595,6 +622,7 @@ it.each([null, 1, 'unavailable'] as const)('uses the native iOS grip menu and ha
     return result;
   });
   vi.stubGlobal('__TAURI_INTERNALS__', { invoke: native });
+  const platform = vi.spyOn(navigator, 'platform', 'get').mockReturnValue('iPhone');
   const editor = createRichEditor(root, () => {});
   const view = EditorView.findFromDOM(root.querySelector('.cm-editor')!)!;
   try {
@@ -622,6 +650,7 @@ it.each([null, 1, 'unavailable'] as const)('uses the native iOS grip menu and ha
     expect(view.state.doc.toString()).toBe(result === 1 ? '| 功能 |  |\n| --- | --- |\n| 清单 |  |' : source);
     if (result !== 1) expect(document.activeElement).toBe(cell);
   } finally {
+    platform.mockRestore();
     view.destroy(); root.remove(); vi.unstubAllGlobals(); document.documentElement.toggleAttribute('data-mobile', mobile);
     document.documentElement.lang = language;
   }

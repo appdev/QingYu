@@ -92,6 +92,8 @@ pub struct Note {
     pub filename: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share: Option<NoteShare>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_title: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -204,6 +206,10 @@ fn validate(library: &Library) -> Result<()> {
             || note.id.len() > 500
             || !notes.insert(&note.id)
             || !folders.contains(&note.folder_id)
+            || note
+                .follow_title
+                .as_ref()
+                .is_some_and(|title| title.len() > 500 || title.chars().any(char::is_control))
             || [note.created_at, note.updated_at]
                 .iter()
                 .any(|n| !n.is_finite() || *n < 0. || *n > 8_640_000_000_000_000.)
@@ -1108,6 +1114,7 @@ impl DiskLibrary {
                 read_only: false,
                 filename: None,
                 share: None,
+                follow_title: None,
             });
             match fs::read(&path) {
                 Ok(bytes) => {
@@ -1705,6 +1712,7 @@ impl DiskLibrary {
                 read_only,
                 filename: None,
                 share: None,
+                follow_title: None,
             });
             count += 1;
         }
@@ -1937,7 +1945,8 @@ pub async fn library_commit(
         if next.folders != store.data.folders
             || next.sync != store.data.sync
             || assets.is_some()
-            || !(matches!(intent.as_str(), "edit" | "create") || intent.starts_with("duplicate:"))
+            || !(matches!(intent.as_str(), "edit" | "create" | "title-edit")
+                || intent.starts_with("duplicate:"))
         {
             return Err("请在主窗口管理笔记库".into());
         }

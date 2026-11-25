@@ -3,6 +3,9 @@
 #calendar-dialog h2 { margin: 0 0 18px; font-size: 18px; }
 #calendar-dialog label { display: block; font-size: 13px; margin: 12px 0 7px; }
 #calendar-dialog input, #calendar-dialog select, #calendar-dialog textarea { display: block; width: 100%; min-width: 0; min-height: 36px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--paper); color: var(--ink); font: inherit; box-sizing: border-box; }
+#calendar-dialog .calendar-time-field { position: relative; border-radius: 6px; --lb-fill: var(--paper); }
+#calendar-dialog .calendar-time-field input { background: transparent; }
+#calendar-dialog .settings-select { justify-self: start; max-width: 100%; }
 #calendar-dialog textarea { resize: vertical; }
 #calendar-dialog .calendar-help { color: var(--muted); font-size: 12px; line-height: 1.6; }
 #event-feedback { min-height: 20px; font-size: 13px; overflow-wrap: anywhere; }

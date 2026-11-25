@@ -1,13 +1,15 @@
-import { noteTitle, type Library, type Note } from './notebook';
-import { markdownBody, noteText, plainMarkdownLine } from './document-text';
+import type { Library, Note } from './notebook';
+import { markdownBody, noteText, noteTitle, plainMarkdownLine } from './document-text';
+import { parseMarkdownLocalResourceReferences } from './vendor/markra/markdown/links';
 import { GFM, parser } from '@lezer/markdown';
 import { markraWikiLink, readWikiLink } from './vendor/markra/editor/codemirror/wiki-link';
 
 const titleKey = (text: string) => text.trim().replace(/\s+/gu, ' ').toLowerCase();
-const canLink = (note: Note) => !note.trashed && !/[\[\]|\r\n]/u.test(noteTitle(note));
-const fullTitle = (library: Library, note: Note) => {
+const linkTitle = (note: Note) => note.title && note.title !== '无标题' ? note.title : noteTitle(note);
+const canLink = (note: Note) => !note.trashed && !/[\[\]|\r\n]/u.test(linkTitle(note));
+const fullTitle = (library: Library, note: Note, title = linkTitle(note)) => {
   const folder = library.folders.find(folder => folder.id === note.folderId);
-  return folder ? `${folder.path || folder.name}/${noteTitle(note)}` : noteTitle(note);
+  return folder ? `${folder.path || folder.name}/${title}` : title;
 };
 
 export function resolveNoteLink(library: Library, written: string, current: Note | undefined) {
@@ -15,10 +17,12 @@ export function resolveNoteLink(library: Library, written: string, current: Note
     if (!target.trim()) return current?.trashed ? undefined : current;
     const key = titleKey(target);
     const notes = library.notes.filter(note => !note.trashed);
-    const titles = notes.filter(note => titleKey(noteTitle(note)) === key);
+    const titles = notes.filter(note => titleKey(linkTitle(note)) === key);
+    const displayTitles = notes.filter(note => titleKey(noteTitle(note)) === key);
     return notes.find(note => titleKey(fullTitle(library, note)) === key)
       ?? titles.find(note => note.folderId === current?.folderId)
-      ?? (titles.length === 1 ? titles[0] : undefined);
+      ?? (titles.length === 1 ? titles[0] : undefined)
+      ?? (titles.length === 0 && displayTitles.length === 1 ? displayTitles[0] : undefined);
   }
   const exact = find(written);
   if (exact) return { note: exact, heading: undefined };
@@ -83,14 +87,14 @@ export function noteLinkChoices(library: Library, currentId: string, query: stri
   const counts = new Map<string, number>();
   const firstByPath = new Map<string, string>();
   for (const note of candidates) {
-    const title = titleKey(noteTitle(note));
+    const title = titleKey(linkTitle(note));
     counts.set(title, (counts.get(title) ?? 0) + 1);
     const path = titleKey(fullTitle(library, note));
     if (!firstByPath.has(path)) firstByPath.set(path, note.id);
   }
   return candidates.flatMap(note => {
     if (note.id === currentId) return [];
-    const title = noteTitle(note), normalized = titleKey(title);
+    const title = linkTitle(note), normalized = titleKey(title);
     const duplicate = (counts.get(normalized) ?? 0) > 1;
     const target = duplicate ? fullTitle(library, note) : title;
     if (!titleKey(target).includes(key) || /[\[\]|\r\n]/u.test(target)) return [];
@@ -108,6 +112,50 @@ export function noteLinkMarkdown(target: string, selected: string) {
 }
 
 const wikiParser = parser.configure([GFM, markraWikiLink]);
+export function retargetNoteLinks(library: Library, before: Note, title: string, current: Note) {
+  const source = current.source;
+  const edits: { from: number; to: number; text: string }[] = [];
+  const target = fullTitle(library, before, title);
+  if (source.includes('[[') && !/[\[\]|#\r\n]/u.test(target)) {
+    const body = markdownBody(source).body;
+    const offset = source.length - body.length;
+    wikiParser.parse(body).iterate({ enter(node) {
+      const card = node.name === 'WikiCard';
+      if (!card && node.name !== 'WikiLink') return;
+      const from = node.from + Number(card) + offset;
+      const raw = source.slice(from, node.to + offset);
+      const link = readWikiLink(raw);
+      if (!link) return;
+      const resolved = resolveNoteLink(library, link.target, current);
+      if (resolved.note?.id !== before.id) return;
+      const alias = raw.indexOf('|');
+      const end = alias < 0 ? raw.length - 2 : alias - Number(raw[alias - 1] === '\\');
+      edits.push({ from: from + 2, to: from + end, text: target + (resolved.heading ? `#${resolved.heading}` : '') });
+    } });
+  }
+  if (current.path && before.path && /[\[(/]/u.test(source)) {
+    const origin = 'https://qingyu.invalid/';
+    const base = origin + current.path.split('/').map(encodeURIComponent).join('/');
+    const expected = origin + before.path.split('/').map(encodeURIComponent).join('/');
+    const extension = before.path.slice(before.path.lastIndexOf('.'));
+    const filename = title.replaceAll(':', '-').replaceAll('/', ':') + extension;
+    const destination = encodeURIComponent(filename).replaceAll('(', '%28').replaceAll(')', '%29');
+    for (const reference of parseMarkdownLocalResourceReferences(source, true)) {
+      if (reference.kind === 'image' || !reference.href || reference.href.startsWith('#')) continue;
+      try {
+        const url = new URL(reference.href, base);
+        if (url.origin !== 'https://qingyu.invalid' || decodeURI(url.pathname).normalize('NFC') !== decodeURI(new URL(expected).pathname).normalize('NFC')) continue;
+      } catch { continue; }
+      const raw = source.slice(reference.from, reference.to);
+      const [, directory, suffix] = /^([^?#]*\/)?[^/?#]+([?#].*)?$/u.exec(raw) ?? [];
+      if (directory === undefined && suffix === undefined && !/^[^/?#]+$/u.test(raw)) continue;
+      edits.push({ from: reference.from, to: reference.to, text: (directory ?? '') + destination + (suffix ?? '') });
+    }
+  }
+  let result = source;
+  for (const { from, to, text } of edits.sort((a, b) => b.from - a.from)) result = result.slice(0, from) + text + result.slice(to);
+  return result;
+}
 export function noteLinkTargets(source: string, cardsOnly = false) {
   const targets = new Set<string>();
   if (!source.includes('[[')) return targets;

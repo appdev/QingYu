@@ -6,6 +6,8 @@ import { copyShareLink, mockWebShareActions, mountMockWebShare, type ShareStore 
 import { alertActions, showAlert } from './alert-dialog';
 import { dismissPopupMenu, showMenu, type MenuItem } from './popup-menu';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { mountTabIndicator } from './glass-controls';
+import { mountWebGlass, usesGlisse } from './web-glass-mount';
 
 type PickerChoice = { title: string; target: string; detail: string };
 type PickerChoices = (query: string) => PickerChoice[];
@@ -112,8 +114,12 @@ export function confirmLinkedNote(title: string, create: () => void) {
 }
 
 export function showShare(anchor: HTMLElement, title: string, text: string, report: (message: string) => void, picture?: import('./note-picture').PictureRequest, noteKey: string = crypto.randomUUID(), shareStore?: ShareStore) {
-  document.querySelector<HTMLElement>('.share-popover')?.hidePopover?.();
+  const previous = document.querySelector<HTMLElement>('.share-popover:not([inert])');
+  const closingCurrent = previous && anchor.ariaExpanded === 'true';
+  previous?.hidePopover?.();
+  if (closingCurrent) return;
   const root = document.documentElement;
+  const glass = usesGlisse(root);
   const nativeShare = native && (root.dataset.platform === 'macos' || root.hasAttribute('data-mobile'));
   async function sendCopy() {
     try {
@@ -139,14 +145,14 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     const restore = () => anchor.focus({ preventScroll: true });
     const icon = (node: Parameters<typeof createLucideIcon>[1]) => createLucideIcon(document, node, '');
     const items: MenuItem[] = url ? [
-      { text: '复制链接', icon: icon(Link), enabled, run: () => copyShareLink(url) },
+      { text: '复制链接', icon: icon(Link), enabled, needsUserActivation: glass, run: () => copyShareLink(url) },
       { text: '打开网页', icon: icon(Globe), enabled, run: web.preview },
       { text: '停止发布', icon: icon(CircleX), enabled, destructive: true, run: web.stop },
       { text: '' },
     ] : [{ text: '分享链接…', icon: icon(Link), enabled, run: web.publish }];
     items.push(
       { text: '发送笔记…', icon: icon(Share2), run: async () => { await sendCopy(); } },
-      { text: '复制为纯文本', icon: icon(Clipboard), run: async () => { await copyText(); } },
+      { text: '复制为纯文本', icon: icon(Clipboard), needsUserActivation: glass, run: async () => { await copyText(); } },
     );
     if (picture) items.push({ text: '分享为图片…', icon: icon(Image), async run() {
       const { showNotePicture } = await import('./note-picture');
@@ -156,7 +162,10 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     return;
   }
 
-  const panel = document.createElement('div'); panel.className = 'share-popover'; panel.setAttribute('popover', 'auto'); panel.role = 'dialog'; panel.ariaLabel = translatedLabel('share');
+  const panel = document.createElement('div'); panel.className = 'share-popover fk-transition fk-opacity'; panel.setAttribute('popover', 'auto'); panel.role = 'dialog'; panel.ariaLabel = translatedLabel('share');
+  if (!glass) panel.classList.add('lb', 'qingyu-glass');
+  else panel.classList.add('web-glass-frost');
+  panel.tabIndex = -1; panel.autofocus = true;
   panel.addEventListener('keydown', event => event.stopPropagation());
   const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = translatedLabel('分享方式');
   const content = document.createElement('div'); content.role = 'tabpanel'; content.id = 'share-content';
@@ -168,12 +177,14 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
   const buttons: HTMLButtonElement[] = [];
   let disposePicture: (() => void) | undefined;
   let tabRevision = 0;
+  let indicator: ReturnType<typeof mountTabIndicator>;
   function select(position: number) {
     const { index } = modes[position];
     const revision = ++tabRevision;
     disposePicture?.(); disposePicture = undefined;
     lastShareTabs.set(noteKey, index);
     for (const [i, button] of buttons.entries()) { button.setAttribute('aria-selected', String(i === position)); button.tabIndex = i === position ? 0 : -1; }
+    indicator?.select(buttons[position]);
     content.replaceChildren();
     const detail = document.createElement('p'); detail.className = 'share-description';
     detail.textContent = ['发送笔记此刻的内容，之后的修改不会同步给收件人。', '模拟创建网页链接。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
@@ -223,7 +234,15 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     button.onkeydown = event => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); const next = (position + (event.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length; select(next); buttons[next].focus(); };
   }
   panel.append(tabs, content); document.body.append(panel);
-  select(Math.max(0, modes.findIndex(mode => mode.index === lastShareTabs.get(noteKey)))); panel.showPopover();
+  panel.addEventListener('beforetoggle', event => {
+    const closing = (event as ToggleEvent).newState === 'closed';
+    anchor.ariaExpanded = String(!closing);
+    panel.inert = closing;
+  });
+  panel.showPopover();
+  const unmountGlass = glass ? mountWebGlass(panel, { tint: 78, blur: 12 }) : undefined;
+  indicator = mountTabIndicator(tabs);
+  select(Math.max(0, modes.findIndex(mode => mode.index === lastShareTabs.get(noteKey))));
   const box = anchor.getBoundingClientRect();
   const center = box.left + box.width / 2;
   const left = Math.max(8, Math.min(center - panel.offsetWidth / 2, innerWidth - panel.offsetWidth - 8));
@@ -243,7 +262,10 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
   panel.addEventListener('toggle', event => {
     if ((event as ToggleEvent).newState !== 'closed') return;
     tabRevision++;
-    disposePicture?.();
-    panel.remove(); anchor.focus();
+    if (panel.contains(document.activeElement) || document.activeElement === document.body) anchor.focus({ preventScroll: true });
+    const remove = () => { indicator?.destroy(); unmountGlass?.(); disposePicture?.(); panel.remove(); };
+    const animations = panel.getAnimations?.() ?? [];
+    if (animations.length) void Promise.allSettled(animations.map(animation => animation.finished)).then(remove);
+    else remove();
   });
 }

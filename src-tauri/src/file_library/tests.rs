@@ -218,6 +218,7 @@ fn draft(title: Option<&str>, body: &str) -> Note {
         read_only: false,
         filename: None,
         share: None,
+        follow_title: None,
     }
 }
 fn create(store: &mut DiskLibrary, title: Option<&str>, body: &str) -> Note {
@@ -227,6 +228,30 @@ fn create(store: &mut DiskLibrary, title: Option<&str>, body: &str) -> Note {
     next.notes.push(note);
     store.commit(next, "create").unwrap();
     store.data.notes.last().unwrap().clone()
+}
+
+#[test]
+fn a_title_edit_renames_the_file_and_saves_link_updates_together() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = open(directory.path());
+    let note = create(&mut store, Some("旧标题"), "# 旧标题\n");
+    let link = create(&mut store, Some("引用"), "[[旧标题]]\n");
+    let occupied = create(&mut store, Some("新标题"), "同名原文");
+    let mut next = store.data.clone();
+    let renamed = next.notes.iter_mut().find(|n| n.id == note.id).unwrap();
+    renamed.title = Some("新标题 2".into());
+    renamed.follow_title = Some("新标题".into());
+    renamed.source = "# 新标题\n".into();
+    next.notes.iter_mut().find(|n| n.id == link.id).unwrap().source = "[[新标题 2]]\n".into();
+    store.commit(next, "title-edit").unwrap();
+    assert!(!directory.path().join(&note.path).exists());
+    let store = open(directory.path());
+    let renamed = store.data.notes.iter().find(|n| n.id == note.id).unwrap();
+    assert_eq!(renamed.path, "新标题 2.md");
+    assert_eq!(renamed.source, "# 新标题\n");
+    assert_eq!(renamed.follow_title.as_deref(), Some("新标题"));
+    assert_eq!(fs::read_to_string(directory.path().join(link.path)).unwrap(), "[[新标题 2]]\n");
+    assert_eq!(fs::read_to_string(directory.path().join(occupied.path)).unwrap(), "同名原文");
 }
 
 #[test]

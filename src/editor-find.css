@@ -1,4 +1,4 @@
-.cm-editor .cm-panels-top:has(.qingyu-find) { border-bottom: 1px solid var(--line); }
+.cm-editor .cm-panels-top:has(.qingyu-find) { border-bottom: 1px solid var(--line); z-index: 2; }
 .qingyu-find { padding: 8px 7px 4px; font: 11px/1.2 var(--font); }
 .qingyu-find-main, .qingyu-find-replace { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .qingyu-find-replace { margin-top: 3px; }

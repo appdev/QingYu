@@ -487,7 +487,6 @@ button.note-date-chip { cursor: pointer; }
 /* 图片和图表的查看器（双击或空格打开图片、右键「打开图片」、放大图表）。
    按「预览」「照片」的看法：整窗压暗模糊，图片居中浮起，深色玻璃工具条浮在底部中央。 */
 .markra-media-viewer-dialog {
-  --viewer-glass-fill: color-mix(in srgb, var(--mode-dark) 58%, transparent);
   --viewer-ink: var(--mode-light);
   position: fixed; inset: 0; z-index: 60;
   background: color-mix(in srgb, var(--mode-dark) 62%, transparent);
@@ -511,6 +510,7 @@ button.note-date-chip { cursor: pointer; }
 }
 svg.markra-media-viewer-media { background: var(--paper); padding: 16px; box-sizing: content-box; }
 .markra-media-viewer-toolbar {
+  --lb-dark: 1; --lb-fill: var(--mode-dark); --lb-transparency: .53; --lb-depth: .2;
   position: absolute; left: 50%; bottom: 28px; translate: -50% 0; z-index: 1;
   display: flex; align-items: center; gap: 2px; height: 44px; max-width: calc(100vw - 32px); padding: 0 6px;
   border-radius: 999px; color: var(--viewer-ink); user-select: none;

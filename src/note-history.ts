@@ -6,6 +6,8 @@ import { diffVersionLines } from './note-version-diff';
 import { noteTitle, type Note, type Notebook, type NoteVersion } from './notebook';
 import type { RichEditor } from './rich-editor';
 import { markraLanguage } from './vendor/markra/editor/codemirror';
+import { settingsSelect } from './settings-select';
+import { usesGlisse } from './web-glass-mount';
 
 const CURRENT = 'current';
 const date = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
@@ -46,7 +48,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
     <section class="history-detail" aria-label="${markupLabel('版本预览')}" hidden><header>
       <button class="history-back" type="button" aria-label="${markupLabel('返回版本列表')}">‹</button>
       <div class="history-summary"><h3></h3><p></p></div>
-      <select aria-label="${markupLabel('对比版本')}"></select><button class="history-restore button primary-button" type="button">${markupLabel('恢复此版本')}</button>
+      <select id="history-compare" aria-label="${markupLabel('对比版本')}"></select><button class="history-restore button primary-button" type="button">${markupLabel('恢复此版本')}</button>
     </header><p class="history-error" role="alert" hidden></p><div id="note-history-editor"></div></section>`;
   dialog.ariaLabel = translatedLabel('版本历史');
   const $ = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
@@ -55,6 +57,8 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
   const retry = $<HTMLButtonElement>('.history-state button'), restore = $<HTMLButtonElement>('.history-restore');
   const detail = $('.history-detail'), preview = $('#note-history-editor'), errorLine = $('.history-error');
   const compare = $<HTMLSelectElement>('select');
+  const comparison = usesGlisse(compare) ? settingsSelect(compare, () => translatedLabel('对比版本'), false) : undefined;
+  if (comparison) $('.history-detail header').insertBefore(comparison.element, restore);
   const current = { id: CURRENT, updatedAt: note.updatedAt };
   let versions: NoteVersion[] = [], selected = CURRENT, currentSource = note.source, request = 0;
   let editorReady: Promise<RichEditor> | undefined, marksInstalled = false, restoring = false;
@@ -76,7 +80,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
   compare.onchange = () => { void renderPreview(); };
   restore.onclick = async () => {
     if (restoring || selected === CURRENT) return;
-    restoring = true; restore.disabled = compare.disabled = close.disabled = back.disabled = true;
+    restoring = true; restore.disabled = compare.disabled = close.disabled = back.disabled = true; comparison?.update();
     restore.textContent = translatedLabel('正在恢复…');
     try {
       await book.restoreNoteVersion(noteId, selected, currentSource, root);
@@ -86,7 +90,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
       errorLine.textContent = message(reason); errorLine.hidden = false;
     } finally {
       restoring = false; restore.textContent = translatedLabel('恢复此版本');
-      restore.disabled = compare.disabled = close.disabled = back.disabled = false;
+      restore.disabled = compare.disabled = close.disabled = back.disabled = false; comparison?.update();
     }
   };
   dialog.addEventListener('cancel', event => {
@@ -96,6 +100,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
   dialog.addEventListener('keydown', event => event.stopPropagation());
   dialog.addEventListener('close', () => {
     narrow.removeEventListener('change', updateLayout);
+    comparison?.destroy();
     request++; sourceView?.destroy(); EditorView.findFromDOM(preview)?.destroy(); dialog.remove(); restoreFocus();
   }, { once: true });
   list.onkeydown = event => {
@@ -121,7 +126,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
     $('.history-summary h3').textContent = heading(version);
     summary.textContent = translatedLabel('正在读取…');
     summary.removeAttribute('data-changes');
-    errorLine.hidden = true; preview.hidden = true; restore.disabled = compare.disabled = true;
+    errorLine.hidden = true; preview.hidden = true; restore.disabled = compare.disabled = true; comparison?.update();
     try {
       const [source, counterpart] = await Promise.all([body(id), body(other || CURRENT)]);
       if (token !== request || !dialog.open) return;
@@ -170,7 +175,7 @@ export function showNoteHistory(book: Notebook, note: Note, restoreFocus: () => 
       summary.textContent = translatedLabel('无法显示该版本');
       errorLine.textContent = message(reason); errorLine.hidden = false;
     } finally {
-      if (token === request) compare.disabled = restoring;
+      if (token === request) { compare.disabled = restoring; comparison?.update(); }
     }
   }
 

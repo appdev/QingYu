@@ -43,9 +43,9 @@ Vite 的 PostCSS 插件将色表编译进 `theme.css`，主窗口、预览、设
 
 ## 版本发布
 
-[GitHub Releases](https://github.com/appdev/QingYu/releases) 提供 macOS Apple Silicon/Intel DMG、Windows x64 安装程序和 Linux x64 DEB/AppImage。启用 Android 打包后的版本也提供 Android arm64 APK。首版为 `v0.1.0`，安装及签名边界见[发布说明](releases/v0.1.0.md)。
+[GitHub Releases](https://github.com/appdev/QingYu/releases) 提供 macOS Apple Silicon/Intel DMG、Windows x64 安装程序、Linux x64 DEB/AppImage、Android arm64 APK，以及用于自托管 Web 编辑器的 Linux amd64/arm64 Docker 镜像归档。首版为 `v0.1.0`，安装及签名边界见[发布说明](releases/v0.1.0.md)。
 
-在 GitHub Actions 的 Release 工作流中点击 Run workflow，选择要发布的分支并输入版本号（如 `0.1.3` 或 `v0.1.3`），无需提前打标签。流程会同步 npm、Cargo、Tauri 及锁文件中的应用版本，测试通过后生成发布提交并自动推送 `v<版本>` 标签；所选分支不会被修改。随后创建草稿，全部桌面安装包及签名的 Android arm64 APK 构建、上传成功后才公开发布。存在 `docs/releases/v<版本>.md` 时使用该发布说明，否则自动生成说明。推送代码或标签不会自动触发。失败时可重跑失败作业；重新手动运行仅允许复用源码完全一致的标签和未公开的草稿，已发布版本及不同源码的同名标签不会被覆盖。
+在 GitHub Actions 的 Release 工作流中点击 Run workflow，选择要发布的分支并输入版本号（如 `0.1.4` 或 `v0.1.4`），无需提前打标签。流程会同步 npm、Cargo、Tauri 及锁文件中的应用版本，测试通过后自动推送 `v<版本>` 标签。源分支已更新到目标版本时，标签直接指向该提交。随后创建草稿，全部桌面安装包、签名的 Android APK 和两个架构的 Docker 镜像通过构建并上传后才公开发布。存在 `docs/releases/v<版本>.md` 时使用该发布说明，否则自动生成说明。推送代码或标签不会自动触发。失败时可重跑失败作业；重新手动运行仅允许复用源码完全一致的标签和未公开的草稿，已发布版本及不同源码的同名标签不会被覆盖。
 
 首次运行前，在仓库的 **Settings → Secrets and variables → Actions** 配置 `ANDROID_KEYSTORE_BASE64`（Base64 编码的发布密钥库）、`ANDROID_KEYSTORE_PASSWORD`（密钥库密码）、`ANDROID_KEY_ALIAS`（密钥别名）和 `ANDROID_KEY_PASSWORD`（密钥密码）。后续版本使用同一签名密钥才能覆盖安装。以前安装过的本地调试包如果签名不同，请先备份笔记，再迁移到发布版。
 

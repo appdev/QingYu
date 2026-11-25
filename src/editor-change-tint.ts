@@ -60,7 +60,7 @@ const receipt = ViewPlugin.define(view => {
     pill.className = 'editor-change-receipt';
     const text = pill.appendChild(doc.createElement('span'));
     text.setAttribute('role', 'status');
-    text.textContent = formatLabel('{person}修改了 {count} 行', { person: info.who, count: info.lines.length });
+    text.textContent = formatLabel('{person}修改了 {count} 行，已自动重载', { person: info.who, count: info.lines.length });
     const undo = pill.appendChild(doc.createElement('button'));
     undo.type = 'button';
     undo.textContent = translatedLabel('撤销');

@@ -1,11 +1,33 @@
 import { formatLabel } from './ui-language';
 import { showContextSheet } from './context-sheet';
-import { clamp, getSurface, glass, mix, Spring, type GlassSurface } from 'glassy-liquid';
-import { toolbarMenuGlass } from './toolbar-menu-glass';
 import { ChevronDown, ChevronRight } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
+import { mountWebGlass, usesGlisse } from './web-glass-mount';
+import { showLiquidMenu } from './liquid-menu';
 
-export type MenuItem = { text: string; icon?: SVGElement; enabled?: boolean; destructive?: boolean; checked?: boolean; shortcut?: string; nativeRole?: 'Cut' | 'Copy' | 'Paste'; needsUserActivation?: boolean; run?: () => void | Promise<void>; items?: MenuItem[] };
+/** 一个菜单项。`text` 为空字符串时表示分隔线，前后的项分成两组。 */
+export type MenuItem = {
+  /** 显示的文字，也是读屏名称和首字母跳转的依据。 */
+  text: string;
+  /** 行首图标。尺寸由菜单决定，调用方只给图形。 */
+  icon?: SVGElement;
+  /** 设为 false 时灰显且不能选。 */
+  enabled?: boolean;
+  /** 删除这类不可撤销的操作，显示为红色。 */
+  destructive?: boolean;
+  /** 单选或开关项：给 true / false 都会按勾选项朗读，true 时显示勾号。同一组里每项都要给。 */
+  checked?: boolean;
+  /** 快捷键文字，如「⇧⌘P」。只在桌面宽度显示，桌面 App 的系统菜单会注册成真正的快捷键。 */
+  shortcut?: string;
+  /** 桌面 App 系统菜单里改用系统自带的剪切、拷贝、粘贴。 */
+  nativeRole?: 'Cut' | 'Copy' | 'Paste';
+  /** 需要用户手势才能执行（选文件、读写剪贴板）。带这类项的菜单不走系统菜单。 */
+  needsUserActivation?: boolean;
+  /** 选中后执行。菜单先关闭、焦点先恢复，再调用它；抛错或返回失败的 Promise 会交给 onError。 */
+  run?: () => void | Promise<void>;
+  /** 子菜单。有子菜单的项本身不执行 run。 */
+  items?: MenuItem[];
+};
 
 const actionIcons: Record<string, string> = {
   分享: 'M12 15V3m-4 4 4-4 4 4M8 9H5v12h14V9h-3',
@@ -30,135 +52,64 @@ for (const label of ['删除行', '删除列', '删除表格']) actionIcons[labe
 let native: import('@tauri-apps/api/menu').Menu | undefined;
 let fallback: HTMLElement | undefined, generation = 0;
 let fallbackAnchor: HTMLButtonElement | undefined;
+let closeFallback: (() => void) | undefined;
 let toolbarBackdrop: HTMLElement | undefined;
-let closeToolbarMenu: ((remove: () => void) => void) | undefined;
 let finishClosingToolbarMenu: (() => void) | undefined;
-let closeGlassyMenu: (() => void) | undefined;
-const glassyToolbarPreview = new URLSearchParams(location.search).get('menu') === 'glassy';
-export const popupMenuOpen = () => Boolean(fallback);
+// Web 和非 Apple 的 App 用移植的 Liquid Glass 菜单，开合和点外关闭由它自己处理。
+let liquidMenu: ReturnType<typeof showLiquidMenu> | undefined;
+let liquidAnchor: HTMLButtonElement | undefined;
+export const popupMenuOpen = () => Boolean(fallback || liquidMenu);
 
-function animateToolbarMenu(menu: HTMLElement, anchor: HTMLButtonElement, surface: GlassSurface) {
-  finishClosingToolbarMenu?.();
-  if (typeof matchMedia !== 'function' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const content = menu.querySelector<HTMLElement>('.toolbar-menu-items')!;
-  const mobileToolbar = anchor.closest<HTMLElement>('#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions');
-  const panel = menu.getBoundingClientRect();
-  const button = anchor.getBoundingClientRect();
-  if (!panel.width || !panel.height || !button.width || !button.height) return;
-  const { left, top } = menu.style;
-  const panelRadius = surface.metrics.radius;
-  const buttonRadius = Math.min(button.width, button.height) / 2;
-  const progress = new Spring();
-  const face = document.createElement('span');
-  face.className = 'toolbar-menu-trigger-face';
-  face.ariaHidden = 'true';
-  face.style.width = `${button.width}px`;
-  face.style.height = `${button.height}px`;
-  const icon = anchor.querySelector('svg');
-  if (icon) {
-    const clone = icon.cloneNode(true) as SVGElement;
-    const bounds = icon.getBoundingClientRect();
-    clone.style.width = `${bounds.width}px`;
-    clone.style.height = `${bounds.height}px`;
-    face.append(clone);
-  }
-  let frame = 0;
+export function backPopupMenu() {
+  if (liquidMenu) { liquidMenu.back(); return true; }
+  if (closeFallback) { closeFallback(); return true; }
+  return false;
+}
 
-  function paint() {
-    const value = Math.max(0, progress.value);
-    const width = mix(button.width, panel.width, value);
-    const height = mix(button.height, panel.height, value);
-    const radius = mix(buttonRadius, panelRadius, Math.min(1, value));
-    menu.style.left = `${mix(button.right, panel.right, value) - width}px`;
-    menu.style.top = `${mix(button.top, panel.top, value)}px`;
-    menu.style.width = `${width}px`;
-    menu.style.height = `${height}px`;
-    menu.style.borderRadius = `${radius}px`;
-    surface.setGeometry({ width, height }, radius);
-    const glassOpacity = mobileToolbar ? clamp(value / .3, 0, 1) : 1;
-    if (mobileToolbar) {
-      mobileToolbar.style.setProperty('--toolbar-return-opacity', String(1 - glassOpacity));
-      menu.style.setProperty('--toolbar-morph-opacity', `${glassOpacity * 100}%`);
-      surface.setOpacity(glassOpacity);
-    }
-    face.style.opacity = String(clamp(1 - value * 3.2, 0, 1) * glassOpacity);
-    content.style.opacity = String(clamp((value - .35) / .5, 0, 1));
-  }
+const menuGlass = new WeakMap<HTMLElement, () => void>();
+function removeMenu(menu: HTMLElement) {
+  menuGlass.get(menu)?.();
+  for (const child of menu.querySelectorAll<HTMLElement>('[role=menu]')) menuGlass.get(child)?.();
+  menu.remove();
+}
 
-  function animate(target: 0 | 1, done: () => void) {
-    cancelAnimationFrame(frame);
-    menu.dataset.toolbarMorph = '';
-    content.style.width = `${panel.width}px`;
-    content.style.maxHeight = `${panel.height}px`;
-    menu.append(face);
-    const opening = target === 1;
-    progress.to(target, opening ? { duration: .30, bounce: .25 } : { duration: .23, bounce: 0 });
-    let last = performance.now();
-    const deadline = last + (opening ? 380 : 300);
-    const tick = (now: number) => {
-      progress.step((now - last) / 1000);
-      last = now;
-      if (progress.settled || now >= deadline) {
-        progress.set(target);
-        done();
-      } else {
-        paint();
-        frame = requestAnimationFrame(tick);
-      }
-    };
-    paint();
-    frame = requestAnimationFrame(tick);
-  }
-
-  animate(1, () => {
-    face.remove();
-    delete menu.dataset.toolbarMorph;
-    mobileToolbar?.style.removeProperty('--toolbar-return-opacity');
-    menu.style.removeProperty('--toolbar-morph-opacity');
-    surface.setOpacity(1);
-    Object.assign(menu.style, { left, top, width: '', height: '', borderRadius: '' });
-    Object.assign(content.style, { width: '', maxHeight: '', opacity: '' });
-    surface.setGeometry(null);
-  });
-  return (remove: () => void) => {
-    finishClosingToolbarMenu = () => {
-      cancelAnimationFrame(frame);
-      finishClosingToolbarMenu = undefined;
-      mobileToolbar?.style.removeProperty('--toolbar-return-opacity');
-      remove();
-    };
-    animate(0, finishClosingToolbarMenu);
+function closeToolbarMenu(menu: HTMLElement) {
+  menu.inert = true;
+  menu.hidden = true;
+  const animations = menu.getAnimations?.() ?? [];
+  if (!animations.length) { removeMenu(menu); return; }
+  const finish = () => {
+    if (finishClosingToolbarMenu !== finish) return;
+    finishClosingToolbarMenu = undefined;
+    removeMenu(menu);
   };
+  finishClosingToolbarMenu = finish;
+  void Promise.allSettled(animations.map(animation => animation.finished)).then(finish);
 }
 
 export function dismissPopupMenu() {
   const menu = fallback, anchor = fallbackAnchor;
-  const closePreview = closeGlassyMenu;
-  const closeToolbar = closeToolbarMenu;
-  closeGlassyMenu = undefined;
-  closeToolbarMenu = undefined;
-  fallback = fallbackAnchor = undefined; generation++;
+  fallback = fallbackAnchor = closeFallback = undefined; generation++;
+  const liquid = liquidMenu;
+  liquidMenu = undefined;
+  liquid?.close();
+  liquidAnchor?.setAttribute('aria-expanded', 'false');
+  liquidAnchor = undefined;
   toolbarBackdrop?.remove();
   toolbarBackdrop = undefined;
   anchor?.setAttribute('aria-expanded', 'false');
-  if (closePreview) { closePreview(); return; }
   if (!menu) return;
-  const remove = () => {
-    for (const submenu of menu.querySelectorAll<HTMLElement>('.note-context-menu')) getSurface(submenu)?.destroy();
-    getSurface(menu)?.destroy(); menu.remove();
-  };
-  if (!closeToolbar) { remove(); return; }
-  menu.inert = true;
-  menu.style.pointerEvents = 'none';
-  closeToolbar(remove);
+  if (anchor) closeToolbarMenu(menu);
+  else removeMenu(menu);
 }
 document.addEventListener('pointerdown', event => {
   if (event.target !== toolbarBackdrop) return;
-  // Complete the tap on the backdrop before either menu can dismiss on pointerdown.
+  // Complete the tap on the backdrop before dismissing the menu.
   event.preventDefault();
   event.stopImmediatePropagation();
 }, true);
 document.addEventListener('pointerdown', event => {
+  if (liquidMenu) return;
   const target = event.target as Node;
   if (fallback?.contains(target) || fallbackAnchor?.contains(target)) return;
   if (fallbackAnchor && (document.activeElement as HTMLElement | null)?.isContentEditable) event.preventDefault();
@@ -170,23 +121,83 @@ document.addEventListener('keydown', event => {
 }, true);
 window.addEventListener('resize', dismissPopupMenu);
 
+/**
+ * 弹出位置和收尾。样式、尺寸、平台（系统菜单还是网页菜单）、动画、点外关闭和键盘操作都由菜单内部处理，调用方不用管。
+ * `anchor` 和 `at` 二选一：从按钮弹出给 `anchor`，右键或没有按钮时给 `at`。
+ */
 export type MenuOptions = {
+  /** 菜单的读屏名称，默认「操作菜单」。 */
   label?: string;
-  /** 从按钮弹出：统一用玻璃面板、从按钮展开的动画，桌面和手机的位置由这里决定。 */
+  /** 从这个按钮弹出。打开期间按钮的 aria-expanded 为 true，再点一次按钮会收起菜单。 */
   anchor?: HTMLButtonElement;
-  /** 不传时按按钮是否带键盘焦点判断；键盘打开时焦点落在首个可用项。 */
+  /** 是否由键盘打开：是则焦点落在首个可用项，否则落在菜单本身。不传时按按钮是否带键盘焦点判断。 */
   keyboard?: boolean;
-  /** 右键之类没有按钮的菜单在这里弹出，桌面 App 用系统菜单。 */
+  /** 没有按钮时的弹出位置（视口坐标），如右键菜单。 */
   at?: { x: number; y: number };
-  /** 手机长按时菜单上方的预览卡片。 */
+  /** 手机长按时显示在菜单上方的预览卡片。带预览的菜单用长按预览布局。 */
   preview?: HTMLElement;
+  /** 预览卡片对齐的元素，通常是被长按的那一行。 */
   previewAnchor?: HTMLElement;
+  /** 长按预览布局里，开头这几项排成一行快捷操作。 */
   quickActions?: number;
+  /** run 失败时的提示，默认打到控制台。 */
   onError?: (message: string) => void;
+  /** 菜单关闭后把焦点还给谁，默认还给 anchor。 */
   restoreFocus?: () => void;
 };
 
-// 所有弹出菜单的入口。调用方只给菜单项和触发位置，样式、定位、开合和焦点都在这里处理。
+type NativeMenuItem ={ id: number; text: string; enabled: boolean; destructive: boolean; checked: boolean | null; children?: NativeMenuItem[][] };
+
+/** 系统菜单打开失败时返回 false，由调用方退回网页菜单。 */
+async function showMobileMenu(anchor: HTMLButtonElement, items: MenuItem[], run: (item: MenuItem) => void) {
+  // 每项编一个号传给原生端，选中后按编号找回原来的菜单项；分隔线把菜单切成几组。
+  const leaves = new Map<number, MenuItem>();
+  let next = 1;
+  const sections = (entries: MenuItem[]) => entries.reduce<NativeMenuItem[][]>((groups, item) => {
+    if (!item.text) { groups.push([]); return groups; }
+    const id = next++;
+    if (!item.items) leaves.set(id, item);
+    groups[groups.length - 1].push({
+      id, text: item.text, enabled: item.enabled !== false, destructive: Boolean(item.destructive), checked: item.checked ?? null,
+      ...(item.items ? { children: sections(item.items) } : {}),
+    });
+    return groups;
+  }, [[]]).filter(group => group.length);
+  const viewport = window.visualViewport, scale = viewport?.scale ?? 1;
+  const box = anchor.getBoundingClientRect();
+  const frame = [(box.left - (viewport?.offsetLeft ?? 0)) * scale, (box.top - (viewport?.offsetTop ?? 0)) * scale, box.width * scale, box.height * scale];
+  anchor.setAttribute('aria-expanded', 'true');
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const result = await invoke<{ id?: number } | null>('show_native_menu', { menu: { frame, sections: sections(items) } });
+    const item = result?.id === undefined ? undefined : leaves.get(result.id);
+    if (item) run(item);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    anchor.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function pathIcon(path: string) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.7');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('stroke-linecap', 'round');
+  const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  shape.setAttribute('d', path);
+  svg.append(shape);
+  return svg;
+}
+
+/**
+ * 所有弹出菜单的唯一入口。调用方只给菜单项和弹出位置。返回的 Promise 在网页菜单打开后、系统菜单关闭后结束，不要拿它判断菜单是否已关；要知道是否还开着用 popupMenuOpen()。
+ * 分端：macOS 和 iOS App 用系统菜单，Web、Android、Windows、Linux 用 Liquid Glass 菜单，带预览的长按菜单和键盘上方快捷栏的菜单用网页菜单。
+ */
 export function showMenu(entries: MenuItem[] | Promise<MenuItem[]>, options: MenuOptions = {}) {
   const { anchor, at, label = '操作菜单' } = options;
   // 菜单开着时再点一次按钮就收起。
@@ -195,19 +206,22 @@ export function showMenu(entries: MenuItem[] | Promise<MenuItem[]>, options: Men
   const box = anchor?.getBoundingClientRect();
   const x = at?.x ?? box?.left ?? 0, y = at?.y ?? box?.bottom ?? 0;
   const restoreFocus = options.restoreFocus ?? (() => anchor?.focus({ preventScroll: true }));
+  const keyboard = options.keyboard ?? Boolean(anchor?.matches(':focus-visible') && !document.documentElement.hasAttribute('data-pointer-focus'));
   const toolbar = anchor && {
-    anchor, keyboard: options.keyboard ?? anchor.matches(':focus-visible'),
+    anchor,
     // 键盘上方的快捷栏贴着屏幕底边，菜单只能往上开。
     above: Boolean(anchor.closest('#mobile-tools')),
   };
-  return openMenu(entries, x, y, options.onError ?? console.warn, restoreFocus, label, options.preview, options.quickActions, toolbar, options.previewAnchor);
+  return openMenu(entries, x, y, options.onError ?? console.warn, restoreFocus, label, keyboard, options.preview, options.quickActions, toolbar, options.previewAnchor);
 }
 
-async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y: number, error: (message: string) => void, restoreFocus: () => void, label = '操作菜单', preview?: HTMLElement, quickActions = 0, toolbar?: { anchor: HTMLButtonElement; keyboard: boolean; above?: boolean }, previewAnchor?: HTMLElement) {
+async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y: number, error: (message: string) => void, restoreFocus: () => void, label: string, keyboard: boolean, preview?: HTMLElement, quickActions = 0, toolbar?: { anchor: HTMLButtonElement; above: boolean }, previewAnchor?: HTMLElement) {
   dismissPopupMenu(); const request = generation;
   const anchor = toolbar?.anchor;
   const root = document.documentElement;
-  const desktopToolbar = anchor && (root.hasAttribute('data-web') ? matchMedia('(min-width: 901px)').matches : !root.hasAttribute('data-mobile'));
+  const glass = usesGlisse(root);
+  const desktop = !root.hasAttribute('data-mobile');
+  const desktopToolbar = anchor && desktop;
   const keepEditorFocus = anchor && (document.activeElement as HTMLElement | null)?.isContentEditable;
   const items = Array.isArray(entries) ? entries : await entries;
   if (request !== generation) return;
@@ -222,33 +236,21 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
     document.body.append(backdrop);
     toolbarBackdrop = backdrop;
   }
-  if (anchor && glassyToolbarPreview && !toolbar?.above) {
-    const { createGlassyMenu } = await import('./glassy-menu-preview');
-    if (request !== generation || !anchor.isConnected) return;
-    const preview = createGlassyMenu(anchor, items, label, Boolean(keepEditorFocus), run, () => {
-      if (fallback === preview.menu) dismissPopupMenu();
-    });
-    preview.menu.classList.toggle('desktop-toolbar-menu', Boolean(desktopToolbar));
-    fallback = preview.menu;
-    fallbackAnchor = anchor;
-    closeGlassyMenu = preview.close;
-    addToolbarBackdrop();
-    anchor.setAttribute('aria-expanded', 'true');
-    preview.open();
-    return;
-  }
   function browserMenu(entries: MenuItem[], left: number, top: number, container: HTMLElement, trigger?: HTMLButtonElement, inline?: { item: MenuItem; width: number }) {
-    const menu = document.createElement('div'); menu.className = 'note-context-menu'; menu.role = 'menu'; menu.ariaLabel = trigger?.ariaLabel ?? label;
+    const menu = document.createElement('div'); menu.className = 'note-context-menu';
+    menu.role = 'menu'; menu.ariaLabel = trigger?.ariaLabel ?? label;
     menu.tabIndex = -1;
     const content = anchor ? document.createElement('div') : menu;
     if (anchor) {
-      menu.classList.add('toolbar-context-menu');
+      menu.classList.add('toolbar-context-menu', 'fk-transition', 'fk-opacity');
+      if (glass) menu.classList.add('web-glass-frost');
+      else menu.classList.add('lb', 'qingyu-glass');
       menu.classList.toggle('desktop-toolbar-menu', Boolean(desktopToolbar));
-      if (!trigger) menu.dataset.toolbarMenuRoot = '';
       content.className = 'toolbar-menu-items';
       content.role = 'presentation';
       menu.append(content);
     }
+    if (anchor && !trigger) menu.dataset.toolbarMenuRoot = '';
     if (inline && trigger) {
       menu.classList.add('toolbar-submenu');
       menu.style.width = `${inline.width}px`;
@@ -259,7 +261,7 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
       if (icon) header.append(icon);
       header.append(title, createLucideIcon(document, ChevronDown, 'context-submenu-chevron'));
       header.onclick = () => {
-        getSurface(menu)?.destroy(); menu.remove();
+        removeMenu(menu);
         trigger.setAttribute('aria-expanded', 'false');
         if (!keepEditorFocus) trigger.focus({ preventScroll: true });
       };
@@ -271,13 +273,12 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
     };
     if (!trigger && quickActions) menu.style.setProperty('--quick-actions', String(quickActions));
     function closeSubmenu() {
-      const submenu = menu.querySelector<HTMLElement>(':scope > .note-context-menu');
-      if (submenu) getSurface(submenu)?.destroy();
-      submenu?.remove();
+      const submenu = menu.querySelector<HTMLElement>(':scope > [role=menu]');
+      if (submenu) removeMenu(submenu);
       menu.querySelector('[aria-expanded=true]')?.setAttribute('aria-expanded', 'false');
     }
     // 子菜单盖在上面时，点原菜单的空处或其他项只是收回子菜单。
-    if (anchor && !desktopToolbar) content.addEventListener('pointerdown', event => {
+    if (anchor && !desktop) content.addEventListener('pointerdown', event => {
       const submenu = menu.querySelector<HTMLElement>(':scope > .toolbar-submenu');
       if (!submenu || submenu.contains(event.target as Node)) return;
       event.preventDefault(); event.stopPropagation();
@@ -295,7 +296,8 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
         item.icon.classList.add('context-action-icon');
         button.append(item.icon);
       } else if ((preview || label === '表格操作' || label === '行选项' || label === '列选项') && icon) button.innerHTML = `<svg class="context-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="${icon}"/></svg>`;
-      const key = document.createElement('kbd'); key.textContent = item.items ? '' : item.checked ? '✓' : anchor && document.documentElement.hasAttribute('data-mobile') ? '' : item.shortcut ?? '';
+      const key = document.createElement('kbd'); key.textContent = item.items ? '' : item.checked ? '✓' : anchor && root.hasAttribute('data-mobile') ? '' : item.shortcut ?? '';
+      key.ariaHidden = 'true';
       if (item.items) key.append(createLucideIcon(document, ChevronRight, 'context-submenu-chevron'));
       button.append(title, key); content.append(button);
       if (inline && item.checked !== undefined) button.classList.add('context-check-leading');
@@ -307,16 +309,11 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
           closeSubmenu(); const box = menu.getBoundingClientRect();
           button.setAttribute('aria-expanded', 'true');
           // 手机上和 iOS 的 UIMenu 一样，子菜单盖在原菜单上展开：顶行是加粗的父项和向下箭头，点它收回。
-          const inline = anchor && !desktopToolbar;
+          const inline = anchor && !desktop;
           const row = button.getBoundingClientRect();
           const submenu = inline
             ? browserMenu(item.items!, box.left - 8, row.top - 8, menu, button, { item, width: box.width + 8 })
             : browserMenu(item.items!, box.right - 4, row.top, menu, button);
-          // 工具栏菜单的二级菜单也用同样的玻璃面板，否则半透明底色下会透出后面的正文。
-          if (anchor) {
-            const radius = Number.parseFloat(getComputedStyle(submenu).borderTopLeftRadius) || 0;
-            glass(submenu, { ...toolbarMenuGlass, radius, fill: 'var(--toolbar-menu-glass-fill)', shadow: false });
-          }
           // 触摸展开时焦点放在子菜单本身，免得首行一出来就是高亮的；键盘展开仍落到首个可用项。
           if (keepEditorFocus) return;
           if (inline && !button.matches(':focus-visible')) submenu.focus({ preventScroll: true });
@@ -337,11 +334,12 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
       if (event.key === 'Tab') { event.preventDefault(); buttons[event.shiftKey ? previous : next]?.focus(); }
       if (event.key === 'Escape' || event.key === 'ArrowLeft' && trigger) {
         event.preventDefault(); event.stopPropagation();
-        if (trigger) { getSurface(menu)?.destroy(); menu.remove(); trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); }
+        if (trigger) { removeMenu(menu); trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); }
         else close();
       }
     };
     container.append(menu);
+    if (glass) menuGlass.set(menu, mountWebGlass(menu, { tint: 82, blur: 14 }));
     const bottom = anchor ? window.visualViewport?.height ?? innerHeight : innerHeight;
     if (anchor && !trigger) {
       if (toolbar?.above) {
@@ -364,11 +362,27 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
     }
     if (anchor && (!toolbar?.above || trigger)) menu.style.maxHeight = `${Math.max(0, bottom - top - 8)}px`;
     if (trigger && !inline && left + menu.offsetWidth > innerWidth - 4) left = container.getBoundingClientRect().left - menu.offsetWidth + 4;
-    menu.style.left = `${Math.max(4, Math.min(left, innerWidth - menu.offsetWidth - 4))}px`;
-    menu.style.top = `${Math.max(4, Math.min(top, bottom - menu.offsetHeight - 4))}px`;
+    const parent = anchor && trigger ? container.getBoundingClientRect() : undefined;
+    menu.style.left = `${Math.max(4, Math.min(left, innerWidth - menu.offsetWidth - 4)) - (parent?.left ?? 0)}px`;
+    menu.style.top = `${Math.max(4, Math.min(top, bottom - menu.offsetHeight - 4)) - (parent?.top ?? 0)}px`;
     return menu;
   }
-  if (!anchor && !preview && !items.some(item => item.needsUserActivation) && '__TAURI_INTERNALS__' in window && !document.documentElement.hasAttribute('data-mobile')) {
+  // 长按带预览的菜单和键盘上方快捷栏的菜单仍用下面的网页菜单。
+  if (glass && !preview && !toolbar?.above) {
+    const restore = () => { dismissPopupMenu(); restoreFocus(); };
+    liquidMenu = showLiquidMenu({
+      items, label, anchor, at: anchor ? undefined : { x, y }, keyboard,
+      iconFor: item => item.icon ?? ((label === '表格操作' || label === '行选项' || label === '列选项') && actionIcons[item.text] ? pathIcon(actionIcons[item.text]) : undefined),
+      select: item => { restore(); void Promise.resolve().then(item.run).catch(reason => error(reason instanceof Error ? reason.message : String(reason))); },
+      dismiss: restore,
+    });
+    liquidAnchor = anchor;
+    anchor?.setAttribute('aria-expanded', 'true');
+    return;
+  }
+  // 桌面 App 的右键和按钮下拉都用系统菜单；带预览或需要用户激活（选文件、剪贴板）的菜单留在网页里。
+  const desktopApp = !glass && !root.hasAttribute('data-mobile');
+  if (desktopApp && !preview && !items.some(item => item.needsUserActivation)) {
     try {
       const { Menu } = await import('@tauri-apps/api/menu'), { LogicalPosition } = await import('@tauri-apps/api/dpi');
       if (request !== generation) return;
@@ -379,21 +393,31 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
       });
       const created = await Menu.new({ items: options(items) });
       if (request !== generation) { await created.close(); return; }
-      native = created; await native.popup(new LogicalPosition(x, y)); return;
+      native = created;
+      if (!anchor) { await native.popup(new LogicalPosition(x, y)); return; }
+      // 从按钮左下角往下 4 px 弹出。菜单开着时按钮保持展开状态，工具栏高亮跟着它。
+      const box = anchor.getBoundingClientRect();
+      anchor.setAttribute('aria-expanded', 'true');
+      try { await native.popup(new LogicalPosition(box.left, box.bottom + 4)); }
+      finally { anchor.setAttribute('aria-expanded', 'false'); }
+      return;
     } catch { if (request !== generation) return; }
   }
+  // iOS 的按钮下拉使用 UIMenu。键盘上方的菜单留在页面内，以保留编辑器焦点。
+  const mobileApp = !glass && root.hasAttribute('data-mobile');
+  if (mobileApp && anchor && !toolbar?.above && !preview && !items.some(item => item.needsUserActivation)) {
+    if (await showMobileMenu(anchor, items, run)) return;
+    if (request !== generation) return;
+  }
+  finishClosingToolbarMenu?.();
   if (preview) {
     fallback = showContextSheet(preview, { label, anchor: previewAnchor, close, mountMenu: dialog => { browserMenu(items, x, y, dialog); } });
   } else fallback = browserMenu(items, x, y, document.body);
+  closeFallback = close;
   fallbackAnchor = anchor;
   addToolbarBackdrop();
   anchor?.setAttribute('aria-expanded', 'true');
-  if (anchor) {
-    const radius = Number.parseFloat(getComputedStyle(fallback).borderTopLeftRadius) || 0;
-    const surface = glass(fallback, { ...toolbarMenuGlass, radius, fill: 'var(--toolbar-menu-glass-fill)', shadow: false });
-    closeToolbarMenu = animateToolbarMenu(fallback, anchor, surface);
-  }
-  const pointerOpenedToolbarMenu = toolbar && !toolbar.keyboard;
+  const pointerOpenedToolbarMenu = toolbar && !keyboard;
   const first = pointerOpenedToolbarMenu ? fallback : fallback.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? fallback.querySelector<HTMLElement>('[role=menu]') ?? fallback;
   if (!keepEditorFocus) first.focus({ preventScroll: true });
 }

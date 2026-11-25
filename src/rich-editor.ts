@@ -19,6 +19,7 @@ import { captureActiveTableMenu, captureTableFormat, captureTableInsertion, form
 import { formatPanelState, formatPanelTransaction, formatTransaction, paragraphFormat, replaceSource, untickChecklist, type Format, type PanelFormat } from './format';
 import { isLocalAsset } from './server-assets';
 import { popupMenuOpen, showMenu, type MenuItem } from './popup-menu';
+import { usesGlisse } from './web-glass-mount';
 import { renderEditorDiagram } from './editor-diagrams';
 import { linkCards, linkFormAt, linkStyleSource, otherLinkStyles, refreshLinkCards, type LinkPreviewLoader, type NoteCardPreview } from './editor-link-cards';
 import { slashMenu, type SlashCommand } from './editor-slash-menu';
@@ -260,7 +261,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         };
       }],
     }) : [],
-    readOnly ? [] : tableContextMenu.of(({ x, y, bounds, cell, tableSelection }, commands, scope, restoreFocus) => {
+    readOnly ? [] : tableContextMenu.of(({ x, y, trigger, cell, tableSelection }, commands, scope, restoreFocus) => {
       const choice = commands.choices;
       if (choice) {
         const items = choice.options.map(value => ({
@@ -301,11 +302,14 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         : onMac ? invoke<boolean>('table_clipboard_has_text').then(cellItems, () => cellItems(false))
         : cellItems(typeof navigator.clipboard?.readText === 'function');
       const label = scope === 'row' ? '行选项' : scope === 'column' ? '列选项' : '表格操作';
-      const showWeb = () => showMenu(items, { label, at: { x, y }, onError: message => options.onError?.(message), restoreFocus }).then(() => {
+      const root = document.documentElement;
+      const glass = usesGlisse(root);
+      const position = glass && trigger ? trigger : { at: { x, y }, keyboard: trigger?.keyboard };
+      const showWeb = () => showMenu(items, { ...position, label, onError: message => options.onError?.(message), restoreFocus }).then(() => {
         if ((scope === 'row' || scope === 'column') && !popupMenuOpen()) restoreFocus();
       });
-      if (bounds && lineSections && '__TAURI_INTERNALS__' in window
-        && document.documentElement.hasAttribute('data-mobile') && !/Android/i.test(navigator.userAgent)) {
+      if (trigger && lineSections && !glass && root.hasAttribute('data-mobile')) {
+        const bounds = trigger.anchor.getBoundingClientRect();
         const viewport = window.visualViewport;
         const scale = viewport?.scale ?? 1;
         const frame = [(bounds.left - (viewport?.offsetLeft ?? 0)) * scale, (bounds.top - (viewport?.offsetTop ?? 0)) * scale,
@@ -371,7 +375,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
       },
     }),
     EditorView.updateListener.of(update => {
-      if (active && (update.selectionSet || update.docChanged)) options.selectionChanged?.();
+      if (active && (update.selectionSet || update.docChanged || update.focusChanged)) options.selectionChanged?.();
       if (!active || readOnly || !update.docChanged) return;
       captured = captured?.map(update.changes);
       if (update.view.compositionStarted || pending) {
@@ -398,7 +402,16 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         return true;
       },
       compositionend() { setTimeout(flush, 0); },
-      blur() { setTimeout(flush, 0); },
+      blur() {
+        setTimeout(() => {
+          // WebKit can lose compositionend on blur. Let CodeMirror finish reading the DOM before saving.
+          const input = view.contentDOM;
+          if (view.compositionStarted && !input.contains(input.ownerDocument.activeElement)) {
+            input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+          }
+          queueMicrotask(flush);
+        }, 0);
+      },
       contextmenu(event, editor) {
         if (!(event.target instanceof Element) || editor.compositionStarted) return false;
         const image = imageMenuTarget(event.target);

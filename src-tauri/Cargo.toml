@@ -1,6 +1,6 @@
 [package]
 name = "qingyu"
-version = "0.1.3"
+version = "0.1.4"
 description = "QingYu (轻羽), a focused Markdown editor"
 edition = "2021"
 default-run = "qingyu"

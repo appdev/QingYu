@@ -40,7 +40,7 @@ export type NoteMeta = Omit<Note, 'source' | 'updatedAt'>;
 export function noteMeta(note: NoteMeta): NoteMeta {
   return { id: note.id, folderId: note.folderId, createdAt: note.createdAt, ...(note.conflictOf ? { conflictOf: note.conflictOf } : {}),
     ...(note.title !== undefined ? { title: note.title } : {}), ...(note.pinned !== undefined ? { pinned: note.pinned } : {}), ...(note.trashed !== undefined ? { trashed: note.trashed } : {}), ...(note.filename ? { filename: note.filename } : {}),
-    ...(note.share ? { share: note.share } : {}) };
+    ...(note.share ? { share: note.share } : {}), ...(note.followTitle !== undefined ? { followTitle: note.followTitle } : {}) };
 }
 
 export class SyncFiles implements Adapter {

@@ -293,6 +293,19 @@ it('still unlocks v2 key files written before the NFC marker', async () => {
 });
 
 describe('full library mapping', () => {
+  it('syncs a confirmed first-line rename and its wiki links under the same note ID', async () => {
+    const [a, b] = await paired();
+    await a.book.save(a.book.current.source, 'note-a', undefined, true);
+    await a.book.save('[[标题|旧别名]]', 'note-b');
+    await a.book.save('# 🚗调试\n', 'note-a', undefined, true);
+    await sync(a.book);
+    await sync(b.book);
+    expect(b.book.data.notes.find(note => note.id === 'note-a')).toMatchObject({
+      title: '🚗调试', followTitle: '🚗调试', source: '# 🚗调试\n',
+    });
+    expect(b.book.data.notes.find(note => note.id === 'note-b')?.source).toBe('[[备忘录/🚗调试|旧别名]]');
+  });
+
   it('preserves names, pin and recoverable trash across mappings and sync', async () => {
     const [a, b] = await paired();
     await a.book.renameNote('note-a', '文件名称'); await a.book.togglePin('note-a'); await a.book.trashNote('note-a');

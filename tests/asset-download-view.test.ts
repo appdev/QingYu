@@ -8,10 +8,6 @@ import { openMediaViewer } from '../src/vendor/markra/editor/codemirror/media-vi
 import { mountNotePicture } from '../src/note-picture';
 
 vi.hoisted(() => { vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} })); });
-vi.mock('glassy-liquid', async importOriginal => ({
-  ...await importOriginal<typeof import('glassy-liquid')>(),
-  glass: vi.fn(),
-}));
 afterEach(() => { document.body.replaceChildren(); });
 
 const entry = { root: '/notes', path: 'b.webp', size: 2_300_000, hash: 'a'.repeat(64), mtime: 1 };

@@ -1,110 +1,147 @@
-import { attachPress, clamp, glass, supportsBackdropSvg } from 'glassy-liquid';
+import { createDrag, createIndicator, installPress } from '@fluidkit/core';
+import { mountWebGlass, usesGlisse } from './web-glass-mount';
+import './glass-toggle.css';
 
-export function glassToggle(input: HTMLInputElement) {
-  const track = document.createElement('span');
+export function mountTabIndicator(container: HTMLElement) {
+  const win = container.ownerDocument.defaultView;
+  if (!win?.matchMedia || typeof ResizeObserver !== 'function') return;
+  const thumb = container.ownerDocument.createElement('span');
+  thumb.className = 'tab-indicator';
+  thumb.ariaHidden = 'true';
+  container.prepend(thumb);
+  const unmount = usesGlisse(container) ? mountWebGlass(thumb, { tint: 88, blur: 3 }) : undefined;
+  const indicator = createIndicator({
+    container, indicator: thumb, items: 'button', trigger: 'press', focus: false,
+    click: container.getAttribute('aria-orientation') !== 'vertical',
+  });
+  let pending: HTMLButtonElement | undefined;
+  const shown = new ResizeObserver(() => { if (pending) select(pending); });
+  function select(button: HTMLButtonElement) {
+    if (!button.getClientRects().length) {
+      pending = button;
+      shown.observe(container);
+      return;
+    }
+    pending = undefined;
+    shown.disconnect();
+    indicator.update();
+    indicator.rest = button;
+    if (!container.hasAttribute('data-tab-indicator')) {
+      indicator.to(button, { instant: true });
+      container.dataset.tabIndicator = '';
+    }
+  }
+  return {
+    select,
+    destroy() { shown.disconnect(); indicator.destroy(); unmount?.(); thumb.remove(); delete container.dataset.tabIndicator; },
+  };
+}
+
+export function glassToggle(input: HTMLInputElement, track: HTMLElement = document.createElement('label')) {
+  // A label keeps native click and keyboard activation while Drag handles the hit area.
   track.className = 'glass-toggle';
   const thumb = document.createElement('span');
-  thumb.className = 'glass-toggle-thumb';
+  const web = usesGlisse(input);
+  thumb.className = web ? 'glass-toggle-thumb web-glass-knob' : 'glass-toggle-thumb lb qingyu-glass';
   thumb.ariaHidden = 'true';
   track.append(input, thumb);
-  let drag: { pointerId: number; start: number; travel: number; checked: boolean } | undefined;
-  let dragged = false;
+  const unmount = web ? mountWebGlass(thumb, { tint: 94, blur: 2 }) : undefined;
+  if (typeof ResizeObserver !== 'function' || typeof window.matchMedia !== 'function') {
+    return { element: track, destroy() { unmount?.(); } };
+  }
 
-  input.addEventListener('pointerdown', event => {
-    if (input.disabled || event.button !== 0 || !event.isPrimary) return;
-    drag = { pointerId: event.pointerId, start: event.clientX, travel: track.clientWidth - thumb.offsetWidth - 4, checked: input.checked };
-    dragged = false;
-    track.dataset.pressed = '';
-    input.setPointerCapture(event.pointerId);
+  const events = new AbortController();
+  let gesture: AbortController | undefined;
+  let released = false;
+  track.addEventListener('pointerdown', event => {
+    if (!event.isPrimary || event.button !== 0 || gesture) return;
+    drag.disabled = input.disabled;
+    if (input.disabled) return;
+    drag.snap(Number(input.checked), { instant: true });
+    released = false;
+    gesture = new AbortController();
+    const end = (endEvent: PointerEvent) => {
+      if (endEvent.pointerId !== event.pointerId) return;
+      released = endEvent.type === 'pointerup';
+      gesture?.abort();
+      gesture = undefined;
+    };
+    const options = { capture: true, signal: gesture.signal };
+    window.addEventListener('pointerup', end, options);
+    window.addEventListener('pointercancel', end, options);
+  }, { signal: events.signal });
+
+  const drag = createDrag({
+    element: thumb, handle: track, axis: 'x', rubberband: 0, deceleration: .99,
+    snaps: () => [0, Math.max(0, track.clientWidth - thumb.offsetWidth - 4)],
+    onEnd(snap) {
+      if (!released || input.disabled || snap === null || input.checked === (snap === 1)) return;
+      input.checked = snap === 1;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
   });
-  function dragPosition(pointer: NonNullable<typeof drag>, x: number) {
-    return clamp((pointer.checked ? 1 : 0) + (x - pointer.start) / Math.max(1, pointer.travel), 0, 1);
-  }
-  input.addEventListener('pointermove', event => {
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    if (!dragged && Math.abs(event.clientX - drag.start) < 5) return;
-    dragged = true;
-    track.toggleAttribute('data-dragging', true);
-    track.style.setProperty('--glass-toggle-x', `${dragPosition(drag, event.clientX) * drag.travel}px`);
-  });
-  function stopDrag() {
-    drag = undefined;
-    delete track.dataset.pressed;
-    delete track.dataset.dragging;
-    track.style.removeProperty('--glass-toggle-x');
-  }
-  input.addEventListener('pointerup', event => {
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const checked = dragPosition(drag, event.clientX) >= .5;
-    stopDrag();
-    if (!dragged || checked === input.checked) return;
-    input.checked = checked;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  input.addEventListener('lostpointercapture', event => {
-    if (drag?.pointerId !== event.pointerId) return;
-    stopDrag();
-    dragged = false;
-  });
-  // A drag commits on release. Cancel the native click's second toggle.
-  input.addEventListener('click', event => {
-    if (dragged && event.detail > 0) event.preventDefault();
-    dragged = false;
-  });
-  return track;
+  return { element: track, destroy() { gesture?.abort(); events.abort(); drag.destroy(); unmount?.(); } };
+}
+
+export function decorateGlisseToggle(input: HTMLInputElement) {
+  if (!usesGlisse(input)) return;
+  const track = document.createElement('span');
+  input.before(track);
+  return glassToggle(input, track);
+}
+
+function mountGlassSurface(element: HTMLElement) {
+  const surface = document.createElement('span');
+  const web = usesGlisse(element);
+  surface.className = web ? 'glass-control-surface web-glass-frost' : 'glass-control-surface lb qingyu-glass';
+  surface.ariaHidden = 'true';
+  element.prepend(surface);
+  if (web) mountWebGlass(surface, { tint: 62, blur: 8 });
+  else installPress(element.ownerDocument);
 }
 
 export function mountGlassButton(button: HTMLButtonElement) {
   button.classList.add('glass-button');
-  const surface = glass(button, { radius: 'capsule', blur: 8, fill: 'var(--glass-control-fill)', shadow: false });
-  attachPress(button, surface, { grow: -.04, stretch: false });
+  if (!usesGlisse(button)) button.classList.add('lb-swell');
+  mountGlassSurface(button);
 }
 
 export function mountGlassToolbar(toolbar: HTMLElement) {
   toolbar.classList.add('glass-toolbar');
-  const surface = glass(toolbar, {
-    radius: 'capsule', blur: supportsBackdropSvg() ? 8 : 16, specular: 0,
-    fill: 'var(--glass-control-fill)', shadow: false,
-  });
+  mountGlassSurface(toolbar);
+  const buttons = [...toolbar.querySelectorAll<HTMLButtonElement>('button')];
+  const editor = toolbar.classList.contains('actions');
+  if (!editor && !usesGlisse(toolbar)) for (const button of buttons) button.classList.add('lb-swell');
   const lens = document.createElement('span');
   lens.className = 'glass-toolbar-lens';
-  lens.ariaHidden = 'true';
-  lens.hidden = true;
   toolbar.append(lens);
-  const buttons = [...toolbar.querySelectorAll<HTMLButtonElement>('button')];
-  for (const button of buttons) attachPress(button, surface, { grow: -.04, stretch: false, glow: false });
-
+  lens.ariaHidden = 'true';
+  const indicator = createIndicator({
+    container: toolbar, indicator: lens, items: 'button:not(:disabled)',
+    trigger: editor ? 'press' : 'manual', click: false, focus: false,
+  });
+  const visible = (button: HTMLButtonElement) => !button.disabled && toolbar.contains(button) && Boolean(button.getClientRects().length);
   function updateLens() {
-    const active = buttons.find(button => button.id !== 'sidebar-button' && button.ariaExpanded === 'true'
-      && !button.disabled && toolbar.contains(button) && button.getClientRects().length);
-    const appearing = lens.hidden;
-    lens.toggleAttribute('hidden', !active);
-    if (!active) return;
-    // 从隐藏到出现时直接落在按钮上；只有在两个按钮之间切换时才滑过去。
-    if (appearing) lens.style.transition = 'none';
-    // 和 Pinto 一样画成按钮中间的一个圆，比按钮四周各小一圈。
-    const inset = parseFloat(getComputedStyle(toolbar).getPropertyValue('--glass-lens-inset')) || 0;
-    const size = Math.max(0, Math.min(active.offsetWidth, active.offsetHeight) - inset * 2);
-    Object.assign(lens.style, {
-      width: `${size}px`, height: `${size}px`,
-      translate: `${active.offsetLeft + (active.offsetWidth - size) / 2}px ${active.offsetTop + (active.offsetHeight - size) / 2}px`,
-    });
-    if (appearing) {
-      void lens.offsetWidth;
-      lens.style.removeProperty('transition');
+    indicator.update();
+    const active = buttons.find(button => button.id !== 'sidebar-button' && button.ariaExpanded === 'true' && visible(button));
+    if (editor) {
+      if (indicator.rest !== (active ?? null)) indicator.rest = active ?? null;
+    } else if (active !== indicator.current) {
+      indicator.to(active ?? null, { instant: !active || !indicator.current });
     }
   }
   new MutationObserver(updateLens).observe(toolbar, { subtree: true, attributes: true, attributeFilter: ['aria-expanded', 'hidden', 'disabled'] });
-  if (typeof ResizeObserver === 'function') new ResizeObserver(updateLens).observe(toolbar);
+  updateLens();
+
   toolbar.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    const visible = buttons.filter(button => toolbar.contains(button) && !button.disabled && button.getClientRects().length);
-    const index = visible.indexOf(event.target as HTMLButtonElement);
-    if (index < 0 || !visible.length) return;
+    const available = buttons.filter(visible);
+    const index = available.indexOf(event.target as HTMLButtonElement);
+    if (index < 0) return;
     event.preventDefault();
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1
-      : (index + (event.key === 'ArrowLeft' ? -1 : 1) + visible.length) % visible.length;
-    visible[next].focus();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1
+      : (index + (event.key === 'ArrowLeft' ? -1 : 1) + available.length) % available.length;
+    available[next].focus();
   });
 }

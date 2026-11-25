@@ -19,11 +19,6 @@ vi.mock('html2canvas', () => ({ default: async () => ({
     arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer,
   }),
 }) }));
-vi.mock('glassy-liquid', async importOriginal => ({
-  ...await importOriginal<typeof import('glassy-liquid')>(),
-  glass: vi.fn(),
-  getSurface: vi.fn(),
-}));
 const show = vi.fn(), hide = vi.fn(), report = vi.fn();
 beforeEach(() => {
   platform.native = false;

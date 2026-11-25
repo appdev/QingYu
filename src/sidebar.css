@@ -149,74 +149,59 @@ html[data-mobile] .context-submenu-chevron { width: 18px; height: 18px; }
 .note-context-menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 8px; }
 .note-context-menu.toolbar-context-menu {
   width: min(var(--toolbar-menu-width, calc(250 * var(--menu-unit))), calc(100vw - 16px)); min-width: 0; padding: 0;
-  border: 0; border-radius: calc(25 * var(--menu-unit)); outline: none; background: transparent; overflow: visible;
+  border: 0; border-radius: calc(25 * var(--menu-unit)); outline: none; overflow: visible;
+  background: revert-layer; box-shadow: revert-layer;
+  --lb-fill: var(--mobile-row); --lb-transparency: .74;
+  --fk-transition-duration: 120ms; --fk-transition-easing: var(--fk-interactive-easing);
+  transition-property: opacity, display;
 }
+.toolbar-context-menu > .toolbar-context-menu { position: absolute; }
 .note-context-menu.desktop-toolbar-menu {
   --toolbar-menu-width: 218px;
   border-radius: 12px;
 }
-.toolbar-context-menu {
-  --gl-solid: var(--mobile-row);
-  --toolbar-menu-glass-fill: color-mix(in srgb, var(--gl-solid) var(--toolbar-menu-opacity, 52%), transparent);
+@supports not (opacity: calc(pow(.5, 2))) {
+  .note-context-menu.toolbar-context-menu { background: var(--lb-fill); }
 }
-:root[data-theme=dark] .toolbar-context-menu { --toolbar-menu-opacity: 66%; }
-.toolbar-context-menu::before {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
-  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent); border-radius: inherit;
-  opacity: var(--toolbar-morph-opacity, 100%);
-}
-.toolbar-context-menu.desktop-toolbar-menu::before { border: 0; }
-:is(.toolbar-context-menu, .toolbar-glassy-menu) {
-  --glass-appearance: light;
-}
-:root[data-theme=dark] :is(.toolbar-context-menu, .toolbar-glassy-menu) { --glass-appearance: dark; }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .note-context-menu.toolbar-context-menu { --toolbar-menu-glass-fill: var(--gl-solid); }
-}
-@media (prefers-reduced-transparency: reduce) {
-  .note-context-menu.toolbar-context-menu { --toolbar-menu-glass-fill: var(--gl-solid); }
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-context-menu.fk-transition, .share-popover.fk-transition { transition: none; }
 }
 .toolbar-menu-items { max-height: inherit; overflow: auto; overscroll-behavior: contain; border-radius: inherit; padding: calc(8 * var(--menu-unit)) calc(12 * var(--menu-unit)); }
-.toolbar-context-menu[data-toolbar-morph] { overflow: clip; }
-.toolbar-context-menu[data-toolbar-morph] > .toolbar-menu-items { position: absolute; top: 0; right: 0; }
-.toolbar-menu-trigger-face { position: absolute; top: 0; right: 0; display: grid; place-items: center; pointer-events: none; color: var(--ink); }
 .toolbar-menu-items > button { padding-inline: calc(14 * var(--menu-unit)); gap: calc(14 * var(--menu-unit)); border-radius: calc(14 * var(--menu-unit)); font-size: calc(var(--toolbar-menu-font-size, 17) * var(--menu-unit)); text-align: start; }
-:is(.toolbar-context-menu, .toolbar-glassy-menu) {
+.toolbar-context-menu {
   --menu-unit: clamp(.8px, calc(100vw / 402), 1px);
   --menu-row-padding: 11;
   --menu-divider-size: 21;
   --menu-divider-margin: calc((var(--menu-divider-size) * var(--menu-unit) - 1px) / 2);
 }
 @media (min-width: 402px) {
-  :is(.toolbar-context-menu, .toolbar-glassy-menu) { --menu-unit: 1px; }
+  .toolbar-context-menu { --menu-unit: 1px; }
 }
 @media (min-width: 780px) {
   :is(html[data-web], html:has([data-mobile-wide])) .toolbar-context-menu:not(.desktop-toolbar-menu) { --toolbar-menu-width: 236px; --toolbar-menu-font-size: 16; --toolbar-menu-icon-size: 18; --toolbar-menu-icon-scale: 1; }
-  :is(html[data-web], html:has([data-mobile-wide])) :is(.toolbar-context-menu, .toolbar-glassy-menu) { --menu-unit: 1px; --menu-row-padding: 9; --menu-divider-size: 17; }
+  :is(html[data-web], html:has([data-mobile-wide])) .toolbar-context-menu { --menu-unit: 1px; --menu-row-padding: 9; --menu-divider-size: 17; }
 }
-html:not([data-web], [data-mobile]) :is(.toolbar-context-menu, .toolbar-glassy-menu) { --menu-unit: 1px; --menu-row-padding: 2; --menu-divider-size: 11; }
+html:not([data-web], [data-mobile]) .toolbar-context-menu { --menu-unit: 1px; --menu-row-padding: 2; --menu-divider-size: 11; }
 @media (min-width: 901px) {
-  html[data-web] :is(.toolbar-context-menu, .toolbar-glassy-menu) { --menu-unit: 1px; --menu-row-padding: 2; --menu-divider-size: 11; }
+  html[data-web] .toolbar-context-menu { --menu-unit: 1px; --menu-row-padding: 2; --menu-divider-size: 11; }
 }
-.toolbar-menu-items > button, .toolbar-glassy-menu > glass-menu-item { min-height: calc((20 + 2 * var(--menu-row-padding)) * var(--menu-unit)); padding-block: calc(var(--menu-row-padding) * var(--menu-unit)); line-height: calc(20 * var(--menu-unit)); }
-.toolbar-glassy-menu { --toolbar-menu-icon-size: 18; --toolbar-menu-icon-scale: 1; }
-.toolbar-glassy-menu > glass-menu-item { font-size: calc(17 * var(--menu-unit)); }
-.toolbar-glassy-menu > glass-menu-item > span:first-child { display: flex; align-items: center; gap: calc(14 * var(--menu-unit)); }
+.toolbar-menu-items > button { min-height: calc((20 + 2 * var(--menu-row-padding)) * var(--menu-unit)); padding-block: calc(var(--menu-row-padding) * var(--menu-unit)); line-height: calc(20 * var(--menu-unit)); }
 .toolbar-menu-items > button:disabled { opacity: .45; }
 @media (pointer: coarse) {
   .toolbar-menu-items > button:hover:not(:focus-visible) { background: transparent; }
 }
 /* Keep the icon's layout box within the line height, then enlarge its painted area. */
-:is(.toolbar-menu-items > button, .toolbar-glassy-menu > glass-menu-item) .context-action-icon { flex: none; width: calc(var(--toolbar-menu-icon-size, 20) * var(--menu-unit)); height: calc(var(--toolbar-menu-icon-size, 20) * var(--menu-unit)); scale: var(--toolbar-menu-icon-scale, 1.1); }
+.toolbar-menu-items > button .context-action-icon { flex: none; width: calc(var(--toolbar-menu-icon-size, 20) * var(--menu-unit)); height: calc(var(--toolbar-menu-icon-size, 20) * var(--menu-unit)); scale: var(--toolbar-menu-icon-scale, 1.1); }
 .toolbar-menu-items > button > span { flex: 1; }
 .toolbar-menu-items > button > kbd:empty { display: none; }
 .toolbar-menu-items > hr { height: 1px; border: 0; margin: var(--menu-divider-margin) var(--menu-divider-inset, calc(10 * var(--menu-unit))); background: var(--line); }
 .toolbar-menu-items > button.destructive { color: var(--toolbar-context-destructive); }
 /* 手机子菜单：盖在原菜单上，原菜单变淡；选中的勾放在行首。 */
 .toolbar-context-menu:has(> .toolbar-submenu) > .toolbar-menu-items { opacity: .35; transition: opacity .18s ease-out; }
-.note-context-menu.toolbar-submenu { z-index: 1; box-shadow: 0 12px 32px -6px var(--shadow-raised), 0 2px 6px -1px var(--shadow); animation: toolbar-submenu-in .22s cubic-bezier(.2, .8, .28, 1); }
-@keyframes toolbar-submenu-in { from { opacity: 0; transform: translateY(-6px) scale(.97); } }
-@media (prefers-reduced-motion: reduce) { .note-context-menu.toolbar-submenu { animation: none; } }
+.note-context-menu.toolbar-submenu { z-index: 1; box-shadow: 0 12px 32px -6px var(--shadow-raised), 0 2px 6px -1px var(--shadow); }
+@media (prefers-reduced-motion: reduce) {
+  .toolbar-context-menu:has(> .toolbar-submenu) > .toolbar-menu-items { transition: none; }
+}
 .toolbar-menu-items > .toolbar-submenu-header { font-weight: 600; }
 .toolbar-menu-items > .toolbar-submenu-header > .context-submenu-chevron { flex: none; margin-inline-start: auto; }
 .toolbar-menu-items > .context-check-leading { position: relative; padding-inline-start: calc(40 * var(--menu-unit)); }
@@ -228,17 +213,10 @@ html:not([data-web], [data-mobile]) :is(.toolbar-context-menu, .toolbar-glassy-m
 }
 .desktop-toolbar-menu { --menu-divider-inset: 8px; }
 .desktop-toolbar-menu .toolbar-menu-items { padding: 6px 8px; }
-.desktop-toolbar-menu :is(.toolbar-menu-items > button, glass-menu-item) { padding-inline: 8px; gap: 9px; border-radius: 5px; font-size: 13px; font-weight: 400; }
-.desktop-toolbar-menu > glass-menu-item > span:first-child { gap: 9px; }
-.desktop-toolbar-menu :is(.toolbar-menu-items > button, glass-menu-item) .context-action-icon { width: 14px; height: 14px; scale: none; stroke-width: 1.7; }
-/* The Web Component sets divider styles inline. */
-.toolbar-glassy-menu > glass-menu-separator {
-  margin: var(--menu-divider-margin) var(--menu-divider-inset, 14px) !important;
-  background: var(--line) !important;
-  opacity: 1 !important;
-}
+.desktop-toolbar-menu .toolbar-menu-items > button { padding-inline: 8px; gap: 9px; border-radius: 5px; font-size: 13px; font-weight: 400; }
+.desktop-toolbar-menu .toolbar-menu-items > button .context-action-icon { width: 14px; height: 14px; scale: none; stroke-width: 1.7; }
 body:has([data-toolbar-menu-root]) #app-shell[data-mobile-page]:not([data-mobile-wide]) .actions {
-  opacity: var(--toolbar-return-opacity, 0);
+  opacity: 0;
 }
 @media (max-width: 900px) {
   .library-resizer { display: none; }
@@ -595,25 +573,22 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
 #app-shell[data-mobile-page] .titlebar > #note-undo[hidden] { display: none; }
 #app-shell[data-mobile-page] .titlebar > #note-undo svg { width: 22px; height: 22px; }
 
-.glass-toolbar, .glass-button {
-  --glass-appearance: light; --gl-solid: var(--paper);
-  --glass-control-fill: color-mix(in srgb, var(--paper) 72%, transparent);
-}
-:root[data-theme=dark] :is(.glass-toolbar, .glass-button) { --glass-appearance: dark; }
 .glass-toolbar {
-  --glass-control-fill: color-mix(in srgb, var(--paper) 30%, transparent);
   position: relative; border-color: transparent; border-radius: 999px; background: transparent;
 }
+.glass-control-surface {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  --lb-fill: var(--paper); --lb-transparency: .83; --lb-depth: .2;
+}
+.glass-toolbar .lb-swell, .glass-button.lb-swell { --lb-swell: .96; }
 .note-context-menu.toolbar-context-menu {
-  box-shadow: 0 12px 32px -10px color-mix(in srgb, var(--shadow-raised) var(--toolbar-morph-opacity, 100%), transparent),
-    0 2px 6px -1px color-mix(in srgb, var(--shadow) var(--toolbar-morph-opacity, 100%), transparent);
+  box-shadow: 0 12px 32px -10px var(--shadow-raised), 0 2px 6px -1px var(--shadow);
 }
 /* Pinto 的工具栏阴影是中性灰并向四周扩展：下沿约 4%，两侧约 2.5%，向下约 30 px 淡出。 */
-.glass-toolbar { box-shadow: 0 8px 28px 8px color-mix(in srgb, var(--toolbar-shadow) var(--toolbar-morph-opacity, 100%), transparent); }
-:root[data-theme=dark] .glass-toolbar { --glass-control-fill: color-mix(in srgb, var(--mobile-row) 42%, transparent); }
-#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions.glass-toolbar {
-  --glass-control-fill: var(--toolbar-button-fill);
-  --gl-solid: var(--toolbar-button-fill);
+.glass-toolbar { box-shadow: 0 8px 28px 8px var(--toolbar-shadow); }
+:root[data-theme=dark] .glass-toolbar > .glass-control-surface { --lb-fill: var(--mobile-row); --lb-transparency: .67; }
+#app-shell[data-mobile-page]:not([data-mobile-wide]) .actions > .glass-control-surface {
+  --lb-fill: var(--toolbar-button-fill); --lb-transparency: 0;
 }
 .glass-toolbar .icon-button { z-index: 1; }
 .glass-toolbar .icon-button:hover, .glass-toolbar #format-button[aria-expanded='true'] { background: transparent; }
@@ -629,22 +604,25 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
   content: ''; position: absolute; inset: var(--glass-lens-inset); z-index: -1; border-radius: 50%;
   background: var(--glass-lens-fill); opacity: 0; transition: opacity .15s ease-out; pointer-events: none;
 }
-.glass-toolbar .icon-button:not(:disabled):is(:active, [data-pressed])::before,
+.glass-toolbar:not(.actions) .icon-button:not(:disabled):is(:active, [data-lb-pressed])::before,
 #app-shell:not([data-mobile-page]) .note-navigation .icon-button:not(:disabled):active::before { opacity: 1; transition-duration: .05s; }
 .glass-toolbar, .note-navigation { --glass-lens-inset: 4px; --glass-lens-fill: color-mix(in srgb, var(--ink) 11.5%, transparent); }
 :root[data-theme=dark] .glass-toolbar, :root[data-theme=dark] .note-navigation { --glass-lens-fill: color-mix(in srgb, var(--mode-light) 16%, transparent); }
-.glass-toolbar-lens {
-  position: absolute; inset: 0 auto auto 0; border-radius: 999px; pointer-events: none;
-  background: var(--glass-lens-fill);
-  transition: translate 230ms cubic-bezier(.2,.8,.3,1.12), width 180ms ease, height 180ms ease;
+.glass-toolbar-lens { container-type: size; }
+.glass-toolbar-lens::before {
+  content: ''; position: absolute; inset: var(--glass-lens-inset);
+  width: calc(100% - 2 * var(--glass-lens-inset));
+  width: calc(min(100cqw, 100cqh) - 2 * var(--glass-lens-inset));
+  aspect-ratio: 1; height: auto; margin: auto;
+  border-radius: 50%; background: var(--glass-lens-fill);
 }
 #app-shell[data-mobile-page] .mobile-library-tools #new-note-button.glass-button {
-  --glass-control-fill: var(--mobile-row);
-  background: var(--mobile-row);
+  background: transparent;
 }
-@media (prefers-reduced-motion: reduce) {
-  .glass-toolbar-lens { transition: none; }
+.glass-button > .glass-control-surface {
+  --lb-fill: var(--mobile-row); --lb-transparency: 0; --lb-depth: .25;
 }
+.glass-button > svg { position: relative; }
 #app-shell:not([data-mobile-page]) .notes-navigation,
 #app-shell[data-mobile-page] .mobile-library-tools #new-note-button:not(.glass-button) {
   border-radius: 999px;
@@ -760,7 +738,10 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
 
 /* 窄屏布局里这一行是整条导航栏，不显示胶囊玻璃。 */
 #app-shell[data-mobile-page] .notes-navigation.glass-toolbar { box-shadow: none; }
-#app-shell[data-mobile-page] .notes-navigation.glass-toolbar > gl-fx { display: none; }
+.notes-navigation.glass-toolbar > .glass-control-surface { display: none; }
+@media (min-width: 901px) {
+  #app-shell:not([data-mobile-page]) .notes-navigation.glass-toolbar > .glass-control-surface { display: block; }
+}
 
 @supports (backdrop-filter: url("#toolbar-glass-refraction")) {
   :root {

@@ -1,0 +1,182 @@
+/* @zakisheriff/liquid-glass — tokens and the core glass material */
+
+:where(:root, [data-theme='light']) {
+  --qlg-fg: rgb(0 0 0 / 0.88);
+  --qlg-fg-muted: rgb(60 60 67 / 0.62);
+  --qlg-fg-faint: rgb(60 60 67 / 0.3);
+  --qlg-accent: #0088ff;
+  --qlg-green: #34c759;
+  --qlg-red: #ff383c;
+
+  /* Regular glass: bars, buttons, fields */
+  --qlg-fill: rgb(255 255 255 / 0.66);
+  --qlg-fill-pressed: rgb(255 255 255 / 0.92);
+  --qlg-blur: 6px;
+  --qlg-saturate: 1.9;
+  --qlg-brightness: 1.04;
+  --qlg-edge: rgb(0 0 0 / 0.06);
+  --qlg-shadow: 0 8px 28px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.07);
+  --qlg-rim-opacity: 1;
+  --qlg-glow: rgb(255 255 255 / 0.55);
+
+  /* Clear glass: the lens that lifts out of selections and thumbs */
+  --qlg-lens-fill: rgb(255 255 255 / 0.1);
+  --qlg-lens-shadow: 0 10px 30px rgb(0 0 0 / 0.14), 0 2px 6px rgb(0 0 0 / 0.08);
+  --qlg-lens-edge: rgb(0 0 0 / 0.07);
+  --qlg-lens-ring: rgb(0 0 0 / 0.22);
+  /* A clear lens still needs a contour against a pale backdrop. */
+  --qlg-navigation-fill: rgb(255 255 255 / 0.48);
+  --qlg-selection-lens-fill: rgb(255 255 255 / 0.14);
+  --qlg-selection-lens-edge: rgb(45 48 53 / 0.28);
+  --qlg-selection-lens-bevel: inset 0 3px 7px rgb(45 48 53 / 0.1), inset 0 -1px 2px rgb(255 255 255 / 0.8);
+  --qlg-selection-lens-brightness: 1;
+  --qlg-switch-face-fade: 1;
+
+  /* Thick material: sheets, menus, cards */
+  --qlg-panel-fill: rgb(255 255 255 / 0.62);
+  --qlg-menu-fill: rgb(250 250 252 / 0.94);
+  --qlg-panel-blur: 28px;
+
+  --qlg-tab-selection: rgb(0 0 0 / 0.07);
+  --qlg-segment-selection: rgb(0 0 0 / 0.08);
+  --qlg-track: rgb(120 120 128 / 0.26);
+  --qlg-rail: rgb(120 120 128 / 0.2);
+  --qlg-block-well: rgb(120 120 128 / 0.24);
+  --qlg-block-lit: #ffffff;
+  --qlg-block-lit-fg: rgb(0 0 0 / 0.78);
+  --qlg-thumb: #ffffff;
+  --qlg-thumb-shadow: 0 3px 8px rgb(0 0 0 / 0.15), 0 1px 1px rgb(0 0 0 / 0.06), 0 0 0 0.5px rgb(0 0 0 / 0.04);
+  --qlg-scrim: rgb(0 0 0 / 0.18);
+  --qlg-ring: rgb(0 136 255 / 0.55);
+  --qlg-font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro', 'Inter', system-ui, sans-serif;
+}
+
+:where([data-theme='dark']) {
+  --qlg-fg: rgb(255 255 255 / 0.96);
+  --qlg-fg-muted: rgb(235 235 245 / 0.6);
+  --qlg-fg-faint: rgb(235 235 245 / 0.3);
+  --qlg-accent: #0091ff;
+  --qlg-green: #30d158;
+  --qlg-red: #ff4245;
+  --qlg-fill: rgb(44 44 48 / 0.5);
+  --qlg-fill-pressed: rgb(90 90 96 / 0.55);
+  --qlg-blur: 8px;
+  --qlg-saturate: 1.6;
+  --qlg-brightness: 0.96;
+  --qlg-edge: rgb(255 255 255 / 0.09);
+  --qlg-shadow: 0 8px 28px rgb(0 0 0 / 0.38), 0 1px 3px rgb(0 0 0 / 0.3);
+  --qlg-rim-opacity: 0.62;
+  --qlg-glow: rgb(255 255 255 / 0.16);
+  --qlg-lens-fill: rgb(28 28 30 / 0.3);
+  --qlg-lens-shadow: 0 10px 30px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3);
+  --qlg-lens-edge: rgb(255 255 255 / 0.12);
+  --qlg-lens-ring: rgb(255 255 255 / 0.3);
+  --qlg-navigation-fill: var(--qlg-fill);
+  --qlg-selection-lens-fill: rgb(255 255 255 / 0.09);
+  --qlg-selection-lens-edge: rgb(255 255 255 / 0.25);
+  --qlg-selection-lens-bevel: inset 0 0 0 transparent;
+  --qlg-selection-lens-brightness: 1.06;
+  --qlg-switch-face-fade: 0.92;
+  --qlg-panel-fill: rgb(30 30 33 / 0.62);
+  --qlg-menu-fill: rgb(38 38 42 / 0.94);
+  --qlg-tab-selection: rgb(0 0 0 / 0.36);
+  --qlg-segment-selection: rgb(255 255 255 / 0.14);
+  --qlg-track: rgb(120 120 128 / 0.44);
+  --qlg-rail: rgb(120 120 128 / 0.4);
+  --qlg-block-well: rgb(120 120 128 / 0.3);
+  --qlg-block-lit: #ffffff;
+  --qlg-block-lit-fg: rgb(0 0 0 / 0.78);
+  --qlg-thumb: #ffffff;
+  --qlg-thumb-shadow: 0 3px 8px rgb(0 0 0 / 0.3), 0 1px 1px rgb(0 0 0 / 0.16);
+  --qlg-scrim: rgb(0 0 0 / 0.4);
+  --qlg-ring: rgb(0 145 255 / 0.7);
+}
+
+/* ------------------------------------------------------------------ */
+/*  The material                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Pressable glass (usePress) never lets a link or image inside it be dragged
+   out; the press stretches the glass instead. */
+[data-qlg-press],
+[data-qlg-press] :is(a, img) {
+  -webkit-user-drag: none;
+}
+
+.qlg-glass {
+  position: relative;
+  box-sizing: border-box;
+  background-color: var(--qlg-glass-fill, var(--qlg-fill));
+  -webkit-backdrop-filter: blur(var(--qlg-glass-blur, var(--qlg-blur))) saturate(var(--qlg-saturate));
+  backdrop-filter: var(--qlg-filter, ) blur(var(--qlg-glass-blur, var(--qlg-blur))) saturate(var(--qlg-saturate))
+    brightness(var(--qlg-brightness));
+  box-shadow: var(--qlg-glass-shadow, var(--qlg-shadow)), inset 0 0 0 0.5px var(--qlg-edge);
+  transition: background-color 260ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Refraction is the costly part of glass: the backdrop is re-bent on every
+   frame it moves. It pauses while the page scrolls (blur and rim carry the
+   look in motion), off screen, and on resting surfaces of weak devices. */
+[data-qlg-refract] {
+  --qlg-filter: var(--qlg-refraction);
+}
+
+html[data-qlg-scrolling] [data-qlg-refract],
+[data-qlg-refract][data-qlg-offscreen],
+html[data-qlg-quality='low'] [data-qlg-refract='surface'] {
+  --qlg-filter: initial;
+}
+
+/* Baked specular rim: thin bright line, hottest on the diagonal corners. */
+.qlg-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: var(--qlg-rim, none);
+  background-size: 100% 100%;
+  opacity: var(--qlg-rim-opacity);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Light bloom under the finger. */
+.qlg-glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 85% 85% at var(--qlg-x, 50%) var(--qlg-y, 50%),
+    var(--qlg-glow),
+    transparent
+  );
+  opacity: 0;
+  transition: opacity 360ms ease;
+  z-index: 0;
+}
+
+.qlg-glass[data-pressed]::after {
+  opacity: 1;
+  transition-duration: 80ms;
+}
+
+.qlg-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .qlg-glass {
+    --qlg-fill: color-mix(in srgb, Canvas 92%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qlg-glass,
+  .qlg-glass::after {
+    transition-duration: 0.01ms !important;
+  }
+}

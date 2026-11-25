@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { Notebook, groupNotes, isShared, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
 import { noteText } from '../src/document-text';
 
-it('uses the first line for UUID-backed notes without overriding explicit file names', () => {
+it('uses the first line for all notes and falls back to the file name for empty notes', () => {
   const note = { filename: 'B72FA25E-A0C0-48C8-8B25-175B4C44D8E1.md', title: '无标题', source: '1\n\n正文' };
   expect(noteTitle(note)).toBe('1');
   expect(noteTitle({ ...note, source: '# 更新后的标题\n\n正文' })).toBe('更新后的标题');
   expect(noteTitle({ ...note, source: '' })).toBe('无标题');
-  expect(noteTitle({ ...note, filename: '自定义名称.md', title: '自定义名称' })).toBe('自定义名称');
-  expect(noteTitle({ ...note, filename: '无标题.md' })).toBe('无标题');
+  expect(noteTitle({ ...note, filename: '自定义名称.md', title: '自定义名称' })).toBe('1');
+  expect(noteTitle({ ...note, filename: '无标题.md' })).toBe('1');
 });
 
 function storage(initial: Record<string, string> = {}) {
@@ -125,16 +125,18 @@ describe('local notebook and legacy migration', () => {
 });
 
 describe('note context operations', () => {
-  it('renames independently of Markdown, finds the name and duplicates the exact latest source', async () => {
+  it('renames the first line, finds the new title and duplicates the exact latest source', async () => {
     const store = storage(), book = new Notebook(store, '# 原标题\r\n\r\n未修改正文\r\n');
-    const id = book.current.id, source = book.current.source, modified = book.current.updatedAt;
+    const id = book.current.id;
     await book.renameNote(id, '独立名称');
-    expect(book.current.source).toBe(source); expect(book.current.updatedAt).toBe(modified);
+    const source = book.current.source;
+    expect(source).toBe('# 独立名称\r\n\r\n未修改正文\r\n');
     expect(visibleNotes(book.data, null, '独立名称').map(note => note.id)).toEqual([id]);
     await book.save(source + '最新内容'); await book.duplicateNote(id);
-    expect(book.current.id).not.toBe(id); expect(noteTitle(book.current)).toBe('独立名称 Copy');
+    expect(book.current.id).not.toBe(id); expect(noteTitle(book.current)).toBe('独立名称');
+    expect(book.current.title).toBe('独立名称 Copy');
     expect(book.current.source).toBe(source + '最新内容');
-    await book.duplicateNote(id); expect(noteTitle(book.current)).toBe('独立名称 Copy 2');
+    await book.duplicateNote(id); expect(book.current.title).toBe('独立名称 Copy 2');
     expect(new Notebook(store, '').data).toEqual(book.data);
   });
   it('pins ahead of years and moves/trashes/restores without removing the last note or its bytes', async () => {
@@ -192,10 +194,10 @@ describe('sidebar document information', () => {
     const book = new Notebook(storage(), '# 笔记');
     const first = book.current;
     book.data.notes = [
-      { ...first, id: 'older', title: '项目 2', updatedAt: 100 },
-      { ...first, id: 'pinned', title: '项目 10', updatedAt: 100, pinned: true },
-      { ...first, id: 'recent', title: '项目 2', updatedAt: 200 },
-      { ...first, id: 'other', title: '项目 3', updatedAt: 300 },
+      { ...first, id: 'older', title: '旧文件名', source: '# 项目 2', updatedAt: 100 },
+      { ...first, id: 'pinned', source: '# 项目 10', updatedAt: 100, pinned: true },
+      { ...first, id: 'recent', source: '# 项目 2', updatedAt: 200 },
+      { ...first, id: 'other', source: '# 项目 3', updatedAt: 300 },
     ];
     const sorted = (reverse: boolean) => visibleNotes(book.data, null, '', false, { key: 'title', reverse, grouped: true }).map(note => note.id);
     expect(sorted(false)).toEqual(['pinned', 'recent', 'older', 'other']);

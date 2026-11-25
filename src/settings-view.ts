@@ -4,7 +4,8 @@ import { formatStorageBytes, libraryDailyChoices, libraryLocation, libraryStorag
 import { dailyFolderName, dailyTitle, dailyTitleStyles, type DailyNoteChoices } from './daily-note';
 import { createShortcutRecorder } from './shortcut-recorder';
 import { settingsSelect } from './settings-select';
-import { glassToggle } from './glass-controls';
+import { glassToggle, mountTabIndicator } from './glass-controls';
+import { usesGlisse } from './web-glass-mount';
 import { mobile, native, noteTextSizes, preferences, syncIntervals, type Preferences } from './preferences';
 import type { SyncClient } from './sync-session';
 import { defaultAssetDownload, hasS3Connection, s3Defaults, syncMode, type S3Settings, type SyncMode } from './sync-store';
@@ -103,6 +104,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
   function error(text: string) { message.textContent = localizeStatus(text); message.dataset.error = 'true'; }
   for (const button of root.querySelectorAll<HTMLButtonElement>('.settings-detail .settings-back, .settings-done, .settings-close')) button.onclick = close;
   const navigation = root.querySelector('nav')!;
+  let tabIndicator: ReturnType<typeof mountTabIndicator>;
   const search = root.querySelector<HTMLInputElement>('.settings-search input');
   const results = root.querySelector<HTMLElement>('.settings-search-results');
   const categoryGroup = navigation.querySelector('.settings-category-group');
@@ -199,6 +201,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     for (const tab of tabs) {
       const active = tab.dataset.section === tabSection;
       tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1;
+      if (active && !tab.hidden && navigation.contains(tab)) tabIndicator?.select(tab);
       if (active && focus && !tab.hidden) tab.focus();
     }
     return section;
@@ -316,6 +319,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     });
   }
   let rowId = 0;
+  const glassToggles: ReturnType<typeof glassToggle>[] = [];
   function row(section: SettingsSection, title: SettingLabel, detail: SettingLabel, control: HTMLElement, group = false) {
     const row = document.createElement('div'); row.className = `settings-row${group ? ' settings-group' : ''}`;
     const label = document.createElement('label'); label.className = 'settings-label';
@@ -324,7 +328,9 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     label.append(heading, description);
     const input = control.matches('input, select') ? control : control.querySelector('input, select');
     if (input) { input.id ||= `${description.id}-control`; label.htmlFor = input.id; input.setAttribute('aria-describedby', description.id); }
-    row.append(label, control instanceof HTMLInputElement && control.type === 'checkbox' ? glassToggle(control) : control);
+    const toggle = control instanceof HTMLInputElement && control.type === 'checkbox' ? glassToggle(control) : undefined;
+    if (toggle) glassToggles.push(toggle);
+    row.append(label, toggle?.element ?? control);
     pages.get(section)!.append(row); return row;
   }
   function setting(section: SettingsSection, key: keyof Preferences, title: SettingLabel, detail: SettingLabel, options?: [string | number, SettingLabel][], group = false) {
@@ -751,6 +757,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
   const sizeSlider = document.createElement('input'); sizeSlider.type = 'range'; sizeSlider.name = 'previewFontSize'; sizeSlider.step = '1';
   const sizeValue = document.createElement('span'); sizeValue.ariaHidden = 'true';
   const track = document.createElement('span'); track.className = 'appearance-size-track';
+  let glisseSlider: ReturnType<typeof import('./web-glass').renderGlisseSlider> | undefined;
   track.append(sizeSlider);
   track.insertAdjacentHTML('beforeend', `<span class="appearance-size-stops" aria-hidden="true">${'<i></i>'.repeat(noteTextSizes.length)}</span>`);
   function updateSize() {
@@ -759,6 +766,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     sizeSlider.value = String(index);
     track.style.setProperty('--size-progress', `${index * 100 / (noteTextSizes.length - 1)}%`);
     sizeValue.textContent = `${size} pt`; sizeSlider.setAttribute('aria-valuetext', sizeValue.textContent);
+    glisseSlider?.update();
   }
   if (!mobile) {
     const size = document.createElement('div'); size.className = 'appearance-size';
@@ -771,6 +779,14 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
       catch (e) { updateSize(); error(e instanceof Error ? e.message : '无法保存字号'); }
     };
     textGroup.append(row('appearance', ['settings.editor.bodyFontSize'], '', size));
+    if (usesGlisse(sizeSlider) && window.CanvasRenderingContext2D && window.ResizeObserver) {
+      void import('./web-glass').then(({ renderGlisseSlider }) => {
+        if (disposed) return;
+        const host = document.createElement('div'); host.className = 'appearance-glisse-slider';
+        track.append(host);
+        glisseSlider = renderGlisseSlider(host, sizeSlider);
+      });
+    }
   }
   const sample = document.createElement('div'); sample.className = 'appearance-text-sample'; sample.innerHTML = `<strong data-i18n="里斯本"></strong><p data-i18n="五月的里斯本，彩砖、电车和刚出炉的蛋挞。"></p>`;
   textGroup.append(sample); appearancePage.append(textGroup);
@@ -1223,6 +1239,6 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
   const nativeError = (event: Event) => error((event as CustomEvent<string>).detail);
   window.addEventListener('settings-error', nativeError);
   updateControls(); if (preferences.error) error(preferences.error);
-  if (!mobile) select('general');
-  return { select, loaded, destroy() { disposed = true; switchConfirmation?.close('cancel'); passwordDialog?.close(); accountPanel?.destroy(); for (const choice of choices) choice.destroy(); recorder?.destroy(); if (locationListener) window.removeEventListener('focus', locationListener); unsubscribe(); unsubscribeSync(); window.removeEventListener('ui-language-change', updateControls); window.removeEventListener('settings-error', nativeError); window.removeEventListener('focus', refreshOnFocus); root.removeEventListener('keydown', navigateHistory); root.replaceChildren(); } };
+  if (!mobile) { tabIndicator = mountTabIndicator(navigation); select('general'); }
+  return { select, loaded, destroy() { disposed = true; glisseSlider?.destroy(); switchConfirmation?.close('cancel'); passwordDialog?.close(); accountPanel?.destroy(); for (const choice of choices) choice.destroy(); for (const toggle of glassToggles) toggle.destroy(); tabIndicator?.destroy(); recorder?.destroy(); if (locationListener) window.removeEventListener('focus', locationListener); unsubscribe(); unsubscribeSync(); window.removeEventListener('ui-language-change', updateControls); window.removeEventListener('settings-error', nativeError); window.removeEventListener('focus', refreshOnFocus); root.removeEventListener('keydown', navigateHistory); root.replaceChildren(); } };
 }

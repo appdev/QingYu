@@ -33,6 +33,7 @@
 | Windows | 文件名含 `x64` 的 `-setup.exe` |
 | Linux | `.deb` 或 `.AppImage`，需要 WebKitGTK 4.1 |
 | Android | `arm64` 的 `.apk` |
+| 自托管 Web | Linux amd64 或 arm64 的 Docker 镜像 `.tar.gz`，见[导入方式](docs/api-service.md#docker-与远程访问) |
 
 > [!NOTE]
 > macOS 版暂未做 Apple 公证，第一次打开如果被拦截，请到「系统设置 → 隐私与安全性」里点「仍要打开」。Windows 安装包没有代码签名，可能会看到 SmartScreen 提示。

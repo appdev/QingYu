@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { Notebook, type Library } from '../src/notebook';
+import { Notebook, noteTitle, type Library } from '../src/notebook';
+import { SyncFiles } from '../src/sync-files';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const diskSeed: Library = { version: 1, activeId: 'disk', folders: [{ id: 'default', name: '备忘录', path: '' }], notes: [{ id: 'disk', folderId: 'default', source: '# 来自真实文件\r\n', title: '磁盘名称', filename: '磁盘名称.md', path: '磁盘名称.md', createdAt: 1, updatedAt: 1 }] };
@@ -23,6 +24,39 @@ beforeEach(() => {
 function fixture() { const storage = { getItem: () => null, setItem: vi.fn() }; return { storage, book: new Notebook(storage, '# 旧草稿') }; }
 
 describe('file-backed Notebook contract', () => {
+  it('follows the first line for new notes and defers the disk name until confirmation', async () => {
+    const { book } = fixture();
+    await book.openFiles();
+    await book.createNote('default');
+    const id = book.current.id;
+    expect(book.current.followTitle).toBeUndefined();
+    await book.save('# 磁盘名称\n', id);
+    expect(noteTitle(book.current)).toBe('磁盘名称');
+    expect(invoke).toHaveBeenLastCalledWith('library_save_note', expect.objectContaining({ noteId: id }));
+    await book.save('# 磁盘名称\n', id, undefined, true);
+    expect(book.current).toMatchObject({ id, title: '磁盘名称 2', followTitle: '磁盘名称' });
+    expect(new SyncFiles(book.data).toLibrary(id).notes.find(note => note.id === id)).toMatchObject({
+      title: '磁盘名称 2', followTitle: '磁盘名称', source: '# 磁盘名称\n',
+    });
+    await book.save('', id, undefined, true);
+    expect(book.current.title).toBe('磁盘名称 2');
+    await book.renameNote(id, '手动标题');
+    expect(noteTitle(book.current)).toBe('手动标题');
+    await book.save('# 再次修改\n', id, undefined, true);
+    expect(book.current.title).toBe('再次修改');
+  });
+
+  it('uses an imported note’s first line immediately and rewrites its links on confirmed rename', async () => {
+    const { book } = fixture();
+    disk.notes.push({ id: 'links', folderId: 'default', source: '[[磁盘名称#段落|有别名]]\n[文件](磁盘名称.md#part)\n`[[磁盘名称]]`', path: 'links.md', title: 'links', createdAt: 1, updatedAt: 1 });
+    await book.openFiles();
+    expect(noteTitle(book.current)).toBe('来自真实文件');
+    expect(book.current.title).toBe('磁盘名称');
+    await book.save(book.current.source, 'disk', undefined, true);
+    expect(book.current).toMatchObject({ id: 'disk', title: '来自真实文件', followTitle: '来自真实文件', source: '# 来自真实文件\r\n' });
+    expect(book.data.notes[1].source).toBe('[[备忘录/来自真实文件#段落|有别名]]\n[文件](%E6%9D%A5%E8%87%AA%E7%9C%9F%E5%AE%9E%E6%96%87%E4%BB%B6.md#part)\n`[[磁盘名称]]`');
+    expect(invoke).toHaveBeenLastCalledWith('library_commit', expect.objectContaining({ intent: 'title-edit' }));
+  });
   it('reads attachment bytes from the captured disk revision through either IPC encoding', async () => {
     const { book } = fixture();
     await book.openFiles();
@@ -94,13 +128,13 @@ describe('file-backed Notebook contract', () => {
     const { book, storage } = fixture(); await book.openFiles();
     expect(book.current.source).toBe('# 来自真实文件\r\n');
     await book.save('最新正文'); await book.renameNote('disk', '新文件名');
-    expect(disk.notes[0].source).toBe('最新正文'); expect(disk.notes[0].title).toBe('新文件名');
+    expect(disk.notes[0].source).toBe('新文件名'); expect(disk.notes[0].title).toBe('新文件名');
     expect(storage.setItem).not.toHaveBeenCalled();
   });
   it('serializes save before rename and binds delayed saves to their original note', async () => {
     const { book } = fixture(); await book.openFiles();
     await Promise.all([book.save('刚输入的内容', 'disk'), book.renameNote('disk', '新名称'), book.createNote('default')]);
-    expect(disk.notes.find(note => note.id === 'disk')).toMatchObject({ source: '刚输入的内容', title: '新名称' });
+    expect(disk.notes.find(note => note.id === 'disk')).toMatchObject({ source: '新名称', title: '新名称' });
     const active = book.current.id;
     await book.save('稍后提交到原文档', 'disk'); expect(book.current.id).toBe(active); expect(book.current.source).toBe('');
   });

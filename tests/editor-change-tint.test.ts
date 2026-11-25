@@ -39,7 +39,7 @@ it('tints outside changes until the next edit and restores the old text from the
     expect(root.querySelector('.cm-change-tint')?.textContent).toBe('藏红花');
     expect(root.querySelector('.cm-change-tint .cm-markra-task-checkbox')).toBeNull();
     const receipt = root.querySelector<HTMLElement>('.editor-change-receipt')!;
-    expect(receipt.querySelector('[role=status]')?.textContent).toBe('外部修改了 1 行');
+    expect(receipt.querySelector('[role=status]')?.textContent).toBe('外部修改了 1 行，已自动重载');
 
     receipt.querySelector('button')!.click();
     expect(view.state.doc.toString()).toBe(before);

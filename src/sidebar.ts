@@ -11,7 +11,7 @@ import { createNoteMenu } from './note-menu';
 import { createFolderMenu } from './folder-menu';
 import { folderRows } from './folder-tree';
 import { setupSidebarResize } from './sidebar-resize';
-import { dismissPopupMenu, showMenu } from './popup-menu';
+import { dismissPopupMenu, showMenu, type MenuOptions } from './popup-menu';
 import { ArrowUpDown, CalendarDays, Check, Folder as FolderIcon, FolderPlus, Inbox, Link as LinkIcon, Search, SquarePen, Trash2, X } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { formatLabel, translatedLabel, uiText } from './ui-language';
@@ -423,10 +423,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
         button.append(more);
       }
     }
-    button.onclick = async () => {
+    button.onclick = async event => {
       if (id && editingFolders()) {
-        const bounds = button.getBoundingClientRect();
-        await openFolderMenu(button, bounds.right - 180, bounds.bottom - 4);
+        await openFolderMenu(button, { anchor: button, keyboard: event.detail === 0 });
         return;
       }
       if (!await selectFolder(id, isTrash, true) || mobile) return;
@@ -484,10 +483,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
         const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-row-more';
         more.tabIndex = -1; more.ariaHidden = 'true'; more.title = translatedLabel('文件夹选项');
         more.innerHTML = '<svg viewBox="0 0 17 17" aria-hidden="true"><circle cx="8.5" cy="8.5" r="7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="5.1" cy="8.5" r="1.05" fill="currentColor"/><circle cx="8.5" cy="8.5" r="1.05" fill="currentColor"/><circle cx="11.9" cy="8.5" r="1.05" fill="currentColor"/></svg>';
-        more.onclick = async () => {
-          const bounds = more.getBoundingClientRect();
-          await openFolderMenu(row, bounds.left, bounds.bottom + 4);
-        };
+        more.onclick = event => openFolderMenu(row, { anchor: more, keyboard: event.detail === 0 });
         entry.append(more);
       }
       folders.append(entry);
@@ -586,14 +582,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
           if (mobile) { if (page !== 'folders') navigate('note'); return; }
           if (innerWidth <= 900 && layout.columns !== 'note') changeLayout('notes');
         };
-        row.oncontextmenu = async event => {
+        row.oncontextmenu = event => {
           event.preventDefault();
-          if (document.body.dataset.libraryBusy === 'true') return;
-          if (!await actions.save()) return;
-          if (!selectedNotes.has(note.id)) {
-            selectedNotes = new Set([note.id]); selectionAnchor = note.id; renderSelection();
-          }
-          void contextMenu(note.id, event.clientX, event.clientY);
+          void openNoteRowMenu(note.id, event.clientX, event.clientY, { preview: touchMenus.has(event) });
         };
         group.append(row);
       }
@@ -741,6 +732,14 @@ export function createSidebar(getBook: () => Notebook, actions: {
   $('#library-sidebar').addEventListener('pointerdown', event => {
     if (event.pointerType !== 'touch' && !(event.target as HTMLElement).closest('input') && (event.target as HTMLElement).closest('button')) event.preventDefault();
   });
+  const touchMenus = new WeakSet<Event>();
+  async function openNoteRowMenu(id: string, x: number, y: number, surface: { preview?: boolean; keyboard?: boolean }) {
+    if (document.body.dataset.libraryBusy === 'true' || !await actions.save()) return;
+    if (!selectedNotes.has(id)) {
+      selectedNotes = new Set([id]); selectionAnchor = id; renderSelection();
+    }
+    await contextMenu(id, x, y, surface);
+  }
   if (mobile) {
     let press: { pointerId: number; x: number; y: number; timer: number } | undefined;
     let held = false;
@@ -754,8 +753,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       const timer = window.setTimeout(() => {
         press = undefined;
         if (!row.isConnected) return;
-        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-        held = true;
+        row.dispatchEvent(new PointerEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: 'touch' }));
       }, 450);
       press = { pointerId, x, y, timer };
     }, true);
@@ -767,7 +765,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       const touch = Boolean(press) || 'pointerType' in event && event.pointerType === 'touch';
       cancelPress();
       if (held) { event.preventDefault(); event.stopImmediatePropagation(); }
-      if (touch) held = true;
+      if (touch) { touchMenus.add(event); held = true; }
     }, true);
     document.addEventListener('click', event => {
       if (held && event.detail) { held = false; event.preventDefault(); event.stopImmediatePropagation(); }
@@ -779,16 +777,16 @@ export function createSidebar(getBook: () => Notebook, actions: {
     event.preventDefault();
     if ((event.target as HTMLElement).closest('.sidebar-brand, .folder-toolbar')) return;
     const row = (event.target as HTMLElement).closest<HTMLElement>('.folder-row') ?? (event.target as HTMLElement).closest('.folder-entry')?.querySelector<HTMLElement>('.folder-row');
-    await openFolderMenu(row, event.clientX, event.clientY);
+    await openFolderMenu(row, { at: { x: event.clientX, y: event.clientY } }, touchMenus.has(event));
   };
-  async function openFolderMenu(row: HTMLElement | null | undefined, x: number, y: number) {
+  async function openFolderMenu(row: HTMLElement | null | undefined, position: Pick<MenuOptions, 'anchor' | 'at' | 'keyboard'>, preview = false) {
     if (getBook().external || editingFolders() && !row?.dataset.folderId) return;
     if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') return;
     const id = row?.dataset.folderId || null;
     if (!await folderMenu.finishRename() || !await actions.save()) return;
     const target = getBook().data.folders.find(folder => folder.id === id);
     const type = row?.dataset.trash === 'true' ? 'trash' : !target ? 'all' : target.id === 'default' || target.path === '' ? 'root' : 'folder';
-    await folderMenu.open(id, type, Boolean(row), x, y, editingFolders());
+    await folderMenu.open(id, type, Boolean(row), position, editingFolders(), preview);
   }
   $('#notes-pane').addEventListener('contextmenu', event => {
     if (!(event.target as HTMLElement).closest('input')) event.preventDefault();
@@ -817,7 +815,10 @@ export function createSidebar(getBook: () => Notebook, actions: {
       return;
     }
     if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
-      event.preventDefault(); const box = row.getBoundingClientRect(); row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box.left + 20, clientY: box.top + 20 })); return;
+      event.preventDefault();
+      const box = row.getBoundingClientRect();
+      void openFolderMenu(row, { at: { x: box.left + 20, y: box.top + 20 }, keyboard: true });
+      return;
     }
     const command = event.metaKey || event.ctrlKey;
     if (event.key === 'F6' && event.shiftKey || command && getBook().root && (event.altKey && event.key.toLowerCase() === 'r' || event.key.toLowerCase() === 'j' || event.shiftKey && event.key === 'Backspace')) {
@@ -838,7 +839,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       const row = document.activeElement?.closest<HTMLElement>('[data-note-id]');
       if (row) {
         event.preventDefault(); const box = row.getBoundingClientRect();
-        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box.left + 20, clientY: box.top + 20 }));
+        void openNoteRowMenu(row.dataset.noteId!, box.left + 20, box.top + 20, { keyboard: true });
       }
       return;
     }
@@ -896,6 +897,10 @@ export function createSidebar(getBook: () => Notebook, actions: {
   }
   refresh();
   return {
+    updateDraftTitle(note: Note) {
+      const title = list.querySelector(`[data-note-id="${CSS.escape(note.id)}"] .note-row-title`);
+      if (title) title.textContent = noteTitle(note) + (note.conflictOf ? '（冲突副本）' : '');
+    },
     refresh,
     searchAll(query: string) {
       folderId = null; trash = false; search.value = query;
@@ -912,7 +917,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       else if (innerWidth <= 900 && layout.columns !== 'note') changeLayout('notes');
       list.querySelector<HTMLElement>('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
     },
-    showCurrentMenu(x: number, y: number, keyboard: boolean) { const note = getBook().current; if (note) return contextMenu(note.id, x, y, { keyboard }); },
+    showCurrentMenu(anchor: HTMLButtonElement, keyboard: boolean) { const note = getBook().current; if (note) return contextMenu(note.id, 0, 0, { anchor, keyboard }); },
     moveCurrentNote() { const note = getBook().current; if (note) return contextMenu(note.id, 0, 0, 'move'); },
     revealCurrent() { folderId = null; trash = Boolean(getBook().current?.trashed); search.value = ''; refresh(); },
     /** 安卓返回键：搜索中先退出搜索。 */

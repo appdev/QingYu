@@ -117,6 +117,13 @@ export function previewPreferences() {
   return { dark: isDark(), theme: p.theme, font: fontCSS(p.previewFont), size: p.previewFontSize, width: p.previewWidth };
 }
 const appShell = document.querySelector<HTMLElement>('#app-shell');
+const inputRoot = document.documentElement;
+// WebKit can carry focus-visible from the editor to a control that a pointer opened.
+document.addEventListener('pointerdown', () => { inputRoot.dataset.pointerFocus = ''; }, true);
+document.addEventListener('keydown', () => { delete inputRoot.dataset.pointerFocus; }, true);
+document.addEventListener('click', event => {
+  if (event.isTrusted && event.detail === 0) delete inputRoot.dataset.pointerFocus;
+}, true);
 let viewingMedia = false;
 /** 把 #RRGGBB 的 base 和 over 按 amount 混合，用来算出半透明遮罩盖在页面上的颜色。 */
 export function mixHex(base: string, over: string, amount: number) {

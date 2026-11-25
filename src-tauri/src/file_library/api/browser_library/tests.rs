@@ -78,6 +78,33 @@ async fn load(app: &Router, cookie: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn browser_title_edit_checks_the_library_version_before_renaming_and_rewriting_links() {
+    let (dir, _, app) = fixture();
+    let cookie = login(&app).await;
+    let note = Uuid::new_v4().to_string();
+    let link = Uuid::new_v4().to_string();
+    let first = json_call(&app, &cookie, json!({
+        "kind":"createNote","id":note,"folderId":"default","title":"Old","source":"# Old"
+    })).await;
+    let second = json_call(&app, &cookie, json!({
+        "kind":"createNote","id":link,"folderId":"default","title":"Links","source":"[[Old]]"
+    })).await;
+    let edit = |version: &serde_json::Value| json!({
+        "kind":"editTitle","id":note,"version":version,"title":"New","followTitle":"New",
+        "edits":[{"id":note,"source":"# New"},{"id":link,"source":"[[New]]"}]
+    });
+    let rejected = call(&app, "POST", "/api/web/commands", &cookie, edit(&first["version"])).await;
+    assert_eq!(rejected.0, StatusCode::PRECONDITION_FAILED);
+    let root = dir.path().join("notes");
+    assert_eq!(fs::read_to_string(root.join("Old.md")).unwrap(), "# Old");
+    assert_eq!(fs::read_to_string(root.join("Links.md")).unwrap(), "[[Old]]");
+    json_call(&app, &cookie, edit(&second["version"])).await;
+    assert!(!root.join("Old.md").exists());
+    assert_eq!(fs::read_to_string(root.join("New.md")).unwrap(), "# New");
+    assert_eq!(fs::read_to_string(root.join("Links.md")).unwrap(), "[[New]]");
+}
+
+#[tokio::test]
 async fn browser_history_restores_the_saved_source_and_rejects_stale_writes() {
     let (dir, _, app) = fixture();
     let cookie = login(&app).await;

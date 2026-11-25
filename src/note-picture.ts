@@ -9,6 +9,7 @@ import { themePalette } from './themes';
 import { readWikiLink } from './vendor/markra/editor/codemirror/wiki-link';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { mountFeaturePanel, openFeaturePanel } from './feature-panel';
+import { decorateGlisseToggle, mountTabIndicator } from './glass-controls';
 import './note-picture.css';
 
 export type PictureRange = { from: number; to: number };
@@ -115,9 +116,36 @@ async function pictureContent(text: string, startsAtTitle: boolean, { image, pre
   return fragment;
 }
 
-async function renderPicture(request: PictureRequest, look: Look) {
+// 导出图按 5 倍绘制；预览只显示在几百像素的区域里，3 倍已经足够清晰。
+const pictureScale = 5, previewScale = 3;
+type PictureSource = { passage: ReturnType<typeof picturePassage>; prefix: string; fragment: DocumentFragment };
+
+function encodePNG(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob(result => result ? resolve(result) : reject(new Error('无法生成 PNG')), 'image/png'));
+}
+
+function shrinkCanvas(canvas: HTMLCanvasElement) {
+  if (!canvas.width || !canvas.height) return canvas;
+  const small = document.createElement('canvas');
+  small.width = Math.round(canvas.width * previewScale / pictureScale);
+  small.height = Math.round(canvas.height * previewScale / pictureScale);
+  const context = small.getContext('2d');
+  if (!context) return canvas;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(canvas, 0, 0, small.width, small.height);
+  return small;
+}
+
+// 正文和附件图片只读一次，切换背景、深浅色或标记时直接复用。
+async function pictureSource(request: PictureRequest): Promise<PictureSource | undefined> {
   const passage = picturePassage(request.source, request.selection);
   if (!passage.text) return undefined;
+  const prefix = passage.text.slice(0, 24_000);
+  return { passage, prefix, fragment: await pictureContent(prefix, passage.startsAtTitle, request) };
+}
+
+async function renderPicture(source: PictureSource, look: Look) {
+  const { passage, prefix } = source;
   const { default: html2canvas } = await import('html2canvas');
   const prefs = previewPreferences(), colors = themePalette(prefs.theme, look.dark);
   const scene = document.createElement('div'); scene.className = 'note-picture-scene'; scene.setAttribute('aria-hidden', 'true');
@@ -128,8 +156,7 @@ async function renderPicture(request: PictureRequest, look: Look) {
   card.style.cssText = `background:${colors.paper};color:${colors.ink};--picture-page:${colors.paper};--picture-link:${colors.link};--picture-soft:${colors.sand};--picture-rule:${colors.line};--picture-code:${colors.code};--picture-mark:${colors.brand};--picture-muted:${colors.muted}`;
   card.style.fontFamily = prefs.font;
   const body = document.createElement('article'); body.className = 'note-picture-content';
-  const prefix = passage.text.slice(0, 24_000);
-  body.append(await pictureContent(prefix, passage.startsAtTitle, request)); card.append(body);
+  body.append(source.fragment.cloneNode(true)); card.append(body);
   if (look.mark) {
     const mark = document.createElement('div'); mark.className = 'note-picture-mark'; mark.textContent = translatedLabel('轻羽 QingYu'); card.append(mark);
   }
@@ -149,13 +176,20 @@ async function renderPicture(request: PictureRequest, look: Look) {
     const fades = body.scrollHeight > maxBody || prefix.length < passage.text.length;
     if (fades) { body.style.maxHeight = `${maxBody}px`; body.classList.add('note-picture-fades'); }
     scene.style.height = `${Math.max(360, Math.min(600, card.offsetHeight + 80))}px`;
-    const canvas = await html2canvas(scene, { scale: 5, backgroundColor: null, imageTimeout: 3000, logging: false });
-    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(result => result ? resolve(result) : reject(new Error('无法生成 PNG'))));
-    return { blob, fades, selected: passage.isSelection };
+    // html2canvas 默认克隆整个页面，还要等页面里所有图片加载完；这里只留样式和图片场景。
+    const ignoreElements = (element: Element) => element !== scene && !scene.contains(element) && !element.contains(scene)
+      && document.body.contains(element) && element.tagName !== 'STYLE' && element.tagName !== 'LINK';
+    const canvas = await html2canvas(scene, { scale: pictureScale, backgroundColor: null, imageTimeout: 3000, logging: false, ignoreElements });
+    const preview = await encodePNG(shrinkCanvas(canvas));
+    let png: Promise<Blob> | undefined;
+    const full = () => png ??= encodePNG(canvas).catch(error => { png = undefined; throw error; });
+    return { preview, png: full, fades, selected: passage.isSelection };
   } finally { scene.remove(); }
 }
 
 export function mountNotePicture(root: HTMLElement, request: PictureRequest, detailed = false, closeMacDialog?: () => void) {
+  let indicator: ReturnType<typeof mountTabIndicator>;
+  let markToggle: ReturnType<typeof decorateGlisseToggle>;
   const look = lookFromDevice();
   const area = document.createElement('div'); area.className = detailed ? 'note-picture note-picture-detailed' : 'note-picture';
   if (closeMacDialog) area.classList.add('note-picture-macos');
@@ -182,13 +216,19 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     const mode = document.createElement('div'); mode.role = 'group'; mode.ariaLabel = translatedLabel('图片外观'); mode.className = 'note-picture-mode';
     const light = document.createElement('button'), dark = document.createElement('button');
     light.type = dark.type = 'button'; light.textContent = translatedLabel('settings.theme.light'); dark.textContent = translatedLabel('settings.theme.dark');
-    const updateMode = () => { light.ariaPressed = String(!look.dark); dark.ariaPressed = String(look.dark); };
+    const updateMode = () => {
+      light.ariaPressed = String(!look.dark); dark.ariaPressed = String(look.dark);
+      indicator?.select(look.dark ? dark : light);
+    };
     light.onclick = () => { look.dark = false; updateMode(); void draw(); }; dark.onclick = () => { look.dark = true; updateMode(); void draw(); };
     updateMode(); mode.append(light, dark);
     const mark = document.createElement('label'), toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = look.mark;
     if (!closeMacDialog) toggle.role = 'switch';
     toggle.onchange = () => { look.mark = toggle.checked; saveLook(); void draw(); }; mark.append(toggle, ' 轻羽标记');
+    markToggle = decorateGlisseToggle(toggle);
     options.append(mode, mark); content.append(options);
+    indicator = mountTabIndicator(mode);
+    updateMode();
   }
   if (detailed && !closeMacDialog) content.append(status);
   const buttons = document.createElement('div'); buttons.className = 'note-picture-actions';
@@ -202,7 +242,9 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
   const isMac = native && document.documentElement.dataset.platform === 'macos';
   const nativeImageShare = native && isMobile;
   const filename = pictureFilename(request.title);
-  let result: Awaited<ReturnType<typeof renderPicture>>, imageURL = '', generation = 0;
+  let result: Awaited<ReturnType<typeof renderPicture>>, imageURL = '', downloadURL = '', generation = 0;
+  let source: Promise<PictureSource | undefined> | undefined, rendering: Promise<void> = Promise.resolve();
+  const readSource = () => source ??= pictureSource(request).catch(error => { source = undefined; throw error; });
   // 原生手机通过系统分享存图；浏览器可直接下载。
   const actionOrder = !detailed || closeMacDialog ? ['copy', 'save', 'share'] as const
     : nativeImageShare ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const;
@@ -222,16 +264,22 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     if (action === 'copy' && !native && (!navigator.clipboard?.write || typeof ClipboardItem !== 'function')) button.hidden = true;
     button.onclick = async () => {
       if (!result) return;
-      const blob = result.blob;
+      const current = result;
       try {
         if (isMac || nativeImageShare && action === 'share' || native && action === 'save' && !isMobile) {
           const { x, y, width, height } = button.getBoundingClientRect();
+          const blob = await current.png();
           const completed = await invoke<boolean>('note_picture_action', { action, filename, png: Array.from(new Uint8Array(await blob.arrayBuffer())), anchor: { x, y, width, height } });
           if (!completed) return;
-        } else if (action === 'copy') await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-        else if (action === 'share') await navigator.share({ files: [new File([blob], filename, { type: 'image/png' })] });
+        } else if (action === 'copy') {
+          // 剪贴板接受 Promise，PNG 还没编码完也不会丢掉这次点击的授权。
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': current.png() })]);
+        } else if (action === 'share') await navigator.share({ files: [new File([await current.png()], filename, { type: 'image/png' })] });
         else {
-          const link = document.createElement('a'); link.href = imageURL; link.download = filename; link.click();
+          const blob = await current.png();
+          if (current !== result) return;
+          downloadURL ||= URL.createObjectURL(blob);
+          const link = document.createElement('a'); link.href = downloadURL; link.download = filename; link.click();
         }
         if (action !== 'share') { label.data = action === 'copy' ? '已复制' : '已保存'; setTimeout(() => { label.data = title; }, 1500); }
       } catch (err) { if (!(err instanceof DOMException && err.name === 'AbortError')) status.textContent = translatedLabel('操作未完成，请重试。'); }
@@ -242,15 +290,21 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
   area.append(content, buttons); root.append(area);
   async function draw() {
     const version = ++generation;
-    if (!closeMacDialog || !result) {
-      actions.forEach(button => { button.disabled = true; });
-      status.textContent = translatedLabel('正在生成图片…');
-    }
+    // 重绘期间保留当前预览、提示和按钮，新图出来后再整体替换，面板不会跳动。
     for (const { scene, button } of swatches) button.ariaPressed = String(scene === look.scene);
-    const next = await renderPicture(request, { ...look }).catch(() => null);
+    // 一次只跑一个 html2canvas；连续点击时，排队期间被新请求取代的就直接跳过。
+    const previous = rendering;
+    let finish!: () => void;
+    rendering = new Promise(resolve => { finish = resolve; });
+    let next: Awaited<ReturnType<typeof renderPicture>> | null | undefined;
+    try {
+      await previous;
+      if (version !== generation || !area.isConnected) return;
+      next = await readSource().then(content => content && renderPicture(content, { ...look })).catch(() => null);
+    } finally { finish(); }
     if (version !== generation || !area.isConnected) return;
     if (!next) { status.textContent = next === null ? translatedLabel('无法生成图片。') : translatedLabel('没有可分享的内容。'); return; }
-    const nextURL = URL.createObjectURL(next.blob);
+    const nextURL = URL.createObjectURL(next.preview);
     if (closeMacDialog) {
       const image = new Image();
       image.className = preview.className;
@@ -270,12 +324,20 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     }
     result = next;
     if (imageURL) URL.revokeObjectURL(imageURL);
-    imageURL = nextURL;
+    if (downloadURL) URL.revokeObjectURL(downloadURL);
+    imageURL = nextURL; downloadURL = '';
     status.textContent = next.fades ? (next.selected ? '选区过长，图片末尾会淡出。可缩小选区以显示全部。' : '笔记过长，图片末尾会淡出。可选择一段内容再分享。') : '';
     actions.forEach(button => { button.disabled = false; });
+    // 预览先出来，完整 PNG 随后在后台编码，用户点按钮时通常已经准备好。
+    setTimeout(() => { if (result === next) void next.png().catch(() => {}); });
   }
   void draw();
-  return () => { generation++; if (imageURL) URL.revokeObjectURL(imageURL); area.remove(); };
+  return () => {
+    generation++; indicator?.destroy(); markToggle?.destroy();
+    if (imageURL) URL.revokeObjectURL(imageURL);
+    if (downloadURL) URL.revokeObjectURL(downloadURL);
+    area.remove();
+  };
 }
 
 export function showNotePicture(request: PictureRequest, restoreFocus: () => void) {
@@ -283,7 +345,7 @@ export function showNotePicture(request: PictureRequest, restoreFocus: () => voi
   const macDialog = native && html.dataset.platform === 'macos' && !html.hasAttribute('data-mobile');
   return openFeaturePanel({
     title: translatedLabel('分享为图片'),
-    className: macDialog ? 'note-picture-macos-dialog' : undefined,
+    className: macDialog ? 'note-picture-macos-dialog' : 'note-picture-dialog',
     mount: (dialog, close) => ({
       dispose: macDialog
         ? mountNotePicture(dialog, request, true, close)

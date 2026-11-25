@@ -1,5 +1,4 @@
-import { glass } from "glassy-liquid";
-
+import { mountWebGlass, usesGlisse } from '../../../../web-glass-mount';
 const svgNamespace = "http://www.w3.org/2000/svg";
 
 type MediaViewerIconName =
@@ -374,12 +373,14 @@ export function openMediaViewer({
     }
     handle.close();
   };
+  let unmountGlass: (() => void) | undefined;
   const handle: MediaViewerHandle = {
     close(options = {}) {
       if (closed) return;
       closed = true;
       cleanImage?.();
       document.removeEventListener("keydown", onKeyDown, true);
+      unmountGlass?.();
       dialog.remove();
       for (const element of blocked) element.removeAttribute("inert");
       document.dispatchEvent(new CustomEvent("media-viewer-toggle", { detail: false }));
@@ -546,11 +547,10 @@ export function openMediaViewer({
   // 查看期间页面其余部分不可交互：编辑器拿不到焦点，按键和输入法都不会改到下面选中的图片。
   const blocked = [...mount.children].filter(element => element !== dialog && !element.hasAttribute("inert"));
   for (const element of blocked) element.setAttribute("inert", "");
-  // 浮在图片下方的深色玻璃工具条，与编辑器工具栏同一个玻璃组件。
-  glass(toolbar, {
-    radius: "capsule", appearance: "dark", blur: 16, specular: 0, shadow: false,
-    fill: "var(--viewer-glass-fill)",
-  });
+  if (usesGlisse(toolbar)) {
+    toolbar.classList.add("web-glass-frost");
+    unmountGlass = mountWebGlass(toolbar, { tint: 76, blur: 9 });
+  } else toolbar.classList.add("lb", "qingyu-glass");
   activeMediaViewers.set(document, handle);
   // 手机上原生窗口在系统栏后面露出背景色，打开期间让它跟着变暗（preferences.ts）。
   document.dispatchEvent(new CustomEvent("media-viewer-toggle", { detail: true }));

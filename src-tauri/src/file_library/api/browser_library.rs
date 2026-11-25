@@ -188,6 +188,13 @@ enum Command {
         title: String,
         source: String,
     },
+    EditTitle {
+        version: String,
+        id: String,
+        title: Option<String>,
+        follow_title: Option<String>,
+        edits: Vec<TitleSource>,
+    },
     UpdateNote {
         id: String,
         version: String,
@@ -237,6 +244,13 @@ enum Command {
     },
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TitleSource {
+    id: String,
+    source: String,
+}
+
 fn library_changed(store: &DiskLibrary, version: &str) -> ApiResult<()> {
     if version != library_version(store)? {
         return Err(ApiError(
@@ -250,7 +264,11 @@ fn library_changed(store: &DiskLibrary, version: &str) -> ApiResult<()> {
 
 /// 带上笔记库给出的原因，网页和 App 显示同样的提示
 fn library_error(error: impl std::fmt::Display) -> ApiError {
-    ApiError(StatusCode::CONFLICT, "library_conflict", error.to_string().into())
+    ApiError(
+        StatusCode::CONFLICT,
+        "library_conflict",
+        error.to_string().into(),
+    )
 }
 
 fn versioned_note<'a>(store: &'a DiskLibrary, id: &str, version: &str) -> ApiResult<&'a Note> {
@@ -318,8 +336,41 @@ async fn change(
                     read_only: false,
                     filename: None,
                     share: None,
+                    follow_title: None,
                 });
                 commit(store, next, "create")?;
+            }
+            Command::EditTitle {
+                version,
+                id,
+                title,
+                follow_title,
+                edits,
+            } => {
+                library_changed(store, &version)?;
+                let mut next = store.data.clone();
+                let note = next
+                    .notes
+                    .iter_mut()
+                    .find(|note| note.id == id && !note.trashed)
+                    .ok_or_else(ApiError::not_found)?;
+                validate_input(title.as_deref(), &note.source)?;
+                if note.read_only {
+                    return Err(ApiError::bad_request("This note is read-only"));
+                }
+                note.title = title;
+                note.follow_title = follow_title;
+                for edit in edits {
+                    let note = next
+                        .notes
+                        .iter_mut()
+                        .find(|note| note.id == edit.id && !note.trashed)
+                        .ok_or_else(ApiError::not_found)?;
+                    validate_input(None, &edit.source)?;
+                    note.source = edit.source;
+                    note.updated_at = now();
+                }
+                commit(store, next, "title-edit")?;
             }
             Command::UpdateNote {
                 id,
@@ -375,6 +426,7 @@ async fn change(
                     filename: None,
                     read_only: false,
                     share: None,
+                    follow_title: None,
                 });
                 commit(store, next, &format!("duplicate:{id}"))?;
             }

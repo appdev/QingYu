@@ -466,6 +466,7 @@ async fn create(
             read_only: false,
             filename: None,
             share: None,
+            follow_title: None,
         });
         commit(store, next, "create")?;
         let mut response = document(find_note(store, &id)?, StatusCode::CREATED)?;

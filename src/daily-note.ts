@@ -58,10 +58,11 @@ export function findDailyNote(data: Library, settings: DailyNoteSettings, now: D
   const day = dailyDateKey(now);
   const live = data.notes.filter(note => !note.trashed && !note.readOnly).sort((a, b) => a.createdAt - b.createdAt);
   const inFolder = live.filter(note => note.folderId === folder?.id);
-  const named = live.filter(note => titles.includes(noteTitle(note)));
+  const named = live.filter(note => titles.includes(note.title ?? '') || titles.includes(noteTitle(note)));
   const note = inFolder.find(note => dailyDateKey(new Date(note.createdAt)) === day) ??
     named.find(note => note.folderId === folder?.id) ??
-    named.find(note => live.every(other => other.folderId !== note.folderId || looksDated(noteTitle(other), now, locale)));
+    named.find(note => live.every(other => other.folderId !== note.folderId
+      || looksDated(other.title ?? '', now, locale) || looksDated(noteTitle(other), now, locale)));
   return { folder, note };
 }
 

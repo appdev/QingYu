@@ -119,11 +119,13 @@ export function createTableControl(
   return button;
 }
 
+export type TableMenuTrigger = { anchor: HTMLButtonElement; keyboard: boolean };
+
 export function createCellTableControls(
   wrapper: HTMLElement,
   table: HTMLTableElement,
   activeCell: () => HTMLTableCellElement | null,
-  showMenu: (cell: HTMLTableCellElement, x: number, y: number, scope: "row" | "column", bounds: DOMRectReadOnly) => void,
+  showMenu: (cell: HTMLTableCellElement, x: number, y: number, scope: "row" | "column", trigger: TableMenuTrigger) => void,
   addRow: () => void,
   addColumn: () => void,
 ) {
@@ -139,6 +141,7 @@ export function createCellTableControls(
       const cell = activeCell();
       if (!cell) return;
       let picked = scope;
+      let anchor = button;
       let bounds = button.getBoundingClientRect();
       if (event.detail && document.documentElement.hasAttribute("data-mobile")) {
         const other = scope === "row" ? columnHandle : rowHandle;
@@ -151,11 +154,12 @@ export function createCellTableControls(
           };
           if (distance(other.firstElementChild!) < distance(dots)) {
             picked = scope === "row" ? "column" : "row";
+            anchor = other;
             bounds = otherBounds;
           }
         }
       }
-      showMenu(cell, bounds.left, bounds.bottom + 4, picked, bounds);
+      showMenu(cell, bounds.left, bounds.bottom + 4, picked, { anchor, keyboard: event.detail === 0 });
     }, dots);
     button.ariaHasPopup = "menu";
     button.ariaPressed = "false";

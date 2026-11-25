@@ -103,6 +103,17 @@ cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
 
 ## Docker 与远程访问
 
+从 [GitHub Releases](https://github.com/appdev/QingYu/releases/latest) 下载与主机架构相符的 `docker_linux_amd64.tar.gz` 或 `docker_linux_arm64.tar.gz`，导入后使用 `qingyu-api:<版本>` 启动。先在环境中设置 `QINGYU_WEB_PASSWORD`，再运行以下命令。示例使用 0.1.4 的 amd64 镜像。
+
+```sh
+docker load -i QingYu_0.1.4_docker_linux_amd64.tar.gz
+docker run -d --name qingyu-api --restart unless-stopped \
+  -p 127.0.0.1:8787:8787 -e QINGYU_WEB_PASSWORD \
+  -v qingyu-notes:/data -v qingyu-config:/config qingyu-api:0.1.4
+```
+
+从源码构建并运行纯 API 服务：
+
 ```sh
 docker build -f Dockerfile.api -t qingyu-api .
 docker volume create qingyu-notes

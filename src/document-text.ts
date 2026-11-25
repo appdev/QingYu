@@ -32,6 +32,28 @@ export function noteText(source: string, untitled = '未命名') {
   return { title: title || untitled, summary: summary || '无更多文本' };
 }
 
+export function firstTitleLineEnd(source: string) {
+  const { body } = markdownBody(source);
+  for (const match of body.matchAll(/[^\r\n]+/g)) {
+    if (noteText(match[0], '').title) return source.length - body.length + match.index + match[0].length;
+  }
+}
+
+export function replaceFirstTitleLine(source: string, title: string) {
+  if (noteText(source, '').title === title) return source;
+  const end = firstTitleLineEnd(source);
+  if (end === undefined) {
+    const { body } = markdownBody(source);
+    const start = source.length - body.length;
+    const newline = /\r\n|\n|\r/u.exec(source)?.[0] ?? '\n';
+    return source.slice(0, start) + (start && !source.slice(0, start).endsWith('\n') ? newline : '') + title + newline + body;
+  }
+  const start = Math.max(source.lastIndexOf('\n', end - 1), source.lastIndexOf('\r', end - 1)) + 1;
+  const line = source.slice(start, end);
+  const prefix = /^\s*#{1,6}[ \t]+/u.exec(line)?.[0] ?? '';
+  return source.slice(0, start) + prefix + title + source.slice(end);
+}
+
 /** 笔记里第一张本地图片的路径，列表行尾的缩略图用它。代码块里的不算，网络图片不算。 */
 export function firstLocalImage(source: string) {
   let fence = '';
@@ -51,7 +73,5 @@ export function firstLocalImage(source: string) {
 }
 
 export function noteTitle(note: { source: string; title?: string; filename?: string }) {
-  // The file library labels UUID-backed files “无标题” until they are explicitly named.
-  const unnamedFile = note.title === '无标题' && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\.(?:md|markdown|txt)$/i.test(note.filename ?? '');
-  return note.title === undefined || unnamedFile ? noteText(note.source, note.title).title : note.title;
+  return noteText(note.source, note.title).title;
 }

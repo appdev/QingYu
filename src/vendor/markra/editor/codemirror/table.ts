@@ -23,7 +23,7 @@ import {
   type ViewUpdate,
   type EditorView as CodeMirrorView,
 } from "@codemirror/view";
-import { createCellTableControls, createTableControls, defaultTableLabels, type TableControlLabels } from "./table-controls.ts";
+import { createCellTableControls, createTableControls, defaultTableLabels, type TableControlLabels, type TableMenuTrigger } from "./table-controls.ts";
 import { layoutTableColumns, tableDisplayChanged } from "./table-layout.ts";
 import type { MarkraSourceRange } from "../math-syntax.ts";
 import {
@@ -81,9 +81,9 @@ type TableMenuCommands = {
   deleteColumn?: () => void;
   deleteTable: () => void;
 };
-export const tableContextMenu = Facet.define<(position: { x: number; y: number; bounds?: DOMRectReadOnly; cell: HTMLTableCellElement; tableSelection?: MarkraSourceRange }, commands: TableMenuCommands, scope: TableMenuScope, restoreFocus: () => void) => void>();
+export const tableContextMenu = Facet.define<(position: { x: number; y: number; trigger?: TableMenuTrigger; cell: HTMLTableCellElement; tableSelection?: MarkraSourceRange }, commands: TableMenuCommands, scope: TableMenuScope, restoreFocus: () => void) => void>();
 const tableActions = new WeakMap<HTMLTableElement, {
-  openMenu: (cell: HTMLTableCellElement, x: number, y: number, scope: TableMenuScope, bounds?: DOMRectReadOnly, capturedRange?: Range | null) => void;
+  openMenu: (cell: HTMLTableCellElement, x: number, y: number, scope: TableMenuScope, trigger?: TableMenuTrigger, capturedRange?: Range | null) => void;
   format: (cell: HTMLTableCellElement, action: string) => void;
   captureInsertion: (cell: HTMLTableCellElement) => (text: (selected: string) => string) => boolean;
 }>();
@@ -2374,7 +2374,7 @@ class TableWidget extends WidgetType {
     wrapper.append(tableScroll);
     if (widthMode === "auto") this.runtime.disposeLayout = layoutTableColumns(view, wrapper, tableScroll, table, Boolean(this.preview.types));
     const show = view.state.facet(tableContextMenu).at(0);
-    const openMenu = (cell: HTMLTableCellElement, x: number, y: number, scope: TableMenuScope, bounds?: DOMRectReadOnly, capturedRange?: Range | null) => {
+    const openMenu = (cell: HTMLTableCellElement, x: number, y: number, scope: TableMenuScope, trigger?: TableMenuTrigger, capturedRange?: Range | null) => {
       if (!show || composing || view.compositionStarted) return;
       const row = Number(cell.dataset.tableRow);
       const column = Number(cell.dataset.tableColumn);
@@ -2418,7 +2418,7 @@ class TableWidget extends WidgetType {
         }
         syncVisualTableCell(view, this.preview, cell, false);
       };
-      show({ x, y, bounds, cell, tableSelection }, {
+      show({ x, y, trigger, cell, tableSelection }, {
         choices: choice ? {
           options: choice.options,
           value: cellValue,

@@ -4,6 +4,7 @@ import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { closeSearchPanel, findNext, findPrevious, getSearchQuery, openSearchPanel, replaceAll, replaceNext, search, searchKeymap, SearchQuery, setSearchQuery } from '@codemirror/search';
 import { showMenu } from './popup-menu';
 import './editor-find.css';
+import { decorateGlisseToggle } from './glass-controls';
 
 const noWrap = new WeakSet<EditorView>();
 function startsWord(_match: string, state: EditorState, from: number) {
@@ -55,6 +56,7 @@ function createFindPanel(view: EditorView) {
   const replaceToggle = dom.querySelector<HTMLInputElement>('[type=checkbox]')!;
   const replaceRow = dom.querySelector<HTMLElement>('.qingyu-find-replace')!;
   const replaceLabel = replaceToggle.closest('label')!;
+  const glassToggle = decorateGlisseToggle(replaceToggle);
   const mainDone = dom.querySelector<HTMLButtonElement>('.qingyu-find-main .qingyu-find-done')!;
   const directionButtons = [...dom.querySelectorAll<HTMLButtonElement>('[data-find]')];
   const replaceButtons = [...dom.querySelectorAll<HTMLButtonElement>('[data-replace]')];
@@ -144,6 +146,7 @@ function createFindPanel(view: EditorView) {
   countMatches();
   return {
     dom, top: true,
+    destroy() { glassToggle?.destroy(); },
     mount() { input.focus(); input.select(); },
     update(update: import('@codemirror/view').ViewUpdate) {
       const next = getSearchQuery(update.state);

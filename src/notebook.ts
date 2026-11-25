@@ -1,17 +1,19 @@
-import { noteText, noteTitle } from './document-text';
+import { noteText, noteTitle, replaceFirstTitleLine } from './document-text';
 import { dailyFolderName, dailyNoteId, dailyTitle, findDailyNote, type DailyNoteSettings } from './daily-note';
 import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
 import type { AssetPlaceholders, AssetStat, AssetSync, StagedAsset } from './sync-files';
 import { ServerLibrary, ServerVersionConflict, type ServerSnapshot } from './server-library';
 import { uiText } from './ui-language';
+import { retargetNoteLinks } from './note-links';
 
 export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
 export type Folder = { id: string; name: string; path?: string };
 // 分享状态只记在元数据里；没有 share 等同于未分享。
 export type NoteShare = { status: 'shared' | 'unshared'; url?: string };
-export type Note = { id: string; folderId: string; source: string; createdAt: number; updatedAt: number; conflictOf?: string; title?: string; pinned?: boolean; trashed?: boolean; path?: string; filename?: string; readOnly?: boolean; share?: NoteShare };
+// followTitle records the last confirmed filename stem before collision suffixes.
+export type Note = { id: string; folderId: string; source: string; createdAt: number; updatedAt: number; conflictOf?: string; title?: string; pinned?: boolean; trashed?: boolean; path?: string; filename?: string; readOnly?: boolean; share?: NoteShare; followTitle?: string };
 
 /** 还没写过一个字的新笔记：正文完全为空、不在废纸篓、可以编辑。对应 Pinto 的 ListCompose.isOff。 */
 export function isBlankNote(note: Note | undefined, source = note?.source ?? '') {
@@ -70,7 +72,8 @@ export function validLibrary(value: unknown): value is Library {
         (note.conflictOf !== undefined && (typeof note.conflictOf !== 'string' || !note.conflictOf)) ||
         (note.title !== undefined && (typeof note.title !== 'string' || !note.title.trim() || note.title.length > 500 || /[\r\n\0]/.test(note.title))) ||
         (note.pinned !== undefined && typeof note.pinned !== 'boolean') || (note.trashed !== undefined && typeof note.trashed !== 'boolean') ||
-        (note.share !== undefined && !validShare(note.share))) return false;
+        (note.share !== undefined && !validShare(note.share)) ||
+        (note.followTitle !== undefined && (typeof note.followTitle !== 'string' || note.followTitle.length > 500))) return false;
     notes.add(note.id);
   }
   if (data.sync !== undefined) {
@@ -203,7 +206,7 @@ export class Notebook {
     else { this.storage.setItem(libraryKey, JSON.stringify(next)); this.data = next; this.persisted = true; }
     if (changed) this.onLocalChange?.();
   }
-  save(source: string, id = this.data.activeId, expectedSource?: string) { const externalRevision = this.externalRevision, root = this.disk?.root; return this.run(async () => {
+  save(source: string, id = this.data.activeId, expectedSource?: string, confirmTitle = false) { const externalRevision = this.externalRevision, root = this.disk?.root; return this.run(async () => {
     if (externalRevision !== this.externalRevision) throw new Error('文件已在外部变化，旧的延迟保存已取消');
     if (root !== this.disk?.root) throw new Error('笔记库位置已更改，旧的延迟保存已取消');
     const current = this.data.notes.find(note => note.id === id);
@@ -217,6 +220,13 @@ export class Notebook {
     }
     const changed = current.source !== source;
     if (changed && current.readOnly) throw new Error('文件内容损坏或不可读，已阻止覆盖');
+    if (confirmTitle && !current.trashed && !current.readOnly && !this.external) {
+      const next = this.titleFromSource(current, source);
+      if (next.followTitle !== current.followTitle) {
+        await this.commitTitle(current, next);
+        return;
+      }
+    }
     if (!changed && this.persisted) return;
     if (root && !this.external && !this.remote && changed) {
       if (this.loadError) throw new Error('笔记库读取失败，未覆盖原有数据');
@@ -349,8 +359,46 @@ export class Notebook {
   renameNote(id: string, title: string) { return this.run(async () => {
     title = title.trim();
     if (!title || title.length > 500 || /[\r\n\0]/.test(title)) throw new Error('文件名称无效，不能包含换行或为空');
-    await this.updateNote(id, { title });
+    const note = this.data.notes.find(note => note.id === id);
+    if (!note) throw new Error('笔记不存在');
+    if (this.external) return this.updateNote(id, { title });
+    if (note.readOnly || note.trashed) throw new Error('当前笔记不可重命名');
+    if (!noteText(title, '').title) throw new Error('请输入有效的标题文字');
+    const source = replaceFirstTitleLine(note.source, title);
+    const next = this.titleFromSource(note, source, false);
+    if (note.followTitle !== next.followTitle || note.title !== next.title) await this.commitTitle(note, next);
+    else if (note.source !== source) await this.commit({
+      ...this.data, notes: this.data.notes.map(other => other.id === id ? { ...next, updatedAt: Date.now() } : other),
+    });
   }); }
+  private titleFromSource(note: Note, source: string, avoidCollisions = true): Note {
+    const firstLine = noteText(source, '').title;
+    let stem = firstLine.replace(/[<>:"/\\|?*#[\]\p{Cc}]/gu, '-').replace(/^[.\s]+|[.\s]+$/gu, '');
+    const characters = [...stem];
+    const encoder = new TextEncoder();
+    let bytes = encoder.encode(stem).length;
+    while (bytes > 220) bytes -= encoder.encode(characters.pop()!).length;
+    stem = characters.join('').replace(/[.\s]+$/gu, '');
+    if (/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(stem)) stem = `_${stem}`;
+    if (!stem || stem === note.followTitle) return { ...note, source };
+    const ext = (note.filename ?? note.path)?.match(/\.[^.]+$/u)?.[0] ?? '.md';
+    const key = (value: string) => value.normalize('NFC').toLowerCase();
+    const occupied = new Set(this.data.notes.filter(other => other.id !== note.id && other.folderId === note.folderId && !other.trashed)
+      .flatMap(other => [key(other.filename ?? ''), key(`${other.title ?? ''}${ext}`)]));
+    let title = stem;
+    for (let suffix = 2; avoidCollisions && occupied.has(key(title + ext)); suffix++) title = `${stem} ${suffix}`;
+    return { ...note, source, title, followTitle: stem };
+  }
+  private async commitTitle(before: Note, note: Note) {
+    const time = Date.now();
+    const renamed = note.title !== before.title && note.title !== undefined;
+    const notes = this.data.notes.map(other => {
+      const current = other.id === note.id ? note : other;
+      const source = renamed && !current.readOnly && !current.trashed ? retargetNoteLinks(this.data, before, note.title!, current) : current.source;
+      return source !== other.source ? { ...current, source, updatedAt: time } : current;
+    });
+    await this.commit({ ...this.data, notes }, 'title-edit');
+  }
   setShare(id: string, share: NoteShare) { return this.run(async () => {
     if (!validShare(share)) throw new Error('分享链接无效');
     await this.updateNote(id, { share });
@@ -378,7 +426,7 @@ export class Notebook {
     // MiaoYan getDupeName uses " Copy", then " Copy 2", without changing the body.
     const base = (note.filename ? note.filename.replace(/\.[^.]+$/, '') : noteTitle(note)).replace(/ Copy(?: \d+)?$/, '').slice(0, 145);
     let title = `${base} Copy`, number = 2;
-    while (this.data.notes.some(other => other.folderId === note.folderId && noteTitle(other) === title)) title = `${base} Copy ${number++}`;
+    while (this.data.notes.some(other => other.folderId === note.folderId && (other.title ?? noteTitle(other)) === title)) title = `${base} Copy ${number++}`;
     const now = Date.now(), copy: Note = { id: crypto.randomUUID(), folderId: note.folderId, title, source: note.source, createdAt: now, updatedAt: now };
     await this.commit({ ...this.data, notes: [copy, ...this.data.notes], activeId: copy.id }, this.disk || this.remote ? `duplicate:${id}` : 'duplicate');
   }); }

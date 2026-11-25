@@ -4,7 +4,7 @@ import 'glassy-liquid/components/progressive-blur';
 import { confirmLinkedNote, showNoteLinkPicker, showShare } from './reference-panels';
 import { openQuickOpen, type QuickCommand } from './quick-open';
 import starter from './starter.md?raw';
-import { firstLocalImage, markdownBody, plainMarkdownLine } from './document-text';
+import { firstLocalImage, firstTitleLineEnd, markdownBody, noteText, plainMarkdownLine } from './document-text';
 import { editorItemMove, moveEditorItem, type Format } from './format';
 import { inlineFormatIcons, openEditorFormatPanel } from './editor-format-panel';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
@@ -36,8 +36,10 @@ import { mountPendingImage } from './asset-download-view';
 import { MAX_ASSET_BYTES } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
-import { dismissPopupMenu, popupMenuOpen, showMenu } from './popup-menu';
-import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink } from './note-links';
+import { backPopupMenu, popupMenuOpen, showMenu } from './popup-menu';
+import { askToConfirm } from './alert-dialog';
+import { usesGlisse } from './web-glass-mount';
+import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink, retargetNoteLinks } from './note-links';
 import { createNoteRelationsFooter } from './editor-note-relations';
 import { hostMenuBar } from './menu-bar-host';
 import { isLocalAsset } from './server-assets';
@@ -58,6 +60,10 @@ shareMarker.append(createLucideIcon(document, LinkIcon, ''), '已分享');
 shareMarker.onclick = () => { const url = notebook.current?.share?.url; if (url) void copyShareLink(url); };
 $('.titlebar').append(shareMarker);
 document.documentElement.dataset.platform = native && /Mac/.test(navigator.platform) ? 'macos' : 'other';
+if (!mobile && document.documentElement.dataset.platform === 'macos') {
+  // 编辑器自己的菜单先处理右键，冒泡到工作区时屏蔽 WebView 默认菜单。
+  workspace.addEventListener('contextmenu', event => event.preventDefault());
+}
 const saveStatus = $('#save-status');
 function setStatus(message: string, error = false) {
   saveStatus.textContent = localizeStatus(message);
@@ -284,8 +290,16 @@ const noteRelations = createNoteRelationsFooter({
   },
 });
 
+let editingTitleOf: string | undefined;
+let pendingTitleEdit: string | undefined;
 const richEditor = createRichEditor($('#rich-editor'), () => {
   refreshTitle();
+  const note = notebook.current;
+  if (note && note.id === displayedNoteId) {
+    const source = sourceForSave();
+    sidebar?.updateDraftTitle({ ...note, source });
+    if (!notebook.external && noteText(source, '').title !== noteText(note.source, '').title) pendingTitleEdit = note.id;
+  }
   updateCompose();
   try { notebook.stageDraft(sourceForSave()); }
   catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
@@ -297,14 +311,26 @@ const richEditor = createRichEditor($('#rich-editor'), () => {
   relations: noteRelations,
   suggestionsHost: mobile ? mobileSuggestions : undefined,
   attachFile: !mobile && canAddAttachments ? () => attachFromKeyboard() : undefined,
-  selectionChanged: () => refreshFormatPanel?.(),
+  selectionChanged() {
+    refreshFormatPanel?.();
+    queueMicrotask(() => {
+      const note = notebook.current;
+      const id = note && note.id === displayedNoteId && !notebook.external ? note.id : undefined;
+      const previous = editingTitleOf;
+      const position = view.state.selection.main.head;
+      editingTitleOf = id && view.hasFocus && position <= (firstTitleLineEnd(sourceForSave()) ?? 0) ? id : undefined;
+      if (id && previous === id && !editingTitleOf) void saveDraft(true);
+    });
+  },
   async openAsset(id, path) { await ensureAttachment(id, path); await openAttachment(notebook, id, path); },
   mountAssetImage: mountNoteAssetImage,
   async pendingAssetSize(id, path) { return (await attachmentPlaceholder(notebook, id, path))?.size; },
   async deletePendingAsset(id, path) {
     const entry = await attachmentPlaceholder(notebook, id, path);
     if (!entry) return;
-    if (!window.confirm('下次同步时也会删除远端附件。要继续吗？')) return;
+    if (!await (usesGlisse(document.documentElement)
+      ? askToConfirm('下次同步时也会删除远端附件。要继续吗？', '删除', translatedLabel('取消'))
+      : window.confirm('下次同步时也会删除远端附件。要继续吗？'))) return;
     await notebook.removeAssetPlaceholder(entry.root, entry.path, entry.hash);
     setStatus('已删除本地占位，下次同步时会删除远端附件');
   },
@@ -336,8 +362,8 @@ function refreshTitle(force = false) {
   if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: view.state.doc.toString() }) : uiText('noSelection');
   $('#word-count').textContent = showingNote ? uiText('characterCount').replace('{count}', view.state.doc.length.toLocaleString(document.documentElement.lang)) : '';
 }
-function saveDraft(includeTitle = false) {
-  const write = draftWrites.then(() => persistDraft(includeTitle));
+function saveDraft(includeTitle = false, forceFilename = false) {
+  const write = draftWrites.then(() => persistDraft(includeTitle, forceFilename));
   draftWrites = write.catch(() => false);
   return write;
 }
@@ -354,7 +380,11 @@ async function openBrowserNote(id: string) {
   tab.close();
 }
 
-async function persistDraft(includeTitle: boolean): Promise<boolean> {
+async function persistDraft(includeTitle: boolean, forceFilename = false): Promise<boolean> {
+  if (richEditor.composing && !richEditor.input.contains(document.activeElement)) {
+    // A note click can reach the save queue before the editor's blur handler finishes.
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
   if (syncApply) await syncApply;
   if (documentWindow && notebook.loadError) return true;
   if (!showingNote) return true;
@@ -371,7 +401,9 @@ async function persistDraft(includeTitle: boolean): Promise<boolean> {
   const titleInput = includeTitle ? document.querySelector<HTMLInputElement>('#rename-note') : null;
   if (titleInput?.dataset.composing === 'true') return false;
   const titleValue = titleInput?.value;
+  const confirmFilename = includeTitle && !titleInput && (forceFilename || pendingTitleEdit === note.id);
   const stored = note.source;
+  const previousLibrary = notebook.data;
   // CodeMirror normalizes line endings internally; viewing a CRLF draft is not an edit.
   const changed = editorSource(stored) !== source;
   try {
@@ -379,21 +411,33 @@ async function persistDraft(includeTitle: boolean): Promise<boolean> {
       if (source !== editorSource(recovered.previous.source)) await notebook.saveDraftAfterSync(recovered.previous, source, recovered.applied);
       else if (displayedNoteId === recovered.previous.id) showCurrentNote(Boolean(notebook.current));
       if (draftDuringSync === recovered) draftDuringSync = undefined;
-    } else await notebook.save(changed ? source : stored, note.id, syncBusy && changed && !note.trashed ? stored : undefined);
+      const restored = notebook.current;
+      if (confirmFilename && restored?.id === note.id) {
+        await notebook.save(restored.source, restored.id, restored.source, true);
+      }
+    } else await notebook.save(changed ? source : stored, note.id, syncBusy && changed && !note.trashed ? stored : undefined, confirmFilename);
     if (titleInput?.isConnected && titleInput.dataset.noteId) {
       if (titleValue?.trim()) await notebook.renameNote(titleInput.dataset.noteId, titleValue);
-      if (titleInput.value !== titleValue) return persistDraft(includeTitle);
+      if (titleInput.value !== titleValue) return persistDraft(includeTitle, forceFilename);
       refreshTitle(true);
       sidebar?.refresh();
     }
     if (note.id === notebook.data.activeId) {
-      if (sourceForSave() !== source) return persistDraft(includeTitle);
+      const saved = notebook.current;
+      const draft = sourceForSave();
+      if (saved.title && (saved.title !== note.title || Boolean(titleInput))) {
+        const updated = draft === source ? editorSource(saved.source)
+          : retargetNoteLinks(previousLibrary, note, saved.title, { ...note, source: draft });
+        if (updated !== draft) richEditor.activate(updated, saved.id, notebook.server || native ? saved.id : undefined, assetBase(notebook), Boolean(saved.readOnly));
+        if (updated !== editorSource(saved.source)) return persistDraft(includeTitle, forceFilename);
+      } else if (draft !== source) return persistDraft(includeTitle, forceFilename);
       setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.server ? '笔记已保存到服务器' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
     }
-    if (changed) sidebar?.refresh();
+    if ((confirmFilename || titleInput) && pendingTitleEdit === note.id) pendingTitleEdit = undefined;
+    if (changed || confirmFilename) sidebar?.refresh();
     return true;
   } catch (error) {
-    if (!recovered && draftDuringSync?.previous.id === displayedNoteId && displayedNoteId === note.id) return persistDraft(includeTitle);
+    if (!recovered && draftDuringSync?.previous.id === displayedNoteId && displayedNoteId === note.id) return persistDraft(includeTitle, forceFilename);
     setStatus(error instanceof Error ? error.message : typeof error === 'string' ? error : '笔记保存失败，暂不能切换；请复制原文备份', true);
     return false;
   }
@@ -616,8 +660,7 @@ function bindTableTool(button: HTMLElement) {
 }
 bindTableTool(tableButton);
 $('#note-more-button').onclick = event => {
-  const box = $('#note-more-button').getBoundingClientRect();
-  void sidebar?.showCurrentMenu(Math.max(8, box.right - 250), box.bottom + 6, event.detail === 0);
+  void sidebar?.showCurrentMenu(event.currentTarget as HTMLButtonElement, event.detail === 0);
 };
 const untickButton = document.createElement('button');
 untickButton.textContent = translatedLabel('取消勾选全部任务');
@@ -895,7 +938,6 @@ workspace.addEventListener('paste', event => { if (!event.clipboardData?.files.l
 // Toolbar presses must not dismiss the keyboard or move the editor selection.
 mountGlassToolbar($('.actions'));
 if (!mobile) mountGlassToolbar($('.notes-navigation'));
-if (mobile) mountGlassButton($<HTMLButtonElement>('#new-note-button'));
 for (const bar of [$('.actions'), menu, mobileTools]) bar.addEventListener('pointerdown', event => {
   if ((event.target as HTMLElement).closest('button')) event.preventDefault();
 });
@@ -907,7 +949,7 @@ if (mobile) window.addEventListener('popstate', () => { closeMenu(); closeFormat
 // 安卓返回键先交给这里：有菜单、弹窗或搜索就只收起最上面那一层，返回 true 表示已处理；
 // 设置自己写了浏览记录，交给 WebView 后退。MainActivity 收到 false 才走默认后退。
 if (mobile) Object.assign(window, { qingyuBack() {
-  if (popupMenuOpen()) { dismissPopupMenu(); return true; }
+  if (backPopupMenu()) return true;
   if (history.state?.settings) return false;
   const dialog = [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1);
   if (dialog) {
@@ -1086,7 +1128,7 @@ document.addEventListener('keydown', event => {
   if (event.isComposing) return;
   if (event.key === 'Escape') closeMenu();
   if (!event.metaKey && !event.ctrlKey) return;
-  if (event.key.toLowerCase() === 's') { event.preventDefault(); clearTimeout(saveTimer); void saveDraft(true); }
+  if (event.key.toLowerCase() === 's') { event.preventDefault(); clearTimeout(saveTimer); void saveDraft(true, true); }
 });
 function preserveOnLeave() {
   if (!showingNote) return true;
@@ -1164,6 +1206,7 @@ sidebar = createSidebar(() => notebook, {
   libraryChanged: () => { richEditor.refreshNoteLinks(); updateShareMarker(); },
   reload: () => showCurrentNote(Boolean(notebook.current)), status: setStatus, error: message => setStatus(message, true),
 }, mobile);
+if (mobile) mountGlassButton($<HTMLButtonElement>('#new-note-button'));
 showCurrentNote(showingNote);
 window.addEventListener('ui-language-change', () => {
   localizeLabels();
@@ -1249,7 +1292,10 @@ if ('__TAURI_INTERNALS__' in window) {
   }
   const { setupFileWatch } = await import('./file-watch');
   await setupFileWatch(notebook, {
-    pending: () => Boolean(saveTimer || richEditor.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true'),
+    // Reconciliation temporarily blurs the editor, including for our own saves.
+    pending: () => Boolean(saveTimer || richEditor.composing ||
+      (editingTitleOf && editingTitleOf === displayedNoteId && view.hasFocus) ||
+      document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true'),
     buffer() { return showingNote && notebook.current ? { noteId: notebook.current.id, source: sourceForSave() } : undefined; },
     refresh(previous) {
       const current = notebook.current;

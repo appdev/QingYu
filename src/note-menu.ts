@@ -8,6 +8,7 @@ import folderIcon from '../public/miaoyan/icons/folder.svg?raw';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { alertActions, showAlert } from './alert-dialog';
 import { formatLabel, markupLabel, translatedLabel, uiText } from './ui-language';
+import { bindVerticalPull } from './panel-pull';
 
 const newWindowIcon: typeof Pin = [
   ['path', { d: 'M11 19H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5M2 8h20M6 5.5h.01M9 5.5h.01' }],
@@ -62,32 +63,22 @@ export function showMoveFolderSheet(rows: { name: string; depth: number; current
     grabber.ariaExpanded = String(expanded);
     grabber.ariaLabel = expanded ? translatedLabel('缩小文件夹列表') : translatedLabel('展开文件夹列表');
   };
-  let startY = 0, startHeight = 0, dragged = false;
-  grabber.onpointerdown = event => {
-    if (!event.isPrimary || event.button !== 0) return;
-    startY = event.clientY; startHeight = dialog.getBoundingClientRect().height; dragged = false;
-    grabber.setPointerCapture(event.pointerId);
-  };
-  grabber.onpointermove = event => {
-    if (!grabber.hasPointerCapture(event.pointerId) || Math.abs(event.clientY - startY) < 5) return;
-    dialog.toggleAttribute('data-dragging', true);
-    dialog.style.setProperty('--sheet-drag-height', `${Math.max(96, startHeight + startY - event.clientY)}px`);
-  };
-  function stopDragging() {
-    delete dialog.dataset.dragging;
-    dialog.style.removeProperty('--sheet-drag-height');
-  }
-  grabber.onlostpointercapture = stopDragging;
-  grabber.onpointerup = event => {
-    if (!grabber.hasPointerCapture(event.pointerId)) return;
-    const distance = event.clientY - startY;
-    stopDragging();
-    if (Math.abs(distance) < 24) return;
-    dragged = true;
-    if (distance > 0 && !dialog.hasAttribute('data-expanded')) dismiss();
-    else setExpanded(distance < 0);
-  };
-  grabber.onclick = event => { if (!dragged || event.detail === 0) setExpanded(!dialog.hasAttribute('data-expanded')); };
+  let startHeight = 0;
+  const disposeDrag = bindVerticalPull(grabber, {
+    canStart() { startHeight = dialog.getBoundingClientRect().height; return !closing && Boolean(startHeight); },
+    move(offset) {
+      dialog.dataset.dragging = '';
+      dialog.style.setProperty('--sheet-drag-height', `${Math.max(96, startHeight - offset)}px`);
+    },
+    finish(offset) {
+      delete dialog.dataset.dragging;
+      dialog.style.removeProperty('--sheet-drag-height');
+      if (offset === null || Math.abs(offset) < 24) return;
+      if (offset > 0 && !dialog.hasAttribute('data-expanded')) dismiss();
+      else setExpanded(offset < 0);
+    },
+  });
+  grabber.onclick = () => setExpanded(!dialog.hasAttribute('data-expanded'));
   dialog.querySelector<HTMLButtonElement>('header button')!.onclick = () => dismiss();
   dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
   dialog.addEventListener('click', event => {
@@ -109,7 +100,7 @@ export function showMoveFolderSheet(rows: { name: string; depth: number; current
     button.onclick = () => dismiss(run);
     item.append(button); list.append(item);
   }
-  dialog.addEventListener('close', () => { dialog.remove(); restoreFocus(); }, { once: true });
+  dialog.addEventListener('close', () => { disposeDrag(); dialog.remove(); restoreFocus(); }, { once: true });
   document.body.append(dialog);
   dialog.showModal();
   if (motion()) opening = dialog.animate([slide, { transform: 'none' }], { duration: 280, easing: 'cubic-bezier(.2,.8,.28,1)' });
@@ -250,9 +241,10 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     panel.style.setProperty('--arrow-top', `${Math.max(22, Math.min(anchor.top + anchor.height / 2 - parseFloat(panel.style.top), panel.offsetHeight - 22))}px`);
     infoPanel = panel; panel.focus();
   }
-  return async (id: string, x: number, y: number, surface?: 'move' | { keyboard: boolean }) => {
-    const toolbar = typeof surface === 'object';
-    const anchor = toolbar ? document.querySelector<HTMLButtonElement>('#note-more-button') ?? undefined : undefined;
+  return async (id: string, x: number, y: number, surface?: 'move' | { anchor?: HTMLButtonElement; keyboard?: boolean; preview?: boolean }) => {
+    const options = typeof surface === 'object' ? surface : undefined;
+    const anchor = options?.anchor;
+    const toolbar = Boolean(anchor);
     const closeToolbar = anchor?.getAttribute('aria-expanded') === 'true';
     dismiss(); dismissInfo();
     if (closeToolbar) return;
@@ -262,8 +254,8 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     const multiple = notes.length > 1;
     const change = async (run: () => Promise<void>, reload = false) => { if (await actions.save()) await actions.change(run, reload); };
     const row = () => document.querySelector<HTMLElement>(`.note-row[data-note-id="${CSS.escape(id)}"]`);
-    const restoreFocus = () => (toolbar ? document.querySelector<HTMLElement>('#note-more-button') : row())?.focus({ preventScroll: true });
-    const compact = actions.mobile && !toolbar && !multiple;
+    const restoreFocus = () => (anchor ?? row())?.focus({ preventScroll: true });
+    const compact = actions.mobile && options?.preview && !multiple;
     const trash: Item = { text: multiple ? `删除 ${notes.length} 篇笔记` : compact ? '删除' : uiText('moveToTrash'), destructive: true, run: () => changeNotes(notes, note => getBook().trashNote(note.id)) };
     const recover: Item = { text: multiple ? `恢复 ${notes.length} 篇笔记` : uiText('restoreNote'), run: () => changeNotes(notes, note => getBook().trashNote(note.id, false)) };
     if (compact || multiple) recover.icon = createLucideIcon(document, Undo2, '');
@@ -368,11 +360,11 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     }
     const moving = toolbar || getBook().external ? [] : [move];
     const deleting = getBook().external ? [] : [trash];
-    const groups = note.trashed ? (purge.length && (compact || multiple || toolbar) ? [[recover, ...purge]] : [[recover], moving, purge])
+    const groups = note.trashed ? (toolbar ? [[recover]] : purge.length && (compact || multiple) ? [[recover, ...purge]] : [[recover], moving, purge])
       : multiple ? [moving, deleting]
       : toolbar ? [[...opening, pin, duplicate], deleting]
         .map(group => group.filter(item => item.enabled !== false))
-      : compact ? [[share, ...moving, ...deleting], [pin, duplicate]]
+      : compact ? [[share, ...moving, ...deleting], [pin, duplicate, ...(getBook().hasNoteHistory ? [versions] : [])]]
       : [opening, [pin, duplicate, share], [...moving, ...(getBook().hasNoteHistory ? [versions] : [])], details, deleting];
     const items = groups.filter(group => group.length).flatMap((group, index) => index ? [{ text: '' }, ...group] : group);
     if (anchor) {
@@ -403,8 +395,8 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       preview.append(title, body);
     }
     await showMenu(items, {
-      label: '笔记操作', at: { x, y }, preview, quickActions: compact && !note.trashed ? groups[0].length : 0,
-      anchor: toolbar ? anchor : undefined, keyboard: toolbar ? surface.keyboard : undefined, onError: actions.error, restoreFocus,
+      label: '笔记操作', ...(anchor ? { anchor } : { at: { x, y } }), preview, previewAnchor: preview ? row() ?? undefined : undefined,
+      quickActions: compact && !note.trashed ? groups[0].length : 0, keyboard: options?.keyboard, onError: actions.error, restoreFocus,
     });
   };
 }

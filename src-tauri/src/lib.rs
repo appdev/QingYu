@@ -128,6 +128,8 @@ pub fn run() {
             note_ui::table_clipboard,
             #[cfg(target_os = "ios")]
             note_ui::show_table_handle_menu,
+            #[cfg(target_os = "ios")]
+            note_ui::show_native_menu,
             file_library::library_open,
             #[cfg(desktop)]
             file_library::api::desktop::local_mcp,

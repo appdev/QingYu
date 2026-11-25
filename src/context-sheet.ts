@@ -1,5 +1,4 @@
 import './context-sheet.css';
-import { clamp } from 'glassy-liquid';
 
 export function showContextSheet(preview: HTMLElement, options: {
   label: string;
@@ -25,7 +24,7 @@ export function showContextSheet(preview: HTMLElement, options: {
     const top = (parseFloat(css.top) || 0) + 4;
     const bottom = (window.visualViewport?.height ?? innerHeight) - (parseFloat(css.bottom) || 0) - 4;
     const centered = row.top + (row.height - card.height) / 2 - (card.top - box.top);
-    dialog.style.top = `${clamp(centered, top, Math.max(top, bottom - box.height))}px`;
+    dialog.style.top = `${Math.max(top, Math.min(centered, bottom - box.height))}px`;
     dialog.style.bottom = 'auto';
     dialog.style.marginBlock = '0';
   }

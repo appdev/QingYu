@@ -76,7 +76,14 @@ it('opens an icon menu and compact preview without selecting the long-pressed fo
     createSidebar(() => book, { select, create: async () => true, save: async () => true, reload() {}, error: vi.fn() }, true);
 
     const row = document.querySelector<HTMLButtonElement>(`.folder-row[data-folder-id="${id}"]`)!;
-    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 }));
+    await vi.waitFor(() => expect(document.querySelector('.qlg-menu-surface [role=menu]')).toBe(document.activeElement));
+    expect(document.querySelector('.context-sheet')).toBeNull();
+    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('新建笔记'));
+    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    row.dispatchEvent(Object.assign(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }), { pointerType: 'touch' }));
     const sheet = await vi.waitFor(() => {
       const dialog = document.querySelector('.context-sheet[open]');
       expect(dialog).not.toBeNull();

@@ -496,6 +496,7 @@ fn rescan(store: &mut DiskLibrary) -> Result<()> {
             filename: Some(filename),
             read_only: bad || meta.permissions().readonly(),
             share: old.and_then(|note| note.share.clone()),
+            follow_title: None,
         });
     }
     notes.sort_by(|a, b| a.path.cmp(&b.path));

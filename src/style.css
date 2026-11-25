@@ -1,5 +1,39 @@
+@import '@fluidkit/core/style.css';
 @import './theme.css';
 @import './buttons.css';
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .qingyu-glass { background: var(--lb-fill); }
+}
+@supports not (opacity: calc(pow(.5, 2))) {
+  .qingyu-glass { background: var(--lb-fill); }
+}
+
+.tab-indicator { --web-glass-fill: var(--tab-indicator-fill, var(--settings-selection)); border-radius: inherit; background: var(--web-glass-fill); box-shadow: var(--tab-indicator-shadow, none); }
+.note-context-menu[data-glass-host] { --web-glass-fill: var(--context-menu-fill); }
+.web-glass-frost, .note-context-menu.toolbar-context-menu.web-glass-frost {
+  --web-glass-fill: var(--lb-fill);
+  background: color-mix(in srgb, var(--web-glass-fill) 74%, transparent);
+  backdrop-filter: blur(14px) saturate(1.25);
+}
+:is([data-glass-host], .note-context-menu.toolbar-context-menu.web-glass-frost):has(> .web-glisse) {
+  isolation: isolate; background-color: transparent; backdrop-filter: none;
+}
+.web-glisse.lg-glass {
+  position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .glass-button > .web-glass-frost { transition: scale 120ms ease-out; }
+  .glass-button:active > .web-glass-frost { scale: .96; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .web-glass-frost, .note-context-menu.toolbar-context-menu.web-glass-frost {
+    background: var(--web-glass-fill); backdrop-filter: none;
+  }
+}
+[data-tab-indicator] { position: relative; isolation: isolate; }
+[data-tab-indicator]:not([aria-orientation=vertical]) { touch-action: pan-y; }
+[data-tab-indicator] button { position: relative; }
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
 body { display: flex; flex-direction: column; height: 100dvh; background: var(--paper); }
@@ -8,6 +42,9 @@ body { display: flex; flex-direction: column; height: 100dvh; background: var(--
 button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
 button, [role='separator'] { touch-action: manipulation; }
 button:focus-visible, [role='separator']:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+:root[data-pointer-focus] :is(button, select, summary, [role='button'], [role='separator']):focus-visible {
+  outline-color: transparent;
+}
 /* 系统提示框（macOS 的 NSAlert）：按钮 28px 高的胶囊，撑满宽度上下排列，常规字重；默认按钮用强调色。 */
 .alert-actions { display: flex; flex-direction: column; gap: 8px; }
 .alert-actions :is(.primary-button, .secondary-button) { width: 100%; border-radius: 999px; font-weight: 400; }
@@ -23,7 +60,8 @@ h1#note-title { font-family: system-ui, sans-serif; font-size: 20px; font-weight
 .actions { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 22px; background: var(--control-fill); }
 .actions .icon-button { width: 30px; height: 28px; border-radius: 50%; color: var(--ink); }
 .actions .icon-button svg { width: 18px; height: 18px; }
-.actions .icon-button:hover { background: var(--control-fill); }
+/* 触屏点完按钮会一直停在 :hover，系统菜单关掉后底色会残留。部分安卓 WebView 也报 hover: hover，所以再限定精确指针。 */
+@media (hover: hover) and (pointer: fine) { .actions .icon-button:hover { background: var(--control-fill); } }
 .actions #format-button { padding: 0; }
 .actions #format-button[aria-expanded='true'] { background-color: var(--control-fill); color: var(--ink); }
 h1#note-title:not(:has(#rename-note)) { display: none; }
@@ -63,7 +101,8 @@ body[data-sync-busy='true'] .statusbar #word-count { display: none; }
 .format-inline::after { content: ''; order: 1; height: 16px; border-inline-start: 1px solid var(--line); margin-inline: 6px; }
 .format-inline [data-format=highlight] { order: 2; }
 .format-menu [data-format=code], .format-menu [data-format=codeblock] { font-family: ui-monospace, monospace; }
-.format-menu > button[data-format] { min-height: 27px; padding: 3px 7px 3px 31px; white-space: nowrap; position: relative; }
+.format-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; border-radius: 5px; padding: 8px 10px; font-size: 13px; background: transparent; cursor: pointer; }
+.format-menu > button { min-height: 27px; padding: 3px 7px 3px 31px; white-space: nowrap; position: relative; }
 .format-menu > button[aria-checked=true]::before { content: '✓'; position: absolute; left: 10px; font: 600 11px var(--font); }
 .format-menu > :is([data-format=quote], [data-format=callout], [data-format=divider]) { padding-left: 50px; }
 .format-menu :is([data-format=quote], [data-format=callout], [data-format=divider])::after {
@@ -74,7 +113,6 @@ body[data-sync-busy='true'] .statusbar #word-count { display: none; }
 .format-menu [data-format=divider]::after { content: '—'; }
 .format-menu > button kbd { display: none; }
 .format-menu [data-format=quote] { border-top: 1px solid var(--line); border-radius: 0; margin-top: 5px; padding-top: 10px; }
-.format-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 0; border-radius: 5px; padding: 8px 10px; font-size: 13px; background: transparent; cursor: pointer; }
 .format-menu .format-inline button { flex: 0 0 30px; height: 26px; justify-content: center; padding: 0; }
 .format-inline-icon { display: block; width: 16px; height: 16px; stroke-width: 1.8px; }
 .format-menu button:disabled { opacity: .4; cursor: default; }
@@ -244,6 +282,7 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
   box-shadow: 0 12px 40px var(--shadow-modal); font: 13px/1.35 var(--font);
 }
 .alert-dialog::backdrop { background: var(--overlay); }
+.alert-dialog.glisse-alert { --web-glass-fill: var(--card); }
 .alert-dialog:focus-visible { outline: none; }
 .alert-dialog h2 { margin: 0 5px 8px; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
 .alert-dialog p { margin: 0 5px; }
@@ -258,26 +297,36 @@ html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=fa
 .share-popover {
   position: fixed; inset: auto; margin: 0; width: min(316px, calc(100vw - 16px)); padding: 12px 15px 15px;
   max-height: var(--share-available-height, calc(100dvh - 80px)); overflow: visible;
-  border: 1px solid var(--line); border-radius: 20px; color: var(--ink); background: var(--card);
-  box-shadow: 0 6px 20px var(--shadow-raised); font: 13px var(--font);
+  border: 0; border-radius: 20px; color: var(--ink); font: 13px var(--font);
+  --lb-fill: var(--card); --lb-transparency: .65;
+  --fk-transition-duration: 120ms; --fk-transition-easing: var(--fk-interactive-easing);
 }
 .share-popover:popover-open { display: flex; flex-direction: column; }
+.share-popover:focus { outline: none; }
 .share-popover::before {
   content: ''; position: absolute; top: -6px; left: var(--share-pointer-x); width: 12px; height: 12px;
-  background: inherit; border: solid var(--line); border-width: 1px 0 0 1px; border-top-left-radius: 3px;
+  background: color-mix(in srgb, var(--card) 85%, transparent); border: solid var(--line); border-width: 1px 0 0 1px; border-top-left-radius: 3px;
   transform: translateX(-50%) rotate(45deg); pointer-events: none;
 }
 .share-popover[data-placement=above]::before { top: auto; bottom: -6px; transform: translateX(-50%) rotate(225deg); }
 .share-popover [role=tabpanel] { min-height: 0; overflow: auto; margin: 0 -4px -4px; padding: 0 4px 4px; }
-.share-tabs { display: flex; flex-shrink: 0; padding: 2px; border-radius: 8px; background: var(--control-fill); }
+.share-tabs {
+  display: flex; flex-shrink: 0; padding: 2px; border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  -webkit-user-select: none; user-select: none;
+  --tab-indicator-fill: light-dark(var(--mode-light), color-mix(in srgb, var(--mode-light) 22%, transparent));
+  --tab-indicator-shadow: 0 1px 3px light-dark(color-mix(in srgb, var(--mode-dark) 12%, transparent), transparent);
+}
+.share-tabs[data-tab-indicator] { touch-action: none; }
 .share-popover :where([role=tabpanel]) button:not(.primary-button, .secondary-button, .quiet-button, .picture-swatch) { border: 0; color: inherit; background: transparent; font: inherit; padding: 6px 2px; text-align: left; }
 .share-tabs button {
-  flex: 1 1 0; min-width: 0; min-height: 24px; padding: 3px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--muted); font-size: 12px; font-weight: 600; text-align: center;
+  flex: 1 1 0; min-width: 0; height: 24px; padding: 0 10px; border: 0; border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 14px; font-weight: 500; text-align: center;
+  white-space: nowrap; transition: color .2s;
 }
-.share-tabs button[aria-selected=true] {
-  background: light-dark(var(--card), color-mix(in srgb, var(--card), var(--ink) 23%));
-  color: var(--ink); box-shadow: 0 1px 3px var(--shadow);
+.share-tabs button[aria-selected=true] { color: var(--ink); }
+.share-tabs:not([data-tab-indicator]) button[aria-selected=true] {
+  background: var(--tab-indicator-fill); box-shadow: var(--tab-indicator-shadow);
 }
 .share-popover [role=tabpanel] > button { display: block; width: 100%; }
 .share-popover button:not(.primary-button, .secondary-button, .quiet-button):disabled { opacity: .45; }
@@ -362,7 +411,7 @@ html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=fa
   vertical-align: -1px; border-inline-start: 2px solid var(--brand); border-radius: 2px;
   background: color-mix(in srgb, var(--brand) 28%, transparent);
 }
-.history-detail select {
+.history-detail :is(select, .settings-select-button) {
   max-width: 144px; border: 1px solid var(--line); border-radius: 7px; padding: 5px 6px;
   background: var(--control-fill); color: var(--ink); font: inherit;
 }
@@ -415,7 +464,7 @@ html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=fa
   display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; padding-inline: 14px 60px;
 }
 .note-history[data-compact] .history-back { display: block; width: 34px; height: 34px; padding: 0; font: 25px/1 var(--font); }
-.note-history[data-compact] .history-detail select { grid-column: 2; justify-self: start; min-height: 36px; }
+.note-history[data-compact] .history-detail :is(select, .settings-select) { grid-column: 2; justify-self: start; min-height: 36px; }
 .note-history[data-compact] .history-restore {
   position: absolute; inset: auto 20px calc(var(--safe-area-bottom) + 8px);
   min-height: 44px; border-radius: 999px;

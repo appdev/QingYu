@@ -25,7 +25,7 @@ it.each([
   await menu('other', 200, 100);
   expect(document.querySelector('[aria-label="导出"]')).toBeNull();
   expect(document.querySelector('[aria-label="锁定笔记…"]')).toBeNull();
-  const item = [...document.querySelectorAll<HTMLButtonElement>('.note-context-menu [role=menuitem]')]
+  const item = [...document.querySelectorAll<HTMLButtonElement>('[role=menu] [role=menuitem]')]
     .find(button => button.ariaLabel?.startsWith('在') && button.ariaLabel.endsWith('中显示'));
   expect(item?.ariaLabel ?? null).toBe(label);
   if (item) {
@@ -46,25 +46,25 @@ it.each([false, true])('shows the toolbar actions with icons and a divider befor
   const anchor = document.querySelector<HTMLButtonElement>('#note-more-button')!;
   anchor.focus();
   vi.spyOn(anchor, 'matches').mockImplementation(selector => selector === ':focus-visible');
-  await menu(book.current!.id, 200, 100, { keyboard: false });
-  expect(document.activeElement).toBe(document.querySelector('.toolbar-context-menu'));
-  const items = [...document.querySelectorAll<HTMLButtonElement>('.toolbar-context-menu [role=menuitem]')];
+  await menu(book.current!.id, 200, 100, { anchor, keyboard: false });
+  expect(document.activeElement).toBe(document.querySelector('.qlg-menu-surface [role=menu]'));
+  const items = [...document.querySelectorAll<HTMLButtonElement>('.qlg-menu-surface [role=menu] [role=menuitem]')];
   expect(items.map(item => item.ariaLabel)).toEqual([
     ...(!mobile ? ['在新窗口打开笔记'] : []), '置顶', '复制笔记', '移到废纸篓',
   ]);
-  expect(items.every(item => item.firstElementChild?.tagName === 'svg')).toBe(true);
-  const separators = [...document.querySelectorAll('.toolbar-menu-items > hr')];
+  expect(items.every(item => item.querySelector(':scope > .qlg-menu__icon > svg'))).toBe(true);
+  const separators = [...document.querySelectorAll('.qlg-menu-surface [role=menu] > hr')];
   expect(separators.map(separator => separator.nextElementSibling?.getAttribute('aria-label'))).toEqual(['移到废纸篓']);
   document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   expect(document.activeElement).toBe(anchor);
-  await menu(book.current!.id, 200, 100, { keyboard: true });
-  expect(document.activeElement).toBe(document.querySelector('.toolbar-context-menu [role=menuitem]'));
+  await menu(book.current!.id, 200, 100, { anchor, keyboard: true });
+  expect(document.activeElement).toBe(document.querySelector('.qlg-menu-surface [role=menu] [role=menuitem]'));
   if (!mobile) {
     await menu(book.current!.id, 200, 100);
-    expect(document.querySelector('.note-context-menu [aria-label="版本历史…"]')).toBeNull();
+    expect(document.querySelector('[role=menu] [aria-label="版本历史…"]')).toBeNull();
     vi.spyOn(book, 'hasNoteHistory', 'get').mockReturnValue(true);
     await menu(book.current!.id, 200, 100);
-    expect(document.querySelector('.note-context-menu [aria-label="版本历史…"]')).not.toBeNull();
+    expect(document.querySelector('[role=menu] [aria-label="版本历史…"]')).not.toBeNull();
   }
 });
 
@@ -75,7 +75,7 @@ it('groups pin, duplicate and share in the desktop note row menu', async () => {
     openNoteWindow: async () => {}, share: vi.fn(),
   });
   await menu(book.current.id, 200, 100);
-  const items = [...document.querySelectorAll<HTMLElement>('.note-context-menu[role="menu"] > :is(button, hr)')];
+  const items = [...document.querySelectorAll<HTMLElement>('[role=menu] > :is(button, hr)')];
   expect(items.slice(0, 6).map(item => item.ariaLabel ?? item.tagName)).toEqual([
     '在新窗口打开笔记', 'HR', '置顶', '复制笔记', '分享…', 'HR',
   ]);
@@ -96,7 +96,8 @@ it('moves from a desktop note row using the sidebar folder hierarchy and order',
     folderOrder: () => [sibling, parent, second, first],
   });
   const submenu = (name: string) => document.querySelector<HTMLElement>(`[role=menu][aria-label="${name}"]`)!;
-  const buttons = (element: HTMLElement) => [...element.querySelectorAll<HTMLButtonElement>(':scope > button')];
+  // 子菜单首行是「收起××」标题行，后面跟一条分隔线，不算在目的地和分组里。
+  const buttons = (element: HTMLElement) => [...element.querySelectorAll<HTMLButtonElement>(':scope > button:not([data-header])')];
   await menu(note.id, 200, 100);
   buttons(submenu('笔记操作')).find(button => button.ariaLabel === '移动到…')!.click();
   const destinations = buttons(submenu('移动到…'));
@@ -105,7 +106,7 @@ it('moves from a desktop note row using the sidebar folder hierarchy and order',
   const nested = buttons(submenu('Alpha'));
   expect(nested.map(button => button.ariaLabel)).toEqual(['Alpha', 'Second', 'First']);
   expect(nested[0]!.disabled).toBe(true);
-  expect(submenu('Alpha').querySelectorAll(':scope > hr')).toHaveLength(1);
+  expect([...submenu('Alpha').querySelectorAll(':scope > hr')].filter(line => !line.previousElementSibling?.hasAttribute('data-header'))).toHaveLength(1);
   nested[1]!.click();
   await vi.waitFor(() => expect(book.current!.folderId).toBe(second));
   expect(book.current!.source).toBe(note.source);
@@ -114,6 +115,10 @@ it('moves from a desktop note row using the sidebar folder hierarchy and order',
 
 it.each([false, true])('opens a mobile folder sheet with working cancel and move (trashed: %s)', async trashed => {
   vi.stubGlobal('CSS', { escape: (text: string) => text });
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    disconnect() {}
+  });
   const { showModal, close } = HTMLDialogElement.prototype;
   HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   HTMLDialogElement.prototype.close = function () {
@@ -128,12 +133,14 @@ it.each([false, true])('opens a mobile folder sheet with working cancel and move
     if (trashed) await book.trashNote(note.id);
     vi.stubGlobal('__TAURI_INTERNALS__', {});
     vi.spyOn(book, 'root', 'get').mockReturnValue('/test/notes');
+    vi.spyOn(book, 'hasNoteHistory', 'get').mockReturnValue(true);
     book.data.notes.find(item => item.id === note.id)!.path = '子文件夹/Note.md';
     const save = vi.fn(async () => true), error = vi.fn();
     const menu = createNoteMenu(() => book, { save, change: async run => { await run(); }, error, mobile: true });
     const open = async () => {
-      await menu(note.id, 0, 0, trashed ? 'move' : undefined);
+      await menu(note.id, 0, 0, trashed ? 'move' : { preview: true });
       if (!trashed) {
+        expect(document.querySelector('.context-sheet [aria-label="版本历史…"]')).not.toBeNull();
         expect(document.querySelector('.context-sheet [aria-label$="中显示"], .context-sheet [aria-label="导出"], .context-sheet [aria-label="锁定笔记…"]')).toBeNull();
         document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="移动"]')!.click();
       }
@@ -149,6 +156,21 @@ it.each([false, true])('opens a mobile folder sheet with working cancel and move
     expect(destinations.map(button => button.textContent?.trim())).toEqual(['备忘录', '父目录', '子目录']);
     expect(destinations[1]!.disabled).toBe(!trashed);
     expect(destinations[2]!.style.getPropertyValue('--folder-depth')).toBe('1');
+    if (!trashed) {
+      vi.spyOn(dialog, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 200, 400, 280));
+      const grabber = dialog.querySelector<HTMLButtonElement>('.note-move-grabber')!;
+      const pointer = (type: string, clientY: number) => grabber.dispatchEvent(Object.assign(
+        new MouseEvent(type, { bubbles: true, clientY }), { pointerId: 1, isPrimary: true },
+      ));
+      pointer('pointerdown', 250); pointer('pointermove', 200); pointer('pointercancel', 200);
+      expect(grabber.getAttribute('aria-expanded')).toBe('false');
+      pointer('pointerdown', 250); pointer('pointermove', 200); pointer('pointerup', 200);
+      grabber.click();
+      expect(grabber.getAttribute('aria-expanded')).toBe('true');
+      pointer('pointerdown', 250); pointer('pointermove', 300); pointer('pointerup', 300);
+      grabber.click();
+      expect(grabber.getAttribute('aria-expanded')).toBe('false');
+    }
     dialog.querySelector<HTMLButtonElement>('[aria-label="取消"]')!.click();
     expect(dialog.isConnected).toBe(false);
     expect(save).not.toHaveBeenCalled();
@@ -173,7 +195,7 @@ it('requires confirmation before permanently deleting a note in Trash', async ()
     const purge = vi.spyOn(book, 'purgeNotes').mockResolvedValue();
     const menu = createNoteMenu(() => book, { save: async () => true, change: async run => { await run(); }, error: vi.fn(), mobile: true });
     const open = async () => {
-      await menu(id, 0, 0);
+      await menu(id, 0, 0, { preview: true });
       const rows = [...document.querySelectorAll<HTMLButtonElement>('.context-sheet [role=menuitem]')];
       expect(rows.map(row => row.ariaLabel)).toEqual(['恢复笔记', '永久删除']);
       expect(rows.every(row => row.querySelector('svg'))).toBe(true);
@@ -195,7 +217,8 @@ it('matches MiaoYan CJK/Latin word counts, frontmatter exclusion and backlink ti
   const book = new Notebook({ getItem: () => null, setItem: () => undefined }, "---\ntitle: 隐藏\n---\n# 中文 don't 2026 カナ 한글 🙂");
   const note = book.current!;
   note.title = '目标';
-  book.data.notes.push({ ...note, id: 'ref-a', title: '引用者', source: '[[ 目标 ]] [[目标]]' }, { ...note, id: 'ref-b', title: '引用者', source: '[[目标]]' },
+  book.data.notes.push({ ...note, id: 'ref-a', title: '旧文件名 A', source: '# 引用者\n[[ 目标 ]] [[目标]]' },
+    { ...note, id: 'ref-b', title: '旧文件名 B', source: '# 引用者\n[[目标]]' },
     { ...note, id: 'trash', title: '废纸篓引用', source: '[[目标]]', trashed: true }, { ...note, id: 'alias', title: '别名', source: '[[目标|别名]]' },
     { ...note, id: 'code', title: '代码示例', source: '`[[目标]]`' });
   const info = noteInformation(book.data, note.id);
@@ -204,7 +227,7 @@ it('matches MiaoYan CJK/Latin word counts, frontmatter exclusion and backlink ti
   expect(info.modified).toMatch(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
 });
 
-it('edits the title inline, cancels with Escape, keeps source/history and dismisses the nonmodal info panel', async () => {
+it('edits the first line inline, cancels with Escape and dismisses the nonmodal info panel', async () => {
   vi.stubGlobal('CSS', { escape: (text: string) => text });
   const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# 正文标题\r\n\r\n正文不改\r\n');
   await book.save(book.current!.source);
@@ -220,7 +243,7 @@ it('edits the title inline, cancels with Escape, keeps source/history and dismis
   input.value = '新名称'; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await vi.waitFor(() => expect(book.current!.title).toBe('新名称'));
   await vi.waitFor(() => expect(document.querySelector('#rename-note')).toBeNull());
-  expect(book.current!.source).toBe(before); expect(change.mock.calls[0]).toHaveLength(1);
+  expect(book.current!.source).toBe(before.replace('# 正文标题', '# 新名称')); expect(change.mock.calls[0]).toHaveLength(1);
   await open('重命名'); input = document.querySelector<HTMLInputElement>('#rename-note')!;
   input.value = '取消的名称'; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   expect(book.current!.title).toBe('新名称'); expect(document.querySelector('#note-title')!.textContent).toBe('新名称');

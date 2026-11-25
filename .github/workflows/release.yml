@@ -202,8 +202,47 @@ jobs:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/QingYu_${RELEASE_TAG#v}_android_arm64.apk" --clobber
 
+  docker:
+    needs: prepare
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - name: Build, smoke-test, and archive Docker image
+        run: |
+          image="qingyu-api:${RELEASE_TAG#v}"
+          docker build -f Dockerfile.api -t "$image" .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "linux/$ARCH"
+          container=$(docker run -d -p 127.0.0.1:8787:8787 -e QINGYU_WEB_PASSWORD=release-smoke-test "$image")
+          trap 'docker rm -fv "$container" >/dev/null' EXIT
+          if ! curl --retry 10 --retry-delay 1 --retry-connrefused -fsS http://127.0.0.1:8787/login.html >/dev/null; then
+            docker logs "$container"
+            exit 1
+          fi
+          docker image save "$image" | gzip > "$RUNNER_TEMP/QingYu_${RELEASE_TAG#v}_docker_linux_$ARCH.tar.gz"
+      - name: Upload Docker image to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/QingYu_${RELEASE_TAG#v}_docker_linux_$ARCH.tar.gz" --clobber
+
   publish:
-    needs: [prepare, desktop, android]
+    needs: [prepare, desktop, android, docker]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

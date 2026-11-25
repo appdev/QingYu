@@ -1,5 +1,7 @@
 import { markupLabel, translatedLabel } from './ui-language';
 import { invoke } from '@tauri-apps/api/core';
+import { settingsSelect } from './settings-select';
+import { usesGlisse, mountWebGlass } from './web-glass-mount';
 import './calendar.css';
 
 export function calendarEvent(title: string, notes: string, start: string, end: string, reminder: string) {
@@ -46,10 +48,30 @@ export function setupCalendar(getTitle: () => string) {
     const form = current.querySelector('form')!;
     const next = new Date(Math.ceil((Date.now() + 16 * 60_000) / 900_000) * 900_000);
     title.value = [...getTitle()].slice(0, 200).join(''); start.value = localTime(next); end.value = localTime(new Date(next.getTime() + 3_600_000));
+    const glass = usesGlisse(current);
+    const reminderLabel = current.querySelector<HTMLLabelElement>('label[for=event-reminder]')!;
+    const choice = glass ? settingsSelect(reminder, () => reminderLabel.textContent ?? '', false) : undefined;
+    const disposeFields: (() => void)[] = [];
+    if (choice) {
+      reminderLabel.after(choice.element); reminderLabel.htmlFor = choice.id;
+      for (const input of [start, end]) {
+        const value = input.value;
+        input.type = 'text';
+        input.value = value.replace('T', ' ');
+        input.placeholder = 'YYYY-MM-DD HH:mm';
+        input.maxLength = 16;
+        const field = document.createElement('div');
+        field.className = 'calendar-time-field web-glass-frost';
+        input.replaceWith(field); field.append(input);
+        disposeFields.push(mountWebGlass(field, { tint: 82, blur: 8 }));
+      }
+    }
     reminder.onchange = () => { field('event-custom').hidden = reminder.value !== 'custom'; minutes.required = reminder.value === 'custom'; };
     let busy = false, saved = false;
     current.addEventListener('cancel', event => { if (busy) event.preventDefault(); });
     current.addEventListener('close', () => {
+      choice?.destroy();
+      for (const dispose of disposeFields) dispose();
       current.remove(); dialog = undefined;
       const trigger = button.closest('#format-menu') ? document.getElementById('format-button') : button;
       trigger?.focus();
@@ -59,7 +81,8 @@ export function setupCalendar(getTitle: () => string) {
       event.preventDefault();
       if (busy || saved) return;
       try {
-        const value = calendarEvent(title.value, notes.value, start.value, end.value, reminder.value === 'custom' ? minutes.value : reminder.value);
+        const time = (input: HTMLInputElement) => glass ? input.value.trim().replace(' ', 'T') : input.value;
+        const value = calendarEvent(title.value, notes.value, time(start), time(end), reminder.value === 'custom' ? minutes.value : reminder.value);
         if (reminder.value === 'custom' && minutes.value === '') throw new Error('请输入提前提醒的分钟数');
         busy = true; form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('input, button, select, textarea').forEach(control => { control.disabled = true; });
         feedback.textContent = translatedLabel('正在保存，请完成系统日历授权…'); feedback.dataset.error = 'false';
@@ -70,6 +93,7 @@ export function setupCalendar(getTitle: () => string) {
       } finally {
         busy = false;
         if (!saved) form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('input, button, select, textarea').forEach(control => { control.disabled = false; });
+        choice?.update();
         cancel.disabled = false;
       }
     };
