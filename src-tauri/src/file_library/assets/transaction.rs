@@ -128,9 +128,9 @@ pub(in crate::file_library) fn stage_lock(root: &Path) -> Result<fs::File> {
 
 pub(in crate::file_library) fn reap_stages(root: &Path) -> Result<()> {
     let lock = stage_lock(root)?;
-    if try_lock(&lock).is_err() {
+    let Ok(_lock) = try_lock(lock) else {
         return Ok(());
-    }
+    };
     for entry in fs::read_dir(root.join(META)).map_err(error)? {
         let entry = entry.map_err(error)?;
         if entry

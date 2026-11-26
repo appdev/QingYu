@@ -47,7 +47,7 @@ impl DiskLibrary {
             .write(true)
             .open(checked(&self.root, ".miaoyan/write.lock")?)
             .map_err(error)?;
-        try_lock(&lock).map_err(|_| "笔记库正在写入，稍后重新检查外部变化".to_string())?;
+        let _lock = try_lock(lock).map_err(|_| "笔记库正在写入，稍后重新检查外部变化".to_string())?;
         if checked(&self.root, JOURNAL)?.exists()
             || checked(&self.root, folders::FOLDER_JOURNAL)?.exists()
         {

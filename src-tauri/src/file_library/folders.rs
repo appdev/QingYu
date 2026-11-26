@@ -259,7 +259,7 @@ impl DiskLibrary {
             .write(true)
             .open(checked(&self.root, ".miaoyan/write.lock")?)
             .map_err(error)?;
-        try_lock(&lock).map_err(|_| "笔记库正在被其他操作写入")?;
+        let _lock = try_lock(lock).map_err(|_| "笔记库正在被其他操作写入")?;
         if !self.index_is_current(&checked(&self.root, INDEX)?)?
             || checked(&self.root, JOURNAL)?.exists()
             || checked(&self.root, FOLDER_JOURNAL)?.exists()

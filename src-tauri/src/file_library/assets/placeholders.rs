@@ -62,8 +62,7 @@ pub(super) fn update(
         .ok_or("附件占位已变化，请重试")?;
     let _stage_lock = if bytes.is_some() {
         let lock = transaction::stage_lock(&store.root)?;
-        try_lock(&lock).map_err(|_| "附件同步正在暂存，请稍后重试")?;
-        Some(lock)
+        Some(try_lock(lock).map_err(|_| "附件同步正在暂存，请稍后重试")?)
     } else {
         None
     };

@@ -395,7 +395,7 @@ struct StageSession {
     revision: u64,
     root: PathBuf,
     files: StageFiles,
-    _lock: fs::File,
+    _lock: FileLock,
 }
 
 #[cfg(feature = "app")]
@@ -421,7 +421,7 @@ pub async fn library_stage_asset(
     let mut active = staging.0.lock().map_err(error)?;
     if active.is_none() {
         let lock = transaction::stage_lock(&store.root)?;
-        try_lock(&lock).map_err(|_| "笔记库正在暂存其他同步附件，请稍后重试")?;
+        let lock = try_lock(lock).map_err(|_| "笔记库正在暂存其他同步附件，请稍后重试")?;
         *active = Some(StageSession {
             batch: batch.clone(),
             revision,
@@ -735,7 +735,7 @@ mod tests {
         let mut stage = StageFiles::new(dir.path());
         let staged = stage.write(&[4, 2]).unwrap();
         let lock = transaction::stage_lock(dir.path()).unwrap();
-        try_lock(&lock).unwrap();
+        let lock = try_lock(lock).unwrap();
         DiskLibrary::open(dir.path().into(), None).unwrap();
         assert_eq!(staged.read(dir.path()).unwrap(), &[4, 2]);
         drop(lock);

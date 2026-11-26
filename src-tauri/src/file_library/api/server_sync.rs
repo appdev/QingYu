@@ -424,7 +424,7 @@ enum Operation {
 
 struct Stage {
     files: assets::StageFiles,
-    _lock: fs::File,
+    _lock: FileLock,
 }
 
 fn dispatch(
@@ -467,7 +467,7 @@ fn dispatch(
             }
             if stage.is_none() {
                 let lock = assets::stage_lock(&store.root)?;
-                try_lock(&lock).map_err(error)?;
+                let lock = try_lock(lock).map_err(error)?;
                 *stage = Some(Stage {
                     files: assets::StageFiles::new(&store.root),
                     _lock: lock,

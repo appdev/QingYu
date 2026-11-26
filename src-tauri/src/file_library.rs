@@ -26,7 +26,28 @@ pub(crate) mod storage_usage;
 #[cfg(feature = "app")]
 pub(crate) mod workspace;
 
-fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
+#[must_use = "请持有守卫，直到受锁保护的操作完成"]
+struct FileLock(fs::File);
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // 子进程在 exec 前可能仍持有 fork 时继承的文件描述符，因此要在关闭文件前显式解锁。
+        #[cfg(target_os = "android")]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = self.0.unlock();
+    }
+}
+
+fn try_lock(file: fs::File) -> std::result::Result<FileLock, fs::TryLockError> {
+    try_lock_file(&file)?;
+    Ok(FileLock(file))
+}
+
+fn try_lock_file(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
     #[cfg(target_os = "android")]
     {
         use std::os::fd::AsRawFd;
@@ -862,7 +883,8 @@ impl DiskLibrary {
             .truncate(false)
             .open(checked(&root, ".miaoyan/write.lock")?)
             .map_err(error)?;
-        try_lock(&scan_lock).map_err(|_| "笔记库正在被另一实例写入，请稍后重试".to_string())?;
+        let scan_lock =
+            try_lock(scan_lock).map_err(|_| "笔记库正在被另一实例写入，请稍后重试".to_string())?;
         folders::recover(&root)?;
         let index_path = checked(&root, INDEX)?;
         let journal = checked(&root, JOURNAL)?;
@@ -1153,7 +1175,7 @@ impl DiskLibrary {
             .truncate(false)
             .open(checked(&self.root, ".miaoyan/write.lock")?)
             .map_err(error)?;
-        try_lock(&lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
+        let _lock = try_lock(lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
         let index_path = checked(&self.root, INDEX)?;
         if index_path.exists() && !self.index_is_current(&index_path)? {
             return Err("磁盘笔记库已被另一实例更新，请重新打开".into());
@@ -1421,7 +1443,7 @@ impl DiskLibrary {
             .truncate(false)
             .open(lock_path)
             .map_err(error)?;
-        try_lock(&lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
+        let _lock = try_lock(lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
         let index_path = checked(&self.root, INDEX)?;
         if index_path.exists() && !self.index_is_current(&index_path)? {
             return Err("磁盘笔记库已被另一实例更新，请重新打开".into());

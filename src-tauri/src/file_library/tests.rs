@@ -191,13 +191,54 @@ fn write_lock_excludes_other_handles_and_releases_on_close() {
         .write(true)
         .open(&path)
         .unwrap();
-    try_lock(&first).unwrap();
+    try_lock_file(&first).unwrap();
     assert!(matches!(
-        try_lock(&second),
+        try_lock_file(&second),
         Err(fs::TryLockError::WouldBlock)
     ));
     drop(first);
-    try_lock(&second).unwrap();
+    try_lock_file(&second).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn write_lock_releases_while_child_is_still_in_pre_exec() {
+    use std::io::Read;
+    use std::net::Shutdown;
+    use std::os::unix::{net::UnixStream, process::CommandExt};
+    use std::process::Command;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("write.lock");
+    let lock = fs::File::create(&path).unwrap();
+    let lock = try_lock(lock).unwrap();
+
+    let (mut parent, mut child) = UnixStream::pair().unwrap();
+    let timeout = Some(Duration::from_secs(5));
+    parent.set_read_timeout(timeout).unwrap();
+    child.set_read_timeout(timeout).unwrap();
+    let worker = std::thread::spawn(move || {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exit 0"]);
+        // Only shutdown and read on an existing socket between fork and exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                child.shutdown(Shutdown::Write)?;
+                child.read(&mut [0])?;
+                Ok(())
+            });
+        }
+        cmd.status().unwrap()
+    });
+
+    assert_eq!(parent.read(&mut [0]).unwrap(), 0);
+    drop(lock);
+    let next = fs::File::options().write(true).open(path).unwrap();
+    let result = try_lock(next);
+    parent.shutdown(Shutdown::Write).unwrap();
+    assert!(worker.join().unwrap().success());
+    let _next = result.unwrap();
 }
 
 fn open(root: &Path) -> DiskLibrary {
