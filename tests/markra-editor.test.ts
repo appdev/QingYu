@@ -345,7 +345,7 @@ it('draws lists like MiaoYan’s preview: bullets by depth, tight blank lines, c
   } finally { view.destroy(); root.remove(); }
 });
 
-it('collapses a heading, its nested text and table without changing the source', () => {
+it('collapses a heading, its nested text and table without changing the source', async () => {
   const source = '## 收起此节\n\n正文\n\n### 子节\n\n| 表头 |\n| --- |\n| 不应可见 |\n\n```md\n## 代码\n```\n\n## 下一节\n\n可见的正文';
   const root = document.body.appendChild(document.createElement('div'));
   const change = vi.fn();
@@ -354,15 +354,14 @@ it('collapses a heading, its nested text and table without changing the source',
   try {
     editor.activate(source, 'heading-fold');
     expect(forceParsing(view, view.state.doc.length)).toBe(true);
-    const toggle = () => root.querySelector<HTMLButtonElement>('.qingyu-heading-fold')!;
-    expect(root.querySelectorAll('.qingyu-heading-fold')).toHaveLength(3);
+    expect(root.querySelector('.qingyu-heading-fold')).toBeNull();
     view.dispatch({ selection: { anchor: source.indexOf('正文') } });
-    toggle().click();
+    await editor.foldHeadings(false);
     expect(view.state.selection.main.head).toBe(source.indexOf('\n'));
     expect(root.querySelector('.cm-markra-table')).toBeNull();
     expect(root.textContent).not.toContain('子节');
     expect(root.textContent).toContain('下一节');
-    expect(toggle().parentElement?.querySelector('.qingyu-heading-more')).not.toBeNull();
+    expect(root.querySelector('.qingyu-heading-more')).not.toBeNull();
     expect(view.state.doc.toString()).toBe(source);
     expect(change).not.toHaveBeenCalled();
 
@@ -370,8 +369,8 @@ it('collapses a heading, its nested text and table without changing the source',
     const after = source.indexOf('\n\n## 下一节');
     expect(view.state.doc.toString()).toBe(`${source.slice(0, after)}\n${source.slice(after)}`);
     expect(view.state.selection.main.head).toBe(after + 1);
-    expect(foldedRanges(view.state).size).toBe(1);
-    toggle().click();
+    expect(foldedRanges(view.state).size).toBe(3);
+    await editor.foldHeadings(true);
     expect(foldedRanges(view.state).size).toBe(0);
     expect(root.querySelector('.cm-markra-table')).not.toBeNull();
   } finally { view.destroy(); root.remove(); }
@@ -387,7 +386,7 @@ it('keeps heading controls out of the text while preserving heading formatting c
     view.focus();
     view.dispatch({ selection: { anchor: 4 } });
     expect(view.hasFocus).toBe(true);
-    expect(root.querySelectorAll('.qingyu-heading-fold')).toHaveLength(1);
+    expect(root.querySelector('.qingyu-heading-fold')).toBeNull();
     expect(root.querySelector('.markra-heading-level-control')).toBeNull();
     expect(runMarkraCommand(view, 'block.heading.6')).toBe(true);
     expect(view.state.doc.toString()).toBe('#####' + source);
@@ -406,9 +405,8 @@ it('restores the same named section after a note changes and reveals it when nav
   try {
     editor.activate(source, note);
     expect(forceParsing(view, view.state.doc.length)).toBe(true);
-    const toggles = root.querySelectorAll<HTMLButtonElement>('.qingyu-heading-fold');
-    expect(toggles).toHaveLength(2);
-    toggles[1].click();
+    await editor.foldHeadings(false);
+    root.querySelector<HTMLButtonElement>('.qingyu-heading-more')!.click();
     await vi.waitFor(() => expect(localStorage.getItem(storageKey)).toMatch(/^\["[a-f0-9]{20}"\]$/));
     editor.activate('另一篇', 'another-note');
     expect(foldedRanges(view.state).size).toBe(0);
@@ -427,7 +425,7 @@ it('restores the same named section after a note changes and reveals it when nav
   }
 });
 
-it('finds committed Chinese in a folded table, counts matches and replaces them through the search panel', () => {
+it('finds committed Chinese in a folded table, counts matches and replaces them through the search panel', async () => {
   const source = '## 表格\n\n| 表头 |\n| --- |\n| 中文 |\n\n## 后文\n\n正文中文';
   const root = document.body.appendChild(document.createElement('div'));
   const editor = createRichEditor(root, () => {});
@@ -435,8 +433,8 @@ it('finds committed Chinese in a folded table, counts matches and replaces them 
   try {
     editor.activate(source, 'find-in-folded-table');
     expect(forceParsing(view, view.state.doc.length)).toBe(true);
-    root.querySelector<HTMLButtonElement>('.qingyu-heading-fold')!.click();
-    expect(foldedRanges(view.state).size).toBe(1);
+    await editor.foldHeadings(false);
+    expect(foldedRanges(view.state).size).toBe(2);
     editor.find();
     const panel = root.querySelector('.cm-panels-top .qingyu-find')!;
     const query = panel.querySelector<HTMLInputElement>('[main-field]')!;
@@ -451,7 +449,7 @@ it('finds committed Chinese in a folded table, counts matches and replaces them 
     query.value = '中文';
     query.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
     expect(count.value).toBe('2');
-    expect(foldedRanges(view.state).size).toBe(0);
+    expect(foldedRanges(view.state).size).toBe(1);
     expect(root.querySelector('td .cm-markra-search-match-current')?.textContent).toBe('中文');
     query.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     expect(view.state.selection.main.from).toBe(source.lastIndexOf('中文'));

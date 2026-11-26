@@ -90,31 +90,25 @@ export function revealHeadingSection(view: EditorView, position: number) {
   if (effects.length) view.dispatch({ effects });
 }
 
-class HeadingFoldButton extends WidgetType {
-  constructor(readonly section: Section, readonly collapsed: boolean, readonly more = false) { super(); }
-  eq(other: HeadingFoldButton) {
-    return this.section.from === other.section.from && this.section.to === other.section.to &&
-      this.section.complete === other.section.complete && this.collapsed === other.collapsed && this.more === other.more;
+// 收起后标题末尾的「…」，点一下展开这一节。收起只能通过菜单或快捷键一次收起全部。
+class HeadingMoreButton extends WidgetType {
+  constructor(readonly section: Section) { super(); }
+  eq(other: HeadingMoreButton) {
+    return this.section.from === other.section.from && this.section.to === other.section.to;
   }
   toDOM(view: EditorView) {
     const button = view.dom.ownerDocument.createElement('button');
     button.type = 'button';
-    button.className = this.more ? 'qingyu-heading-more' : 'qingyu-heading-fold';
-    if (this.more) button.textContent = '…';
-    else button.ariaExpanded = String(!this.collapsed);
-    button.ariaLabel = button.title = this.collapsed ? translatedLabel('editor.expandSection') : translatedLabel('收起章节');
+    button.className = 'qingyu-heading-more';
+    button.textContent = '…';
+    button.ariaLabel = button.title = translatedLabel('editor.expandSection');
     button.onmousedown = event => event.preventDefault();
-    button.onclick = async event => {
+    button.onclick = event => {
       event.preventDefault();
       event.stopPropagation();
       if (view.compositionStarted) return;
       const existing = foldAt(view.state, this.section.from);
-      if (existing) { view.dispatch({ effects: unfoldEffect.of(existing) }); return; }
-      const known = this.section;
-      const doc = view.state.doc;
-      const ranges = known.complete ? [known] : await parsedSections(view, () => view.state.doc === doc);
-      const current = ranges.find(section => section.from === known.from);
-      if (view.dom.isConnected && doc === view.state.doc && current && !view.compositionStarted) collapse(view, [current]);
+      if (existing) view.dispatch({ effects: unfoldEffect.of(existing) });
     };
     return button;
   }
@@ -198,14 +192,10 @@ export function headingFolds(noteId: () => string | undefined) {
     }
 
     private render(view: EditorView): DecorationSet {
-      const head = view.state.doc.lineAt(view.state.selection.main.head).from;
       return Decoration.set(this.headings.flatMap(section => {
         if (!view.visibleRanges.some(range => section.line >= range.from && section.line <= range.to)) return [];
-        const collapsed = Boolean(foldAt(view.state, section.from));
-        const toggles = [Decoration.line({ class: 'qingyu-fold-heading', attributes: { 'data-fold-caret': String(head === section.line) } }).range(section.line),
-          Decoration.widget({ side: -1, widget: new HeadingFoldButton(section, collapsed) }).range(section.line)];
-        if (collapsed) toggles.push(Decoration.widget({ side: -1, widget: new HeadingFoldButton(section, true, true) }).range(section.from));
-        return toggles;
+        if (!foldAt(view.state, section.from)) return [];
+        return [Decoration.widget({ side: -1, widget: new HeadingMoreButton(section) }).range(section.from)];
       }), true);
     }
 
@@ -213,7 +203,7 @@ export function headingFolds(noteId: () => string | undefined) {
       const parsed = update.docChanged || syntaxTree(update.startState) !== syntaxTree(update.state);
       const foldsChanged = foldedRanges(update.startState) !== foldedRanges(update.state);
       if (parsed) this.headings = sections(update.state);
-      if (parsed || foldsChanged || update.selectionSet || update.viewportChanged) this.decorations = this.render(update.view);
+      if (parsed || foldsChanged || update.viewportChanged) this.decorations = this.render(update.view);
       if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(reloadHeadingFolds)))) {
         this.revision++;
         void this.restore(update.view);

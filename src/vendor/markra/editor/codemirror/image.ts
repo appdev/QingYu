@@ -1,11 +1,14 @@
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { EditorSelection, EditorState } from "@codemirror/state";
+import type { SyntaxNode } from "@lezer/common";
 import {
   Decoration,
   EditorView,
   WidgetType,
   type EditorView as CodeMirrorView,
 } from "@codemirror/view";
+import { createLucideIcon } from "@markra/shared";
+import { Image as ImageIcon } from "lucide";
 import { defineMarkraPlugin } from "./plugin.ts";
 import {
   createMediaViewerEnlargeIcon,
@@ -65,7 +68,51 @@ interface ImageWidgetDomRecord {
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
 const scheme = /^([a-z][a-z\d+.-]*):/iu;
 
+// 编辑器失焦时选中的图片收起源码，源码被图片盖住，只剩一行高的选区色块，
+// 会从图片的透明边缘透出来。这时图片已有自己的选中描边，把这块选区色藏掉。
+function selectionIsSingleImage(state: EditorState) {
+  const selection = state.selection;
+  if (selection.ranges.length !== 1 || selection.main.empty) return false;
+  const { from, to } = selection.main;
+  let found = false;
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter(node) {
+      if (found) return false;
+      if (node.name === "Image" && node.from === from && node.to === to) found = true;
+    },
+  });
+  return found;
+}
+
+const imageSelectionAttributes = EditorView.editorAttributes.compute(
+  ["selection", "doc"],
+  (state): Record<string, string> =>
+    selectionIsSingleImage(state) ? { "data-markra-image-selected": "true" } : {},
+);
+
 const imageTheme = EditorView.baseTheme({
+  '&:not(.cm-focused)[data-markra-image-selected="true"] .cm-selectionBackground': {
+    display: "none",
+  },
+  ".cm-markra-image-source": {
+    color: "var(--muted, #888)",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "0.9em",
+  },
+  ".cm-markra-image-source-icon": {
+    display: "inline-block",
+    width: "1em",
+    height: "1em",
+    marginInlineEnd: "0.3em",
+    verticalAlign: "-0.12em",
+    color: "var(--muted, #888)",
+  },
+  ".cm-markra-image-source-line .markra-image-node": {
+    display: "block",
+    marginTop: "0.4em",
+  },
   ".cm-markra-image": {
     borderRadius: "0.35em",
     display: "inline-block",
@@ -233,9 +280,45 @@ function claimImageElement(root: HTMLElement, widget: ImageWidget) {
   return claimedRecord;
 }
 
-// 与 Pinto 一致：单击只选中整张图片，不显示 Markdown 源码；选中时由样式画出选中色和描边。
+// 选中时由样式画出选中色和描边。
 function markImageSelected(root: HTMLElement, selected: boolean) {
   root.classList.toggle("markra-image-node-selected", selected);
+}
+
+class ImageSourceIconWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+
+  toDOM(view: CodeMirrorView) {
+    return createLucideIcon(view.dom.ownerDocument, ImageIcon, "cm-markra-image-source-icon") as unknown as HTMLElement;
+  }
+}
+
+// 和 Typora 一样：整张图片被选中，或光标、选区落在 ![…](…) 里面时，
+// 在图片上方露出源码供直接修改。光标停在图片前后不算，免得上下移动时行高来回跳。
+function imageSourceRevealed(view: CodeMirrorView, state: EditorState, from: number, to: number) {
+  if (!view.hasFocus || state.facet(EditorState.readOnly)) return false;
+  return state.selection.ranges.some((range) =>
+    range.empty
+      ? range.head > from && range.head < to
+      : range.from >= from && range.to <= to,
+  );
+}
+
+// 选区落在哪张图片的源码里。预览只在光标移动时重建，选中图片 A 再点图片 B
+// 是从一段选区换到另一段选区，靠这个值变化来触发重建，B 的源码才会展开。
+export function imageSelectionKey(state: EditorState) {
+  const keys: string[] = [];
+  for (const range of state.selection.ranges) {
+    if (range.empty) continue;
+    for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(range.from, 1); node; node = node.parent) {
+      if (node.name !== "Image") continue;
+      if (node.from <= range.from && node.to >= range.to) keys.push(`${node.from}:${node.to}`);
+      break;
+    }
+  }
+  return keys.join(",");
 }
 
 class ImageWidget extends WidgetType {
@@ -546,32 +629,53 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
           );
           if (!source) return true;
           const line = context.state.doc.lineAt(context.node.from);
-          if (line.text.trim() === details.markdown) {
+          const standalone = line.text.trim() === details.markdown;
+          const revealed = imageSourceRevealed(
+            context.view,
+            context.state,
+            context.node.from,
+            context.node.to,
+          );
+          if (standalone) {
             context.add(
-              Decoration.line({ class: "cm-markra-image-line" }).range(
-                line.from,
-              ),
+              Decoration.line({
+                class: revealed
+                  ? "cm-markra-image-line cm-markra-image-source-line"
+                  : "cm-markra-image-line",
+              }).range(line.from),
             );
+          }
+          const widget = new ImageWidget(
+            className,
+            details,
+            context.node.from,
+            context.state.facet(EditorState.readOnly),
+            options.resolveSource,
+            options.mountImage,
+            selected,
+            source,
+            context.node.to,
+            context.view,
+          );
+          if (revealed) {
+            context.add(
+              Decoration.widget({ widget: new ImageSourceIconWidget(), side: -1 }).range(context.node.from),
+            );
+            context.add(
+              Decoration.mark({ class: "cm-markra-image-source" }).range(context.node.from, context.node.to),
+            );
+            context.add(Decoration.widget({ widget, side: 1 }).range(context.node.to));
+            return false;
           }
           context.add(
             Decoration.replace({
-              widget: new ImageWidget(
-                className,
-                details,
-                context.node.from,
-                context.state.facet(EditorState.readOnly),
-                options.resolveSource,
-                options.mountImage,
-                selected,
-                source,
-                context.node.to,
-                context.view,
-              ),
+              widget,
             }).range(context.node.from, context.node.to),
           );
           return false;
         },
       }),
+      imageSelectionAttributes,
       imageTheme,
     ],
   });

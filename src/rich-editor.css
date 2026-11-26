@@ -53,26 +53,8 @@
 :is(#rich-editor, #note-history-editor) .cm-markra-h2 { font-size: 1.41em; }
 :is(#rich-editor, #note-history-editor) .cm-markra-h3 { font-size: 1.18em; }
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-h4, .cm-markra-h5, .cm-markra-h6) { font-weight: 700; line-height: 1.4; }
-:is(#rich-editor, #note-history-editor) .qingyu-fold-heading { position: relative; }
-:is(#rich-editor, #note-history-editor) .qingyu-heading-fold, :is(#rich-editor, #note-history-editor) .qingyu-heading-more {
-  border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0;
-}
-:is(#rich-editor, #note-history-editor) .qingyu-heading-fold {
-  position: absolute; inset-inline-start: -24px; top: 0; width: 26px; height: 1.2em;
-  background: transparent; opacity: 0;
-}
-:is(#rich-editor, #note-history-editor) .qingyu-heading-fold::before {
-  content: ''; display: inline-block; width: 5px; height: 5px;
-  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
-}
-:is(#rich-editor, #note-history-editor) :is(.cm-markra-h2, .cm-markra-h3) .qingyu-heading-fold { top: .6em; }
-:is(#rich-editor, #note-history-editor) .qingyu-heading-fold[aria-expanded=false]::before { transform: rotate(-45deg); }
-html:not([data-mobile]) :is(#rich-editor, #note-history-editor) :is(.qingyu-fold-heading:hover, .qingyu-fold-heading:focus-within) .qingyu-heading-fold,
-:is(#rich-editor, #note-history-editor) .qingyu-heading-fold[aria-expanded=false] { opacity: 1; }
-html[data-mobile] :is(#rich-editor, #note-history-editor) .qingyu-heading-fold { visibility: hidden; display: grid; place-items: center; height: max(1lh, 16px); }
-html[data-mobile] :is(#rich-editor, #note-history-editor) .cm-focused .qingyu-fold-heading[data-fold-caret=true] .qingyu-heading-fold,
-html[data-mobile] :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[aria-expanded=false] { visibility: visible; opacity: 1; }
 :is(#rich-editor, #note-history-editor) .qingyu-heading-more {
+  border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0;
   display: inline-block; vertical-align: .12em; margin-inline-start: 8px;
   border-radius: 999px; background: var(--control-fill); min-width: 24px;
   font-size: .76em; line-height: 1.1;

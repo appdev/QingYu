@@ -304,9 +304,12 @@ const rawHtmlTheme = EditorView.baseTheme({
   ".cm-markra-html-hidden-line": {
     display: "none",
   },
+  // 编辑行继承了 break-spaces，HTML 源码里的换行和缩进会原样显示，
+  // 这里按浏览器的常规规则折叠空白，<pre> 自带的 white-space 不受影响。
   ".markra-html-node": {
     display: "block",
     maxWidth: "100%",
+    whiteSpace: "normal",
   },
   ".markra-html-node img": {
     maxWidth: "100%",

@@ -36,6 +36,7 @@ import { unescapeMarkdown } from "./syntax.ts";
 import { createTaskDecoration } from "./tasks.ts";
 import { isInsidePreformattedBlock } from "./blank-lines.ts";
 import { syntaxTreeChanged, updateOnlyInsertsPlainText } from "./changes.ts";
+import { imageSelectionKey } from "./image.ts";
 import { blockSpacingExtension } from "./block-spacing.ts";
 import { readWikiLink, wikiLinkAvailability, wikiLinksChanged } from "./wiki-link.ts";
 
@@ -1072,6 +1073,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
           searchChanged ||
           update.docChanged ||
           selectionChangeAffectsReveal(update) ||
+          (update.selectionSet && imageSelectionKey(update.startState) !== imageSelectionKey(update.state)) ||
           update.focusChanged ||
           update.viewportChanged ||
           reconfigured ||
