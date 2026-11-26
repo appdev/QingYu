@@ -44,5 +44,3 @@ MDSync 生成包在 `src/vendor/mdsync/`，包含 MIT 和依赖许可证。`node
 本地回归：`npx vitest run --exclude '**/artifacts/**' tests/`，排除验收目录里的旧源码快照，避免重复执行旧测试。真实服务测试需显式设置 `MIAOYAN_S3_CONFIG`，指向仓库外权限为 0600 的私有 JSON；字段为界面对应的 endpoint、region、bucket、prefix、accessKeyId、secretAccessKey。不要提交此文件或将值写入报告。
 
 `tests/sync-cloud.test.ts` 使用合成笔记，在指定测试前缀和其 `-cas` 前缀下创建、读取、条件更新、删除对象；完成后清理这些前缀。它另外准备 `-native` 前缀及私有 `native-probe.json`，用于 Rust 原生 HTTP 实测，然后由验证者清理。仅对明确可丢弃的测试空间执行。
-
-首次原版风险复现见 `mdsync-spike-results.md`；后续正式集成的测试结果以本轮交付说明和 `artifacts/mdsync-spike/live-results.json` 为准。

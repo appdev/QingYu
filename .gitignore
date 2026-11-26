@@ -1,5 +1,19 @@
 node_modules/
 /dist/
+# docs 下只跟踪维护中的指南、README 译本、产品截图和发布说明。
+/docs/**
+!/docs/api-service.md
+!/docs/calendar.md
+!/docs/development.md
+!/docs/external-files.md
+!/docs/file-library.md
+!/docs/s3-sync.md
+!/docs/images/
+!/docs/images/*.webp
+!/docs/readme/
+!/docs/readme/README.*.md
+!/docs/releases/
+!/docs/releases/v*.md
 src-tauri/target/
 src-tauri/gen/schemas/
 /src-tauri/plugins/*/android/build/
