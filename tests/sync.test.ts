@@ -381,7 +381,9 @@ describe('MDSync application synchronization', () => {
       }
     });
     try {
-      const session = createSyncSession(b.book, () => {}, () => true, true);
+      let resumed: Promise<void> | undefined;
+      const unlocked = vi.fn((settings: typeof config, id: string) => { resumed = session.run(settings, id); });
+      const session = createSyncSession(b.book, () => {}, () => true, true, unlocked);
       const account = mode === 'cloud' ? 'test-owner' : undefined;
       // A custom target might already have been edited. Returning to the old target must still offer recovery.
       if (mode === 's3') {
@@ -392,8 +394,18 @@ describe('MDSync application synchronization', () => {
       expect(b.placeholders()).toEqual({});
       expect(b.assets()).toEqual(a.assets());
       const state = await session.password!(next, account);
+      expect(unlocked).not.toHaveBeenCalled();
       await session.password!(next, account, { ...state, password: 'test upgrade password' });
-      await session.run(next, account);
+      if (account) {
+        expect(unlocked).toHaveBeenCalledExactlyOnceWith(next, account);
+        await resumed;
+        expect(native).toHaveBeenCalledWith('account_refresh_storage_usage', expect.objectContaining({ accountId: account }));
+        await session.password!(next, account);
+        expect(unlocked).toHaveBeenCalledOnce();
+      } else {
+        expect(unlocked).not.toHaveBeenCalled();
+        await session.run(next);
+      }
       expect(b.book.data.sync?.target).toBe(createStore(normalizeSettings(next)).identity());
       expect(server.objects.has(`${next.prefix}/manifest.json.enc`)).toBe(true);
       for (const [path, object] of previous) expect(server.objects.get(path)).toBe(object);

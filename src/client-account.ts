@@ -250,6 +250,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   let historyAccount: string | undefined;
   let historyRevision = 0;
   let accountRevision = 0;
+  let usageRevision = 0;
   let refreshing = false;
   let busy = false, disposed = false;
   const applyLabels = [...accountSections, confirmation, redeemDialog].map(bindLabels);
@@ -350,7 +351,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     storage.querySelector<HTMLElement>('[data-storage-sign-in]')!.hidden = info !== null;
     const plan = info?.subscription;
     const usage = info?.usage;
-    const quota = plan?.quotaBytes ?? usage?.quotaBytes;
+    const quota = usage?.quotaBytes ?? plan?.quotaBytes;
     const capacity = `${formatStorageBytes(usage?.usedBytes)} / ${formatStorageBytes(quota)}`;
     const accountUsage = panel.querySelector<HTMLElement>('[data-account-usage]')!;
     accountUsage.hidden = !usage;
@@ -399,7 +400,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       invalidateHistory();
     }
     if (info !== undefined && (previous?.id !== current?.id || previous?.avatar !== current?.avatar || previous?.email !== current?.email ||
-      previous?.displayName !== current?.displayName || previous?.name !== current?.name) && '__TAURI_INTERNALS__' in window) {
+      previous?.displayName !== current?.displayName || previous?.name !== current?.name)) {
       if ('__TAURI_INTERNALS__' in window) void emit(profileChanged).catch(() => {});
       else dispatchEvent(new Event(profileChanged));
     }
@@ -622,6 +623,13 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   for (const apply of applyLabels) apply();
   void run(() => readAccount(false), '正在读取账户…');
   return {
+    async refreshUsage(accountId: string) {
+      const revision = ++usageRevision, account = accountRevision;
+      const latest = await callAccount<AccountInfo | null>('account_status').catch(() => null);
+      if (disposed || revision !== usageRevision || account !== accountRevision || info?.profile.id !== accountId || latest?.profile.id !== accountId) return;
+      info.usage = latest.usage;
+      render();
+    },
     refreshLanguage() {
       for (const apply of applyLabels) apply();
       submit.textContent = workflowText(email.readOnly ? '登录' : '继续');

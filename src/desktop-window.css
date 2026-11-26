@@ -1,0 +1,28 @@
+.desktop-window-bar {
+  display: flex; flex: 0 0 38px; align-items: stretch;
+  background: var(--sidebar); color: var(--ink); user-select: none;
+}
+.desktop-window-drag {
+  display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding-inline: 12px;
+  font: 600 12px var(--font);
+}
+.desktop-window-drag > span, .desktop-window-menu > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-window-bar button { display: grid; place-items: center; background: transparent; border: 0; }
+.desktop-window-bar button:hover:not(:disabled), .desktop-window-menu[aria-expanded=true] { background: var(--control-hover); }
+.desktop-window-bar .desktop-window-menu {
+  display: flex; align-items: center; gap: 6px; min-width: 0; padding-inline: 12px; font: 650 13px var(--font);
+}
+.desktop-window-menu svg { flex: none; width: 12px; height: 12px; color: var(--muted); }
+.desktop-window-tools, .desktop-window-caption { display: flex; align-items: stretch; }
+.desktop-window-tools { --sync-badge-ring: var(--sidebar); }
+.desktop-window-tools + .desktop-window-caption { border-inline-start: 1px solid var(--line); margin-inline-start: 5px; }
+.desktop-window-tools .icon-button { width: 34px; height: 100%; border-radius: 0; }
+.desktop-window-tools .icon-button::before { inset: 0; }
+.desktop-window-tools .icon-button svg { width: 16px; height: 16px; }
+.desktop-window-control { width: 42px; padding: 0; }
+.desktop-window-control svg { width: 15px; height: 15px; }
+.desktop-window-close:hover { color: var(--error); }
+.desktop-window-bar ~ .feature-window-root { flex: 1; min-height: 0; }
+.desktop-window-bar ~ #app-shell:not([data-mobile-page]) #folder-pane { padding-block-start: 8px; }
+.desktop-window-bar ~ #app-shell #folder-pane > .folder-toolbar:not(:has(> :not([hidden]))) { display: none; }
+.desktop-window-bar ~ #app-shell .sidebar-footer:not(:has(button:not([hidden]))) { display: none; }

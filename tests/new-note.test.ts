@@ -77,9 +77,9 @@ it('lays out the empty line like the title so the caret lines up with the hint',
   // jsdom 不排版：比对样式表，空提示所在行和标题行用同一套字号、粗细和行高。
   const css = readFileSync('src/rich-editor.css', 'utf8');
   const sharedRule = css.match(/:is\(#rich-editor, #note-history-editor\) :is\(\.cm-markra-h1, \.cm-markra-note-title\),\s*#rich-editor \.cm-line:has\(> \.cm-placeholder\)\s*\{([^}]+)\}/)?.[1];
-  expect(sharedRule).toContain('font-size: calc(28em / 13);');
-  expect(sharedRule).toContain('font-size: round(nearest, 28em / 13, 1px);');
-  expect(sharedRule).toContain('font-weight: 700; line-height: 1.18;');
+  expect(sharedRule).toContain('font-size: 1.76em;');
+  expect(sharedRule).toContain('font-size: round(nearest, 1.76em, 1px);');
+  expect(sharedRule).toContain('font-weight: 700; line-height: 1.4;');
   // 提示本身不另设字号，跟着这一行走。
   expect(css).not.toMatch(/#rich-editor \.cm-placeholder \{[^}]*font-size/);
 });

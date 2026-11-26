@@ -37,8 +37,9 @@ const headingSpacing: Readonly<
   Record<HeadingLevel, Readonly<Record<HeadingEdge, number>>>
 > = {
   1: { after: 6, before: 0 },
-  2: { after: 3, before: 5 },
-  3: { after: 2, before: 2 },
+  // H2/H3 use font-relative padding on the heading line itself.
+  2: { after: 0, before: 0 },
+  3: { after: 0, before: 0 },
   4: { after: 0, before: 2 },
   5: { after: 0, before: 2 },
   6: { after: 0, before: 2 },

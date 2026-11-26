@@ -120,10 +120,10 @@ body[data-sync-busy='true'] .statusbar #word-count { display: none; }
 .format-menu kbd { font: 12px var(--font); color: var(--muted); }
 .cm-editor { height: 100%; color: var(--editor-ink); background: var(--paper); font-size: var(--preview-size, 16px); }
 .cm-editor.cm-focused { outline: none; }
-.cm-editor .cm-scroller { font-family: var(--preview-font, var(--font)); line-height: 1.675; letter-spacing: .02em; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.cm-editor .cm-scroller { font-family: var(--preview-font, var(--font)); line-height: var(--editor-leading); letter-spacing: .02em; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .cm-editor .cm-content { padding: 3px 0 96px; min-height: 100%; caret-color: var(--editor-ink); }
 /* shortcut: WebKit rounds soft-wrap line heights; min-height aligns hard lines with TextKit until its fractional-line-height bug is fixed. */
-.cm-editor .cm-line { padding: 0 31px; min-height: 1.675em; }
+.cm-editor .cm-line { padding: 0 31px; min-height: calc(var(--editor-leading) * 1em); }
 .cm-editor .cm-cursor { border-left-color: var(--editor-ink); }
 .cm-editor .cm-content ::selection { background: var(--selection); }
 .cm-editor .cm-panels { background: var(--paper); color: var(--ink); border-color: var(--border); }

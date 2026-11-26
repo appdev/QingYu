@@ -296,6 +296,55 @@ it('reveals the cell entered by the caret inside a horizontally scrolled grid', 
   } finally { scroller.remove(); }
 });
 
+it('marks emphasis that contains CJK text so it renders bold instead of slanted', () => {
+  const root = document.body.appendChild(document.createElement('div'));
+  const editor = createRichEditor(root, vi.fn());
+  const view = EditorView.findFromDOM(root.querySelector('.cm-editor')!)!;
+  try {
+    editor.activate('标题\n\n以*婴宁*为名，也叫 *Yingning*，或 *婴宁 Ying*。', 'cjk-emphasis');
+    expect(forceParsing(view, view.state.doc.length)).toBe(true);
+    const marked = [...root.querySelectorAll('.cm-markra-emphasis')].map(node => [node.textContent?.replaceAll('*', ''), node.classList.contains('cm-markra-emphasis-cjk')]);
+    expect(marked).toEqual([['婴宁', true], ['Yingning', false], ['婴宁 Ying', true]]);
+  } finally { view.destroy(); root.remove(); }
+});
+
+it('lays out a list item’s continuation lines under its text, like the paragraphs of an <li>', () => {
+  const root = document.body.appendChild(document.createElement('div'));
+  const editor = createRichEditor(root, () => {});
+  const view = EditorView.findFromDOM(root.querySelector('.cm-editor')!)!;
+  try {
+    const source = '标题\n\n1. 查看日志：\n   adb logcat -s Mode:D\n惰性续行\n   - 子项\n     子项续行\n2. 下一项\n     多打两格\n\n   ```sh\n   echo 代码\n   ```\n\n正文';
+    editor.activate(source, 'list-continuation');
+    expect(forceParsing(view, view.state.doc.length)).toBe(true);
+    const lines = [...root.querySelectorAll<HTMLElement>('.cm-markra-list-continuation')]
+      .map(line => [line.textContent, line.style.getPropertyValue('--list-depth'), line.dataset.markraListSource]);
+    // 只藏归属本项所需的缩进（`1. ` 的 3 格），用户多打的空格照常显示；
+    // 嵌套子项的续行跟子项的层级走，代码块和列表外的正文不算续行。
+    expect(lines).toEqual([['adb logcat -s Mode:D', '0', 'hidden'], ['惰性续行', '0', 'hidden'], ['子项续行', '1', 'hidden'], ['  多打两格', '0', 'hidden']]);
+    expect(view.state.doc.toString()).toBe(source);
+  } finally { view.destroy(); root.remove(); }
+});
+
+it('draws lists like MiaoYan’s preview: bullets by depth, tight blank lines, code blocks under the item text', () => {
+  const root = document.body.appendChild(document.createElement('div'));
+  const editor = createRichEditor(root, () => {});
+  const view = EditorView.findFromDOM(root.querySelector('.cm-editor')!)!;
+  try {
+    const source = '标题\n\n- 一级\n\n  ```sh\n  echo 1\n  ```\n\n  - 二级\n    - 三级\n\n正文';
+    editor.activate(source, 'list-preview');
+    expect(forceParsing(view, view.state.doc.length)).toBe(true);
+    expect([...root.querySelectorAll<HTMLElement>('.cm-markra-list-item')].map(line => line.dataset.listMarker)).toEqual(['•', '◦', '▪']);
+    // 列表里的空行收窄，列表后面的空行仍是普通段落间距。
+    const gaps = [...root.querySelectorAll('.cm-markra-empty-line')].map(line => line.classList.contains('cm-markra-list-gap'));
+    expect(gaps).toEqual([false, true, true, false]);
+    const code = [...root.querySelectorAll<HTMLElement>('.cm-markra-code-line')];
+    expect(code.every(line => line.classList.contains('cm-markra-list-block') && line.style.getPropertyValue('--list-depth') === '1')).toBe(true);
+    expect(code[1]?.textContent).toContain('echo 1');
+    expect(code[1]?.textContent?.startsWith(' ')).toBe(false);
+    expect(view.state.doc.toString()).toBe(source);
+  } finally { view.destroy(); root.remove(); }
+});
+
 it('collapses a heading, its nested text and table without changing the source', () => {
   const source = '## 收起此节\n\n正文\n\n### 子节\n\n| 表头 |\n| --- |\n| 不应可见 |\n\n```md\n## 代码\n```\n\n## 下一节\n\n可见的正文';
   const root = document.body.appendChild(document.createElement('div'));
@@ -1728,6 +1777,30 @@ it('opens the standalone image menu on a touch hold and cancels when the finger 
     expect(view.state.doc.toString()).toBe(source);
     menu.querySelector('button')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   } finally { view.destroy(); root.remove(); html.toggleAttribute('data-mobile', wasMobile); vi.useRealTimers(); }
+});
+
+it('opens the note menu from trailing whitespace and the editor margin without editing the note', () => {
+  const root = document.body.appendChild(document.createElement('div'));
+  const showNoteMenu = vi.fn();
+  const editor = createRichEditor(root, () => {}, { showNoteMenu });
+  const source = '正文';
+  try {
+    editor.activate(source, 'current');
+    vi.spyOn(editor.view, 'posAtCoords').mockReturnValue(source.length);
+    const trailing = root.querySelector('.cm-markra-trailing-space')!;
+    trailing.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, ctrlKey: true }));
+    for (const target of [trailing, editor.view.scrollDOM]) {
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 100, clientY: 150 });
+      expect(target.dispatchEvent(event)).toBe(false);
+      expect(showNoteMenu).toHaveBeenLastCalledWith('current', event, [
+        expect.objectContaining({ nativeRole: 'Cut', enabled: false }),
+        expect.objectContaining({ nativeRole: 'Copy', enabled: false }),
+        expect.objectContaining({ nativeRole: 'Paste' }),
+      ]);
+    }
+    expect(editor.view.state.doc.toString()).toBe(source);
+    expect(editor.view.state.selection.main.head).toBe(source.length);
+  } finally { editor.view.destroy(); root.remove(); }
 });
 
 it('passes the right-click selection and the same source to the picture action', async () => {

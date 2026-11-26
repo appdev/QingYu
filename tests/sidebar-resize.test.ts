@@ -19,7 +19,7 @@ it('keeps saved widths when release CSS removes the initial default body margin'
   resizing.update();
   expect(shell.style.getPropertyValue('--folder-width')).toBe('292px');
   expect(shell.style.getPropertyValue('--notes-width')).toBe('360px');
-  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 2, folders: 292, notes: 360, columns: 'all' });
+  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 3, folders: 292, notes: 360, columns: 'all' });
   expect(error).not.toHaveBeenCalled();
 });
 
@@ -49,7 +49,7 @@ it('keeps the folders collapsed until the captured drag ends and retains remembe
   expect(captured()).toBe(true);
   pointer(shell, 'pointerup', 500);
   expect(captured()).toBe(false);
-  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 2, folders: 292, notes: 360, columns: 'list' });
+  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 3, folders: 292, notes: 360, columns: 'list' });
   expect(shell.style.getPropertyValue('--folder-width')).toBe('0px');
   expect(shell.style.getPropertyValue('--notes-width')).toBe('360px');
   apply({ columns: 'all', unfolding: false });
@@ -65,20 +65,20 @@ it('can cancel a collapsed drag without overwriting its widths or layout', () =>
   expect(shell.style.getPropertyValue('--folder-width')).toBe('292px');
   expect(shell.style.getPropertyValue('--notes-width')).toBe('360px');
   expect(captured()).toBe(false);
-  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 2, folders: 292, notes: 360, columns: 'all' });
+  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 3, folders: 292, notes: 360, columns: 'all' });
 });
 
 it('keeps the note list visible and shrinks the folder column once the list reaches its minimum', () => {
   const { shell, move, pointer, layout } = startDrag('notes');
-  move(600);
-  expect(shell.style.getPropertyValue('--folder-width')).toBe('270px');
-  expect(shell.style.getPropertyValue('--notes-width')).toBe('330px');
+  move(570);
+  expect(shell.style.getPropertyValue('--folder-width')).toBe('273px');
+  expect(shell.style.getPropertyValue('--notes-width')).toBe('297px');
   move(271);
   expect(layout().columns).toBe('all');
   expect(shell.style.getPropertyValue('--folder-width')).toBe('248px');
-  expect(shell.style.getPropertyValue('--notes-width')).toBe('330px');
+  expect(shell.style.getPropertyValue('--notes-width')).toBe('297px');
   pointer(shell, 'pointerup', 271);
-  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 2, folders: 248, notes: 330, columns: 'all' });
+  expect(JSON.parse(localStorage.getItem('miaoyan-editor.sidebar-size.v1')!)).toEqual({ version: 3, folders: 248, notes: 297, columns: 'all' });
 });
 
 function startDrag(kind: 'folders' | 'notes') {

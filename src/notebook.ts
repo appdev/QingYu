@@ -1,4 +1,4 @@
-import { noteText, noteTitle, replaceFirstTitleLine } from './document-text';
+import { noteMatches, noteText, noteTitle, replaceFirstTitleLine } from './document-text';
 import { dailyFolderName, dailyNoteId, dailyTitle, findDailyNote, type DailyNoteSettings } from './daily-note';
 import type { State } from './vendor/mdsync/core';
 import { invoke } from '@tauri-apps/api/core';
@@ -38,6 +38,8 @@ export type Library = { version: 1; folders: Folder[]; notes: Note[]; activeId: 
 export type EditorBuffer = { noteId: string; source: string };
 export type NoteVersion = { id: string; updatedAt: number };
 type FileSnapshot = { library: Library; root: string; revision: number; trashed_folders?: string[] };
+/** 保存正文时，窗口里的笔记库还是最新的就只回传这一篇，别处改过才回整份快照。 */
+type SavedNote = FileSnapshot | { root: string; revision: number; note: Note };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 export class SyncSnapshotChanged extends Error {
   constructor() { super('同步期间本机笔记发生变化，已保留新内容，请再次同步'); }
@@ -93,6 +95,10 @@ export class Notebook {
   private persisted = false;
   private pending: Promise<unknown> = Promise.resolve();
   private disk?: { root: string; revision: number };
+  // 磁盘笔记库的普通提交要把整个笔记库（含正文）传给 Rust 再传回来，还要落盘。切换笔记时只改内存，
+  // 停下来 1.5 秒或保存、退出前再用 library_select 记下当前笔记，点击不用等磁盘。
+  private unsavedActive?: string;
+  private activeTimer?: ReturnType<typeof setTimeout>;
   private externalRevision = 0;
   external = false;
   noteWindow = false;
@@ -185,8 +191,10 @@ export class Notebook {
     try { this.adopt(await invoke('library_open', { seed })); }
     catch (error) { this.loadError = true; throw error; }
   }
-  private adopt(snapshot: FileSnapshot, activeId = this.noteWindow ? this.data.activeId : snapshot.library.activeId) {
+  private adopt(snapshot: FileSnapshot, activeId?: string) {
     if (!validLibrary(snapshot.library)) throw new Error('本地文件笔记库格式无效');
+    if (snapshot.root !== this.disk?.root) { clearTimeout(this.activeTimer); this.unsavedActive = undefined; }
+    activeId ??= this.noteWindow ? this.data.activeId : this.unsavedActive ?? snapshot.library.activeId;
     this.data = activeId === snapshot.library.activeId ? snapshot.library
       : { ...snapshot.library, activeId: snapshot.library.notes.some(note => note.id === activeId) ? activeId : '' };
     this.disk = { root: snapshot.root, revision: snapshot.revision }; this.persisted = true; this.loadError = false;
@@ -202,7 +210,10 @@ export class Notebook {
       const snapshot = await this.remote.commit(this.data, next, intent);
       if (snapshot) this.adoptServer(snapshot, next.activeId); else this.data = next;
     }
-    else if (this.disk) this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }), this.noteWindow ? next.activeId : undefined);
+    else if (this.disk) {
+      this.adopt(await invoke(this.external ? 'workspace_commit' : 'library_commit', { next, intent, revision: this.disk.revision, ...(assets ? { assets } : {}) }), this.noteWindow ? next.activeId : undefined);
+      if (this.unsavedActive === next.activeId) this.unsavedActive = undefined;
+    }
     else { this.storage.setItem(libraryKey, JSON.stringify(next)); this.data = next; this.persisted = true; }
     if (changed) this.onLocalChange?.();
   }
@@ -230,7 +241,12 @@ export class Notebook {
     if (!changed && this.persisted) return;
     if (root && !this.external && !this.remote && changed) {
       if (this.loadError) throw new Error('笔记库读取失败，未覆盖原有数据');
-      this.adopt(await invoke('library_save_note', { root, noteId: id, expectedSource: current.source, source }));
+      const saved = await invoke<SavedNote>('library_save_note', { root, noteId: id, expectedSource: current.source, source, revision: this.disk!.revision });
+      if ('library' in saved) this.adopt(saved);
+      else {
+        this.data = { ...this.data, notes: this.data.notes.map(note => note.id === saved.note.id ? saved.note : note) };
+        this.disk = { root: saved.root, revision: saved.revision }; this.persisted = true;
+      }
       this.onLocalChange?.();
       return;
     }
@@ -252,7 +268,16 @@ export class Notebook {
     }
     await this.commit({ ...this.data, notes, activeId: note.id });
   }); }
-  select(id: string) { return this.run(async () => {
+  select(id: string) {
+    if (this.disk && !this.external && !this.noteWindow && !this.loadError) {
+      if (!this.data.notes.some(note => note.id === id)) return Promise.reject(new Error('笔记不存在'));
+      this.data = { ...this.data, activeId: id };
+      this.unsavedActive = id;
+      clearTimeout(this.activeTimer);
+      this.activeTimer = setTimeout(() => { void this.flushActive(); }, 1500);
+      return Promise.resolve(true);
+    }
+    return this.run(async () => {
     if (!this.data.notes.some(note => note.id === id)) throw new Error('笔记不存在');
     if (this.noteWindow) {
       this.adopt(await invoke('workspace_note_snapshot', { noteId: id }), id);
@@ -266,6 +291,20 @@ export class Notebook {
     await this.commit({ ...this.data, activeId: id });
     return true;
   }); }
+  /** 把只记在内存里的当前笔记写进磁盘笔记库；写不进去时留到下次提交，不挡住保存和退出。 */
+  flushActive() {
+    clearTimeout(this.activeTimer); this.activeTimer = undefined;
+    return this.run(async () => {
+      const id = this.unsavedActive;
+      if (!id || !this.disk || this.data.activeId !== id) return true;
+      try {
+        // 只告诉磁盘端换了哪篇，不传整个笔记库，也不要回快照；当前笔记不算内容变化，版本号不变。
+        await invoke('library_select', { noteId: id, revision: this.disk.revision });
+        if (this.unsavedActive === id) this.unsavedActive = undefined;
+      } catch { /* 下次提交会带上当前笔记 */ }
+      return true;
+    });
+  }
   private async insertNote(folderId: string, title: string, source: string, id: string = crypto.randomUUID(), now = Date.now()) {
     if (!this.data.folders.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
     await this.commit({ ...this.data, notes: [{ id, folderId, source, createdAt: now, updatedAt: now, ...(title ? { title } : {}) }, ...this.data.notes], activeId: id }, 'create');
@@ -546,8 +585,27 @@ export function visibleNotes(library: Library, folderId: string | null, query: s
   const selected = library.folders.find(folder => folder.id === folderId);
   const path = selected?.path ?? selected?.name;
   const included = new Set(library.folders.filter(folder => folder.id === folderId || path && (folder.path ?? folder.name).startsWith(path + '/')).map(folder => folder.id));
-  return library.notes.filter(note => Boolean(note.trashed) === trashed && (!folderId || included.has(note.folderId)) && (!search || note.source.toLocaleLowerCase().includes(search) || noteTitle(note).toLocaleLowerCase().includes(search)))
+  return library.notes.filter(note => Boolean(note.trashed) === trashed && (!folderId || included.has(note.folderId)) && (!search || noteMatches(note, search)))
     .sort((a, b) => compareNotes(order, a, b));
+}
+
+/**
+ * 每个文件夹（含子文件夹）里未删除笔记的数量，和 visibleNotes(library, id, '').length 一致。
+ * 先按文件夹数一遍笔记，再按路径把子文件夹加上去，不用每个文件夹都把全部笔记筛选、排序一次。
+ */
+export function folderNoteCounts(library: Library) {
+  const direct = new Map<string, number>();
+  for (const note of library.notes) if (!note.trashed) direct.set(note.folderId, (direct.get(note.folderId) ?? 0) + 1);
+  const counts = new Map<string, number>();
+  for (const folder of library.folders) {
+    const path = folder.path ?? folder.name;
+    let count = 0;
+    for (const other of library.folders) {
+      if (other.id === folder.id || path && (other.path ?? other.name).startsWith(path + '/')) count += direct.get(other.id) ?? 0;
+    }
+    counts.set(folder.id, count);
+  }
+  return counts;
 }
 
 const localDay = (now: Date, offset: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime();
@@ -557,8 +615,9 @@ export function noteListDate(now: Date, locale = 'zh-CN') {
   const listDate = new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'numeric', day: 'numeric' });
   const yesterdayLabel = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day');
   const [sixDaysAgo, yesterday, today, tomorrow] = [-6, -1, 0, 1].map(offset => localDay(now, offset));
-  return (timestamp: number) => {
-    if (timestamp >= today && timestamp < tomorrow) return listClock.format(timestamp);
+  return (timestamp: number, previous?: number) => {
+    if ((timestamp >= today && timestamp < tomorrow)
+      || (previous !== undefined && new Date(timestamp).toDateString() === new Date(previous).toDateString())) return listClock.format(timestamp);
     if (timestamp >= yesterday && timestamp < today) return yesterdayLabel;
     return timestamp >= sixDaysAgo && timestamp < today ? listWeekday.format(timestamp) : listDate.format(timestamp);
   };

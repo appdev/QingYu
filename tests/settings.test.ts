@@ -191,11 +191,14 @@ it('keeps inline settings modal, contains editor shortcuts, and preserves a sync
 it('clamps legacy desktop note sizes and changes note text by one point', () => {
   expect(parsePreferences({ previewFontSize: 16, previewFont: 'Menlo' })).toMatchObject({ previewFontSize: 16, previewFont: 'Menlo' });
   expect(parsePreferences({ previewFontSize: 28 }).previewFontSize).toBe(24);
+  expect(parsePreferences({ previewFontSize: 13 }).previewFontSize).toBe(15);
   preferences.update({ previewFontSize: 16 });
   changeNoteTextSize('bigger'); expect(previewPreferences().size).toBe(17);
   changeNoteTextSize('smaller'); expect(previewPreferences().size).toBe(16);
-  changeNoteTextSize('actual'); expect(previewPreferences().size).toBe(13);
-  changeNoteTextSize('smaller'); expect(previewPreferences().size).toBe(13);
+  preferences.update({ previewFontSize: 20 });
+  changeNoteTextSize('actual'); expect(previewPreferences().size).toBe(16);
+  preferences.update({ previewFontSize: 15 });
+  changeNoteTextSize('smaller'); expect(previewPreferences().size).toBe(15);
 });
 
 it('accepts the equals key WebKit reports for Command plus', () => {

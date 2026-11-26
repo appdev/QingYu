@@ -274,6 +274,9 @@ const FORMAT_GROUPS: &[&[(&str, &str, Option<&str>)]] = &[
         ("format-date", "日期", Some("Cmd+Shift+D")),
         ("format-link", "链接", None),
     ],
+    &[
+        ("format-typography", "排版优化", Some("Cmd+Alt+Shift+F")),
+    ],
 ];
 
 #[cfg(target_os = "macos")]

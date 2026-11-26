@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop-window-controls",
+  "description": "Allow the Windows and Linux app title bar to control its window",
+  "platforms": ["windows", "linux"],
+  "windows": ["main", "document-*", "settings", "feature-picture-*"],
+  "permissions": [
+    "core:window:allow-is-minimizable",
+    "core:window:allow-is-maximizable",
+    "core:window:allow-is-maximized",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging"
+  ]
+}

@@ -19,7 +19,7 @@ export function themePalette(theme: Theme, dark: boolean) {
     secondary: muted, title: ink, gold: accent, brand: accent, link: accent,
     'editor-ink': ink, 'editor-code': ink, 'render-text': ink, 'render-code': ink, 'quote-text': muted,
     'note-selection': selection, 'folder-selection': selection, 'selection': selection,
-    'control-fill': soft, 'control-hover': selection, 'section-line': line, 'row-line': line,
+    'control-fill': soft, 'control-hover': selection, 'section-line': line, 'row-line': line, 'note-row-hairline': line,
     'settings-ground': panel, 'settings-sidebar': sidebar, 'settings-card': card, 'settings-sheet': panel,
     'settings-disclosure': theme === 'contrast' ? muted : muted + (dark ? 'A6' : '6E'),
     'settings-group-fill': card, 'settings-theme-fill': sidebar,

@@ -720,3 +720,17 @@ async fn browser_import_copies_markdown_files_into_the_library_like_the_desktop_
     assert_eq!(status, StatusCode::CONFLICT);
     assert!(String::from_utf8(body).unwrap().contains("没有可导入的 Markdown 文件"));
 }
+
+#[tokio::test]
+async fn typography_cleanup_needs_a_session_and_only_returns_text() {
+    let (_dir, _state, app) = fixture();
+    let request = json!({"source":"用Rust写的,很好用...\n"});
+    let (status, _, _) = call(&app, "POST", "/api/web/typography", "", request.clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let cookie = login(&app).await;
+    let before = load(&app, &cookie).await;
+    let (status, _, bytes) = call(&app, "POST", "/api/web/typography", &cookie, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_slice::<String>(&bytes).unwrap(), "用 Rust 写的，很好用……\n");
+    assert_eq!(load(&app, &cookie).await, before);
+}

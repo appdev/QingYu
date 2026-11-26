@@ -33,13 +33,11 @@ it('uses the sidebar guest icon for every signed-out settings avatar', async () 
   vi.mocked(invoke).mockResolvedValue(null);
   const markup = new DOMParser().parseFromString(readFileSync('index.html', 'utf8'), 'text/html');
   const sidebar = markup.querySelector<HTMLButtonElement>('#sidebar-account')!;
-  const refresh = sidebarAccount(sidebar);
   const { root, pages } = accountPages();
   const tab = root.appendChild(document.createElement('button'));
   tab.innerHTML = '<span class="settings-avatar">Q</span><strong>本地账户</strong>';
   const controller = mountClientAccount(pages, tab, vi.fn());
   try {
-    await refresh();
     await vi.waitFor(() => expect(pages.account.querySelector<HTMLButtonElement>('.client-sign-in-entry')?.hidden).toBe(false));
     const expected = sidebar.querySelector('svg')!.outerHTML;
     const avatars = root.querySelectorAll('.settings-avatar');
@@ -118,9 +116,12 @@ it('submits only after the password step and updates or clears the account card'
     expect(password.value).toBe(''); expect(email.readOnly).toBe(false);
     expect(dialog.open).toBe(false);
     controller.show('account');
+    const profileChanged = vi.fn();
+    window.addEventListener('client-profile-changed', profileChanged, { once: true });
     entry.click(); email.value = 'qa@example.invalid'; submit(); password.value = 'fixture-value'; submit();
     await vi.waitFor(() => expect(tab.ariaLabel).toBe('测试账号'));
     expect(ipc).toHaveBeenCalledWith('account_login', { username: 'qa@example.invalid', password: 'fixture-value', rememberDevice: false });
+    expect(profileChanged).toHaveBeenCalledOnce();
     expect(dialog.open).toBe(false);
     expect(entry.hidden).toBe(true);
     expect(pages.storage.querySelector('[data-subscription]')?.textContent).toBe('套餐有效');

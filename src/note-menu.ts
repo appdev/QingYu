@@ -1,4 +1,4 @@
-import { CopyPlus, Folder as FolderIcon, Pin, PinOff, Trash2, Undo2 } from 'lucide';
+import { CircleArrowOutUpRight, CopyPlus, Folder as FolderIcon, History, Pin, PinOff, Trash2, Undo2 } from 'lucide';
 import { noteTitle, type Notebook, type Library, type Note } from './notebook';
 import { markdownBody, plainMarkdownLine } from './document-text';
 import { showMenu, dismissPopupMenu as dismiss, popupMenuOpen, type MenuItem as Item } from './popup-menu';
@@ -241,20 +241,20 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     panel.style.setProperty('--arrow-top', `${Math.max(22, Math.min(anchor.top + anchor.height / 2 - parseFloat(panel.style.top), panel.offsetHeight - 22))}px`);
     infoPanel = panel; panel.focus();
   }
-  return async (id: string, x: number, y: number, surface?: 'move' | { anchor?: HTMLButtonElement; keyboard?: boolean; preview?: boolean }) => {
+  return async (id: string, x: number, y: number, surface?: 'move' | { anchor?: HTMLButtonElement; keyboard?: boolean; preview?: boolean; editorItems?: Item[]; restoreFocus?: () => void }) => {
     const options = typeof surface === 'object' ? surface : undefined;
     const anchor = options?.anchor;
-    const toolbar = Boolean(anchor);
+    const detail = Boolean(anchor || options?.editorItems);
     const closeToolbar = anchor?.getAttribute('aria-expanded') === 'true';
     dismiss(); dismissInfo();
     if (closeToolbar) return;
     const note = getBook().data.notes.find(note => note.id === id);
     if (!note) return;
-    const notes = toolbar || surface === 'move' ? [note] : selectedNotes(id);
+    const notes = detail || surface === 'move' ? [note] : selectedNotes(id);
     const multiple = notes.length > 1;
     const change = async (run: () => Promise<void>, reload = false) => { if (await actions.save()) await actions.change(run, reload); };
     const row = () => document.querySelector<HTMLElement>(`.note-row[data-note-id="${CSS.escape(id)}"]`);
-    const restoreFocus = () => (anchor ?? row())?.focus({ preventScroll: true });
+    const restoreFocus = options?.restoreFocus ?? (() => (anchor ?? row())?.focus({ preventScroll: true }));
     const compact = actions.mobile && options?.preview && !multiple;
     const trash: Item = { text: multiple ? `删除 ${notes.length} 篇笔记` : compact ? '删除' : uiText('moveToTrash'), destructive: true, run: () => changeNotes(notes, note => getBook().trashNote(note.id)) };
     const recover: Item = { text: multiple ? `恢复 ${notes.length} 篇笔记` : uiText('restoreNote'), run: () => changeNotes(notes, note => getBook().trashNote(note.id, false)) };
@@ -315,13 +315,14 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       move.icon = createLucideIcon(document, FolderIcon, '');
       trash.icon = createLucideIcon(document, Trash2, '');
     }
-    if (compact || surface === 'move') {
+    const moving = options?.editorItems || book.external ? [] : [move];
+    if (compact || surface === 'move' || (anchor && actions.mobile)) {
       move.run = () => showMoveFolderSheet(orderedFolders().map(({ folder, depth }) => ({
         name: folder.name, depth, current: !canMoveTo(folder.id),
         run: () => pickDestination(folder.id),
       })), restoreFocus);
       if (surface === 'move') { if (move.enabled && !getBook().external) move.run(); return; }
-    } else if (!toolbar && !getBook().external) {
+    } else if (moving.length) {
       const moveItems: Item[] = [];
       const submenus = new Map<string | null, Item[]>([[null, moveItems]]);
       for (const { folder, parentId, hasChildren } of orderedFolders()) {
@@ -346,7 +347,7 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       async run() { if (browser || await actions.save()) await actions.openNoteWindow?.(id); },
     }] : [];
     const details: Item[] = [
-      { text: '显示简介', shortcut: '⌥⌘I', run: () => showInfo(id, toolbar) },
+      { text: '显示简介', shortcut: '⌥⌘I', run: () => showInfo(id, Boolean(anchor)) },
       { text: '重命名', shortcut: '⌘R', enabled: !note.readOnly, run: () => renameSelected(id) },
     ];
     if (!actions.mobile && '__TAURI_INTERNALS__' in window && getBook().root && note.path) {
@@ -358,18 +359,19 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
         await invoke('library_reveal_note', { noteId: id });
       } });
     }
-    const moving = toolbar || getBook().external ? [] : [move];
-    const deleting = getBook().external ? [] : [trash];
-    const groups = note.trashed ? (toolbar ? [[recover]] : purge.length && (compact || multiple) ? [[recover, ...purge]] : [[recover], moving, purge])
+    const history = versions.enabled ? [versions] : [];
+    const deleting = getBook().external || options?.editorItems ? [] : [trash];
+    const groups = note.trashed ? (detail ? [[recover]] : purge.length && (compact || multiple) ? [[recover, ...purge]] : [[recover], moving, purge])
       : multiple ? [moving, deleting]
-      : toolbar ? [[...opening, pin, duplicate], deleting]
-        .map(group => group.filter(item => item.enabled !== false))
-      : compact ? [[share, ...moving, ...deleting], [pin, duplicate, ...(getBook().hasNoteHistory ? [versions] : [])]]
-      : [opening, [pin, duplicate, share], [...moving, ...(getBook().hasNoteHistory ? [versions] : [])], details, deleting];
+      : detail ? [[...opening, pin, duplicate].filter(item => item.enabled !== false).concat(moving, anchor ? history : []), deleting]
+      : compact ? [[share, ...moving, ...deleting], [pin, duplicate, ...history]]
+      : [opening, [pin, duplicate, share], [...moving, ...history], details, deleting];
+    if (options?.editorItems) groups.unshift(options.editorItems);
     const items = groups.filter(group => group.length).flatMap((group, index) => index ? [{ text: '' }, ...group] : group);
-    if (anchor) {
+    if (detail) {
       const toolbarIcons: [Item, typeof Pin][] = [[pin, note.pinned ? PinOff : Pin], [duplicate, CopyPlus], [trash, Trash2], [recover, Undo2]];
       for (const item of opening) toolbarIcons.push([item, newWindowIcon]);
+      if (anchor) toolbarIcons.push([move, CircleArrowOutUpRight], [versions, History]);
       for (const [item, icon] of toolbarIcons) item.icon = createLucideIcon(document, icon, '');
     }
     const preview = compact ? document.createElement('article') : undefined;

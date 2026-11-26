@@ -4,14 +4,14 @@ import allIcon from '../public/miaoyan/icons/allNotes.svg?raw';
 import folderIcon from '../public/miaoyan/icons/folder.svg?raw';
 import newNoteIcon from '../public/miaoyan/icons/newNote.svg?raw';
 import folderPlusIcon from '../public/miaoyan/icons/folder-badge-plus.svg?raw';
-import { defaultNoteOrder, groupNotes, isShared, noteListDate, noteTitle, visibleNotes, type Note, type Notebook, type NoteOrder } from './notebook';
-import { noteText } from './document-text';
+import { defaultNoteOrder, folderNoteCounts, groupNotes, isShared, noteListDate, noteTitle, visibleNotes, type Note, type Notebook, type NoteOrder } from './notebook';
+import { noteSummary } from './document-text';
 import { folderFit, nextSidebarLayout, type SidebarCommand, type SidebarLayout } from './sidebar-layout';
 import { createNoteMenu } from './note-menu';
 import { createFolderMenu } from './folder-menu';
 import { folderRows } from './folder-tree';
 import { setupSidebarResize } from './sidebar-resize';
-import { dismissPopupMenu, showMenu, type MenuOptions } from './popup-menu';
+import { dismissPopupMenu, showMenu, type MenuItem, type MenuOptions } from './popup-menu';
 import { ArrowUpDown, CalendarDays, Check, Folder as FolderIcon, FolderPlus, Inbox, Link as LinkIcon, Search, SquarePen, Trash2, X } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { formatLabel, translatedLabel, uiText } from './ui-language';
@@ -67,6 +67,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
   let folderId = restored?.folderId ?? null;
   let trash = restored?.trash ?? Boolean(getBook().current?.trashed);
   const orderKey = 'miaoyan-editor.note-order.v1';
+  const hideSummaryKey = 'qingyu.list.hideSummary';
+  window.addEventListener('storage', event => { if (event.key === hideSummaryKey || event.key === null) refresh(); });
   let order = defaultNoteOrder;
   try {
     const saved = JSON.parse(localStorage.getItem(orderKey) ?? 'null') as Partial<NoteOrder> | null;
@@ -119,7 +121,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   const editFolders = mobile ? document.createElement('button') : undefined;
   const editingFolders = () => folderPane.hasAttribute('data-editing-folders');
   $('#sidebar-brand-icon').innerHTML = brandIcon;
-  $('#new-folder-button').innerHTML = mobile ? folderPlusIcon : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+  $('#new-folder-button').innerHTML = mobile ? folderPlusIcon : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
   const compose = $('#new-note-button');
   if (mobile) compose.replaceChildren(createLucideIcon(document, SquarePen, ''));
   else compose.innerHTML = newNoteIcon;
@@ -127,6 +129,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   const todayGlyph = today.querySelector('text')!;
   let todayTimer: ReturnType<typeof setTimeout>;
   let listDay = '';
+  let searchTimer: ReturnType<typeof setTimeout> | undefined, lastSearchRefresh = 0;
   function updateToday() {
     clearTimeout(todayTimer);
     const now = new Date();
@@ -141,6 +144,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     else updateToday();
   });
   const toggle = $<HTMLButtonElement>('#sidebar-button'), foldersBack = $<HTMLButtonElement>('#folders-back');
+  const titlebarTools = toggle.closest('.desktop-window-tools');
   toggle.innerHTML = mobile ? backIcon : sidebarIcon;
   if (editFolders) {
     footer.classList.replace('sidebar-footer', 'folder-toolbar-actions');
@@ -268,9 +272,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const toolbarOwner = wideList ? notesToolbar : folderPane;
     const restoreToolFocus = folderToolbar.parentElement !== toolbarOwner && folderToolbar.contains(active) && (wideList || layout.columns === 'all');
     if (folderToolbar.parentElement !== toolbarOwner) toolbarOwner.prepend(folderToolbar);
-    const parent = externalWindow ? shell : innerWidth <= 900
+    const parent = titlebarTools ?? (externalWindow ? shell : innerWidth <= 900
       ? layout.columns === 'note' ? $('.titlebar') : $('.notes-navigation')
-      : layout.columns === 'note' ? $('.titlebar') : folderToolbar;
+      : layout.columns === 'note' ? $('.titlebar') : folderToolbar);
     if (toggle.parentElement !== parent) {
       parent.prepend(toggle);
     }
@@ -411,7 +415,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (mobile) icon.append(createLucideIcon(document, isTrash ? Trash2 : id === null ? Inbox : FolderIcon, ''));
     else icon.innerHTML = id === null ? allIcon : folderIcon;
     const text = document.createElement('span'); text.className = 'folder-name'; text.textContent = name;
-    const total = document.createElement('span'); total.className = 'folder-count'; total.textContent = String(count);
+    const total = document.createElement('span'); total.className = 'folder-count'; total.textContent = !mobile && count === 0 ? '' : String(count);
     button.append(icon, text, total);
     if (editingFolders()) {
       if (!id) button.disabled = true;
@@ -441,6 +445,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   }
   const thumbnailCleanups: (() => void)[] = [];
   function refresh() {
+    clearTimeout(searchTimer); searchTimer = undefined; lastSearchRefresh = performance.now();
     const now = new Date();
     listDay = now.toDateString();
     updateToday();
@@ -465,9 +470,10 @@ export function createSidebar(getBook: () => Notebook, actions: {
     // 正在侧栏里改文件夹名时不重建列表，否则输入框会被换掉；改完会再刷新一次。
     const renaming = Boolean(folders.querySelector('.renaming:not([data-committing]) .rename-folder'));
     if (!renaming) folders.replaceChildren(folderRow(null, uiText('allNotes'), getBook().data.notes.filter(note => !note.trashed).length));
+    const counts = folderNoteCounts(getBook().data);
     if (!renaming) for (const { folder, depth, hasChildren } of folderRows(getBook().data.folders, expanded, folderOrder)) {
       const entry = document.createElement('div'); entry.className = 'folder-entry';
-      const row = folderRow(folder.id, folder.name, visibleNotes(getBook().data, folder.id, '').length);
+      const row = folderRow(folder.id, folder.name, counts.get(folder.id) ?? 0);
       row.style.setProperty('--folder-depth', String(depth)); entry.style.setProperty('--folder-depth', String(depth));
       entry.append(row);
       if (hasChildren) {
@@ -532,22 +538,25 @@ export function createSidebar(getBook: () => Notebook, actions: {
       if (group.childElementCount > 1) list.append(group);
     }
     const date = noteListDate(now, locale);
+    const fullDate = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' });
+    const hideSummary = localStorage.getItem(hideSummaryKey) === 'true';
     for (const { label, notes: grouped } of groupNotes(notes, { ...order, grouped: groupsByDate(groupingKey()) }, now, locale)) {
+      let previous: number | undefined;
       const group = document.createElement('section'); group.role = 'group'; group.setAttribute('aria-label', label);
       if (label) {
         const heading = document.createElement('h3'); heading.className = 'notes-year'; heading.textContent = label;
         group.append(heading);
       }
       for (const note of grouped) {
-        const text = noteText(note.source), row = document.createElement('button');
+        const row = document.createElement('button');
         row.className = 'note-row'; row.role = 'option'; row.dataset.noteId = note.id;
         row.setAttribute('aria-selected', String(selectedNotes.has(note.id)));
         const title = document.createElement('span'); title.className = 'note-row-title'; title.textContent = noteTitle(note) + (note.conflictOf ? '（冲突副本）' : '');
         const info = document.createElement('span'); info.className = 'note-row-info';
         const time = document.createElement('time'), timestamp = order.key === 'createdAt' ? note.createdAt : note.updatedAt;
-        time.dateTime = new Date(timestamp).toISOString(); time.textContent = date(timestamp);
-        const separator = document.createElement('span'); separator.ariaHidden = 'true'; separator.textContent = '·';
-        const summary = document.createElement('span'); summary.className = 'note-row-summary'; summary.textContent = text.summary;
+        time.dateTime = new Date(timestamp).toISOString(); time.textContent = date(timestamp, previous);
+        time.title = fullDate.format(timestamp); time.setAttribute('aria-label', time.title);
+        if (!mobile && label && order.key !== 'title') previous = timestamp;
         // 参照 Pinto 列表：已分享的笔记在日期前放一个弱化的链接图标。
         const stamp = document.createElement('span'); stamp.className = 'note-row-date';
         if (isShared(note)) {
@@ -555,18 +564,31 @@ export function createSidebar(getBook: () => Notebook, actions: {
           row.dataset.shared = ''; row.setAttribute('aria-description', '已分享');
         }
         stamp.append(time);
-        info.append(stamp, separator, summary);
-        const location = document.createElement('span'); location.className = 'note-row-folder';
-        const icon = document.createElement('span'); icon.className = 'sidebar-icon'; icon.ariaHidden = 'true'; icon.innerHTML = folderIcon;
-        const label = document.createElement('span'); label.textContent = getBook().data.folders.find(folder => folder.id === note.folderId)!.name;
-        location.append(icon, label); row.append(title, info, location);
+        // 和 Pinto 一样分三行：标题独占一行，第二行是时间和摘要，第三行是所在文件夹。
+        // 桌面上时间和摘要之间只留空隙，手机上保留「·」。
+        row.append(title); info.append(stamp);
+        if (!hideSummary) {
+          if (mobile) {
+            const separator = document.createElement('span'); separator.ariaHidden = 'true'; separator.textContent = '·'; info.append(separator);
+          }
+          const summary = document.createElement('span'); summary.className = 'note-row-summary'; summary.textContent = noteSummary(note);
+          info.append(summary);
+        }
+        row.append(info);
+        // 已经在这个文件夹里浏览时，文件夹那一行就不用再显示了。
+        if (mobile || folderId !== note.folderId) {
+          const location = document.createElement('span'); location.className = 'note-row-folder';
+          const icon = document.createElement('span'); icon.className = 'sidebar-icon'; icon.ariaHidden = 'true'; icon.innerHTML = folderIcon;
+          const folderLabel = document.createElement('span'); folderLabel.textContent = getBook().data.folders.find(folder => folder.id === note.folderId)!.name;
+          location.append(icon, folderLabel); row.append(location);
+        }
         const picture = actions.thumbnail?.(note);
         if (picture) {
           const image = document.createElement('img'); image.className = 'note-row-thumbnail';
           image.alt = ''; image.loading = 'lazy'; image.decoding = 'async'; image.draggable = false;
           // 图片读不到时只去掉缩略图，行本身照常显示。
           image.onerror = () => { image.remove(); delete row.dataset.thumbnail; };
-          row.dataset.thumbnail = ''; row.append(image);
+          row.dataset.thumbnail = ''; row.dataset.picture = picture; row.append(image);
           const cleanup = actions.mountThumbnail?.(note, image, row, picture);
           if (cleanup) thumbnailCleanups.push(cleanup);
           else image.src = picture;
@@ -575,9 +597,22 @@ export function createSidebar(getBook: () => Notebook, actions: {
           if (event.shiftKey || event.metaKey || event.ctrlKey) {
             event.preventDefault(); extendSelection(note.id, event); return;
           }
-          if (!await actions.select(note.id)) return;
+          // 先把高亮画出来再换编辑器内容，点下去马上有反馈；切换失败再退回原来的选中。
+          const previous = selectedNotes, previousAnchor = selectionAnchor, before = getBook().data;
+          selectedNotes = new Set([note.id]); selectionAnchor = note.id; renderSelection();
+          await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+          if (!await actions.select(note.id)) {
+            if (selectedNotes.size === 1 && selectedNotes.has(note.id)) { selectedNotes = previous; selectionAnchor = previousAnchor; renderSelection(); }
+            return;
+          }
           selectedNotes = new Set([note.id]); selectionAnchor = note.id;
-          refresh();
+          const after = getBook().data;
+          // 只换了当前笔记时列表内容没变，不用整列重建（几百行加缩略图）。
+          if (after.notes === before.notes && after.folders === before.folders && displayedLibrary === before) {
+            displayedLibrary = after; selectionActive = after.activeId; renderSelection();
+            const location = document.querySelector('#note-location');
+            if (location) location.textContent = after.folders.find(folder => folder.id === getBook().current?.folderId)?.name ?? '';
+          } else refresh();
           if (!mobile || tablet?.matches) list.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(note.id)}"]`)?.focus({ preventScroll: true });
           if (mobile) { if (page !== 'folders') navigate('note'); return; }
           if (innerWidth <= 900 && layout.columns !== 'note') changeLayout('notes');
@@ -675,6 +710,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
           localStorage.setItem(keyForGrouping, String(grouped));
           refresh();
         } })) },
+      { text: uiText('hideNoteSummaries'), checked: localStorage.getItem(hideSummaryKey) === 'true', run: () => {
+        localStorage.setItem(hideSummaryKey, String(localStorage.getItem(hideSummaryKey) !== 'true')); refresh();
+      } },
       ...(!mobile && !getBook().external ? [{ text: '' }, { text: '新建文件夹', icon: createLucideIcon(document, FolderPlus, ''), run: () => newFolder() }] : []),
     ], { anchor: listMore, keyboard: event.detail === 0, label: '列表选项', onError: actions.error });
   };
@@ -695,6 +733,14 @@ export function createSidebar(getBook: () => Notebook, actions: {
   notesToolbar.before(edge, wash);
   if (!mobile) {
     notesToolbar.prepend($('.notes-summary'));
+    const scrollTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+    shell.addEventListener('scroll', event => {
+      const pane = event.target;
+      if (!(pane instanceof HTMLElement) || !pane.matches('#folder-list, #notes-list, #document-column .cm-scroller')) return;
+      pane.toggleAttribute('data-scrolling', true);
+      clearTimeout(scrollTimers.get(pane));
+      scrollTimers.set(pane, setTimeout(() => pane.removeAttribute('data-scrolling'), 700));
+    }, { capture: true, passive: true });
     let frame = 0;
     const markStuck = () => {
       frame = 0;
@@ -718,6 +764,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     new MutationObserver(() => { frame ||= requestAnimationFrame(markStuck); }).observe(list, { childList: true });
   }
   toggle.onclick = event => {
+    if (shell.inert) return;
     if (mobile) return navigate('notes');
     changeLayout(externalWindow || innerWidth <= 900 ? 'cycle' : layout.columns === 'note' ? 'notes' : 'folders');
     if (externalWindow && event.detail > 0) toggle.blur();
@@ -725,7 +772,13 @@ export function createSidebar(getBook: () => Notebook, actions: {
   foldersBack.onclick = () => navigate('folders');
   toggle.onpointerdown = event => event.preventDefault();
   $('#sidebar-backdrop').onclick = () => changeLayout('notes');
-  search.oninput = event => { if (!(event as InputEvent).isComposing) refresh(); };
+  // 搜索每输入一个字都要重建列表。空闲时第一下立即刷新，连续输入时最多每 100ms 刷新一次，最后一下一定会刷新。
+  search.oninput = event => {
+    if ((event as InputEvent).isComposing) return;
+    const wait = lastSearchRefresh + 100 - performance.now();
+    if (wait <= 0) refresh();
+    else { clearTimeout(searchTimer); searchTimer = setTimeout(refresh, wait); }
+  };
   // compositionend also covers IMEs that do not emit a final input event.
   search.addEventListener('compositionend', refresh);
   // Keep WebKit from blurring/saving and replacing the clicked row before its click arrives.
@@ -895,8 +948,46 @@ export function createSidebar(getBook: () => Notebook, actions: {
     window.addEventListener('resize', fitDesktopLayout);
     fitDesktopLayout();
   }
+  /**
+   * 保存一篇笔记后只更新它那一行。列表顺序、分组、缩略图都没变时就地改标题、时间和摘要，
+   * 否则整列刷新。打字时每次自动保存都会走这里，不能每次都把几百行重建一遍。
+   */
+  function noteSaved(id: string) {
+    const book = getBook(), note = book.data.notes.find(entry => entry.id === id);
+    const row = list.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(id)}"]`);
+    if (!note || !row || actions.noteWindow || search.value.trim()) { refresh(); return; }
+    const now = new Date(), locale = document.documentElement.lang || 'zh-CN';
+    if (now.toDateString() !== listDay) { refresh(); return; }
+    const groups = groupNotes(notesIn(folderId), { ...order, grouped: groupsByDate(groupingKey()) }, now, locale);
+    const expected = groups.flatMap(({ label, notes }) => notes.map(entry => `${label}\n${entry.id}`));
+    const shown = noteRows().map(entry => `${entry.closest('section')?.getAttribute('aria-label') ?? ''}\n${entry.dataset.noteId}`);
+    const picture = actions.thumbnail?.(note) ?? '';
+    if (expected.join('\0') !== shown.join('\0') || (row.dataset.picture ?? '') !== picture) {
+      refresh(); return;
+    }
+    if (displayedLibrary !== book.data) { displayedLibrary = book.data; actions.libraryChanged?.(); }
+    const title = row.querySelector('.note-row-title');
+    if (title) title.textContent = noteTitle(note) + (note.conflictOf ? '（冲突副本）' : '');
+    const summary = row.querySelector('.note-row-summary');
+    if (summary) summary.textContent = noteSummary(note);
+    // 下一行的时间要和这一行比是不是同一天，所以一起重算。
+    const group = groups.find(({ notes }) => notes.some(entry => entry.id === id))!;
+    const index = group.notes.findIndex(entry => entry.id === id);
+    const stampOf = (entry: Note) => order.key === 'createdAt' ? entry.createdAt : entry.updatedAt;
+    const date = noteListDate(now, locale), full = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' });
+    for (const position of [index, index + 1]) {
+      const entry = group.notes[position];
+      const time = entry && list.querySelector<HTMLTimeElement>(`[data-note-id="${CSS.escape(entry.id)}"] time`);
+      if (!time) continue;
+      const before = !mobile && group.label && order.key !== 'title' && position > 0 ? stampOf(group.notes[position - 1]) : undefined;
+      const timestamp = stampOf(entry);
+      time.dateTime = new Date(timestamp).toISOString(); time.textContent = date(timestamp, before);
+      time.title = full.format(timestamp); time.setAttribute('aria-label', time.title);
+    }
+  }
   refresh();
   return {
+    noteSaved,
     updateDraftTitle(note: Note) {
       const title = list.querySelector(`[data-note-id="${CSS.escape(note.id)}"] .note-row-title`);
       if (title) title.textContent = noteTitle(note) + (note.conflictOf ? '（冲突副本）' : '');
@@ -918,6 +1009,11 @@ export function createSidebar(getBook: () => Notebook, actions: {
       list.querySelector<HTMLElement>('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
     },
     showCurrentMenu(anchor: HTMLButtonElement, keyboard: boolean) { const note = getBook().current; if (note) return contextMenu(note.id, 0, 0, { anchor, keyboard }); },
+    showEditorMenu(id: string, event: MouseEvent, editorItems: MenuItem[]) {
+      if (getBook().current?.id === id && !getBook().loadError && document.body.dataset.libraryBusy !== 'true') {
+        return contextMenu(id, event.clientX, event.clientY, { editorItems, restoreFocus: actions.focusEditor });
+      }
+    },
     moveCurrentNote() { const note = getBook().current; if (note) return contextMenu(note.id, 0, 0, 'move'); },
     revealCurrent() { folderId = null; trash = Boolean(getBook().current?.trashed); search.value = ''; refresh(); },
     /** 安卓返回键：搜索中先退出搜索。 */

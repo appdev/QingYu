@@ -5,7 +5,8 @@ import { isAppLanguage, type AppLanguage } from './vendor/markra/shared/i18n';
 export const preferencesKey = 'miaoyan-editor.preferences.v1';
 export const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
 export const sizes = [12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 24, 26, 28] as const;
-export const noteTextSizes = Array.from({ length: 12 }, (_, index) => 13 + index);
+// 桌面正文字号 15–24pt。以前存的 13、14 读取时会被抬到 15。
+export const noteTextSizes = Array.from({ length: 10 }, (_, index) => 15 + index);
 export const syncIntervals = [1, 3, 5, 10, 15, 30, 60] as const;
 export type Preferences = DailyNoteSettings & {
   version: 1;
@@ -29,7 +30,7 @@ export const defaults: Preferences = {
   version: 1, language: 'system', appearance: 'system', theme: 'default', buttonDisplay: 'always', alwaysOnTop: false, menuBar: true,
   sortCheckedItems: true, previewWidth: 1000,
   todayFolder: '', todayTitle: 'long', todayOpenOnLaunch: false,
-  previewFont: 'system', previewFontSize: mobile ? 17 : noteTextSizes[0],
+  previewFont: 'system', previewFontSize: mobile ? 17 : 16,
   syncInterval: 3, autoSyncS3: true, autoSyncCloudAccount: '', cloudSyncAccount: '',
 };
 export function parsePreferences(value: unknown): Preferences {
@@ -92,7 +93,7 @@ export function interfaceLanguage(): AppLanguage {
 export function changeNoteTextSize(action: 'bigger' | 'smaller' | 'actual') {
   const current = preferences.value.previewFontSize;
   const index = noteTextSizes.findIndex(size => size === current);
-  const next = action === 'actual' ? noteTextSizes[0] : noteTextSizes[index + (action === 'bigger' ? 1 : -1)];
+  const next = action === 'actual' ? defaults.previewFontSize : noteTextSizes[index + (action === 'bigger' ? 1 : -1)];
   if (next !== undefined && next !== current) preferences.update({ previewFontSize: next });
 }
 export function noteTextSizeShortcut(event: KeyboardEvent) {

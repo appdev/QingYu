@@ -42,6 +42,19 @@ it('shows the first picture at the end of a note row and drops it when it cannot
   expect(row(book.current!.id).hasAttribute('data-thumbnail')).toBe(false);
 });
 
+it('omits hidden summaries from the list and restores them when the preference changes in another window', () => {
+  const key = 'qingyu.list.hideSummary';
+  localStorage.setItem(key, 'true');
+  const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# 标题\n\n仅正文可见');
+  createSidebar(() => book, { async select() { return true; }, async create() { return true; }, async save() { return true; }, reload() {}, error: vi.fn() });
+  const list = document.querySelector('#notes-list')!;
+  expect(list.querySelector('.note-row-title')?.textContent).toBe('标题');
+  expect(list.textContent).not.toContain('仅正文可见');
+  localStorage.removeItem(key);
+  window.dispatchEvent(new StorageEvent('storage', { key }));
+  expect(list.querySelector('.note-row-summary')?.textContent).toBe('仅正文可见');
+});
+
 it.each([false, true])('marks shared notes before the date (native=%s)', native => {
   if (native) vi.stubGlobal('__TAURI_INTERNALS__', {});
   const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# 已分享');

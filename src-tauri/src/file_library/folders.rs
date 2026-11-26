@@ -260,10 +260,7 @@ impl DiskLibrary {
             .open(checked(&self.root, ".miaoyan/write.lock")?)
             .map_err(error)?;
         try_lock(&lock).map_err(|_| "笔记库正在被其他操作写入")?;
-        let index: Index =
-            serde_json::from_slice(&fs::read(checked(&self.root, INDEX)?).map_err(error)?)
-                .map_err(error)?;
-        if index.generation != self.revision
+        if !self.index_is_current(&checked(&self.root, INDEX)?)?
             || checked(&self.root, JOURNAL)?.exists()
             || checked(&self.root, FOLDER_JOURNAL)?.exists()
         {

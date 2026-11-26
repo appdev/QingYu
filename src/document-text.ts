@@ -72,6 +72,37 @@ export function firstLocalImage(source: string) {
   }
 }
 
+// 笔记列表每次刷新、按标题排序都要取几百篇笔记的标题和首图。按笔记对象缓存，
+// 正文没变就直接用上次的结果；笔记被替换成新对象或正文变了会重新解析。
+type NoteMeta = { source: string; title: string; summary: string; image?: string | null; lower?: string };
+const noteMeta = new WeakMap<object, NoteMeta>();
+function metaOf(note: { source: string }) {
+  let meta = noteMeta.get(note);
+  if (meta?.source !== note.source) {
+    const { title, summary } = noteText(note.source, '');
+    meta = { source: note.source, title, summary };
+    noteMeta.set(note, meta);
+  }
+  return meta;
+}
+
 export function noteTitle(note: { source: string; title?: string; filename?: string }) {
-  return noteText(note.source, note.title).title;
+  return metaOf(note).title || (note.title ?? '未命名');
+}
+
+export function noteSummary(note: { source: string }) {
+  return metaOf(note).summary;
+}
+
+/** 正文或标题里是否包含已经转成小写的搜索词。小写正文第一次搜索时生成，之后正文不变就一直复用。 */
+export function noteMatches(note: { source: string; title?: string; filename?: string }, query: string) {
+  const meta = metaOf(note);
+  meta.lower ??= note.source.toLocaleLowerCase();
+  return meta.lower.includes(query) || noteTitle(note).toLocaleLowerCase().includes(query);
+}
+
+export function noteFirstImage(note: { source: string }) {
+  const meta = metaOf(note);
+  if (meta.image === undefined) meta.image = firstLocalImage(note.source) ?? null;
+  return meta.image ?? undefined;
 }

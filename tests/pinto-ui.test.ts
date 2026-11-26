@@ -122,16 +122,16 @@ it('adjusts note text live in one-point increments and navigates back and forwar
   const root = document.body.appendChild(document.createElement('div')), view = mountSettings(root, sync, vi.fn());
   view.select('appearance');
   const slider = root.querySelector<HTMLInputElement>('input[name=previewFontSize]')!;
-  expect(slider.getAttribute('aria-valuetext')).toBe('13 pt');
-  expect(slider.max).toBe('11');
-  slider.value = '1'; slider.dispatchEvent(new Event('input', { bubbles: true }));
-  expect(slider.getAttribute('aria-valuetext')).toBe('14 pt');
-  expect(previewPreferences().size).toBe(14);
+  expect(slider.getAttribute('aria-valuetext')).toBe('16 pt');
+  expect(slider.max).toBe('9');
+  slider.value = '2'; slider.dispatchEvent(new Event('input', { bubbles: true }));
+  expect(slider.getAttribute('aria-valuetext')).toBe('17 pt');
+  expect(previewPreferences().size).toBe(17);
   slider.value = '8'; slider.dispatchEvent(new Event('input', { bubbles: true }));
-  expect(new PreferenceStore(localStorage).value.previewFontSize).toBe(21);
-  preferences.update({ previewFontSize: 23 });
-  expect(slider.getAttribute('aria-valuetext')).toBe('23 pt');
-  expect(root.querySelectorAll('.appearance-size-stops i')).toHaveLength(12);
+  expect(new PreferenceStore(localStorage).value.previewFontSize).toBe(23);
+  preferences.update({ previewFontSize: 21 });
+  expect(slider.getAttribute('aria-valuetext')).toBe('21 pt');
+  expect(root.querySelectorAll('.appearance-size-stops i')).toHaveLength(10);
   expect(root.querySelectorAll('.mode-picture[data-mode=system] .mode-window')).toHaveLength(2);
 
   root.querySelector<HTMLButtonElement>('.settings-back')!.click();
@@ -222,6 +222,8 @@ it('formats the note row time by local day and switches to a date at seven days'
   expect(date(+new Date(2026, 10, 17, 10, 19))).toBe('10:19');
   expect(date(+new Date(2026, 10, 16, 23, 59))).toBe('昨天');
   expect(date(+new Date(2026, 10, 11, 0))).toBe('星期三');
+  expect(date(+new Date(2026, 10, 11, 9, 32), +new Date(2026, 10, 11, 15))).toBe('09:32');
+  expect(date(+new Date(2026, 10, 11, 23, 59), +new Date(2026, 10, 12, 0))).toBe('星期三');
   expect(date(+new Date(2026, 10, 10, 23, 59))).toBe('2026/11/10');
 });
 

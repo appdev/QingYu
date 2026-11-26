@@ -35,6 +35,7 @@ import {
   type MediaViewerHandle,
 } from "./media-viewer.ts";
 import {
+  markraListDepth,
   markraRenderer,
   type MarkraRendererContext,
   type MarkraSyntaxNode,
@@ -1124,6 +1125,9 @@ export function codeBlockPreviewPlugin(
 
           const firstVisibleLine = state.doc.lineAt(visibleFrom).number;
           const lastVisibleLine = state.doc.lineAt(visibleTo - 1).number;
+          // 列表项里的代码块和妙言预览一样跟着列表缩进；行首用来归属列表的空格（不超过围栏前的缩进）只在源码里。
+          const listDepth = markraListDepth(node);
+          const fenceIndent = node.from - firstLine.from;
           let codeLineNumber = 0;
           for (
             let lineNumber = firstVisibleLine;
@@ -1138,15 +1142,21 @@ export function codeBlockPreviewPlugin(
               : closing ? "cm-markra-code-closing-line" : "cm-markra-code-content-line";
             const openEdge = !parts.hasClosingFence && line.number === lastLine.number;
             if (codeContentLine) codeLineNumber += 1;
+            if (listDepth > 0 && fenceIndent > 0 && !sourceRevealed) {
+              const indent = /^[\t ]*/u.exec(line.text)![0].length;
+              const hidden = Math.min(indent, fenceIndent);
+              if (hidden > 0) context.add(Decoration.replace({}).range(line.from, line.from + hidden));
+            }
             context.add(
               Decoration.line({
                 attributes: {
+                  ...(listDepth > 0 ? { style: `--list-depth: ${listDepth}` } : {}),
                   "data-code-block-from": String(node.from),
                   ...(codeContentLine && showLineNumbers ? { "data-code-line-number": String(codeLineNumber) } : {}),
                   ...(opening && !sourceRevealed ? { "data-code-block-start": String(node.from) } : {}),
                   ...(closing && !sourceRevealed ? { "data-code-block-end": String(node.to) } : {}),
                 },
-                class: `cm-markra-code-line ${roleClass}${openEdge ? " cm-markra-code-open-edge" : ""}`,
+                class: `cm-markra-code-line ${roleClass}${openEdge ? " cm-markra-code-open-edge" : ""}${listDepth > 0 ? " cm-markra-list-block" : ""}`,
               }).range(line.from),
             );
           }

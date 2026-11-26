@@ -75,7 +75,8 @@ function profile(value: S3Settings): S3Settings {
   for (const key of ['timeout', 'tlsVerify', 'forcePathStyle', 'concurrency', 'assetDownload'] as const) if (value[key] !== undefined) Object.assign(config, { [key]: value[key] });
   return config;
 }
-export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>, mobile = false): SyncClient & {
+export function createSyncSession(book: Notebook, refresh: () => void, prepare: () => boolean | Promise<boolean>, mobile = false,
+  onCloudKeyUnlocked?: (settings: S3Settings, accountId: string) => void): SyncClient & {
   fetchAsset(path: string): Promise<string | undefined>;
 } {
   let config: S3Settings = { endpoint: '', bucket: '', region: 'us-east-1', prefix: 'miaoyan/v2', accessKeyId: '', secretAccessKey: '' };
@@ -221,23 +222,25 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
       if (status.busy) throw new Error('同步正在进行，请稍候');
       publish({ busy: true, error: false, message: '正在连接 S3…' });
       let connection: S3Connection = settings;
+      let result: PasswordInfo;
       try {
         await assets.drain();
         await writes;
         await load();
         if (syncMode(config) !== (accountId ? 'cloud' : 's3')) throw new Error('存储方式已变更，请重新打开密钥设置');
         connection = accountId ? (await accountConnections(accountId)).current : profile(settings);
-        const result = await manageSyncPassword(await connect(connection), keyCache(accountId), action,
+        result = await manageSyncPassword(await connect(connection), keyCache(accountId), action,
           accountId ? () => invoke('account_check_sync', { accountId, ...(connection.cloud ? { generation: connection.cloud.storageGeneration } : {}) }) : undefined);
         if (result.state === 'unlocked') publish({ passwordRequired: undefined, message: '数据仓库密钥已解锁' });
         else publish({ passwordRequired: { accountId }, message: syncPasswordRequired });
-        return result;
       } catch (error) {
         const message = redact(error, connection);
         const label = accountId ? cloudErrorMessage(message) : message;
         publish({ error: true, message: label });
         throw new Error(label);
       } finally { publish({ busy: false }); }
+      if (accountId && action && action.state !== 'unlocked' && result.state === 'unlocked') onCloudKeyUnlocked?.(settings, accountId);
+      return result;
     },
     async test(settings) {
       if (status.busy) throw new Error('同步正在进行，请稍候');
@@ -305,6 +308,7 @@ export function createSyncSession(book: Notebook, refresh: () => void, prepare: 
           if (!(reason instanceof SyncSnapshotChanged)) throw reason;
           return synchronize();
         });
+        if (accountId) await invoke('account_refresh_storage_usage', { accountId, generation: next.cloud?.storageGeneration }).catch(() => {});
         refresh(); publish({ passwordRequired: undefined, lastSyncedAt: Date.now(), lastSyncedAccount: accountId,
           message: result.notice ?? `同步完成：${result.notes} 篇笔记、${result.folders} 个文件夹、${result.assets ?? 0} 个附件${result.conflicts ? '，冲突已保留双方' : ''}` });
       } catch (error) {

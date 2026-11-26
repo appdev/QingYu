@@ -138,11 +138,16 @@ impl ServerSync {
     }
 
     pub(super) fn profile(&self) -> Result<Option<Profile>> {
-        Ok(sync_profile::load(&sync_profile::profile_path(self.config()?))?)
+        Ok(sync_profile::load(&sync_profile::profile_path(
+            self.config()?,
+        ))?)
     }
 
     pub(super) fn save_profile(&self, profile: &Profile) -> Result<()> {
-        Ok(sync_profile::save(&sync_profile::profile_path(self.config()?), profile)?)
+        Ok(sync_profile::save(
+            &sync_profile::profile_path(self.config()?),
+            profile,
+        )?)
     }
 
     pub(super) fn schedule(&self) -> Result<Schedule> {
@@ -181,7 +186,12 @@ impl ServerSync {
             }
             status.busy = true;
             status.error = false;
-            status.message = if account.is_some() { "正在连接轻羽云存储…" } else { "正在连接 S3…" }.into();
+            status.message = if account.is_some() {
+                "正在连接轻羽云存储…"
+            } else {
+                "正在连接 S3…"
+            }
+            .into();
         }
         *self.started.lock().unwrap_or_else(|err| err.into_inner()) = Some(Instant::now());
         let sync = self.clone();
@@ -205,7 +215,10 @@ impl ServerSync {
         Ok(())
     }
 
-    fn worker_profile(&self, account: Option<&str>) -> std::result::Result<serde_json::Value, String> {
+    fn worker_profile(
+        &self,
+        account: Option<&str>,
+    ) -> std::result::Result<serde_json::Value, String> {
         let profile = self.profile().map_err(|e| e.to_string())?;
         match account {
             Some(_) => {
@@ -225,15 +238,28 @@ impl ServerSync {
         }
     }
 
-    async fn run(&self, state: &Arc<Service>, account: Option<&str>) -> std::result::Result<Option<String>, String> {
+    async fn run(
+        &self,
+        state: &Arc<Service>,
+        account: Option<&str>,
+    ) -> std::result::Result<Option<String>, String> {
         let profile = self.worker_profile(account)?;
-        self.spawn(state, profile, "sync", account, None)
-            .await
-            .map(|value| value.and_then(|value| value.as_str().map(str::to_owned)))
+        let result = self.spawn(state, profile, "sync", account, None).await?;
+        if let (Some(account), Some(config)) = (account, &self.config) {
+            let _ = state
+                .account
+                .refresh_storage_usage(ClientAccount::session_path(config), account, None)
+                .await;
+        }
+        Ok(result.and_then(|value| value.as_str().map(str::to_owned)))
     }
 
     /// 测试连接：用表单里的配置跑一次读写删检查，不保存配置。
-    pub(super) async fn test(&self, state: &Arc<Service>, profile: Profile) -> std::result::Result<(), String> {
+    pub(super) async fn test(
+        &self,
+        state: &Arc<Service>,
+        profile: Profile,
+    ) -> std::result::Result<(), String> {
         if let Some(reason) = self.unavailable() {
             return Err(reason.into());
         }
@@ -241,12 +267,25 @@ impl ServerSync {
         if profile.cloud() {
             return Err("请先切换至 S3 同步".into());
         }
-        self.spawn(state, serde_json::to_value(profile).map_err(|e| e.to_string())?, "test", None, None)
-            .await
-            .map(|_| ())
+        self.spawn(
+            state,
+            serde_json::to_value(profile).map_err(|e| e.to_string())?,
+            "test",
+            None,
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
-    async fn spawn(&self, state: &Arc<Service>, profile: serde_json::Value, task: &'static str, account: Option<&str>, password_action: Option<PasswordAction>) -> std::result::Result<Option<serde_json::Value>, String> {
+    async fn spawn(
+        &self,
+        state: &Arc<Service>,
+        profile: serde_json::Value,
+        task: &'static str,
+        account: Option<&str>,
+        password_action: Option<PasswordAction>,
+    ) -> std::result::Result<Option<serde_json::Value>, String> {
         // 子进程从配置目录里的临时文件读取连接配置，用完即删
         let dir = self.config().map_err(|e| e.to_string())?.to_owned();
         let cloud = account.map(|id| (ClientAccount::session_path(&dir), id.to_owned()));
@@ -266,9 +305,18 @@ impl ServerSync {
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
         let (state, worker, path) = (state.clone(), self.worker.clone(), file.to_path_buf());
-        let result = tokio::task::spawn_blocking(move || run_worker(&state, &worker, &path, task, cloud.as_ref(), password_action))
-            .await
-            .map_err(|e| e.to_string())?;
+        let result = tokio::task::spawn_blocking(move || {
+            run_worker(
+                &state,
+                &worker,
+                &path,
+                task,
+                cloud.as_ref(),
+                password_action,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         drop(file);
         result
     }
@@ -298,7 +346,9 @@ impl ServerSync {
                     .started
                     .lock()
                     .unwrap_or_else(|err| err.into_inner())
-                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(schedule.interval * 60));
+                    .is_none_or(|last| {
+                        last.elapsed() >= Duration::from_secs(schedule.interval * 60)
+                    });
                 if due {
                     let _ = sync.trigger(state.clone(), account);
                 }
@@ -320,12 +370,27 @@ enum Operation {
         begin: bool,
         generation: Option<u64>,
     },
-    CheckStorage { generation: u64 },
-    Upload { upload_id: u64, object: UploadObject, body: String },
-    DeleteObjects { config_version: u64, generation: Option<u64>, keys: Vec<String> },
-    CachedKey { target: String, key: Option<String> },
+    CheckStorage {
+        generation: u64,
+    },
+    Upload {
+        upload_id: u64,
+        object: UploadObject,
+        body: String,
+    },
+    DeleteObjects {
+        config_version: u64,
+        generation: Option<u64>,
+        keys: Vec<String>,
+    },
+    CachedKey {
+        target: String,
+        key: Option<String>,
+    },
     PasswordAction,
-    PasswordResult { result: serde_json::Value },
+    PasswordResult {
+        result: serde_json::Value,
+    },
     Snapshot,
     ReadAsset {
         asset: assets::AssetStat,
@@ -375,7 +440,9 @@ fn dispatch(
         | Operation::DeleteObjects { .. }
         | Operation::CachedKey { .. }
         | Operation::PasswordAction
-        | Operation::PasswordResult { .. } => return Err(error("operation requires a cloud sync session")),
+        | Operation::PasswordResult { .. } => {
+            return Err(error("operation requires a cloud sync session"))
+        }
         Operation::Snapshot => {
             store.reconcile(None)?;
             json!({ "value": { "library": store.data, "revision": store.revision,
@@ -443,7 +510,9 @@ fn dispatch(
                         .filter(|sync| sync.get("target") == Some(target))
                         .unwrap_or_else(|| json!({"version":1,"target":target}));
                     sync["state"] = published;
-                    if let Some(binding) = next.sync.as_ref().and_then(|sync| sync.get("cloudBinding")) {
+                    if let Some(binding) =
+                        next.sync.as_ref().and_then(|sync| sync.get("cloudBinding"))
+                    {
                         sync["cloudBinding"] = binding.clone();
                     }
                     current.sync = Some(sync);
@@ -473,7 +542,10 @@ impl Drop for Worker {
     }
 }
 
-fn reply_to_worker(input: &Mutex<BufWriter<std::process::ChildStdin>>, response: &serde_json::Value) -> std::result::Result<(), String> {
+fn reply_to_worker(
+    input: &Mutex<BufWriter<std::process::ChildStdin>>,
+    response: &serde_json::Value,
+) -> std::result::Result<(), String> {
     let mut input = input.lock().map_err(|_| "同步进程输入不可用")?;
     serde_json::to_writer(&mut *input, response).map_err(|e| e.to_string())?;
     input.write_all(b"\n").map_err(|e| e.to_string())?;
@@ -481,7 +553,14 @@ fn reply_to_worker(input: &Mutex<BufWriter<std::process::ChildStdin>>, response:
 }
 
 /// 成功时返回同步程序报告的完成提示。
-fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str, cloud: Option<&(PathBuf, String)>, mut password_action: Option<PasswordAction>) -> std::result::Result<Option<serde_json::Value>, String> {
+fn run_worker(
+    state: &Service,
+    worker: &Path,
+    profile: &Path,
+    task: &str,
+    cloud: Option<&(PathBuf, String)>,
+    mut password_action: Option<PasswordAction>,
+) -> std::result::Result<Option<serde_json::Value>, String> {
     let mut child = Worker(
         Command::new("node")
             .arg(worker)
@@ -496,11 +575,17 @@ fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str, cloud:
             .map_err(|_| "无法启动同步程序，请确认部署环境安装了 Node.js 22 或更高版本")?,
     );
     let output = BufReader::new(child.0.stdout.take().ok_or("无同步输出")?);
-    let input = Arc::new(Mutex::new(BufWriter::new(child.0.stdin.take().ok_or("无同步输入")?)));
+    let input = Arc::new(Mutex::new(BufWriter::new(
+        child.0.stdin.take().ok_or("无同步输入")?,
+    )));
     #[derive(Default)]
     struct Watch(Option<tokio::task::JoinHandle<()>>);
     impl Drop for Watch {
-        fn drop(&mut self) { if let Some(task) = &self.0 { task.abort(); } }
+        fn drop(&mut self) {
+            if let Some(task) = &self.0 {
+                task.abort();
+            }
+        }
     }
     let mut watch = Watch::default();
     let mut upload_jobs = tokio::task::JoinSet::new();
@@ -509,23 +594,45 @@ fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str, cloud:
     for line in output.lines() {
         let line = line.map_err(|e| e.to_string())?;
         let op: Operation = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-        if let Operation::Upload { upload_id, object, body } = op {
+        if let Operation::Upload {
+            upload_id,
+            object,
+            body,
+        } = op
+        {
             let bytes = (body.len() <= (64_usize * 1024 * 1024).div_ceil(3) * 4)
-                .then(|| STANDARD.decode(body.as_bytes()).ok()).flatten();
+                .then(|| STANDARD.decode(body.as_bytes()).ok())
+                .flatten();
             let (Some((session, account)), Some(bytes)) = (cloud, bytes) else {
-                reply_to_worker(&input, &json!({ "uploadId": upload_id, "credentialError": "invalid_request" }))?;
+                reply_to_worker(
+                    &input,
+                    &json!({ "uploadId": upload_id, "credentialError": "invalid_request" }),
+                )?;
                 continue;
             };
             if bytes.len() > 64 * 1024 * 1024 {
-                reply_to_worker(&input, &json!({ "uploadId": upload_id, "credentialError": "invalid_request" }))?;
+                reply_to_worker(
+                    &input,
+                    &json!({ "uploadId": upload_id, "credentialError": "invalid_request" }),
+                )?;
                 continue;
             }
-            let (client, session, account, input) = (state.account.clone(), session.clone(), account.clone(), input.clone());
+            let (client, session, account, input) = (
+                state.account.clone(),
+                session.clone(),
+                account.clone(),
+                input.clone(),
+            );
             while upload_jobs.try_join_next().is_some() {}
             upload_jobs.spawn(async move {
-                let response = match client.storage_upload(session, &account, object, bytes).await {
+                let response = match client
+                    .storage_upload(session, &account, object, bytes)
+                    .await
+                {
                     Ok(status) => json!({ "uploadId": upload_id, "value": status }),
-                    Err(error) => json!({ "uploadId": upload_id, "credentialError": account_message(error) }),
+                    Err(error) => {
+                        json!({ "uploadId": upload_id, "credentialError": account_message(error) })
+                    }
                 };
                 let _ = reply_to_worker(&input, &response);
             });
@@ -534,22 +641,43 @@ fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str, cloud:
         match &op {
             Operation::Failed { message } => failure = Some(message.clone()),
             Operation::Finished { message } => finished = Some(json!(message)),
-            Operation::PasswordResult { result } if task == "password" => finished = Some(result.clone()),
+            Operation::PasswordResult { result } if task == "password" => {
+                finished = Some(result.clone())
+            }
             _ => {}
         }
         let response = match cloud {
             Some((session, account)) => tokio::runtime::Handle::current().block_on(async {
                 let result = match op {
-                    Operation::Credentials { rejected_key, begin, generation } => state.account
-                        .sync_config(session.clone(), account, rejected_key.as_deref(), begin, generation).await.and_then(|config| {
+                    Operation::Credentials {
+                        rejected_key,
+                        begin,
+                        generation,
+                    } => state
+                        .account
+                        .sync_config(
+                            session.clone(),
+                            account,
+                            rejected_key.as_deref(),
+                            begin,
+                            generation,
+                        )
+                        .await
+                        .and_then(|config| {
                             let mut value = json!(config);
                             if begin && value["protocolVersion"] == 2 {
-                                let mut cancellation = state.account.watch_storage(value["storageGeneration"].as_u64().ok_or("invalid_response")?)?;
+                                let mut cancellation = state.account.watch_storage(
+                                    value["storageGeneration"]
+                                        .as_u64()
+                                        .ok_or("invalid_response")?,
+                                )?;
                                 let input = input.clone();
                                 watch.0 = Some(tokio::spawn(async move {
                                     if cancellation.changed().await.is_ok() {
                                         if let Ok(mut input) = input.lock() {
-                                            let _ = input.write_all(b"{\"cancelStorage\":true}\n").and_then(|_| input.flush());
+                                            let _ = input
+                                                .write_all(b"{\"cancelStorage\":true}\n")
+                                                .and_then(|_| input.flush());
                                         }
                                     }
                                 }));
@@ -557,28 +685,68 @@ fn run_worker(state: &Service, worker: &Path, profile: &Path, task: &str, cloud:
                             value["accountId"] = json!(account);
                             Ok(value)
                         }),
-                    Operation::CheckStorage { generation } => state.account.with_sync_account(session.clone(), account, async {
-                        state.account.watch_storage(generation).map(|_| json!(null))
-                    }).await.and_then(|result| result),
-                    Operation::DeleteObjects { config_version, generation, keys } => state.account
-                        .storage_delete(session.clone(), account, config_version, generation, keys).await.map(|()| json!(null)),
-                    Operation::CachedKey { target, key } => state.account.with_sync_account(session.clone(), account, async {
-                        state.config.as_ref()
-                            .and_then(|dir| sync_profile::cached_key(dir, &target, key, Some(account.clone()), false).ok())
-                            .ok_or(AccountError::Code("secure_storage"))
-                            .map(|value| json!(value))
-                    }).await.and_then(|result| result),
-                    Operation::PasswordAction if task == "password" => Ok(json!(password_action.take())),
+                    Operation::CheckStorage { generation } => state
+                        .account
+                        .with_sync_account(session.clone(), account, async {
+                            state.account.watch_storage(generation).map(|_| json!(null))
+                        })
+                        .await
+                        .and_then(|result| result),
+                    Operation::DeleteObjects {
+                        config_version,
+                        generation,
+                        keys,
+                    } => state
+                        .account
+                        .storage_delete(session.clone(), account, config_version, generation, keys)
+                        .await
+                        .map(|()| json!(null)),
+                    Operation::CachedKey { target, key } => state
+                        .account
+                        .with_sync_account(session.clone(), account, async {
+                            state
+                                .config
+                                .as_ref()
+                                .and_then(|dir| {
+                                    sync_profile::cached_key(
+                                        dir,
+                                        &target,
+                                        key,
+                                        Some(account.clone()),
+                                        false,
+                                    )
+                                    .ok()
+                                })
+                                .ok_or(AccountError::Code("secure_storage"))
+                                .map(|value| json!(value))
+                        })
+                        .await
+                        .and_then(|result| result),
+                    Operation::PasswordAction if task == "password" => {
+                        Ok(json!(password_action.take()))
+                    }
                     Operation::PasswordResult { .. } if task == "password" => Ok(json!(null)),
-                    op @ Operation::Commit { generation, .. } => return state.account.with_sync_account(session.clone(), account, async {
-                        if let Some(generation) = generation {
-                            if let Err(error) = state.account.watch_storage(generation) {
-                                return json!({"credentialError": account_message(error)});
-                            }
-                        }
-                        dispatch(state, &mut stage, op).unwrap_or_else(|_| json!({"error":"storage"}))
-                    }).await.unwrap_or_else(|error| json!({"credentialError": account_message(error)})),
-                    op => return dispatch(state, &mut stage, op).unwrap_or_else(|_| json!({"error":"storage"})),
+                    op @ Operation::Commit { generation, .. } => {
+                        return state
+                            .account
+                            .with_sync_account(session.clone(), account, async {
+                                if let Some(generation) = generation {
+                                    if let Err(error) = state.account.watch_storage(generation) {
+                                        return json!({"credentialError": account_message(error)});
+                                    }
+                                }
+                                dispatch(state, &mut stage, op)
+                                    .unwrap_or_else(|_| json!({"error":"storage"}))
+                            })
+                            .await
+                            .unwrap_or_else(
+                                |error| json!({"credentialError": account_message(error)}),
+                            )
+                    }
+                    op => {
+                        return dispatch(state, &mut stage, op)
+                            .unwrap_or_else(|_| json!({"error":"storage"}))
+                    }
                 };
                 match result {
                     Ok(value) => json!({ "value": value }),
@@ -607,7 +775,11 @@ pub(super) fn routes() -> Router<Arc<Service>> {
 }
 
 fn failed(message: impl Into<String>) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": message.into() }))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": message.into() })),
+    )
+        .into_response()
 }
 
 fn sync_of(state: &Service) -> std::result::Result<&Arc<ServerSync>, Response> {
@@ -615,10 +787,16 @@ fn sync_of(state: &Service) -> std::result::Result<&Arc<ServerSync>, Response> {
 }
 
 async fn status(State(state): State<Arc<Service>>) -> Json<SyncStatus> {
-    Json(state.sync.as_ref().map(|sync| sync.status()).unwrap_or(SyncStatus {
-        unavailable: Some("同步不可用"),
-        ..Default::default()
-    }))
+    Json(
+        state
+            .sync
+            .as_ref()
+            .map(|sync| sync.status())
+            .unwrap_or(SyncStatus {
+                unavailable: Some("同步不可用"),
+                ..Default::default()
+            }),
+    )
 }
 
 #[derive(Deserialize, Default)]
@@ -632,7 +810,9 @@ async fn start(State(state): State<Arc<Service>>, body: Option<Json<Start>>) -> 
         Ok(sync) => sync.clone(),
         Err(response) => return response,
     };
-    let account = body.and_then(|Json(body)| body.account_id).filter(|id| !id.is_empty());
+    let account = body
+        .and_then(|Json(body)| body.account_id)
+        .filter(|id| !id.is_empty());
     match sync.trigger(state.clone(), account) {
         Ok(()) => Json(sync.status()).into_response(),
         Err(message) => failed(message),
@@ -750,16 +930,114 @@ async fn password(
     struct Busy(Arc<ServerSync>);
     impl Drop for Busy {
         fn drop(&mut self) {
-            self.0.status.lock().unwrap_or_else(|err| err.into_inner()).busy = false;
+            self.0
+                .status
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .busy = false;
         }
     }
     let busy = Busy(sync.clone());
     let result = tokio::spawn(async move {
-        busy.0.spawn(&state, profile, "password", Some(&body.account_id), body.action).await
-    }).await;
+        let unlock = body
+            .action
+            .as_ref()
+            .is_some_and(|action| matches!(action.state.as_str(), "new" | "locked"));
+        let sync = busy.0.clone();
+        let result = sync
+            .spawn(
+                &state,
+                profile,
+                "password",
+                Some(&body.account_id),
+                body.action,
+            )
+            .await;
+        drop(busy);
+        if unlock
+            && matches!(&result, Ok(Some(info)) if info["state"] == "unlocked")
+            && sync
+                .schedule()
+                .is_ok_and(|schedule| schedule.cloud_account == body.account_id)
+        {
+            let _ = sync.trigger(state, Some(body.account_id));
+        }
+        result
+    })
+    .await;
     match result {
         Ok(Ok(Some(result))) => Json(result).into_response(),
         Ok(Err(error)) => failed(error),
         _ => failed("密钥操作未完成"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn starts_cloud_sync_only_after_unlocking_the_scheduled_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("notes");
+        let mut state = Service::open(
+            root.clone(),
+            Some("synthetic-token-for-sync-tests-12345"),
+            None,
+            None,
+        )
+        .unwrap();
+        let mut sync = ServerSync::open(Some(dir.path().to_owned()), &root).unwrap();
+        let worker = dir.path().join("worker.cjs");
+        fs::write(&worker, r#"
+            const password = process.argv[3] === 'password';
+            const reply = password ? {operation:'passwordResult', result:{state:'unlocked', etag:null}}
+                                   : {operation:'finished', message:'done'};
+            process.stdout.write(JSON.stringify(reply) + '\n');
+            process.stdin.once('data', () => process.exit(0));
+        "#).unwrap();
+        Arc::get_mut(&mut sync).unwrap().worker = worker;
+        Arc::get_mut(&mut state).unwrap().sync = Some(sync.clone());
+        sync.save_schedule(&Schedule {
+            cloud_account: "one".into(),
+            ..Schedule::default()
+        })
+        .unwrap();
+
+        for (account, key_state) in [
+            ("one", None),
+            ("other", Some("new")),
+            ("one", Some("new")),
+            ("one", Some("locked")),
+        ] {
+            let previous = *sync.started.lock().unwrap();
+            let action = key_state.map(|s| PasswordAction {
+                state: s.into(),
+                etag: None,
+                password: "test".into(),
+            });
+            let response = password(
+                State(state.clone()),
+                Ok(Json(PasswordRequest {
+                    account_id: account.into(),
+                    action,
+                })),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            if account == "one" && key_state.is_some() {
+                assert_ne!(*sync.started.lock().unwrap(), previous);
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while sync.status().busy {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(sync.status().last_synced_account.as_deref(), Some(account));
+            } else {
+                assert_eq!(*sync.started.lock().unwrap(), previous);
+            }
+        }
     }
 }

@@ -6,7 +6,7 @@ import { libraryLocation } from '../src/library-settings';
 import { preferences } from '../src/preferences';
 import { workflowText } from '../src/ui-language';
 import { invoke } from '@tauri-apps/api/core';
-import type { SyncClient } from '../src/sync-session';
+import type { SyncClient, SyncStatus } from '../src/sync-session';
 import { s3Defaults } from '../src/sync-store';
 vi.hoisted(() => { Object.assign(window, { __TAURI_INTERNALS__: {} }); vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} })); });
 vi.mock('../src/library-settings', async importOriginal => ({
@@ -25,6 +25,42 @@ beforeEach(() => {
     showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
     close: { configurable: true, value(this: HTMLDialogElement, result = '') { this.returnValue = result; this.open = false; this.dispatchEvent(new Event('close')); } },
   });
+});
+
+it('updates the open cloud usage meter once per completed sync, including one missed between polls', async () => {
+  const ipc = vi.mocked(invoke), original = ipc.getMockImplementation()!;
+  let usage = { usedBytes: 100, quotaBytes: 1000 };
+  const snapshot = () => ({ profile: { id: 'one', emailVerified: true }, usage, subscription: { active: true, quotaBytes: 1000 } });
+  const account = vi.fn(async () => snapshot());
+  ipc.mockImplementation(async (command, args) => command === 'account_status' ? account() : original(command, args));
+  let publish!: (status: SyncStatus) => void;
+  const client: SyncClient = { load: async () => ({ ...config, mode: 'cloud' }), save: vi.fn(), test: vi.fn(), flush: vi.fn(), run: vi.fn(),
+    subscribe(listener) { publish = listener; return () => {}; } };
+  const root = document.body.appendChild(document.createElement('div'));
+  const view = mountSettings(root, client, vi.fn());
+  try {
+    await view.loaded;
+    view.select('storage');
+    const meter = root.querySelector('progress')!;
+    await vi.waitFor(() => expect(meter.value).toBe(0.1));
+    usage = { usedBytes: 500, quotaBytes: 2000 };
+    const done = { busy: false, error: false, message: '同步完成', lastSyncedAccount: 'one', lastSyncedAt: 123 };
+    publish(done); publish(done);
+    await vi.waitFor(() => expect(meter.value).toBe(0.25));
+    expect(root.querySelector('[data-usage]')?.textContent).toBe('已用 500 B / 2 KB');
+    publish({ ...done, error: true }); publish({ ...done, lastSyncedAt: 456, lastSyncedAccount: undefined });
+    expect(account).toHaveBeenCalledTimes(2);
+    let release!: () => void;
+    const delayed = snapshot();
+    account.mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(delayed); }));
+    publish({ ...done, lastSyncedAt: 600 });
+    usage = { ...usage, usedBytes: 1000 };
+    publish({ ...done, lastSyncedAt: 700 });
+    await vi.waitFor(() => expect(meter.value).toBe(0.5));
+    release();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(meter.value).toBe(0.5);
+  } finally { view.destroy(); root.remove(); ipc.mockImplementation(original); }
 });
 
 it('sets, unlocks and resets the sync password from Storage & Sync', async () => {

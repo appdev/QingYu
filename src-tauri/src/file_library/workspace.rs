@@ -423,6 +423,8 @@ fn open_file(path: &Path) -> Result<DiskLibrary> {
         revision: 0,
         bytes: HashMap::new(),
         folder_identities: HashMap::new(),
+        index_stamp: Default::default(),
+        disk_state: None,
         data: Library {
             version: 1,
             folders: vec![Folder {
@@ -576,6 +578,16 @@ fn take_first_show(label: &str) -> bool {
 // 否则会先闪一下没套样式的原始页面。页面脚本出错时兜底，2 秒后照常显示。
 #[cfg(desktop)]
 pub(crate) fn show_when_ready(app: &tauri::AppHandle, label: &str) {
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    if let Some(window) = app.get_webview_window(label) {
+        // Keep menu commands and accelerators registered while the app draws the chrome.
+        if let Err(error) = window
+            .hide_menu()
+            .and_then(|_| window.set_decorations(false))
+        {
+            eprintln!("无法应用窗口样式：{error}");
+        }
+    }
     wait_first_show(label);
     // Finder 的打开请求可能早于主窗口登记首次显示。
     if label == "main"
@@ -876,7 +888,7 @@ fn open_document(app: &tauri::AppHandle, path: &Path) -> Result<String> {
         tauri::WebviewUrl::App("index.html?document=1".into()),
     )
     .title(title)
-    .inner_size(1120., 780.)
+    .inner_size(1203., 780.)
     .min_inner_size(360., 420.)
     .visible(false);
     if let Some(main) = app.config().app.windows.first() {

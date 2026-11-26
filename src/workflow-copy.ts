@@ -773,6 +773,11 @@ export const workflowCopy = {
   "无法注销旧快捷键": "Could not unregister the previous shortcut.",
   "无效的快捷键操作": "Invalid shortcut action.",
   "唤起快捷键操作未完成": "The global shortcut action did not finish.",
+  "排版优化": "Optimize Formatting",
+  "排版已优化": "Formatting optimized",
+  "排版无需调整": "Nothing to change",
+  "正文已改动，已取消排版": "The note changed, so formatting was canceled.",
+  "排版失败": "Formatting failed.",
 } satisfies Record<string, string | readonly [UiMessage]>;
 
 export const workflowLocales = ['ja', 'ko', 'fr', 'de', 'es', 'pt-BR', 'it', 'ru'] as const;
@@ -1487,10 +1492,20 @@ export const localizedWorkflowCopy: Partial<Record<keyof typeof workflowCopy, Wo
   "笔记位置": ["ライブラリの場所","노트 보관함 위치","Emplacement de la bibliothèque","Speicherort der Bibliothek","Ubicación de la biblioteca","Local da biblioteca","Posizione della libreria","Расположение библиотеки"],
   "正在读取…": ["読み込み中…","불러오는 중…","Chargement…","Wird geladen…","Cargando…","Carregando…","Caricamento…","Загрузка…"],
   "正在登录…": ["ログイン中…","로그인 중…","Connexion…","Anmeldung läuft…","Iniciando sesión…","Entrando…","Accesso in corso…","Выполняется вход…"],
+  "排版优化": ["体裁を整える","서식 최적화","Optimiser la mise en forme","Formatierung optimieren","Optimizar formato","Otimizar formatação","Ottimizza formattazione","Оптимизировать оформление"],
+  "排版已优化": ["体裁を整えました","서식을 최적화했습니다","Mise en forme optimisée","Formatierung optimiert","Formato optimizado","Formatação otimizada","Formattazione ottimizzata","Оформление оптимизировано"],
+  "排版无需调整": ["変更はありません","바꿀 내용이 없습니다","Rien à modifier","Keine Änderungen nötig","No hay nada que cambiar","Nada a alterar","Nessuna modifica necessaria","Изменений не требуется"],
+  "正文已改动，已取消排版": ["本文が変更されたため、整形を中止しました","본문이 바뀌어 서식 정리를 취소했습니다","La note a changé, la mise en forme a été annulée.","Die Notiz hat sich geändert, die Formatierung wurde abgebrochen.","La nota cambió, así que se canceló el formato.","A nota mudou, então a formatação foi cancelada.","La nota è cambiata, la formattazione è stata annullata.","Заметка изменилась, форматирование отменено."],
+  "排版失败": ["整形に失敗しました","서식 정리에 실패했습니다","Échec de la mise en forme.","Formatierung fehlgeschlagen.","No se pudo dar formato.","Falha ao formatar.","Formattazione non riuscita.","Не удалось отформатировать."],
   "{minutes} 分钟": ["{minutes} 分","{minutes}분","{minutes} min","{minutes} Min.","{minutes} min","{minutes} min","{minutes} min","{minutes} мин"],
 };
 
 export const traditionalWorkflowCopy: Record<string, string> = {
+  "排版优化": "排版優化",
+  "排版已优化": "排版已優化",
+  "排版无需调整": "排版無需調整",
+  "正文已改动，已取消排版": "內文已改動，已取消排版",
+  "排版失败": "排版失敗",
   "该同步库受 App 数据仓库密钥保护，Web 部署端请使用独立同步前缀": "該同步庫受 App 資料倉庫金鑰保護，Web 部署端請使用獨立同步前綴",
   "正在下载原同步库的待取附件…": "正在下載原同步庫的待取附件…",
   "请先恢复原 S3 连接并下载待取附件，再切换同步目标": "請先恢復原 S3 連線並下載待取附件，再切換同步目標",

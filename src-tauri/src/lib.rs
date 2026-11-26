@@ -104,6 +104,7 @@ pub fn run() {
             client_account::account_sync_config,
             client_account::storage::account_storage_upload,
             client_account::storage::account_storage_delete,
+            client_account::storage::account_refresh_storage_usage,
             client_account::account_check_sync,
             client_account::account_open_portal,
             #[cfg(target_os = "android")]
@@ -122,6 +123,7 @@ pub fn run() {
             note_ui::link_applications,
             note_ui::open_external_link,
             link_preview::fetch_link_preview,
+            typography::typography_clean,
             #[cfg(target_os = "macos")]
             note_ui::table_clipboard_has_text,
             #[cfg(target_os = "macos")]
@@ -152,6 +154,7 @@ pub fn run() {
             file_library::workspace::library_hide_main,
             file_library::library_commit,
             file_library::library_save_note,
+            file_library::library_select,
             file_library::library_purge_notes,
             #[cfg(desktop)]
             file_library::library_reveal_note,
@@ -248,6 +251,7 @@ pub fn run() {
         });
 }
 mod file_library;
+mod typography;
 #[cfg(any(feature = "server", all(feature = "app", desktop)))]
 pub use file_library::api;
 #[cfg(any(feature = "app", feature = "server"))]

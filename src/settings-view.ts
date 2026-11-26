@@ -1118,6 +1118,9 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     updateSyncControls();
     unsubscribeSync = client.subscribe(value => {
       const finished = syncing && !value.busy;
+      if (value.lastSyncedAccount && value.lastSyncedAt && (value.lastSyncedAt !== lastSyncedAt || value.lastSyncedAccount !== lastSyncedAccount)) {
+        void accountPanel?.refreshUsage(value.lastSyncedAccount);
+      }
       syncing = value.busy;
       lastSyncedAt = value.lastSyncedAt;
       lastSyncedAccount = value.lastSyncedAccount;

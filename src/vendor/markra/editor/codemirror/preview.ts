@@ -61,6 +61,8 @@ const HEADING_LEVELS: Readonly<Record<string, string>> = {
   SetextHeading2: "2",
 };
 
+const CJK_TEXT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
 const INLINE_CLASSES: Readonly<Record<string, string>> = {
   Autolink: "cm-markra-link",
   StrongEmphasis: "cm-markra-strong",
@@ -102,6 +104,8 @@ const INLINE_WRAPPERS = new Set([
   "Strikethrough",
   "StrongEmphasis",
 ]);
+// 无序列表的符号按层级换，和妙言预览（浏览器默认的 disc、circle、square）一致。
+const BULLET_MARKERS = ["•", "◦", "▪"];
 const LIST_ITEM_PATTERN = /^([\t ]*)([-+*]|\d+[.)])[\t ]+(\[[ xX]\](?:[\t ]+|$))?/u;
 const EMPTY_TASK_ITEM_PATTERN =
   /^([\t ]*)([-+*]|\d+[.)])([\t ]+)(\[[ xX]\])[\t ]*$/u;
@@ -406,6 +410,57 @@ function buildDecorations(
     node.name === "Link" && node.getChild("URL")
       ? node.getChildren("LinkMark")[1]?.from ?? node.from
       : node.from;
+  // 列表项里折到下一行的正文（续行）和 HTML 里的 <li> 段落一样排：缩进到列表文字的左缘，
+  // 行首用来表示归属的空格不显示。嵌套子项、代码块等不是本项段落的行各管各的。
+  const decorateListContinuations = (
+    item: MarkraSyntaxNode,
+    depth: number,
+    kind: string,
+  ) => {
+    const firstLine = state.doc.lineAt(item.from).number;
+    const lastLine = state.doc.lineAt(Math.max(item.from, item.to - 1)).number;
+    // 只藏 Markdown 归属本项所需的缩进，即本项文字开始的列（`1. ` 是 3，`- ` 是 2）；
+    // 用户多打的空格照常显示。标记后空格超过 4 个时按 CommonMark 只算 1 个。
+    const marker = /^([\t ]*(?:[-+*]|\d+[.)]))([\t ]*)/u.exec(state.doc.line(firstLine).text);
+    const contentColumn = marker
+      ? marker[1].length + (marker[2].length > 4 ? 1 : marker[2].length)
+      : 0;
+    for (let lineNumber = firstLine + 1; lineNumber <= lastLine; lineNumber += 1) {
+      const line = state.doc.line(lineNumber);
+      if (decoratedListLines.has(line.from) || !line.text.trim()) continue;
+      const indent = /^[\t ]*/u.exec(line.text)![0].length;
+      let owner: MarkraSyntaxNode | null = tree.resolveInner(line.from + indent, 1) as MarkraSyntaxNode;
+      let inParagraph = false;
+      while (owner && owner.name !== "ListItem") {
+        if (owner.name === "Paragraph") inParagraph = true;
+        owner = owner.parent;
+      }
+      if (!inParagraph || owner?.from !== item.from || owner.to !== item.to) continue;
+      decoratedListLines.add(line.from);
+      const hidden = Math.min(indent, contentColumn);
+      const sourceVisible = hidden > 0 && isRevealed({
+        view,
+        state,
+        from: line.from,
+        to: line.from + hidden,
+        nodeName: "ListMark",
+        scope: "line",
+      });
+      ranges.push(
+        Decoration.line({
+          attributes: {
+            style: `--list-depth: ${depth}`,
+            "data-list-kind": kind,
+            "data-markra-list-source": sourceVisible ? "visible" : "hidden",
+          },
+          class: "cm-markra-list-continuation",
+        }).range(line.from),
+      );
+      if (!sourceVisible && hidden > 0) {
+        pushHiddenRange(ranges, state.doc, line.from, line.from + hidden);
+      }
+    }
+  };
   type SyntaxNode = Parameters<
     NonNullable<Parameters<typeof tree.iterate>[0]["enter"]>
   >[0];
@@ -449,9 +504,10 @@ function buildDecorations(
           const key = `${blockClass}:${line.from}`;
           if (!decoratedBlockLines.has(key)) {
             decoratedBlockLines.add(key);
-            const title = lineNumber === titleLine && node.name === "Paragraph" && node.node.parent?.name === "Document";
             let className = blockClass;
-            if (title) className += " cm-markra-note-title";
+            if (node.name === "Paragraph" && node.node.parent?.name === "Document") {
+              className += lineNumber === titleLine ? " cm-markra-note-title" : " cm-markra-body-line";
+            }
             if (lineNumber === paragraphEndLine) className += " cm-markra-paragraph-end";
             ranges.push(Decoration.line({ class: className }).range(line.from));
           }
@@ -565,12 +621,19 @@ function buildDecorations(
                   node.node as MarkraSyntaxNode,
                   orderedListMarkers,
                 ) ?? listAttributes.marker
-                : listAttributes.marker,
+                : BULLET_MARKERS[Math.min(depth, BULLET_MARKERS.length - 1)],
               "data-markra-list-source": sourceVisible ? "visible" : "hidden",
             },
             class: "cm-markra-list-item",
           }).range(line.from),
         );
+        if (listAttributes) {
+          decorateListContinuations(
+            node.node as MarkraSyntaxNode,
+            depth,
+            listAttributes.kind,
+          );
+        }
       }
 
       const emptyTask = emptyTaskMarkerRange(line.text);
@@ -712,7 +775,11 @@ function buildDecorations(
       } else {
         ranges.push(
           Decoration.mark({
-            class: inlineClass,
+            // 中日韩字体没有真正的斜体，浏览器只能把字形硬压斜。含这类文字的强调
+            // 另加一个 class，样式里改用加粗（和妙言预览一样）。
+            class: node.name === "Emphasis" && CJK_TEXT.test(state.sliceDoc(node.from, node.to))
+              ? `${inlineClass} cm-markra-emphasis-cjk`
+              : inlineClass,
             ...(linkHref
               ? {
                   attributes: {
@@ -862,9 +929,17 @@ function buildDecorations(
         // Keep every authored blank as a normal CodeMirror row. Folding one
         // based on surrounding text makes its height change while typing.
         decoratedEmptyLines.add(line.from);
+        // 列表里的空行相当于 <li> 里段落之间的边距，比正文段落间距窄得多。
+        let inList = false;
+        for (let parent: MarkraSyntaxNode | null = tree.resolveInner(line.from, 1) as MarkraSyntaxNode; parent; parent = parent.parent) {
+          if (parent.name === "BulletList" || parent.name === "OrderedList") {
+            inList = parent.from < line.from && parent.to > line.to;
+            break;
+          }
+        }
         ranges.push(
           Decoration.line({
-            class: "cm-markra-empty-line",
+            class: inList ? "cm-markra-empty-line cm-markra-list-gap" : "cm-markra-empty-line",
           }).range(line.from),
         );
       }

@@ -160,6 +160,78 @@ pub struct DiskLibrary {
     revision: u64,
     bytes: HashMap<String, Vec<u8>>,
     folder_identities: HashMap<String, [u64; 2]>,
+    index_stamp: StampCell,
+    disk_state: Option<DiskState>,
+}
+/// 上次读盘或自己写盘后看到的笔记目录：每个笔记文件的指纹，加上文件夹列表。
+/// 监听到变化时先按它用 stat 核对，都没变就不用把所有笔记重读一遍。
+#[derive(Clone, PartialEq, Default, Debug)]
+struct DiskState {
+    directories: Vec<PathBuf>,
+    trashed_folders: Vec<String>,
+    files: HashMap<String, IndexStamp>,
+}
+/// library.json 写完后的文件指纹。每次写入都会换成新文件，inode 和 ctime 必然变化，
+/// 指纹没变就说明没有别的实例动过它，提交前不用再读一遍整份索引核对版本。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct IndexStamp {
+    identity: [u64; 2],
+    len: u64,
+    changed: [i64; 2],
+}
+/// 写索引时在 `&self` 里记下指纹；命令要跨线程，所以用锁而不是 Cell。
+#[derive(Default)]
+struct StampCell(Mutex<Option<IndexStamp>>);
+impl StampCell {
+    fn get(&self) -> Option<IndexStamp> {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+    fn set(&self, stamp: Option<IndexStamp>) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = stamp;
+    }
+}
+impl Clone for StampCell {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.get()))
+    }
+}
+fn index_stamp(path: &Path) -> Option<IndexStamp> {
+    metadata_stamp(&fs::metadata(path).ok()?)
+}
+// ctime 由系统维护，改内容、改名、改时间戳都会变，比修改时间可靠。
+fn metadata_stamp(meta: &fs::Metadata) -> Option<IndexStamp> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(IndexStamp {
+            identity: [meta.dev(), meta.ino()],
+            len: meta.len(),
+            changed: [meta.ctime(), meta.ctime_nsec()],
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+/// 保存正文的结果：窗口里的版本还是最新的就只回传这一篇，否则回整份快照。
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum SavedNote {
+    Note {
+        root: String,
+        revision: u64,
+        note: Note,
+    },
+    Snapshot(Snapshot),
 }
 #[cfg(feature = "app")]
 #[derive(Default)]
@@ -292,10 +364,12 @@ fn atomic(path: &Path, bytes: &[u8], existing: bool) -> Result<()> {
     let mut temporary =
         tempfile::NamedTempFile::new_in(path.parent().ok_or("文件路径无效")?).map_err(error)?;
     temporary.write_all(bytes).map_err(error)?;
-    temporary.as_file().sync_all().map_err(error)?;
+    // 先把旧文件的属性抄过来再落盘，一次 fsync 同时带上内容和属性。
     if existing {
         copy_metadata(path, temporary.path())?;
-        temporary.as_file().sync_all().map_err(error)?;
+    }
+    temporary.as_file().sync_all().map_err(error)?;
+    if existing {
         exchange(temporary.path(), path).map_err(error)?;
     } else {
         temporary.persist_noclobber(path).map_err(error)?;
@@ -888,20 +962,18 @@ impl DiskLibrary {
             active_id: String::new(),
             sync: None,
         };
+        let generation = index.as_ref().map_or(0, |index| index.generation);
         let mut store = Self {
             root,
             data: index
                 .take()
                 .map_or_else(|| empty.clone(), |index| index.library),
-            revision: 0,
+            revision: generation,
             bytes: HashMap::new(),
             folder_identities: HashMap::new(),
+            index_stamp: Default::default(),
+            disk_state: None,
         };
-        if index_path.exists() {
-            store.revision = serde_json::from_slice::<Index>(&fs::read(index_path).map_err(error)?)
-                .map_err(error)?
-                .generation;
-        }
         store.scan()?;
         if store.revision == 0 {
             if let Some(seed) = seed {
@@ -973,7 +1045,130 @@ impl DiskLibrary {
         })
         .map_err(error)?;
         let path = checked(&self.root, INDEX)?;
-        atomic(&path, &bytes, path.exists())
+        atomic(&path, &bytes, path.exists())?;
+        self.index_stamp.set(index_stamp(&path));
+        Ok(())
+    }
+    /// 笔记目录和上次读盘、写盘后是否一模一样。只用 stat，不读文件内容；
+    /// 有任何对不上的（包括没记录过），都按有变化处理，交给完整对账。
+    pub(crate) fn disk_unchanged(&self) -> bool {
+        let Some(known) = &self.disk_state else {
+            return false;
+        };
+        let pending =
+            [INDEX, JOURNAL, folders::FOLDER_JOURNAL].map(|path| checked(&self.root, path));
+        let [Ok(index), Ok(journal), Ok(folder_journal)] = pending else {
+            return false;
+        };
+        if journal.exists() || folder_journal.exists() {
+            return false;
+        }
+        if index.exists() && index_stamp(&index) != self.index_stamp.get() {
+            return false;
+        }
+        let mut directories = vec![];
+        let mut entries = vec![];
+        if collect_directories(&self.root, &mut directories).is_err()
+            || directories != known.directories
+            || folders::trashed_folders(&self.root) != known.trashed_folders
+            || scan(&self.root, &mut entries, false).is_err()
+            || entries.len() != known.files.len()
+        {
+            return false;
+        }
+        entries.iter().all(|path| {
+            let Ok(relative) = path.strip_prefix(&self.root) else {
+                return false;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            known
+                .files
+                .get(&relative)
+                .is_some_and(|stamp| index_stamp(path) == Some(*stamp))
+        })
+    }
+    /// 自己写完笔记文件后更新记录的指纹，下一次文件监听不会把自己的保存当成外部修改。
+    fn remember_written_files(&mut self, operations: &[Operation], folders_changed: bool) {
+        if folders_changed {
+            // 新建的文件夹目录交给下一次完整对账重新记录。
+            self.disk_state = None;
+        }
+        let Some(mut state) = self.disk_state.take() else {
+            return;
+        };
+        for operation in operations {
+            let (removed, written) = match operation {
+                Operation::Create { path, .. } | Operation::Write { path, .. } => {
+                    (None, Some(path))
+                }
+                Operation::Move { from, to, .. } => (Some(from), Some(to)),
+                Operation::Purge { from, .. } => (Some(from), None),
+                Operation::Asset(_) => (None, None),
+            };
+            if let Some(path) = removed {
+                state.files.remove(path);
+            }
+            // 历史版本等隐藏目录里的文件不在扫描范围内，不记。
+            if let Some(path) =
+                written.filter(|path| !path.split('/').any(|part| part.starts_with('.')))
+            {
+                let stamp = checked(&self.root, path)
+                    .ok()
+                    .and_then(|path| index_stamp(&path));
+                match stamp {
+                    Some(stamp) => {
+                        state.files.insert(path.clone(), stamp);
+                    }
+                    None => return,
+                }
+            }
+        }
+        state.trashed_folders = folders::trashed_folders(&self.root);
+        self.disk_state = Some(state);
+    }
+    /// 磁盘上的索引是不是本实例最后写的那一版。指纹对得上直接放行，对不上才读出来比版本号。
+    fn index_is_current(&self, path: &Path) -> Result<bool> {
+        if let Some(stamp) = index_stamp(path) {
+            if Some(stamp) == self.index_stamp.get() {
+                return Ok(true);
+            }
+        }
+        let index: Index =
+            serde_json::from_slice(&fs::read(path).map_err(error)?).map_err(error)?;
+        Ok(index.generation == self.revision)
+    }
+    /// 只换当前笔记。这不算内容变化，版本号不变，也不用走文件事务。
+    #[cfg_attr(not(feature = "app"), allow(dead_code))]
+    pub(crate) fn select_note(&mut self, note_id: &str) -> Result<()> {
+        if self.data.active_id == note_id {
+            return Ok(());
+        }
+        if !self.data.notes.iter().any(|note| note.id == note_id) {
+            return Err("笔记不存在".into());
+        }
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(checked(&self.root, ".miaoyan/write.lock")?)
+            .map_err(error)?;
+        try_lock(&lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
+        let index_path = checked(&self.root, INDEX)?;
+        if index_path.exists() && !self.index_is_current(&index_path)? {
+            return Err("磁盘笔记库已被另一实例更新，请重新打开".into());
+        }
+        if checked(&self.root, JOURNAL)?.exists()
+            || checked(&self.root, folders::FOLDER_JOURNAL)?.exists()
+        {
+            return Err("存在未恢复的文件事务，请重新打开笔记库".into());
+        }
+        let previous = std::mem::replace(&mut self.data.active_id, note_id.into());
+        if let Err(reason) = self.persist_index(&self.data, self.revision) {
+            self.data.active_id = previous;
+            return Err(reason);
+        }
+        Ok(())
     }
     fn remember_folder_identities(&mut self) {
         let ids: HashSet<_> = self.data.folders.iter().map(|folder| &folder.id).collect();
@@ -997,6 +1192,10 @@ impl DiskLibrary {
     fn scan(&mut self) -> Result<()> {
         let mut entries = Vec::new();
         scan(&self.root, &mut entries, false)?;
+        let mut seen = DiskState {
+            trashed_folders: folders::trashed_folders(&self.root),
+            ..Default::default()
+        };
         let root = self
             .data
             .folders
@@ -1016,6 +1215,7 @@ impl DiskLibrary {
             .collect();
         let mut directories = vec![];
         collect_directories(&self.root, &mut directories)?;
+        seen.directories.clone_from(&directories);
         for directory in directories {
             let path = directory
                 .strip_prefix(&self.root)
@@ -1100,6 +1300,8 @@ impl DiskLibrary {
                     .clone()
             };
             let meta = fs::metadata(&path).map_err(error)?;
+            // 指纹在读内容之前取：读的过程中文件又被改了，下次核对就对不上，会重新读。
+            let stamp = metadata_stamp(&meta);
             let mut note = old.remove(&relative).unwrap_or_else(|| Note {
                 id: id(),
                 folder_id: folder_id.clone(),
@@ -1135,7 +1337,15 @@ impl DiskLibrary {
             note.filename = path.file_name().map(|n| n.to_string_lossy().into());
             note.updated_at = millis(meta.modified().map_err(error)?);
             notes.push(note);
+            match stamp {
+                Some(stamp) => {
+                    seen.files.insert(relative, stamp);
+                }
+                None => seen.directories.clear(),
+            }
         }
+        // 拿不到指纹的平台（Windows）不记录，每次都完整重读。
+        self.disk_state = (seen.files.len() == notes.len()).then_some(seen);
         folders.retain(|f| f.path.is_empty() || self.root.join(&f.path).is_dir());
         for note in &mut notes {
             if !folders.iter().any(|f| f.id == note.folder_id) {
@@ -1213,12 +1423,8 @@ impl DiskLibrary {
             .map_err(error)?;
         try_lock(&lock).map_err(|_| "另一个窗口正在写入此笔记库，请稍后重试".to_string())?;
         let index_path = checked(&self.root, INDEX)?;
-        if index_path.exists() {
-            let index: Index =
-                serde_json::from_slice(&fs::read(index_path).map_err(error)?).map_err(error)?;
-            if index.generation != self.revision {
-                return Err("磁盘笔记库已被另一实例更新，请重新打开".into());
-            }
+        if index_path.exists() && !self.index_is_current(&index_path)? {
+            return Err("磁盘笔记库已被另一实例更新，请重新打开".into());
         }
         if checked(&self.root, JOURNAL)?.exists()
             || checked(&self.root, folders::FOLDER_JOURNAL)?.exists()
@@ -1576,11 +1782,15 @@ impl DiskLibrary {
                 let _ = identity;
             }
         }
-        atomic(
-            &journal,
-            &serde_json::to_vec(&transaction).map_err(error)?,
-            false,
-        )?;
+        // 置顶、改当前笔记这类提交不动任何文件，只换索引，不必先写恢复日志。
+        let journaled = !transaction.operations.is_empty();
+        if journaled {
+            atomic(
+                &journal,
+                &serde_json::to_vec(&transaction).map_err(error)?,
+                false,
+            )?;
+        }
         let result = (|| {
             for operation in &transaction.operations {
                 operation.apply(&self.root)?;
@@ -1596,9 +1806,12 @@ impl DiskLibrary {
             for operation in &transaction.operations {
                 operation.cleanup(&self.root)?;
             }
-            fs::remove_file(journal).map_err(error)?;
+            if journaled {
+                fs::remove_file(journal).map_err(error)?;
+            }
             return Err(reason);
         }
+        let folders_changed = next.folders != self.data.folders;
         self.data = next;
         self.revision = generation;
         self.remember_folder_identities();
@@ -1616,7 +1829,11 @@ impl DiskLibrary {
             }
             operation.cleanup(&self.root)?;
         }
-        fs::remove_file(journal).map_err(error)?;
+        if journaled {
+            fs::remove_file(journal).map_err(error)?;
+        }
+        // 收尾步骤也会动文件属性，等全部做完再记指纹。
+        self.remember_written_files(&transaction.operations, folders_changed);
         if intent == "purge" {
             self.bytes
                 .retain(|id, _| self.data.notes.iter().any(|note| &note.id == id));
@@ -1992,18 +2209,55 @@ pub async fn library_save_note(
     note_id: String,
     expected_source: String,
     source: String,
-) -> Result<Snapshot> {
+    revision: Option<u64>,
+) -> Result<SavedNote> {
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
     workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;
-    let revision = store.revision;
+    let before = store.revision;
     store.save_note_body(&root, &note_id, &expected_source, source, "edit")?;
-    let snapshot = store.snapshot();
+    let saved = if revision == Some(before) {
+        let note = store
+            .data
+            .notes
+            .iter()
+            .find(|note| note.id == note_id)
+            .ok_or("笔记不存在")?
+            .clone();
+        SavedNote::Note {
+            root: store.root.to_string_lossy().into(),
+            revision: store.revision,
+            note,
+        }
+    } else {
+        SavedNote::Snapshot(store.snapshot())
+    };
+    let after = store.revision;
+    let changed_root = store.root.to_string_lossy().into_owned();
     drop(lock);
-    if snapshot.revision != revision {
-        workspace::library_changed(window.app_handle(), &snapshot.root, Some(window.label()));
+    if after != before {
+        workspace::library_changed(window.app_handle(), &changed_root, Some(window.label()));
     }
-    Ok(snapshot)
+    Ok(saved)
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub async fn library_select(
+    window: tauri::WebviewWindow,
+    state: State<'_, FileLibrary>,
+    note_id: String,
+    revision: u64,
+) -> Result<()> {
+    if window.label() != "main" {
+        return Err("请在主窗口切换笔记".into());
+    }
+    let mut lock = state.0.lock().map_err(error)?;
+    let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
+    if store.revision != revision {
+        return Err("笔记库已发生变化，请重新打开后再操作".into());
+    }
+    store.select_note(&note_id)
 }
 
 #[cfg(all(feature = "app", desktop))]

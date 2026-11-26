@@ -1,8 +1,8 @@
 use super::*;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::DateTime;
 use md5::{Digest, Md5};
-use reqwest::{Url, header::HeaderMap};
+use reqwest::{header::HeaderMap, Url};
 use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Serialize)]
@@ -685,6 +685,16 @@ impl ClientAccount {
                 json!({"configVersion": config_version, "keys": keys}),
             )
             .await?;
+        self.refresh_storage_usage(session, account_id, generation)
+            .await
+    }
+
+    pub(crate) async fn refresh_storage_usage(
+        &self,
+        session: PathBuf,
+        account_id: &str,
+        generation: Option<u64>,
+    ) -> Result<()> {
         let mut state = self.session.lock().await;
         let service = self.service(session)?;
         service.require_account(&state.access, account_id)?;
@@ -722,6 +732,19 @@ fn storage_http() -> Result<&'static Client> {
     })
     .as_ref()
     .map_err(Clone::clone)
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub(crate) async fn account_refresh_storage_usage(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, ClientAccount>,
+    account_id: String,
+    generation: Option<u64>,
+) -> Result<()> {
+    state
+        .refresh_storage_usage(app_session(&window)?, &account_id, generation)
+        .await
 }
 
 #[cfg(feature = "app")]

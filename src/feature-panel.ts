@@ -3,6 +3,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { native } from './preferences';
 import { showWindowWhenPainted } from './window-ready';
 import { bindVerticalPull } from './panel-pull';
+import { mountDesktopWindowBar } from './desktop-window';
 import './feature-panel.css';
 
 function usesFeatureWindow() {
@@ -118,6 +119,7 @@ export async function mountFeatureWindow(root: HTMLElement, mount: (close: () =>
   const windowHandle = getCurrentWindow();
   const close = () => { void windowHandle.close(); };
   root.classList.add('feature-window-root');
+  mountDesktopWindowBar();
   document.addEventListener('keydown', event => {
     if (event.isComposing) return;
     if (event.key === 'Escape' || event.key.toLowerCase() === 'w' && (event.metaKey || event.ctrlKey)) {

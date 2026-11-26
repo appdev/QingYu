@@ -6,10 +6,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { keepEditorFocusForTouchButtons } from './editor-viewport';
 import { editorItemMove, moveEditorItem, taskMarker, toggleTask, untickChecklist, type Format } from './format';
 import { showMenu } from './popup-menu';
+import { typographyEvent } from './typography';
 import { markupLabel, uiText, workflowText } from './ui-language';
 
 type HistoryAction = 'undo' | 'redo';
-type FormatAction = Format | 'move-up' | 'move-down' | 'tick' | 'untick';
+type FormatAction = Format | 'move-up' | 'move-down' | 'tick' | 'untick' | 'typography';
 
 function focusedEditor(target: Element) {
   const content = target.closest<HTMLElement>('.cm-content');
@@ -75,6 +76,7 @@ export const editorHistoryMenuUpdates = ViewPlugin.define(view => {
       if (!edit) return;
       dismissNotice();
       if (edit.isUserEvent('input.table.delete')) showNotice('已删除表格');
+      else if (edit.isUserEvent(typographyEvent)) showNotice(workflowText('排版已优化'));
       else if (edit.isUserEvent('input.task.untickAll')) {
         let count = 0;
         edit.changes.iterChangedRanges(() => count++);
@@ -135,6 +137,7 @@ export function connectMobileEditorHistory(button: HTMLButtonElement, currentEdi
 export async function connectEditorHistoryMenu(formatEditor?: {
   current: () => EditorView | null;
   apply: (action: Format) => void;
+  optimizeTypography?: (view: EditorView) => void;
 }) {
   if (!('__TAURI_INTERNALS__' in window) || !/Mac/.test(navigator.platform) || navigator.maxTouchPoints > 1) return;
   let scheduled = false;
@@ -186,7 +189,8 @@ export async function connectEditorHistoryMenu(formatEditor?: {
     const writing = formatTarget();
     if (!writing) return;
     const { view, line, inTable, checkbox } = writing;
-    if (payload === 'move-up' || payload === 'move-down') {
+    if (payload === 'typography') formatEditor?.optimizeTypography?.(view);
+    else if (payload === 'move-up' || payload === 'move-down') {
       if (!inTable && !checkbox) moveEditorItem(view, payload === 'move-up');
     } else if (payload === 'tick' || payload === 'untick') {
       if (inTable) return;

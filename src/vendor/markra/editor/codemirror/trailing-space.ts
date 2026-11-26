@@ -20,7 +20,7 @@ class TrailingSpaceWidget extends WidgetType {
     space.className = "cm-markra-trailing-space";
     space.setAttribute("aria-hidden", "true");
     space.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || event.ctrlKey) return;
       event.preventDefault();
       event.stopPropagation();
       const source = view.state.doc.toString();

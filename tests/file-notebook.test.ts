@@ -13,10 +13,16 @@ beforeEach(() => {
       const request = args as { next: Library; revision: number };
       expect(request.revision).toBe(revision); disk = structuredClone(request.next); revision++;
     } else if (command === 'library_save_note') {
-      const request = args as { noteId: string; expectedSource: string; source: string };
+      const request = args as { noteId: string; expectedSource: string; source: string; revision: number };
       const note = disk.notes.find(note => note.id === request.noteId)!;
       if (note.source !== request.expectedSource) throw new Error('笔记正文已更新，未覆盖');
+      const stale = request.revision !== revision;
       note.source = request.source; revision++;
+      // 窗口里的版本还是最新的，就只回传这一篇；别处改过才回整份快照。
+      if (!stale) return { root: '/test/documents/MiaoYan Editor', revision, note: structuredClone(note) };
+    } else if (command === 'library_select') {
+      const request = args as { noteId: string; revision: number };
+      expect(request.revision).toBe(revision); disk.activeId = request.noteId; return null;
     }
     return { library: structuredClone(disk), root: '/test/documents/MiaoYan Editor', revision };
   });
@@ -24,6 +30,31 @@ beforeEach(() => {
 function fixture() { const storage = { getItem: () => null, setItem: vi.fn() }; return { storage, book: new Notebook(storage, '# 旧草稿') }; }
 
 describe('file-backed Notebook contract', () => {
+  it('switches notes in memory and writes the active note to disk once the user settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const { book } = fixture();
+      disk.notes.push({ ...diskSeed.notes[0], id: 'second', title: '第二篇', filename: '第二篇.md', path: '第二篇.md' }, { ...diskSeed.notes[0], id: 'third', title: '第三篇', filename: '第三篇.md', path: '第三篇.md' });
+      await book.openFiles();
+      vi.mocked(invoke).mockClear();
+      // 连续切换不碰磁盘，当前笔记立即变化。
+      expect(await book.select('second')).toBe(true);
+      expect(await book.select('third')).toBe(true);
+      expect(book.current.id).toBe('third');
+      expect(invoke).not.toHaveBeenCalled();
+      // 期间别的保存读回旧快照，也不会把当前笔记切回去。
+      await book.save('# 改动\n', 'third');
+      expect(book.current.id).toBe('third');
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(vi.mocked(invoke).mock.calls.map(([command]) => command).filter(command => command !== 'library_save_note')).toEqual(['library_select']);
+      expect(disk.activeId).toBe('third');
+      // 写过之后不再重复写。
+      vi.mocked(invoke).mockClear();
+      expect(await book.flushActive()).toBe(true);
+      expect(invoke).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
   it('follows the first line for new notes and defers the disk name until confirmation', async () => {
     const { book } = fixture();
     await book.openFiles();
@@ -144,7 +175,7 @@ describe('file-backed Notebook contract', () => {
     disk.notes.push(other); revision++;
     await book.save('当前窗口正文');
     expect(invoke).toHaveBeenLastCalledWith('library_save_note', {
-      root: '/test/documents/MiaoYan Editor', noteId: 'disk', expectedSource: diskSeed.notes[0].source, source: '当前窗口正文',
+      root: '/test/documents/MiaoYan Editor', noteId: 'disk', expectedSource: diskSeed.notes[0].source, source: '当前窗口正文', revision: 1,
     });
     expect(book.current).toMatchObject({ id: 'disk', source: '当前窗口正文' });
     expect(book.data.notes.find(note => note.id === 'other')).toEqual(other);

@@ -36,6 +36,31 @@ function toolbarButton() {
   return button;
 }
 
+it('opens a desktop app dropdown below the trigger with a keyboard-accessible side submenu', async () => {
+  nativeApp('Win32');
+  const anchor = toolbarButton();
+  const run = vi.fn();
+  await showMenu([
+    { text: 'Open file', shortcut: '⌘O', run },
+    { text: 'Library', items: [{ text: 'Reload', run }] },
+  ], { anchor, presentation: 'dropdown', keyboard: true });
+
+  const root = document.querySelector<HTMLElement>('.desktop-dropdown-menu')!;
+  expect(root.style.top).toBe('42px');
+  expect(root.querySelector('kbd')?.textContent).toBe('Ctrl+O');
+  document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+  const library = document.activeElement!;
+  expect(library.getAttribute('aria-label')).toBe('Library');
+  library.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  expect(root.querySelector(':scope > .desktop-dropdown-menu')?.getAttribute('aria-label')).toBe('Library');
+  expect(document.activeElement?.getAttribute('aria-label')).toBe('Reload');
+  document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  expect(document.activeElement).toBe(library);
+  library.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  expect(anchor.getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(anchor);
+});
+
 it('opens toolbar menus as native menus below the button in the desktop App', async () => {
   nativeApp('MacIntel');
   const anchor = toolbarButton();

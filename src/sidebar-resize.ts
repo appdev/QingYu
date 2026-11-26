@@ -25,7 +25,7 @@ export function setupSidebarResize(shell: HTMLElement, getLayout: () => SidebarL
       handles[kind].setAttribute('aria-valuemax', String(kind === 'folders' ? sidebarLimits.folderMax : sidebarLimits.noteMax));
     }
     if (drag) return;
-    const next = JSON.stringify({ version: 2, ...sizes, columns: getPreferredColumns() });
+    const next = JSON.stringify({ version: 3, ...sizes, columns: getPreferredColumns() });
     if (stored === next) return;
     try { localStorage.setItem(key, next); stored = next; }
     catch { error('分栏宽度未能保存'); }

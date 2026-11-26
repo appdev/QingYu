@@ -1,5 +1,5 @@
 #app-shell { display: flex; flex: 1; min-height: 0; }
-#library-sidebar { position: relative; display: flex; flex-direction: column; flex-shrink: 0; width: calc(var(--folder-width, 268px) + var(--notes-width, 330px)); min-height: 0; background: var(--sidebar); -webkit-user-select: none; user-select: none; }
+#library-sidebar { position: relative; display: flex; flex-direction: column; flex-shrink: 0; width: calc(var(--folder-width, 268px) + var(--notes-width, 297px)); min-height: 0; background: var(--sidebar); -webkit-user-select: none; user-select: none; }
 #library-sidebar input { -webkit-user-select: text; user-select: text; }
 .sidebar-panes { display: flex; flex: 1; min-height: 0; }
 .sidebar-footer { position: absolute; z-index: 2; left: 12px; bottom: max(12px, var(--safe-area-bottom)); display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 24px; background: var(--paper); box-shadow: 0 2px 10px var(--shadow); }
@@ -14,7 +14,7 @@
 #sync-button[data-state='syncing']::after { display: none; }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #sync-button[data-state='syncing'] svg { animation: none; } }
-#folder-pane { position: relative; width: var(--folder-width, 268px); flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+#folder-pane { position: relative; width: var(--folder-width, 268px); flex-shrink: 0; border-right: 1px solid var(--line); background: var(--sidebar); display: flex; flex-direction: column; min-height: 0; }
 .library-resizer { position: absolute; z-index: 3; top: 0; bottom: 0; left: 100%; width: 9px; cursor: col-resize; touch-action: none; }
 body[data-library-resizing], body[data-library-resizing] * { cursor: col-resize !important; user-select: none !important; }
 body[data-library-resizing] iframe { pointer-events: none; }
@@ -50,7 +50,7 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .folder-row-more:hover { color: var(--brand); background: var(--control-fill); }
 .folder-entry:hover:not(:has(.renaming)) .folder-row-more { display: grid; }
 .folder-entry:hover:not(:has(.renaming)) .folder-count { opacity: 0; }
-#notes-pane { position: relative; width: var(--notes-width, 330px); flex-shrink: 0; min-width: 0; min-height: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; background: var(--list); }
+#notes-pane { position: relative; width: var(--notes-width, 297px); flex-shrink: 0; min-width: 0; min-height: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; background: var(--list); }
 .notes-toolbar { gap: 11px; padding: 0 14px; }
 .notes-navigation { display: contents; }
 .notes-navigation-title { display: none; }
@@ -94,7 +94,7 @@ body[data-library-resizing] iframe { pointer-events: none; }
 .icon-button:disabled:hover { background: transparent; }
 html[data-platform='macos'] #app-shell[data-sidebar='note'] #document-column .titlebar { padding-left: 92px; }
 html[data-platform='macos'] #app-shell[data-sidebar='list'] .notes-toolbar { padding-left: 92px; }
-#app-shell[data-sidebar='list'] #library-sidebar { width: var(--notes-width, 330px); }
+#app-shell[data-sidebar='list'] #library-sidebar { width: var(--notes-width, 297px); }
 #app-shell[data-sidebar='list'] #folder-pane { display: none; }
 #app-shell[data-sidebar='note'] #library-sidebar { display: none; }
 #app-shell[data-note-window] .note-navigation { display: flex; align-items: center; gap: 6px; margin-inline-end: 12px; }
@@ -159,6 +159,9 @@ html[data-mobile] .context-submenu-chevron { width: 18px; height: 18px; }
 .note-context-menu.desktop-toolbar-menu {
   --toolbar-menu-width: 218px;
   border-radius: 12px;
+}
+.note-context-menu.desktop-dropdown-menu {
+  background: var(--paper); border: 1px solid var(--border); box-shadow: 0 6px 20px var(--shadow-raised);
 }
 @supports not (opacity: calc(pow(.5, 2))) {
   .note-context-menu.toolbar-context-menu { background: var(--lb-fill); }
@@ -348,9 +351,10 @@ html[data-mobile] :is(.note-row, .folder-row) { touch-action: pan-y; -webkit-tou
 html[data-mobile] .folder-row { -webkit-user-select: none; user-select: none; }
 html[data-mobile] .folder-row input { -webkit-user-select: text; user-select: text; }
 @media (min-width: 901px) {
-  #app-shell:not([data-mobile-page]) #folder-pane { border: 0; padding: 0 8px; background: var(--list); }
-  #app-shell:not([data-mobile-page]) #folder-pane::before { content: ''; position: absolute; inset: 8px 0 8px 8px; background: var(--sidebar); border-radius: 14px; pointer-events: none; }
-  #app-shell:not([data-mobile-page]) #folder-pane > :not(.library-resizer) { position: relative; }
+  #app-shell:not([data-mobile-page]) #folder-pane { padding: 0 8px; }
+  html[data-platform=macos] #app-shell:not([data-mobile-page]) #folder-pane { border: 0; background: var(--list); }
+  html[data-platform=macos] #app-shell:not([data-mobile-page]) #folder-pane::before { content: ''; position: absolute; inset: 8px 0 8px 8px; background: var(--sidebar); border-radius: 14px; pointer-events: none; }
+  html[data-platform=macos] #app-shell:not([data-mobile-page]) #folder-pane > :not(.library-resizer) { position: relative; }
   #app-shell:not([data-mobile-page]) .folder-toolbar { height: 52px; gap: 8px; padding: 0; margin-right: -4px; container-type: inline-size; }
   #app-shell:not([data-mobile-page]) .folder-toolbar .icon-button { width: 36px; height: 36px; border-radius: 50%; }
   #app-shell:not([data-mobile-page]) .folder-toolbar .icon-button:hover:not(:disabled) { background: var(--control-hover); }
@@ -360,17 +364,21 @@ html[data-mobile] .folder-row input { -webkit-user-select: text; user-select: te
   @container (max-width: 154px) {
     #app-shell:not([data-mobile-page]) .folder-toolbar .icon-button { width: 24px; }
   }
-  #app-shell:not([data-mobile-page]) .sidebar-brand { height: 20px; margin: 3px 17px 0 26px; gap: 0; font: 500 11px var(--font); color: var(--muted); letter-spacing: 0; }
+  #app-shell:not([data-mobile-page]) .sidebar-brand { height: 20px; margin: 3px 17px 0 26px; gap: 0; font: 600 12px var(--font); color: var(--muted); letter-spacing: 0; }
   #app-shell:not([data-mobile-page]) #sidebar-brand-icon { display: none; }
-  #app-shell:not([data-mobile-page]) #new-folder-button { margin-left: auto; width: 16px; height: 16px; }
-  #app-shell:not([data-mobile-page]) #new-folder-button svg { width: 14px; height: 14px; }
+  /* 照 Pinto：加号约 9px 宽、线宽约 1.3px，点击区 22px，横向对准下面数量的最后一位数字。 */
+  #app-shell:not([data-mobile-page]) #new-folder-button { margin: -1px -8px -1px auto; width: 22px; height: 22px; }
+  #app-shell:not([data-mobile-page]) #new-folder-button svg { width: 16px; height: 16px; }
   #app-shell:not([data-mobile-page]) .folder-row { height: 32px; font-size: 13px; padding-right: 16px; gap: 9px; }
   #app-shell:not([data-mobile-page]) .folder-row::before { inset: 2px 8px 2px 12px; }
-  #app-shell:not([data-mobile-page]) .folder-row[aria-pressed=true] { color: var(--brand); }
+  #app-shell:not([data-mobile-page]) .folder-row[aria-pressed=true]::before { background: var(--note-selection); }
+  #app-shell:not([data-mobile-page]) .folder-entry:hover > .folder-row:not([aria-pressed=true], .renaming)::before,
+  #app-shell:not([data-mobile-page]) .folder-row:not([aria-pressed=true], .renaming):hover::before,
+  #app-shell:not([data-mobile-page]) .note-row:not([aria-selected=true]):hover { background: color-mix(in srgb, var(--note-selection) 50%, transparent); }
   #app-shell:not([data-mobile-page]) .folder-row .sidebar-icon { width: 16px; height: 16px; }
   #app-shell:not([data-mobile-page]) .sidebar-services { padding-bottom: 84px; }
   #app-shell:not([data-mobile-page]) .sidebar-services button { min-height: 40px; padding-inline-start: 18px; }
-  #app-shell:is([data-mac-sidebar-foot], [data-web-sidebar-services]) #folder-pane::before { border-radius: 20px; }
+  html[data-platform=macos] #app-shell[data-mac-sidebar-foot]:not([data-mobile-page]) #folder-pane::before { border-radius: 20px; }
   #app-shell:is([data-mac-sidebar-foot], [data-web-sidebar-services]) .sidebar-services { gap: 1.5px; padding: 4px 2px 16px 10px; }
   #app-shell:is([data-mac-sidebar-foot], [data-web-sidebar-services]) #notes-pane > .sidebar-services { padding-inline-end: 10px; }
   #app-shell:is([data-mac-sidebar-foot], [data-web-sidebar-services]) .sidebar-services button {
@@ -440,9 +448,9 @@ html[data-mobile] .folder-row input { -webkit-user-select: text; user-select: te
   #app-shell:not([data-mobile-page]) #notes-pane[data-searching] .notes-toolbar { height: 94px; padding-bottom: 42px; }
   #app-shell:not([data-mobile-page]) #notes-pane[data-searching] #note-search { display: block; position: absolute; left: 12px; right: 12px; bottom: 8px; width: calc(100% - 24px); }
   #app-shell:not([data-mobile-page]) #notes-list { padding: 4px 10px 20px; }
-  #app-shell:not([data-mobile-page]) .notes-year { font-size: 11px; font-weight: 500; color: var(--muted); padding: 6px 10px 8px; }
+  #app-shell:not([data-mobile-page]) .notes-year { font: 500 12px/18px var(--font); color: var(--muted); padding: 6px 10px 8px; }
   #app-shell:not([data-mobile-page]) .note-row { padding: 11px 10px 9px 15.5px; border-radius: 10px; gap: 1px; }
-  #app-shell:not([data-mobile-page]) .note-row-title { font-size: 13px; line-height: 18px; }
+  #app-shell:not([data-mobile-page]) .note-row-title { font-size: 14px; font-weight: 400; line-height: 20px; }
   #app-shell:not([data-mobile-page]) .note-row-info { font-size: 12px; line-height: 17px; }
   #app-shell:not([data-mobile-page]) .note-row-folder { font-size: 11px; line-height: 16px; }
   html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) #notes-list:has(.notes-year) { padding-top: 10px; }
@@ -451,8 +459,9 @@ html[data-mobile] .folder-row input { -webkit-user-select: text; user-select: te
     display: flex; align-items: center; min-height: 40px; padding: 0 6px;
     color: var(--ink); font: 600 15px/20px var(--font);
   }
-  html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) .note-row::after { display: none; }
-  html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) .note-row-info time { color: color-mix(in srgb, var(--ink) 85%, transparent); }
+  /* 行与行之间一条 0.5px 细线，从标题左边对齐到行的右内边距；选中行和它上面那一行不画，组内最后一行也不画。 */
+  #app-shell:not([data-mobile-page]) .note-row::after { left: 15.5px; right: 10px; height: .5px; background: var(--note-row-hairline); }
+  #app-shell:not([data-mobile-page]) :is(.note-row[aria-selected='true'], .note-row:has(+ .note-row[aria-selected='true']), .note-row:last-child)::after { background: transparent; }
   #app-shell[data-sidebar=all]:not([data-mobile-page]) .sidebar-footer {
     left: 24px; width: calc(var(--folder-width) - 40px); bottom: 22px;
     border-radius: 0; background: transparent; box-shadow: none; padding: 0 4px;
@@ -672,7 +681,12 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
     display: block; height: var(--notes-edge, var(--notes-top));
   }
   #app-shell:not([data-mobile-page]) #notes-list { padding-top: calc(var(--notes-top) + 4px); scroll-padding-top: calc(var(--notes-top) + 44px); }
-  #app-shell:not([data-mobile-page]) #notes-list { scrollbar-width: auto; scrollbar-color: auto; }
+  #app-shell:not([data-mobile-page]) :is(#folder-list, #notes-list, #document-column .cm-scroller) {
+    --scroll-thumb: transparent;
+    scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent;
+    &:is(:hover, :focus-visible, [data-scrolling]) { --scroll-thumb: color-mix(in srgb, var(--ink) 40%, transparent); }
+    &::-webkit-scrollbar-thumb { background-color: var(--scroll-thumb); }
+  }
   #app-shell:not([data-mobile-page]) #notes-list::-webkit-scrollbar-track:vertical { margin-top: var(--notes-top); }
   html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) #notes-list { scroll-padding-top: calc(var(--notes-top) + 50px); }
   html:is([data-platform=macos], [data-web]) #app-shell:not([data-mobile-page]) #notes-list:has(.notes-year) { padding-top: calc(var(--notes-top) + 10px); }
@@ -691,6 +705,7 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
 
 #app-shell {
   --editor-scrollbar-mode: auto;
+  & #rich-editor .cm-scroller { scrollbar-width: var(--editor-scrollbar-mode, inherit); scrollbar-color: var(--editor-scrollbar-mode, inherit); }
   @media (max-width: 900px) {
     &:not([data-note-window], [data-mobile-page]) {
       --editor-scroll-inset: 0px;
@@ -705,7 +720,6 @@ label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; strok
     & #rich-editor .cm-content { padding-top: calc(var(--editor-scroll-overlap) + 15px); }
     & #rich-editor .cm-scroller {
       scroll-padding-top: var(--editor-scroll-overlap);
-      scrollbar-width: var(--editor-scrollbar-mode, inherit); scrollbar-color: var(--editor-scrollbar-mode, inherit);
     }
     & #rich-editor .cm-scroller::-webkit-scrollbar-track:vertical { margin-top: var(--editor-scroll-overlap); }
 

@@ -50,19 +50,27 @@ it.each([false, true])('shows the toolbar actions with icons and a divider befor
   expect(document.activeElement).toBe(document.querySelector('.qlg-menu-surface [role=menu]'));
   const items = [...document.querySelectorAll<HTMLButtonElement>('.qlg-menu-surface [role=menu] [role=menuitem]')];
   expect(items.map(item => item.ariaLabel)).toEqual([
-    ...(!mobile ? ['在新窗口打开笔记'] : []), '置顶', '复制笔记', '移到废纸篓',
+    ...(!mobile ? ['在新窗口打开笔记'] : []), '置顶', '复制笔记', '移动到…', '移到废纸篓',
   ]);
   expect(items.every(item => item.querySelector(':scope > .qlg-menu__icon > svg'))).toBe(true);
   const separators = [...document.querySelectorAll('.qlg-menu-surface [role=menu] > hr')];
   expect(separators.map(separator => separator.nextElementSibling?.getAttribute('aria-label'))).toEqual(['移到废纸篓']);
   document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   expect(document.activeElement).toBe(anchor);
+  const historySupport = vi.spyOn(book, 'hasNoteHistory', 'get').mockReturnValue(true);
   await menu(book.current!.id, 200, 100, { anchor, keyboard: true });
   expect(document.activeElement).toBe(document.querySelector('.qlg-menu-surface [role=menu] [role=menuitem]'));
+  const versions = document.querySelector<HTMLButtonElement>('[role=menu] [aria-label="版本历史…"]')!;
+  expect(versions.previousElementSibling?.ariaLabel).toBe('移动到…');
+  expect(versions.querySelector('svg')).not.toBeNull();
+  const showHistory = vi.spyOn(await import('../src/note-history'), 'showNoteHistory').mockImplementation(() => {});
+  versions.click();
+  await vi.waitFor(() => expect(showHistory).toHaveBeenCalledWith(book, book.current, expect.any(Function), expect.any(Function)));
   if (!mobile) {
+    historySupport.mockReturnValue(false);
     await menu(book.current!.id, 200, 100);
     expect(document.querySelector('[role=menu] [aria-label="版本历史…"]')).toBeNull();
-    vi.spyOn(book, 'hasNoteHistory', 'get').mockReturnValue(true);
+    historySupport.mockReturnValue(true);
     await menu(book.current!.id, 200, 100);
     expect(document.querySelector('[role=menu] [aria-label="版本历史…"]')).not.toBeNull();
   }
@@ -81,7 +89,27 @@ it('groups pin, duplicate and share in the desktop note row menu', async () => {
   ]);
 });
 
-it('moves from a desktop note row using the sidebar folder hierarchy and order', async () => {
+it('combines editor actions with actions for only the displayed note', async () => {
+  const book = new Notebook({ getItem: () => null, setItem() {} }, '# Current');
+  const id = book.current.id;
+  book.data.notes.push({ ...book.current, id: 'other' });
+  const restoreFocus = vi.fn();
+  const menu = createNoteMenu(() => book, {
+    save: async () => true, change: async run => { await run(); }, error: vi.fn(),
+    selection: () => [id, 'other'], openNoteWindow: async () => {},
+  });
+  await menu(id, 120, 80, { editorItems: [{ text: '剪切', enabled: false }, { text: '复制', enabled: false }, { text: '粘贴' }], restoreFocus });
+  const rows = [...document.querySelectorAll<HTMLElement>('[role=menu] > :is(button, hr)')];
+  expect(rows.map(row => row.ariaLabel ?? row.tagName)).toEqual([
+    '剪切', '复制', '粘贴', 'HR', '在新窗口打开笔记', '置顶', '复制笔记',
+  ]);
+  rows.find(row => row.ariaLabel === '置顶')!.click();
+  await vi.waitFor(() => expect(book.data.notes.find(note => note.id === id)?.pinned).toBe(true));
+  expect(book.data.notes.find(note => note.id === 'other')?.pinned).toBeFalsy();
+  expect(restoreFocus).toHaveBeenCalledOnce();
+});
+
+it.each(['sidebar', 'toolbar'])('moves from the desktop %s using the sidebar folder hierarchy and order', async surface => {
   vi.stubGlobal('CSS', { escape: (text: string) => text });
   const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# Note');
   const parent = await book.createFolder('Alpha');
@@ -98,7 +126,8 @@ it('moves from a desktop note row using the sidebar folder hierarchy and order',
   const submenu = (name: string) => document.querySelector<HTMLElement>(`[role=menu][aria-label="${name}"]`)!;
   // 子菜单首行是「收起××」标题行，后面跟一条分隔线，不算在目的地和分组里。
   const buttons = (element: HTMLElement) => [...element.querySelectorAll<HTMLButtonElement>(':scope > button:not([data-header])')];
-  await menu(note.id, 200, 100);
+  const anchor = document.body.appendChild(document.createElement('button'));
+  await menu(note.id, 200, 100, surface === 'toolbar' ? { anchor } : undefined);
   buttons(submenu('笔记操作')).find(button => button.ariaLabel === '移动到…')!.click();
   const destinations = buttons(submenu('移动到…'));
   expect(destinations.map(button => button.ariaLabel)).toEqual(['备忘录', 'Beta', 'Alpha']);

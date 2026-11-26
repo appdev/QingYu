@@ -58,6 +58,7 @@ type EditorOptions = {
   /** 从斜杠菜单添加文件；不传则菜单里没有这一项。 */
   attachFile?: () => void;
   selectionChanged?: () => void;
+  showNoteMenu?: (id: string, event: MouseEvent, items: MenuItem[]) => void;
 };
 
 const commands = {
@@ -156,10 +157,12 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
   }
   function textMenu(editor: EditorView, visibleSelection: boolean): MenuItem[] {
     const selected = visibleSelection || editor.state.selection.ranges.some(range => !range.empty);
+    const copy: MenuItem = { text: '复制', enabled: selected, nativeRole: 'Copy', needsUserActivation: !onMac, run: () => { document.execCommand('copy'); } };
+    if (readOnly) return [copy];
     return [
-      { text: '剪切', enabled: selected, nativeRole: 'Cut' as const, run: () => { document.execCommand('cut'); } },
-      { text: '复制', enabled: selected, nativeRole: 'Copy' as const, run: () => { document.execCommand('copy'); } },
-      { text: '粘贴', nativeRole: 'Paste' as const, run: async () => {
+      { text: '剪切', enabled: selected, nativeRole: 'Cut', needsUserActivation: !onMac, run: () => { document.execCommand('cut'); } },
+      copy,
+      { text: '粘贴', nativeRole: 'Paste', needsUserActivation: !onMac, run: async () => {
         const before = editor.state;
         const text = await navigator.clipboard.readText();
         if (text && editor.state === before && editor.hasFocus && !editor.compositionStarted) {
@@ -445,11 +448,13 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         const standalone = position !== undefined ? linkFormAt(editor.state, position) : null;
         const target = standalone?.form.href ?? (anchor && resolveLink(anchor.getAttribute('href') ?? ''));
         const canUntick = !readOnly && position !== undefined && untickChecklist(editor.state, position);
-        const selected = readOnly ? undefined : pictureSelection(editor);
-        const picture = pictureMenu(editor, selected);
         const codeFrom = event.target.closest<HTMLElement>('.cm-markra-code-line')?.dataset.codeBlockFrom;
         const code = codeFrom === undefined ? undefined : fencedCodeTextAt(editor.state, Number(codeFrom));
-        if (!canUntick && !target && !picture.length && !code) return false;
+        const specialized = Boolean(canUntick || target || code);
+        if (!specialized && options.showNoteMenu) return false;
+        const selected = readOnly ? undefined : pictureSelection(editor);
+        const picture = pictureMenu(editor, selected);
+        if (!specialized && !picture.length) return false;
         const clipboard = readOnly || embed ? [] : textMenu(editor, Boolean(selected));
         const restyle = !readOnly && standalone ? otherLinkStyles(standalone.form).map(style => ({
           text: linkStyles[style], run: () => rewrite(linkStyleSource(standalone.form, style, anchor?.dataset.webTitle)),
@@ -493,6 +498,25 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
   ];
   const state = (doc = '') => EditorState.create({ doc, extensions: extensions() });
   const view = new EditorView({ parent, state: state() });
+  const { showNoteMenu } = options;
+  if (showNoteMenu) view.dom.addEventListener('contextmenu', event => {
+    if (!active || !documentId || event.defaultPrevented || view.compositionStarted) return;
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest('button, input, textarea, select')) return;
+    if (target !== view.dom && target !== view.scrollDOM && !target.matches('.note-relations') && !view.contentDOM.contains(target)) return;
+    event.preventDefault();
+    const selection = pictureSelection(view);
+    if (!readOnly && view.state.selection.main.empty) {
+      if (selection) view.dispatch({ selection: { anchor: selection.from, head: selection.to } });
+      else {
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }, false);
+        view.dispatch({ selection: { anchor: pos } });
+      }
+    }
+    view.focus();
+    const picture = readOnly ? [] : pictureMenu(view, selection);
+    showNoteMenu(documentId, event, [...picture, ...textMenu(view, Boolean(selection))]);
+  });
   function missingWikiLink(link: HTMLAnchorElement) {
     const target = wikiLinkTarget(link.getAttribute('href') ?? '');
     return target !== null && noteLinkExists?.(target) === false;

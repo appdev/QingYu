@@ -242,7 +242,11 @@ fn a_title_edit_renames_the_file_and_saves_link_updates_together() {
     renamed.title = Some("新标题 2".into());
     renamed.follow_title = Some("新标题".into());
     renamed.source = "# 新标题\n".into();
-    next.notes.iter_mut().find(|n| n.id == link.id).unwrap().source = "[[新标题 2]]\n".into();
+    next.notes
+        .iter_mut()
+        .find(|n| n.id == link.id)
+        .unwrap()
+        .source = "[[新标题 2]]\n".into();
     store.commit(next, "title-edit").unwrap();
     assert!(!directory.path().join(&note.path).exists());
     let store = open(directory.path());
@@ -250,8 +254,14 @@ fn a_title_edit_renames_the_file_and_saves_link_updates_together() {
     assert_eq!(renamed.path, "新标题 2.md");
     assert_eq!(renamed.source, "# 新标题\n");
     assert_eq!(renamed.follow_title.as_deref(), Some("新标题"));
-    assert_eq!(fs::read_to_string(directory.path().join(link.path)).unwrap(), "[[新标题 2]]\n");
-    assert_eq!(fs::read_to_string(directory.path().join(occupied.path)).unwrap(), "同名原文");
+    assert_eq!(
+        fs::read_to_string(directory.path().join(link.path)).unwrap(),
+        "[[新标题 2]]\n"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join(occupied.path)).unwrap(),
+        "同名原文"
+    );
 }
 
 #[test]
@@ -885,4 +895,137 @@ fn share_state_survives_a_disk_commit_and_reopen() {
         saved.share.as_ref().map(|s| s.status),
         Some(ShareStatus::Shared)
     );
+}
+
+#[test]
+fn selecting_a_note_only_rewrites_the_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("a.md"), "甲").unwrap();
+    fs::write(root.join("b.md"), "乙").unwrap();
+    let mut store = DiskLibrary::open(root.into(), None).unwrap();
+    let target = store
+        .data
+        .notes
+        .iter()
+        .find(|n| n.path == "b.md")
+        .unwrap()
+        .id
+        .clone();
+    let revision = store.revision;
+    let bodies_before = (
+        fs::read(root.join("a.md")).unwrap(),
+        fs::read(root.join("b.md")).unwrap(),
+    );
+    store.select_note(&target).unwrap();
+    assert_eq!(store.data.active_id, target);
+    assert_eq!(store.revision, revision, "换当前笔记不算内容变化");
+    assert!(!root.join(JOURNAL).exists());
+    assert_eq!(
+        (
+            fs::read(root.join("a.md")).unwrap(),
+            fs::read(root.join("b.md")).unwrap()
+        ),
+        bodies_before
+    );
+    assert!(store.select_note("missing").is_err());
+    let index: Index = serde_json::from_slice(&fs::read(root.join(INDEX)).unwrap()).unwrap();
+    assert_eq!(index.library.active_id, target);
+    assert!(index.library.notes.iter().all(|n| n.source.is_empty()));
+    // 选过之后普通提交照常进行
+    let mut next = store.data.clone();
+    next.notes
+        .iter_mut()
+        .find(|n| n.id == target)
+        .unwrap()
+        .pinned = true;
+    store.commit(next, "edit").unwrap();
+    assert_eq!(
+        DiskLibrary::open(root.into(), None).unwrap().data.active_id,
+        target
+    );
+}
+
+#[test]
+fn refuses_to_write_after_another_instance_changed_the_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("a.md"), "甲").unwrap();
+    fs::write(root.join("b.md"), "乙").unwrap();
+    let mut first = DiskLibrary::open(root.into(), None).unwrap();
+    let mut second = DiskLibrary::open(root.into(), None).unwrap();
+    let ids: Vec<_> = first.data.notes.iter().map(|n| n.id.clone()).collect();
+    // 两个实例的版本号一样，只靠指纹发现索引已被换掉
+    let mut next = second.data.clone();
+    next.notes[0].pinned = true;
+    second.commit(next, "edit").unwrap();
+    assert!(first.select_note(&ids[1]).unwrap_err().contains("另一实例"));
+    let mut next = first.data.clone();
+    next.notes[1].pinned = true;
+    assert!(first.commit(next, "edit").unwrap_err().contains("另一实例"));
+    // 对方只换了当前笔记、版本号没变时，读出来比对后照常写入
+    let mut third = DiskLibrary::open(root.into(), None).unwrap();
+    let mut fourth = DiskLibrary::open(root.into(), None).unwrap();
+    third.select_note(&ids[0]).unwrap();
+    fourth.select_note(&ids[1]).unwrap();
+    let mut next = fourth.data.clone();
+    next.notes[1].pinned = true;
+    fourth.commit(next, "edit").unwrap();
+    assert!(third.select_note(&ids[1]).unwrap_err().contains("另一实例"));
+}
+
+#[cfg(unix)]
+#[test]
+fn own_saves_do_not_look_like_external_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir(root.join("项目")).unwrap();
+    fs::write(root.join("a.md"), "甲").unwrap();
+    fs::write(root.join("项目/b.md"), "乙").unwrap();
+    let mut store = DiskLibrary::open(root.into(), None).unwrap();
+    assert!(store.disk_unchanged());
+    let id = store
+        .data
+        .notes
+        .iter()
+        .find(|n| n.path == "a.md")
+        .unwrap()
+        .id
+        .clone();
+    let at = store.root.to_string_lossy().into_owned();
+    store
+        .save_note_body(&at, &id, "甲", "甲改".into(), "edit")
+        .unwrap();
+    assert!(store.disk_unchanged(), "自己保存后不应触发对账");
+    let mut next = store.data.clone();
+    next.notes.iter_mut().find(|n| n.id == id).unwrap().trashed = true;
+    store.commit(next, "edit").unwrap();
+    assert!(store.disk_unchanged(), "自己移到废纸篓后也不应触发对账");
+    assert!(store.reconcile(None).unwrap().snapshot.is_none());
+
+    // 外部改了内容，即使长度一样、修改时间被改回去，也要发现
+    let b = root.join("项目/b.md");
+    let modified = fs::metadata(&b).unwrap().modified().unwrap();
+    fs::write(&b, "丙").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&b)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert!(!store.disk_unchanged());
+    let snapshot = store.reconcile(None).unwrap().snapshot.unwrap();
+    assert!(snapshot.library.notes.iter().any(|n| n.source == "丙"));
+    assert!(store.disk_unchanged(), "完整对账后重新记下指纹");
+
+    fs::write(root.join("c.md"), "新").unwrap();
+    assert!(!store.disk_unchanged());
+    store.reconcile(None).unwrap();
+    fs::create_dir(root.join("空目录")).unwrap();
+    assert!(!store.disk_unchanged());
+    store.reconcile(None).unwrap();
+    fs::remove_file(root.join("c.md")).unwrap();
+    assert!(!store.disk_unchanged());
+    store.reconcile(None).unwrap();
+    assert!(store.disk_unchanged());
 }

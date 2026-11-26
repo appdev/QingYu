@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Notebook, groupNotes, isShared, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
-import { noteText } from '../src/document-text';
+import { Notebook, folderNoteCounts, groupNotes, isShared, legacyDraftKey, libraryKey, noteTitle, visibleNotes, type Library } from '../src/notebook';
+import { noteFirstImage, noteMatches, noteSummary, noteText } from '../src/document-text';
 
 it('uses the first line for all notes and falls back to the file name for empty notes', () => {
   const note = { filename: 'B72FA25E-A0C0-48C8-8B25-175B4C44D8E1.md', title: '无标题', source: '1\n\n正文' };
@@ -247,4 +247,33 @@ describe('sidebar document information', () => {
     expect(groupNotes(library.notes).map(g => [g.year, g.notes.map(n => n.id)])).toEqual([[2021, ['a']], [2020, ['b']], [2019, ['c']]]);
     expect(groupNotes([])).toEqual([]);
   });
+});
+
+it('counts folder notes in one pass with the same rules as the folder list', () => {
+  const note = (id: string, folderId: string, trashed = false) => ({ id, folderId, source: id, createdAt: 1, updatedAt: 1, trashed });
+  const library: Library = { version: 1, activeId: 'a', folders: [
+    { id: 'root', name: '备忘录', path: '' }, { id: 'work', name: '工作', path: '工作' },
+    { id: 'deep', name: '项目', path: '工作/项目' }, { id: 'like', name: '工作簿', path: '工作簿' }, { id: 'named', name: '旧版' },
+  ], notes: [note('a', 'root'), note('b', 'work'), note('c', 'deep'), note('d', 'deep', true), note('e', 'like'), note('f', 'named')] };
+  const counts = folderNoteCounts(library);
+  for (const folder of library.folders) expect(counts.get(folder.id)).toBe(visibleNotes(library, folder.id, '').length);
+  expect(counts.get('work')).toBe(2);
+});
+
+it('reuses parsed note text until the source changes, even on the same object', () => {
+  const note = { source: '# 标题\n摘要\n![图](assets/a.png)' };
+  expect([noteTitle(note), noteSummary(note), noteFirstImage(note)]).toEqual(['标题', '摘要', 'assets/a.png']);
+  note.source = '新标题\n新的摘要';
+  expect([noteTitle(note), noteSummary(note), noteFirstImage(note)]).toEqual(['新标题', '新的摘要', undefined]);
+  expect(noteTitle({ source: '' })).toBe(noteText('').title);
+});
+
+it('searches the current source after a note changes in place', () => {
+  const note = { id: 'n', folderId: 'default', source: '# Alpha\n旧内容', createdAt: 1, updatedAt: 1 };
+  const library: Library = { version: 1, activeId: 'n', folders: [{ id: 'default', name: '备忘录' }], notes: [note] };
+  expect(visibleNotes(library, null, '旧内容')).toHaveLength(1);
+  note.source = '# Alpha\n新内容';
+  expect(visibleNotes(library, null, '旧内容')).toHaveLength(0);
+  expect(visibleNotes(library, null, '新内容')).toHaveLength(1);
+  expect(noteMatches(note, 'alpha')).toBe(true);
 });

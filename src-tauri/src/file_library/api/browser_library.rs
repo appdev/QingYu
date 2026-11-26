@@ -17,6 +17,7 @@ pub(super) fn router(state: Arc<Service>) -> Router<Arc<Service>> {
             "/web/link-preview",
             axum::routing::post(link_preview).layer(DefaultBodyLimit::max(12 * 1024)),
         )
+        .route("/web/typography", axum::routing::post(typography))
         .route(
             "/web/assets/{id}",
             get(asset)
@@ -82,6 +83,23 @@ async fn link_preview(
     body: std::result::Result<Json<crate::link_preview::PreviewRequest>, JsonRejection>,
 ) -> ApiResult<Json<Option<crate::link_preview::PreviewResource>>> {
     Ok(Json(crate::link_preview::fetch(payload(body)?).await))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypographyRequest {
+    source: String,
+}
+
+/// 清理排版，和 App 的 typography_clean 相同，只返回结果，不写笔记；写回仍走 /web/commands 的版本检查。
+async fn typography(
+    body: std::result::Result<Json<TypographyRequest>, JsonRejection>,
+) -> ApiResult<Json<String>> {
+    let request = payload(body)?;
+    tokio::task::spawn_blocking(move || crate::typography::clean(&request.source))
+        .await
+        .map(Json)
+        .map_err(|_| ApiError::internal())
 }
 
 async fn browser_only(State(state): State<Arc<Service>>, request: Request, next: Next) -> Response {

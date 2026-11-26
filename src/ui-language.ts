@@ -6,6 +6,7 @@ type MessageRow<Codes extends readonly string[]> = { readonly [Index in keyof Co
 
 // QingYu terms that have no equivalent in the Markra dictionaries.
 const messages = {
+  hideNoteSummaries: ['隐藏摘要', 'Hide Note Summaries', '隱藏摘要', 'ノートの要約を隠す', '노트 요약 숨기기', 'Masquer les résumés', 'Notizvorschauen ausblenden', 'Ocultar resúmenes', 'Ocultar resumos', 'Nascondi i riepiloghi', 'Скрыть краткое содержание'],
   notes: ['笔记', 'Notes', '筆記', 'ノート', '노트', 'Notes', 'Notizen', 'Notas', 'Notas', 'Note', 'Заметки'],
   allNotes: ['全部笔记', 'All Notes', '所有筆記', 'すべてのノート', '모든 노트', 'Toutes les notes', 'Alle Notizen', 'Todas las notas', 'Todas as notas', 'Tutte le note', 'Все заметки'],
   library: ['笔记库', 'Note Library', '筆記庫', 'ノートライブラリ', '노트 보관함', 'Bibliothèque de notes', 'Notizbibliothek', 'Biblioteca de notas', 'Biblioteca de notas', 'Libreria delle note', 'Библиотека заметок'],
@@ -25,6 +26,7 @@ const messages = {
   editorToolbar: ['编辑器工具栏', 'Editor Toolbar', '編輯器工具列', 'エディターツールバー', '편집기 도구 모음', 'Barre d’outils de l’éditeur', 'Editor-Werkzeugleiste', 'Barra del editor', 'Barra do editor', 'Barra dell’editor', 'Панель редактора'],
   editor: ['所见即所得编辑区', 'Rich Text Editor', '所見即所得編輯區', 'リッチテキストエディター', '서식 있는 텍스트 편집기', 'Éditeur de texte enrichi', 'Rich-Text-Editor', 'Editor de texto enriquecido', 'Editor de texto rico', 'Editor di testo formattato', 'Редактор форматированного текста'],
   checklist: ['任务清单', 'Checklist', '待辦清單', 'チェックリスト', '체크리스트', 'Liste de tâches', 'Checkliste', 'Lista de tareas', 'Lista de tarefas', 'Elenco di attività', 'Список задач'],
+  optimizeTypography: ['排版优化', 'Optimize Formatting', '排版優化', '体裁を整える', '서식 최적화', 'Optimiser la mise en forme', 'Formatierung optimieren', 'Optimizar formato', 'Otimizar formatação', 'Ottimizza formattazione', 'Оптимизировать оформление'],
   insertTable: ['插入表格', 'Insert Table', '插入表格', '表を挿入', '표 삽입', 'Insérer un tableau', 'Tabelle einfügen', 'Insertar tabla', 'Inserir tabela', 'Inserisci tabella', 'Вставить таблицу'],
   shortcuts: ['键盘快捷键', 'Keyboard Shortcuts', '鍵盤快速鍵', 'キーボードショートカット', '키보드 단축키', 'Raccourcis clavier', 'Tastaturkurzbefehle', 'Atajos de teclado', 'Atalhos de teclado', 'Scorciatoie da tastiera', 'Сочетания клавиш'],
   account: ['账户', 'Account', '帳號', 'アカウント', '계정', 'Compte', 'Konto', 'Cuenta', 'Conta', 'Account', 'Аккаунт'],

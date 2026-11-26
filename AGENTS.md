@@ -45,7 +45,7 @@ void showMenu(items, { at: { x: event.clientX, y: event.clientY }, label: '笔�
 - 选项：`anchor` 和 `at` 二选一；`keyboard` 不传时按按钮是否有键盘焦点判断；`restoreFocus` 默认把焦点还给 `anchor`；手机长按菜单用 `preview`、`previewAnchor` 和 `quickActions`。
 - 选中后菜单先关闭、焦点先恢复，再执行 `run`。判断菜单是否还开着用 `popupMenuOpen()`，不要用 `showMenu` 返回的 Promise。
 
-菜单内部按平台分流，调用方不用区分：macOS 和 iOS App 用系统菜单；Web、Android、Windows、Linux 用 `src/liquid-menu.ts` 的 Liquid Glass 菜单（移植自 `@zakisheriff/liquid-glass` 的 `GlassMenu`，动画与上游逐帧一致，代码在 `src/vendor/liquid-glass/`，类名和变量用 `qlg-` 前缀）；带预览的长按菜单和键盘上方快捷栏的菜单用旧网页菜单。已知例外：表格行和列手柄的菜单在 iOS App 上仍由 `src/rich-editor.ts` 直接调用 `show_table_handle_menu`。
+菜单内部按平台分流，调用方不用区分：macOS 和 iOS App 用系统菜单；Web、Android、Windows、Linux 用 `src/liquid-menu.ts` 的 Liquid Glass 菜单（移植自 `@zakisheriff/liquid-glass` 的 `GlassMenu`，动画与上游逐帧一致，代码在 `src/vendor/liquid-glass/`，类名和变量用 `qlg-` 前缀）；带预览的长按菜单和键盘上方快捷栏的菜单用旧网页菜单。桌面标题栏的应用菜单使用 `presentation: 'dropdown'`，在按钮下方打开，子菜单在父项旁边展开。表格行和列手柄的菜单在 iOS App 上仍由 `src/rich-editor.ts` 直接调用 `show_table_handle_menu`。
 
 维护菜单组件时的内部规则：
 
@@ -54,7 +54,7 @@ void showMenu(items, { at: { x: event.clientX, y: event.clientY }, label: '笔�
 - 桌面档按 macOS 菜单的样子，悬停或键盘选中的行铺满主题高亮色 `--brand`，文字、图标、对勾和快捷键变白；手机和平板用浅灰底。勾选标记用 `--brand`。悬停底色只给精确指针，触屏点过的行不留高亮。Android 上展开动画每帧重新生成背景模糊，修部分 WebView 停在水滴形状的问题。系统要求减少动态效果时直接开合，减少透明度时用实底。
 - 桌面档打开后等鼠标离开点开时的位置才给悬停高亮；用更干脆的弹簧（约 0.2 秒落定），条目只淡入不模糊，收起时 150ms 淡出。
 - 精简模式：4 核以下或内存 4GB 以下的设备，或者某次展开的前 400ms 里有 3 帧以上超过 34ms（记在 `localStorage` 的 `qingyu.menu.lite`），展开时用实底、不做背景模糊和水滴变形，只用 Web Animations 动缩放和透明度，落定后再换上半透明玻璃；收起和桌面档一样淡出。
-- 笔记详情「···」显示在新窗口打开（桌面 App）、置顶或取消置顶、复制笔记和移到废纸篓，仅在移到废纸篓前保留分隔线；废纸篓中的笔记显示恢复笔记；支持历史版本的笔记通过侧栏笔记菜单访问版本历史。
+- 笔记详情「···」显示在新窗口打开（桌面 App）、置顶或取消置顶、复制笔记、移动到…、版本历史…（笔记库支持时）和移到废纸篓，仅在移到废纸篓前保留分隔线。侧栏笔记菜单也提供移动和版本历史。废纸篓中的笔记在「···」中显示恢复笔记。
 - 验证时测量打开后的菜单边界、行高和分组间隔，检查焦点、子菜单和关闭交互。Web 覆盖 `779/780px` 和 `900/901px`，App 按设备核对实包。
 
 ## 玻璃材质与动效

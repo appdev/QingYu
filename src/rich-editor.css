@@ -9,20 +9,25 @@
   --surface-main: var(--paper);
   --surface-hover: var(--control-hover);
   --accent: var(--brand);
-  --rich-editor-leading: 1.4616;
-  --task-leading: 1.82;
-  --task-checkbox-size: 1.2em;
-  --task-checkbox-gap: .64em;
+  /* 复选框同妙言预览：1em 见方、和文字隔 .45em，任务项行高和普通列表项相同。 */
+  --task-leading: var(--editor-leading);
+  --task-checkbox-size: 1em;
+  --task-checkbox-gap: .45em;
   background: var(--paper);
 }
-:is(#rich-editor, #note-history-editor) > .cm-editor { color: var(--render-text); font: var(--preview-size, 13px)/var(--rich-editor-leading) var(--preview-font, system-ui); }
+:is(#rich-editor, #note-history-editor) > .cm-editor { color: var(--render-text); font: var(--preview-size, 13px)/var(--editor-leading) var(--preview-font, system-ui); }
 :is(#rich-editor, #note-history-editor) > .cm-editor.cm-focused { outline: none; }
-:is(#rich-editor, #note-history-editor) .cm-scroller { font: inherit; letter-spacing: normal; overflow: auto; overscroll-behavior: contain; }
+:is(#rich-editor, #note-history-editor) .cm-scroller { font: inherit; letter-spacing: .02em; text-autospace: normal; overflow: auto; overscroll-behavior: contain; }
 :is(#rich-editor, #note-history-editor) .cm-content {
   box-sizing: border-box; width: 100%; max-width: var(--preview-width, 1000px);
   padding: 15px 32px 80px; min-height: 100%; caret-color: var(--editor-ink);
 }
 :is(#rich-editor, #note-history-editor) .cm-line { padding-inline: 0; min-height: 0; }
+/* 段落之间的间距由空行决定。空行占满一整行会显得太散，这里压到 1.15em，和妙言预览里段落的上下边距一样；
+   标题下面的空行再压短，让标题和它下面的正文靠在一起。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-empty-line { line-height: 1.15; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-note-title, .cm-markra-h1, .cm-markra-h2, .cm-markra-h3, .cm-markra-h4, .cm-markra-h5, .cm-markra-h6) + .cm-markra-empty-line,
+:is(#rich-editor, #note-history-editor) .cm-markra-h1 + .cm-markra-heading-spacer + .cm-markra-empty-line { line-height: .5; }
 :is(#rich-editor, #note-history-editor) .cm-cursor { border-left-color: var(--editor-ink); }
 :is(#rich-editor, #note-history-editor) :is(.cm-selectionBackground, .cm-content ::selection) { background: var(--selection); }
 /* drawSelection 把选区画在正文下面一层，代码块和行内代码的不透明底色会把它整块盖住。
@@ -33,17 +38,21 @@
    打下第一个字后这一行变成真正的标题行，样式相同，不会跳。提示本身只是淡色，光标不在编辑区时不显示。 */
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title),
 #rich-editor .cm-line:has(> .cm-placeholder) {
-  font-size: calc(28em / 13);
-  font-size: round(nearest, 28em / 13, 1px);
-  font-weight: 700; line-height: 1.18;
+  font-size: 1.76em;
+  font-size: round(nearest, 1.76em, 1px);
+  font-weight: 700; line-height: 1.4;
 }
+/* 标题和粗体用灰度抗锯齿，次像素渲染下粗字会发虚、显胖。 */
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-h2, .cm-markra-h3, .cm-markra-h4, .cm-markra-h5, .cm-markra-h6, .cm-markra-note-title, .cm-markra-strong, .cm-markra-emphasis-cjk) { -webkit-font-smoothing: antialiased; }
+:is(#rich-editor, #note-history-editor) .cm-markra-emphasis-cjk { font-style: normal; font-weight: 700; }
 :is(#rich-editor, #note-history-editor) .cm-markra-note-title,
 #rich-editor .cm-line:has(> .cm-placeholder) { padding-block-end: 4px; }
 #rich-editor .cm-placeholder { color: var(--muted); opacity: .6; }
 #rich-editor .cm-editor:not(.cm-focused) .cm-placeholder { visibility: hidden; }
-:is(#rich-editor, #note-history-editor) .cm-markra-h2 { font-size: 1.25em; line-height: 1.26; }
-:is(#rich-editor, #note-history-editor) .cm-markra-h3 { font-size: 1.1em; }
-:is(#rich-editor, #note-history-editor) :is(.cm-markra-h3, .cm-markra-h4, .cm-markra-h5, .cm-markra-h6) { font-weight: 600; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-h2, .cm-markra-h3) { padding-block-start: .6em; font-weight: 700; line-height: 1.4; }
+:is(#rich-editor, #note-history-editor) .cm-markra-h2 { font-size: 1.41em; }
+:is(#rich-editor, #note-history-editor) .cm-markra-h3 { font-size: 1.18em; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-h4, .cm-markra-h5, .cm-markra-h6) { font-weight: 700; line-height: 1.4; }
 :is(#rich-editor, #note-history-editor) .qingyu-fold-heading { position: relative; }
 :is(#rich-editor, #note-history-editor) .qingyu-heading-fold, :is(#rich-editor, #note-history-editor) .qingyu-heading-more {
   border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0;
@@ -56,6 +65,7 @@
   content: ''; display: inline-block; width: 5px; height: 5px;
   border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
 }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-h2, .cm-markra-h3) .qingyu-heading-fold { top: .6em; }
 :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[aria-expanded=false]::before { transform: rotate(-45deg); }
 html:not([data-mobile]) :is(#rich-editor, #note-history-editor) :is(.qingyu-fold-heading:hover, .qingyu-fold-heading:focus-within) .qingyu-heading-fold,
 :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[aria-expanded=false] { opacity: 1; }
@@ -103,11 +113,12 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[a
 .link-card-source svg { width: 1em; height: 1em; margin-right: 4px; vertical-align: -.13em; }
 .link-card-download { margin-inline-start: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 :is(#rich-editor, #note-history-editor) .cm-markra-blockquote {
-  color: var(--quote-text); border-left: 0; padding-left: 16px; position: relative;
+  color: var(--quote-text); border-left: 0; padding-left: 12px; position: relative; font-size: calc(1em - 1px);
 }
+/* 引用竖线同妙言：3px 宽、1.5px 圆角，用不抢眼的中性色。 */
 :is(#rich-editor, #note-history-editor) .cm-markra-blockquote::before {
-  content: ''; position: absolute; inset: .05em auto .05em 2px; width: 3px;
-  background: color-mix(in srgb, var(--brand) 68%, transparent); border-radius: 2px;
+  content: ''; position: absolute; inset: .05em auto .05em 0; width: 3px;
+  background: color-mix(in srgb, var(--muted) 35%, transparent); border-radius: 1.5px;
 }
 :is(#rich-editor, #note-history-editor) .cm-line.cm-markra-callout {
   color: var(--editor-ink); border: 0; padding-inline: .95em;
@@ -126,7 +137,7 @@ html[data-mobile] :is(#rich-editor, #note-history-editor) .qingyu-heading-fold[a
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-task-checkbox, .cm-markra-table-tick) {
   appearance: none; display: inline-block; position: relative;
   width: var(--task-checkbox-size); height: var(--task-checkbox-size); font: inherit;
-  border: 1px solid var(--muted); border-radius: 50%; background: none; color: var(--primary-ink);
+  border: 1px solid var(--muted); border-radius: .22em; background: none; color: var(--primary-ink);
   margin: 0; margin-inline-end: var(--task-checkbox-gap); line-height: 1;
   vertical-align: -.22em; vertical-align: calc((1cap - var(--task-checkbox-size)) / 2);
 }
@@ -166,35 +177,64 @@ html[data-mobile] .editor-change-receipt { bottom: max(64px, var(--safe-area-bot
 .check-burst { position: fixed; z-index: 6; width: 0; height: 0; pointer-events: none; }
 .check-burst i { position: absolute; left: 0; top: 0; translate: -50% -50%; border-radius: 50%; background: var(--brand); }
 :is(#rich-editor, #note-history-editor) .cm-line:has(.cm-markra-task-checkbox) {
-  padding-block-end: calc((var(--task-leading) - var(--rich-editor-leading)) * 1em);
+  padding-block-end: calc((var(--task-leading) - var(--editor-leading)) * 1em);
 }
-:is(#rich-editor, #note-history-editor) .cm-line:has(.cm-markra-task-checkbox:checked) { color: var(--muted); text-decoration: line-through; }
+/* 列表按妙言预览排：无序列表文字缩进 1.5em、有序 1.75em，每深一层再缩 1.5em；
+   任务项和 ul.cb 一样，复选框前空 1em。续行沿用同一套缩进。 */
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-list-item, .cm-markra-list-continuation) {
+  --list-base: 1.5em;
+  --list-start: calc(var(--list-depth, 0) * 1.5em);
+}
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-list-item, .cm-markra-list-continuation)[data-list-kind=ordered] { --list-base: 1.75em; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-list-item, .cm-markra-list-continuation)[data-list-kind=task] {
+  --list-base: calc(1em + var(--task-checkbox-size) + var(--task-checkbox-gap));
+}
 :is(#rich-editor, #note-history-editor) .cm-markra-list-item[data-markra-list-source=hidden] {
-  position: relative; padding-inline-start: calc(var(--list-depth, 0) * 1.4em + 1.5em);
+  position: relative; padding-inline-start: calc(var(--list-start) + var(--list-base));
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-list-item[data-markra-list-source=hidden]:not([data-list-kind=task])::before {
-  content: attr(data-list-marker); position: absolute; inset-inline-start: calc(var(--list-depth, 0) * 1.4em);
-  width: 1.25em; text-align: end;
+  content: attr(data-list-marker); position: absolute; inset-inline-start: var(--list-start);
+  width: calc(var(--list-base) - .45em); text-align: end;
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-list-item[data-list-kind=task][data-markra-list-source=hidden] {
   --task-indent: calc(var(--task-checkbox-size) + var(--task-checkbox-gap));
-  padding-inline-start: calc(var(--list-depth, 0) * 1.4em + var(--task-indent));
   text-indent: calc(-1 * var(--task-indent));
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-list-item[data-markra-list-marker-selected=true]::before { background: var(--selection); }
-:is(#rich-editor, #note-history-editor) .cm-markra-inline-code { font-family: ui-monospace, Menlo, monospace; font-size: .93em; border-radius: 2px; padding: 0 2px; }
+/* 续行和 <li> 里的段落一样，左缘对齐列表文字，折行也不会退回到编号下面。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-list-continuation[data-markra-list-source=hidden] {
+  padding-inline-start: calc(var(--list-start) + var(--list-base));
+}
+/* 项与项之间空 0.4em，同 li { margin-block: .4em }。列表里的空行相当于 li > p 的 .26em 边距，
+   隔开的两项合起来仍是 .4em；挨着代码块的空行保留代码块自己的 1.15em。 */
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-list-item, .cm-markra-list-continuation) + .cm-markra-list-item {
+  padding-block-start: .4em;
+}
+:is(#rich-editor, #note-history-editor) .cm-markra-empty-line.cm-markra-list-gap { line-height: .26; }
+:is(#rich-editor, #note-history-editor) .cm-markra-list-gap + .cm-markra-list-item { padding-block-start: .14em; }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-list-gap:has(+ .cm-markra-code-line), .cm-markra-code-line + .cm-markra-list-gap) { line-height: 1.15; }
+/* 分隔线和文字间距同妙言的 hr（上下 2em）：和前后空行排在同一行里，不另占上下两行。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-horizontal-rule { display: inline-block; vertical-align: middle; margin: 0; }
+/* 行内代码沿用正文字体，只靠底色区分。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-inline-code { font-family: inherit; font-size: 1em; border-radius: 4px; padding: .12em .38em; }
 :is(#rich-editor, #note-history-editor) .cm-markra-inline-code { background: var(--code); }
+/* 代码块同妙言预览的 pre：上下 14px、左右 16px 内边距，8px 圆角；代码跟随正文字体，0.86em、1.6 倍行高。
+   行高取整到像素，和其它行一样落在整数高度上。 */
 :is(#rich-editor, #note-history-editor) .cm-markra-code-line {
-  background: var(--code); color: var(--render-code); padding-inline: 14px;
-  font-family: var(--code-font, ui-monospace, monospace);
+  background: var(--code); color: var(--render-code); padding-inline: 16px;
+  font-family: inherit;
 }
-:is(#rich-editor, #note-history-editor) .cm-markra-code-content-line { font-size: .88em; line-height: 1.5; }
+:is(#rich-editor, #note-history-editor) .cm-markra-code-content-line { font-size: .86em; line-height: 1.6; line-height: round(nearest, 1.6em, 1px); }
 :is(#rich-editor, #note-history-editor) :is(.cm-markra-code-header-line, .cm-markra-code-closing-line) {
-  box-sizing: border-box; min-height: 20px; font-size: 11px; line-height: 20px; color: var(--muted);
+  box-sizing: border-box; min-height: 14px; font-size: 11px; line-height: 14px; color: var(--muted);
 }
-:is(#rich-editor, #note-history-editor) .cm-markra-code-header-line { border-radius: 10px 10px 0 0; }
-:is(#rich-editor, #note-history-editor) :is(.cm-markra-code-closing-line, .cm-markra-code-open-edge) { border-radius: 0 0 10px 10px; }
+:is(#rich-editor, #note-history-editor) .cm-markra-code-header-line { border-radius: 8px 8px 0 0; }
+/* 行顶落在小数像素上时，逐行的底色接缝处会被抗锯齿成一条细线；每行底色往下多铺 1px 盖住接缝。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-code-line:not(.cm-markra-code-closing-line, .cm-markra-code-open-edge) { box-shadow: 0 1px 0 var(--code); }
+:is(#rich-editor, #note-history-editor) :is(.cm-markra-code-closing-line, .cm-markra-code-open-edge) { border-radius: 0 0 8px 8px; }
 :is(#rich-editor, #note-history-editor) .cm-markra-code-open-edge { padding-bottom: 8px; }
+/* 列表项里的代码块跟着列表文字缩进。各行字号不同，用正文字号换算，免得每行缩进不一样。 */
+:is(#rich-editor, #note-history-editor) .cm-markra-list-block { margin-inline-start: calc(var(--list-depth, 1) * 1.5 * var(--preview-size, 16px)); }
 :is(#rich-editor, #note-history-editor) .cm-markra-code-language { background: var(--code); color: var(--muted); padding-left: 8px; font: 500 .93em/1.6 var(--font); }
 :is(#rich-editor, #note-history-editor) .cm-markra-code-token:is(.hljs-keyword, .hljs-literal, .hljs-built_in) { color: var(--syntax-number); }
 :is(#rich-editor, #note-history-editor) .cm-markra-code-token:is(.hljs-string, .hljs-regexp) { color: var(--syntax-string); }
@@ -270,15 +310,15 @@ img[hidden]:is(.cm-markra-image, .note-row-thumbnail, .markra-media-viewer-image
 :is(#rich-editor, #note-history-editor) .cm-focused:has([data-table-edge-caret]) .cm-cursor { visibility: hidden; }
 :is(#rich-editor, #note-history-editor) .cm-focused:has([data-table-edge-caret]) .cm-content { caret-color: transparent; }
 :is(#rich-editor, #note-history-editor) .cm-markra-table {
-  border-collapse: separate; border-spacing: 0; font: inherit; font-variant-numeric: tabular-nums;
+  border-collapse: separate; border-spacing: 0; font: inherit; font-size: .92em; font-variant-numeric: tabular-nums;
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-table :is(th, td) {
   text-align: start; vertical-align: middle; min-width: max(63px, 4em); box-sizing: border-box;
-  border: 0; border-bottom: 1px solid var(--line); height: max(32px, 2.4em); padding: 5px max(8px, .6em);
+  border: 0; border-bottom: 1px solid var(--line); height: max(32px, 2.4em); padding: 8px max(8px, .6em);
 }
 :is(#rich-editor, #note-history-editor) .cm-markra-table :is(th, td):not(:last-child) { border-inline-end: 1px solid var(--line); }
 :is(#rich-editor, #note-history-editor) .cm-markra-table tr:last-child > td { border-bottom: 0; }
-:is(#rich-editor, #note-history-editor) .cm-markra-table th { background: var(--control-fill); font-weight: 600; }
+:is(#rich-editor, #note-history-editor) .cm-markra-table th { background: var(--code); font-weight: 700; }
 :is(#rich-editor, #note-history-editor) .cm-markra-table td[data-table-check] { position: relative; }
 :is(#rich-editor, #note-history-editor) .cm-markra-table-check {
   position: absolute; inset: 0; display: flex; align-items: center; padding-inline: max(8px, .6em);
@@ -391,11 +431,9 @@ img[hidden]:is(.cm-markra-image, .note-row-thumbnail, .markra-media-viewer-image
 #mobile-tools .mobile-suggestions .note-link-completion li[aria-selected=true] { background: var(--folder-selection); color: var(--ink); }
 :is(#rich-editor, #note-history-editor)[data-read-only=true] .cm-content { cursor: auto; }
 :root[data-mobile] :is(#rich-editor, #note-history-editor) .cm-content { padding-inline: 24px; }
-:root[data-mobile] :is(#rich-editor, #note-history-editor) :is(.cm-markra-h1, .cm-markra-note-title) { font-size: 2em; }
-:root[data-mobile] #rich-editor .cm-line:has(> .cm-placeholder) { font-size: 2em; padding-block-end: 10px; }
-:root[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-note-title { padding-block-end: 10px; }
+:root[data-mobile] :is(#rich-editor, #note-history-editor) .cm-markra-note-title,
+:root[data-mobile] #rich-editor .cm-line:has(> .cm-placeholder) { padding-block-end: 10px; }
 :root[data-mobile] :is(#rich-editor, #note-history-editor) {
-  --rich-editor-leading: 1.55;
   --task-leading: 2.24;
   --task-checkbox-size: 1.41em;
   --task-checkbox-gap: .7em;

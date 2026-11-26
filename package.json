@@ -1,7 +1,7 @@
 {
   "name": "qingyu",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 1420 --strictPort",
@@ -38,6 +38,7 @@
     "markdown-it-task-lists": "^2.1.1",
     "mdast-util-to-string": "4.0.0",
     "mermaid": "11.15.0",
+    "prettier": "3.10.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "remark-gfm": "4.0.1",

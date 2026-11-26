@@ -30,6 +30,18 @@ pub(super) fn same_text(a: &str, b: &str) -> bool {
 
 impl DiskLibrary {
     pub(super) fn reconcile(&mut self, buffer: Option<EditorBuffer>) -> Result<Reconciled> {
+        // 磁盘和上次看到的一样时，当前草稿不会和磁盘冲突，直接返回。
+        // 带着旧版本基准的草稿仍要走完整流程，可能需要另存冲突副本。
+        if buffer
+            .as_ref()
+            .is_none_or(|buffer| buffer.expected_source.is_none())
+            && self.disk_unchanged()
+        {
+            return Ok(Reconciled {
+                snapshot: None,
+                backups: vec![],
+            });
+        }
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -151,6 +163,17 @@ pub async fn library_reconcile(
     Ok(result)
 }
 
+#[cfg(all(feature = "app", desktop))]
+fn own_write(app: &tauri::AppHandle, root: &Path) -> bool {
+    use tauri::Manager;
+    let state = app.state::<FileLibrary>();
+    let Ok(lock) = state.0.lock() else {
+        return false;
+    };
+    lock.as_ref()
+        .is_some_and(|store| store.root == root && store.disk_unchanged())
+}
+
 #[cfg(desktop)]
 pub struct Watch {
     root: PathBuf,
@@ -251,6 +274,7 @@ pub async fn library_watch(app: tauri::AppHandle, state: State<'_, FileLibrary>)
         let payload = root.to_string_lossy().into_owned();
         let emitter = app.clone();
         let path = payload.clone();
+        let watched = root.clone();
         let next = Watch::start(root, true, move |message| {
             if let Err(reason) = message {
                 let _ = emitter.emit_to(
@@ -258,6 +282,9 @@ pub async fn library_watch(app: tauri::AppHandle, state: State<'_, FileLibrary>)
                     "library-watch-error",
                     serde_json::json!({ "root": path, "error": reason }),
                 );
+            } else if own_write(&emitter, &watched) {
+                // 自己刚保存的文件，磁盘和内存一致，不用让窗口再对账一次。
+                return;
             }
             workspace::library_changed(&emitter, &path, None);
         })?;

@@ -59,8 +59,11 @@ it.each(['metaKey', 'ctrlKey'])('toggles separate notes with %s and plain click 
   click(3, { [modifier]: true });
   expect(selected()).toEqual([]);
   click(2);
-  await vi.waitFor(() => expect(selected()).toEqual([notes[2].id]));
-  expect(select).toHaveBeenCalledOnce();
+  // 普通点击先画高亮，下一帧再切换笔记。
+  expect(selected()).toEqual([notes[2].id]);
+  await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+  expect(select).toHaveBeenCalledWith(notes[2].id);
+  expect(selected()).toEqual([notes[2].id]);
 });
 
 it('keeps the range when opening a different note fails to save', async () => {
@@ -221,4 +224,54 @@ it('keeps a mobile list open when Shift selects notes with a hardware keyboard',
   menu(1);
   await vi.waitFor(() => expect(item('删除 3 篇笔记')).not.toBeNull());
   expect(document.querySelector('.context-preview')).toBeNull();
+});
+
+it('highlights the clicked note before switching and restores the old selection when switching fails', async () => {
+  const { notes, selected, click, select } = fixture();
+  let finish!: (ok: boolean) => void;
+  select.mockImplementationOnce(() => new Promise<boolean>(resolve => { finish = resolve; }));
+  click(2);
+  expect(selected()).toEqual([notes[2].id]);
+  expect(select).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(select).toHaveBeenCalledWith(notes[2].id));
+  expect(selected()).toEqual([notes[2].id]);
+  finish(false);
+  await vi.waitFor(() => expect(selected()).toEqual([notes[0].id]));
+  // 只换当前笔记时沿用原来的行，不整列重建。
+  const rowBefore = document.querySelector(`.note-row[data-note-id="${notes[1].id}"]`);
+  click(1);
+  await vi.waitFor(() => expect(selected()).toEqual([notes[1].id]));
+  await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(2));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(document.querySelector(`.note-row[data-note-id="${notes[1].id}"]`)).toBe(rowBefore);
+});
+
+it('updates only the saved row while the list order stays the same', async () => {
+  const { book, notes, sidebar } = fixture();
+  const rowOf = (id: string) => document.querySelector<HTMLElement>(`.note-row[data-note-id="${id}"]`)!;
+  const first = rowOf(notes[0].id), second = rowOf(notes[1].id);
+  await book.save('# 改过的标题\n新的摘要', notes[0].id);
+  sidebar.noteSaved(notes[0].id);
+  expect(rowOf(notes[0].id)).toBe(first);
+  expect(first.querySelector('.note-row-title')!.textContent).toBe('改过的标题');
+  expect(first.querySelector('.note-row-summary')!.textContent).toBe('新的摘要');
+  // 排在后面的笔记被改过后跑到最前，就整列刷新。
+  await book.save('# 第二篇改了', notes[3].id);
+  sidebar.noteSaved(notes[3].id);
+  expect(rowOf(notes[1].id)).not.toBe(second);
+  expect(document.querySelector<HTMLElement>('.note-row')!.dataset.noteId).toBe(notes[3].id);
+});
+
+it('filters right away when idle and always applies the last term while typing fast', async () => {
+  const { notes } = fixture();
+  const search = document.querySelector<HTMLInputElement>('#note-search')!;
+  const shown = () => [...document.querySelectorAll<HTMLElement>('.note-row')].map(row => row.dataset.noteId);
+  await new Promise(resolve => setTimeout(resolve, 120));
+  const type = (value: string) => { search.value = value; search.dispatchEvent(new Event('input')); };
+  type('note 3');
+  expect(shown()).toEqual([notes[3].id]);
+  type('note 2'); type('note 1');
+  await vi.waitFor(() => expect(shown()).toEqual([notes[1].id]));
+  type('');
+  await vi.waitFor(() => expect(shown()).toHaveLength(notes.length));
 });

@@ -4,17 +4,18 @@ import 'glassy-liquid/components/progressive-blur';
 import { confirmLinkedNote, showNoteLinkPicker, showShare } from './reference-panels';
 import { openQuickOpen, type QuickCommand } from './quick-open';
 import starter from './starter.md?raw';
-import { firstLocalImage, firstTitleLineEnd, markdownBody, noteText, plainMarkdownLine } from './document-text';
+import { firstTitleLineEnd, markdownBody, noteFirstImage, noteText, plainMarkdownLine } from './document-text';
 import { editorItemMove, moveEditorItem, type Format } from './format';
 import { inlineFormatIcons, openEditorFormatPanel } from './editor-format-panel';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
-import { Calendar, FileDown, FileText, FolderInput, FolderPlus, Image, Link as LinkIcon, Notebook as NotebookIcon, Pin, PinOff, Settings, SquarePen } from 'lucide';
+import { Calendar, CircleHelp, FileDown, FileText, FolderInput, FolderOpen, FolderPlus, Image, Link as LinkIcon, LogOut, Notebook as NotebookIcon, Pin, PinOff, RefreshCw, Settings, SquarePen, WandSparkles } from 'lucide';
 import { createRichEditor, type RichEditor } from './rich-editor';
 import { webLinkPreview, webLinkThumbnail } from './web-link-preview';
 import { isBlankNote, isShared, Notebook, noteTitle, type Note, type NoteShare } from './notebook';
 import { copyShareLink } from './mock-web-share';
 import { createSidebar } from './sidebar';
 import { changeNoteTextSize, noteTextSizeShortcut, preferences, settingsShortcut, native, mobile } from './preferences';
+import { optimizeTypography } from './typography';
 import { connectPreferences, hostSync } from './settings-bridge';
 import { connectEditorHistoryMenu, connectMobileEditorHistory, refreshEditorHistory } from './editor-history-menu';
 import { accountSyncNotices, createSyncSession, type SyncStatus } from './sync-session';
@@ -36,7 +37,8 @@ import { mountPendingImage } from './asset-download-view';
 import { MAX_ASSET_BYTES } from './sync-files';
 import { requireWebSession, watchWebSession } from './web-session';
 import { isServerLibrary, offerServerDrafts } from './server-library';
-import { backPopupMenu, popupMenuOpen, showMenu } from './popup-menu';
+import { backPopupMenu, popupMenuOpen, showMenu, type MenuItem } from './popup-menu';
+import { mountDesktopWindowBar } from './desktop-window';
 import { askToConfirm } from './alert-dialog';
 import { usesGlisse } from './web-glass-mount';
 import { describeNoteLink, noteHeadingOffset, noteLinkChoices, noteLinkHeadingChoices, noteLinkMarkdown, resolveNoteLink, retargetNoteLinks } from './note-links';
@@ -44,7 +46,7 @@ import { createNoteRelationsFooter } from './editor-note-relations';
 import { hostMenuBar } from './menu-bar-host';
 import { isLocalAsset } from './server-assets';
 import type { PictureRange, PictureRequest } from './note-picture';
-import { translatedLabel, bindLabels, localizeStatus, localizeSyncError, uiText, workflowText } from './ui-language';
+import { translatedLabel, bindLabels, localizeStatus, localizeSyncError, uiText, workflowText, type WorkflowMessage } from './ui-language';
 
 const localizeLabels = bindLabels(document);
 localizeLabels();
@@ -163,7 +165,9 @@ const syncSession = createSyncSession(notebook, () => setStatus('笔记库同步
   if (notebook.loadError) throw new Error('笔记目录尚未读取成功，请先恢复目录访问或更改笔记位置');
   if (document.body.dataset.libraryBusy === 'true') throw new Error('笔记位置正在更改，请稍后同步');
   return saveDraft(true);
-}, mobile);
+}, mobile, (settings, accountId) => {
+  if (preferences.value.autoSyncCloudAccount === accountId) void syncSession.run(settings, accountId).catch(() => { /* The sync session reports the error. */ });
+});
 if (native && !documentWindow) void hostAssetDownloads(notebook, syncSession.fetchAsset).catch(() => undefined);
 let thumbnailRefresh: number | undefined;
 function downloadAttachment(entry: { root: string; path: string }) {
@@ -229,6 +233,34 @@ document.addEventListener('keydown', event => { if (document.body.dataset.librar
 function showSettings(section?: SettingsSection) {
   return openSettings(native ? syncSession : undefined, section, () => dailyNoteChoices(notebook.data));
 }
+mountDesktopWindowBar({
+  menu() {
+    const icon = (node: typeof FolderOpen) => createLucideIcon(document, node, '');
+    const command = (label: WorkflowMessage, action: string, glyph: typeof FolderOpen, options: Pick<MenuItem, 'shortcut' | 'needsUserActivation'> = {}): MenuItem => ({
+      text: workflowText(label), icon: icon(glyph), ...options,
+      run: () => emitTo(action.startsWith('workspace-') ? windowLabel : 'main', 'library-command', action),
+    });
+    return [
+      { text: workflowText('设置…'), icon: icon(Settings), shortcut: '⌘,', run: () => showSettings() },
+      command('打开文件…', 'workspace-open', FileText, { shortcut: '⌘O', needsUserActivation: true }),
+      ...(documentWindow ? [command('返回笔记库', 'workspace-close', FolderOpen, { shortcut: '⇧⌘W' })] : [
+        { text: uiText('library'), icon: icon(FolderOpen), items: [
+          command('导入文件…', 'library-import', FileDown, { needsUserActivation: true }),
+          command('导入文件夹…', 'library-import-folder', FolderInput, { needsUserActivation: true }),
+          command('更改笔记库位置…', 'library-choose', FolderOpen, { needsUserActivation: true }),
+          command('重新读取笔记文件夹', 'library-reload', RefreshCw),
+        ] },
+        command('今日笔记', 'library-today', Calendar, { shortcut: '⌘T' }),
+      ]),
+      { text: '' },
+      { text: workflowText('帮助'), icon: icon(CircleHelp), run: () => showSettings('help') },
+      { text: workflowText('退出轻羽'), icon: icon(LogOut), run: () => emitTo('main', 'library-before-exit') },
+    ];
+  },
+  leading: documentWindow ? undefined : [$('#sidebar-button'), $('#today-note-button')],
+  trailing: documentWindow ? [$('#settings-button')] : [$('#library-search-button'), $('#sync-button'), $('#settings-button')],
+  report: message => setStatus(message, true),
+});
 $('#settings-button').onclick = () => { void showSettings().catch(() => setStatus('无法打开设置', true)); };
 document.addEventListener('keydown', event => {
   if (settingsShortcut(event) && (!native || mobile)) { event.preventDefault(); void showSettings(); }
@@ -309,6 +341,7 @@ const richEditor = createRichEditor($('#rich-editor'), () => {
 }, {
   sortCheckedItems: () => preferences.value.sortCheckedItems,
   relations: noteRelations,
+  showNoteMenu: desktop ? (id, event, items) => { void sidebar?.showEditorMenu(id, event, items); } : undefined,
   suggestionsHost: mobile ? mobileSuggestions : undefined,
   attachFile: !mobile && canAddAttachments ? () => attachFromKeyboard() : undefined,
   selectionChanged() {
@@ -352,14 +385,19 @@ const richEditor = createRichEditor($('#rich-editor'), () => {
 });
 const { view } = richEditor;
 
+// 一次按键里标题、草稿备份、新建按钮状态都要读全文。CodeMirror 每次改动都会换一个新的文档对象，
+// 按文档对象缓存，同一次改动只把全文转成字符串一次。
+let savedSource: { doc: typeof view.state.doc; source: string } | undefined;
 function sourceForSave() {
-  return view.state.doc.toString();
+  const doc = view.state.doc;
+  if (savedSource?.doc !== doc) savedSource = { doc, source: doc.toString() };
+  return savedSource.source;
 }
 const editorSource = (source: string) => source.replace(/\r\n?/g, '\n');
 
 function refreshTitle(force = false) {
   const note = displayedNoteId === notebook.current?.id ? notebook.current : draftDuringSync?.previous;
-  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: view.state.doc.toString() }) : uiText('noSelection');
+  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: sourceForSave() }) : uiText('noSelection');
   $('#word-count').textContent = showingNote ? uiText('characterCount').replace('{count}', view.state.doc.length.toLocaleString(document.documentElement.lang)) : '';
 }
 function saveDraft(includeTitle = false, forceFilename = false) {
@@ -434,7 +472,8 @@ async function persistDraft(includeTitle: boolean, forceFilename = false): Promi
       setStatus(note.readOnly ? '文件不可读或内容损坏，仅可预览，原文件未修改' : notebook.server ? '笔记已保存到服务器' : notebook.root ? '笔记已保存到本地文件' : '草稿已保存到此浏览器');
     }
     if ((confirmFilename || titleInput) && pendingTitleEdit === note.id) pendingTitleEdit = undefined;
-    if (changed || confirmFilename) sidebar?.refresh();
+    // 只改了正文时只更新这一行，改了文件名才整列刷新。
+    if (confirmFilename) sidebar?.refresh(); else if (changed) sidebar?.noteSaved(note.id);
     return true;
   } catch (error) {
     if (!recovered && draftDuringSync?.previous.id === displayedNoteId && displayedNoteId === note.id) return persistDraft(includeTitle, forceFilename);
@@ -659,6 +698,14 @@ function bindTableTool(button: HTMLElement) {
   };
 }
 bindTableTool(tableButton);
+// 排版优化只给电脑和网页用，手机和平板不放这个按钮。
+const typographyButton = $<HTMLButtonElement>('#typography-button');
+if (mobile) typographyButton.remove();
+else {
+  // 按下时不抢编辑器的焦点，排完光标还在原来的文字旁边。
+  typographyButton.onpointerdown = event => event.preventDefault();
+  typographyButton.onclick = () => runTypography();
+}
 $('#note-more-button').onclick = event => {
   void sidebar?.showCurrentMenu(event.currentTarget as HTMLButtonElement, event.detail === 0);
 };
@@ -673,6 +720,9 @@ untickButton.onclick = () => {
 };
 function currentWritingEditor() {
   return showingNote && !view.state.readOnly && !richEditor.composing ? view : null;
+}
+function runTypography(editor = currentWritingEditor()) {
+  if (editor && !mobile) void optimizeTypography(editor, (message, error) => setStatus(message, error));
 }
 const moveItemButtons = ([true, false] as const).map(up => {
   const button = document.createElement('button');
@@ -1005,6 +1055,10 @@ function toggleQuickOpen() {
       if (showingNote && note && !note.trashed && notebook.data.folders.some(folder => folder.id !== note.folderId)) rows.push({
         title: '移动笔记…', icon: FolderInput, detail: noteTitle(note), keywords: ['move', 'folder'], run: () => { void sidebar?.moveCurrentNote(); },
       });
+      if (showingNote && note && !note.trashed && currentEditor) rows.push({
+        title: '排版优化', icon: WandSparkles, shortcut: native && /Mac/.test(navigator.platform) ? '⌥⇧⌘F' : undefined,
+        keywords: ['format', 'typography', 'prettier', 'spacing'], run: () => runTypography(),
+      });
       if (native) rows.push(
         { title: '导入文件…', icon: FileDown, keywords: ['import files'], run: () => { void emitTo('main', 'library-command', 'library-import'); } },
         { title: '导入文件夹…', icon: FileDown, keywords: ['import folder'], run: () => { void emitTo('main', 'library-command', 'library-import-folder'); } },
@@ -1132,7 +1186,7 @@ document.addEventListener('keydown', event => {
 });
 function preserveOnLeave() {
   if (!showingNote) return true;
-  if (!notebook.server) { void saveDraft(true); return true; }
+  if (!notebook.server) { void saveDraft(true).then(() => notebook.flushActive()); return true; }
   // Navigation can abort HTTP saves; the per-note draft is recovered after reopening.
   try { notebook.stageDraft(sourceForSave()); return true; }
   catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); return false; }
@@ -1191,12 +1245,12 @@ sidebar = createSidebar(() => notebook, {
   share: shareNote,
   quickOpen: toggleQuickOpen,
   thumbnail(note) {
-    const image = firstLocalImage(note.source);
+    const image = noteFirstImage(note);
     return image ? attachmentUrl(notebook, note.id, image) : undefined;
   },
   mountThumbnail(note, image, row, url) {
     if (!native || notebook.data.sync?.version !== 2) return;
-    const source = firstLocalImage(note.source);
+    const source = noteFirstImage(note);
     if (source) return mountNoteAssetImage(note.id, image, row, url, source, true);
   },
   noteWindow,
@@ -1281,7 +1335,7 @@ if ('__TAURI_INTERNALS__' in window) {
   if (!documentWindow) {
     const { setupFileLibrary } = await import('./file-library-ui');
     await setupFileLibrary(notebook, {
-      save: () => saveDraft(true),
+      save: async () => await saveDraft(true) && await notebook.flushActive(),
       openToday: openTodayNote,
       quickOpen: toggleQuickOpen,
       prepareExit: mobile ? undefined : () => invoke('workspace_prepare_exit'),
@@ -1363,6 +1417,7 @@ else void connectEditorHistoryMenu({
       focusEditor();
     } else applyFormat(action);
   },
+  optimizeTypography: editor => runTypography(editor),
 }).catch(console.warn);
 if (!documentWindow) void hostSync(syncSession).catch(() => setStatus('无法连接同步设置', true));
 // 菜单栏面板的新建和打开都在这里做，和侧栏、编辑器走同一套保存流程。
