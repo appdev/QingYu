@@ -13,9 +13,6 @@
 !public/**
 !tools/
 !tools/palette.ts
-!prototypes/
-!prototypes/web-login/
-!prototypes/web-login/*.css
 !rust-toolchain.toml
 !src-tauri/
 !src-tauri/Cargo.toml

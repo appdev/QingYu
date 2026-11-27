@@ -1,5 +1,7 @@
 node_modules/
 /dist/
+/.claude/
+/experiments/mdsync/
 # docs 下只跟踪维护中的指南、README 译本、产品截图和发布说明。
 /docs/**
 !/docs/api-service.md

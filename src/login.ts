@@ -1,5 +1,5 @@
 import { bindLabels, translatedLabel } from './ui-language';
-import '../prototypes/web-login/login.css';
+import './login.css';
 import './preferences';
 
 const localizeLabels = bindLabels(document);
