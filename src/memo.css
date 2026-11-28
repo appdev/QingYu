@@ -228,7 +228,18 @@ html.darkmode #memo-pane { --memo-card: var(--card, var(--paper)); }
 .memo-filter { margin-block-end: 8px; }
 .memo-card-body .contains-task-list { padding-inline-start: 16px; }
 .memo-card-body .task-list-item { list-style: none; }
-.memo-card-body .task-list-item-checkbox { width: 16px; height: 16px; margin: 0 4px 0 0; vertical-align: -2px; accent-color: var(--brand); }
+.memo-card-body .task-list-item-checkbox {
+  appearance: none; display: inline-block; position: relative; box-sizing: border-box;
+  width: 17px; height: 17px; margin: 0 6px 0 0; vertical-align: -3px;
+  border: 1.25px solid color-mix(in srgb, var(--muted) 72%, transparent); border-radius: 50%;
+  background: none; color: var(--primary-ink); cursor: pointer;
+}
+.memo-card-body .task-list-item-checkbox:checked { background: var(--brand); border-color: var(--brand); }
+.memo-card-body .task-list-item-checkbox:checked::before {
+  content: ''; position: absolute; inset: 0; margin: auto; box-sizing: border-box;
+  width: 46%; height: 26%; border: solid currentColor; border-width: 0 0 1.6px 1.6px;
+  border-radius: 0 0 0 .5px; transform: translateY(-10%) rotate(-45deg);
+}
 .memo-card-body .task-list-item:has(> :checked, > p > :checked) { color: var(--muted); text-decoration: line-through; }
 .memo-card-body img { display: block; width: auto; max-width: 100%; max-height: 360px; object-fit: contain; border-radius: 8px; margin-block-start: 8px; }
 .memo-image-link { display: block; width: fit-content; max-width: 100%; }
