@@ -14,6 +14,8 @@ import { webLinkPreview, webLinkThumbnail } from './web-link-preview';
 import { isBlankNote, isShared, Notebook, noteTitle, type Note, type NoteShare } from './notebook';
 import { copyShareLink } from './mock-web-share';
 import { createSidebar } from './sidebar';
+import { createMemoView } from './memo-view';
+import { isMemo, regularNotes } from './memo';
 import { changeNoteTextSize, noteTextSizeShortcut, preferences, settingsShortcut, native, mobile } from './preferences';
 import { optimizeTypography } from './typography';
 import { connectPreferences, hostSync } from './settings-bridge';
@@ -30,8 +32,8 @@ import { keepEditorFocusForTouchButtons, keepPanelTargetVisible, keepMobileViewp
 import { invoke } from '@tauri-apps/api/core';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { showWindowWhenPainted } from './window-ready';
-import { assetBase, attachmentMarkdown, attachmentPlaceholder, attachmentUrl, openAttachment } from './attachments';
+import { showAndroidWindowWhenReady, showWindowWhenPainted } from './window-ready';
+import { assetBase, attachmentMarkdown, attachmentPlaceholder, attachmentUrl, openAttachment, pickMemoAttachments } from './attachments';
 import { downloadFromMain, hostAssetDownloads } from './asset-fetch';
 import { mountPendingImage } from './asset-download-view';
 import { MAX_ASSET_BYTES } from './sync-files';
@@ -170,21 +172,23 @@ const syncSession = createSyncSession(notebook, () => setStatus('笔记库同步
 });
 if (native && !documentWindow) void hostAssetDownloads(notebook, syncSession.fetchAsset).catch(() => undefined);
 let thumbnailRefresh: number | undefined;
-function downloadAttachment(entry: { root: string; path: string }) {
+function fetchAttachment(entry: { root: string; path: string }) {
   if (notebook.root !== entry.root) return Promise.reject(new Error('笔记库已切换，请重新下载附件'));
-  const download = documentWindow ? downloadFromMain(windowLabel, entry.root, entry.path) : syncSession.fetchAsset(entry.path);
+  return documentWindow ? downloadFromMain(windowLabel, entry.root, entry.path) : syncSession.fetchAsset(entry.path);
+}
+function downloadAttachment(entry: Parameters<typeof fetchAttachment>[0]) {
   // 列表缩略图不自己下载，正文里的图下完后刷新列表，缩略图才会从占位换成图片。
   // 一篇笔记里的多张图会接连下完，合并成一次刷新。
-  return download.then(hash => {
+  return fetchAttachment(entry).then(hash => {
     if (hash && sidebar && thumbnailRefresh === undefined) {
       thumbnailRefresh = window.setTimeout(() => { thumbnailRefresh = undefined; sidebar?.refresh(); }, 300);
     }
     return hash;
   });
 }
-async function ensureAttachment(noteId: string, source: string) {
+async function ensureAttachment(noteId: string, source: string, download = downloadAttachment) {
   const entry = await attachmentPlaceholder(notebook, noteId, source);
-  if (entry) return downloadAttachment(entry);
+  if (entry) return download(entry);
 }
 function mountNoteAssetImage(noteId: string, image: HTMLImageElement, frame: HTMLElement, url: string, source: string, thumbnail = false) {
   if (!native || notebook.external || notebook.data.sync?.version !== 2 || !isLocalAsset(source)) return;
@@ -324,17 +328,22 @@ const noteRelations = createNoteRelationsFooter({
 
 let editingTitleOf: string | undefined;
 let pendingTitleEdit: string | undefined;
+const noteTitleEl = $('#note-title');
+const wordCountEl = $('#word-count');
+const newNoteButton = $<HTMLButtonElement>('#new-note-button');
 const richEditor = createRichEditor($('#rich-editor'), () => {
-  refreshTitle();
+  const title = draftTitle();
+  refreshTitle(false, title);
   const note = notebook.current;
   if (note && note.id === displayedNoteId) {
-    const source = sourceForSave();
-    sidebar?.updateDraftTitle({ ...note, source });
-    if (!notebook.external && noteText(source, '').title !== noteText(note.source, '').title) pendingTitleEdit = note.id;
+    sidebar?.updateDraftTitle(note, title || (note.title ?? '未命名'));
+    if (!notebook.external && title !== noteText(note.source, '').title) pendingTitleEdit = note.id;
   }
   updateCompose();
-  try { notebook.stageDraft(sourceForSave()); }
-  catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
+  if (notebook.server) {
+    try { notebook.stageDraft(sourceForSave()); }
+    catch { setStatus('本地草稿备份失败，请保持页面打开并等待服务器保存', true); }
+  }
   if (document.body.dataset.statusError !== 'true') setStatus('正在保留草稿…');
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { void saveDraft(); }, 500);
@@ -351,7 +360,7 @@ const richEditor = createRichEditor($('#rich-editor'), () => {
       const id = note && note.id === displayedNoteId && !notebook.external ? note.id : undefined;
       const previous = editingTitleOf;
       const position = view.state.selection.main.head;
-      editingTitleOf = id && view.hasFocus && position <= (firstTitleLineEnd(sourceForSave()) ?? 0) ? id : undefined;
+      editingTitleOf = id && view.hasFocus && position <= (draftFirstTitleLineEnd() ?? 0) ? id : undefined;
       if (id && previous === id && !editingTitleOf) void saveDraft(true);
     });
   },
@@ -386,19 +395,52 @@ const richEditor = createRichEditor($('#rich-editor'), () => {
 const { view } = richEditor;
 
 // 一次按键里标题、草稿备份、新建按钮状态都要读全文。CodeMirror 每次改动都会换一个新的文档对象，
-// 按文档对象缓存，同一次改动只把全文转成字符串一次。
+// 按文档对象缓存，同一次改动只把全文转成字符串一次；标题和首行终点仅取前部文本并按文档对象缓存，
+// 长文档敲字和移动光标时不再分配整篇字符串。
 let savedSource: { doc: typeof view.state.doc; source: string } | undefined;
+let savedDraftMeta: { doc: typeof view.state.doc; title: string; titleEnd?: number; hasEnd: boolean } | undefined;
 function sourceForSave() {
   const doc = view.state.doc;
   if (savedSource?.doc !== doc) savedSource = { doc, source: doc.toString() };
   return savedSource.source;
 }
+function draftTextSample(doc: typeof view.state.doc) {
+  if (doc.length <= 4096) return sourceForSave();
+  const head = doc.sliceString(0, 4096);
+  if (/^---\r?\n/.test(head) && !/^---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.test(head)) return sourceForSave();
+  return head;
+}
+function draftTitle() {
+  const doc = view.state.doc;
+  if (savedDraftMeta?.doc !== doc) {
+    let title = noteText(draftTextSample(doc), '').title;
+    if (!title && doc.length > 4096) title = noteText(sourceForSave(), '').title;
+    savedDraftMeta = { doc, title, hasEnd: false };
+  }
+  return savedDraftMeta.title;
+}
+function draftFirstTitleLineEnd() {
+  const doc = view.state.doc;
+  if (savedDraftMeta?.doc !== doc) draftTitle();
+  if (!savedDraftMeta!.hasEnd) {
+    const sample = draftTextSample(doc);
+    let end = firstTitleLineEnd(sample);
+    if (end === undefined && doc.length > 4096) end = firstTitleLineEnd(sourceForSave());
+    savedDraftMeta!.titleEnd = end;
+    savedDraftMeta!.hasEnd = true;
+  }
+  return savedDraftMeta!.titleEnd;
+}
 const editorSource = (source: string) => source.replace(/\r\n?/g, '\n');
 
-function refreshTitle(force = false) {
+function refreshTitle(force = false, resolvedDraftTitle?: string) {
+  if ($('#app-shell').dataset.view === 'memos') return;
   const note = displayedNoteId === notebook.current?.id ? notebook.current : draftDuringSync?.previous;
-  if (force || !$('#rename-note')) $('#note-title').textContent = showingNote && note ? noteTitle({ ...note, source: sourceForSave() }) : uiText('noSelection');
-  $('#word-count').textContent = showingNote ? uiText('characterCount').replace('{count}', view.state.doc.length.toLocaleString(document.documentElement.lang)) : '';
+  if (force || !$('#rename-note')) {
+    const title = resolvedDraftTitle !== undefined ? resolvedDraftTitle : draftTitle();
+    noteTitleEl.textContent = showingNote && note ? (title || (note.title ?? '未命名')) : uiText('noSelection');
+  }
+  wordCountEl.textContent = showingNote ? uiText('characterCount').replace('{count}', view.state.doc.length.toLocaleString(document.documentElement.lang)) : '';
 }
 function saveDraft(includeTitle = false, forceFilename = false) {
   const write = draftWrites.then(() => persistDraft(includeTitle, forceFilename));
@@ -503,13 +545,18 @@ async function stepHistory(step: -1 | 1) {
   if (movingInHistory || index < 0) return;
   movingInHistory = true; updateHistoryButtons();
   try {
-    if (await selectNote(visitHistory[index], index)) sidebar?.revealCurrent();
+    if (await selectNote(visitHistory[index], index)) {
+      if ($('#app-shell').dataset.view === 'memos') sidebar?.openCurrent();
+      else sidebar?.revealCurrent();
+    }
   } finally { movingInHistory = false; updateHistoryButtons(); }
 }
 noteBack.onclick = () => { void stepHistory(-1); };
 noteForward.onclick = () => { void stepHistory(1); };
 
 function showCurrentNote(selected: boolean, fromHistory?: number) {
+  const current = notebook.current;
+  if (selected && current && !documentWindow && !notebook.external && !current.trashed && isMemo(notebook.data, current)) selected = false;
   closeFormatPanel?.();
   closeMenu();
   clearTimeout(saveTimer);
@@ -547,18 +594,20 @@ function updateShareMarker() {
 }
 
 function blankNote() {
-  return showingNote && !notebook.loadError && isBlankNote(notebook.current, sourceForSave());
+  return showingNote && !notebook.loadError && isBlankNote(notebook.current, view.state.doc.length ? 'x' : '');
 }
 // 对应 Pinto 的 ListCompose：空白新笔记开着时桌面上的新建按钮变灰，再建只会多一篇空白笔记。
 function updateCompose() {
   if (mobile) return;
-  const compose = $<HTMLButtonElement>('#new-note-button'), off = blankNote();
-  compose.disabled = off;
-  compose.title = off ? uiText('blankNote') : `${uiText('newNote')}（⌘N）`;
+  const off = blankNote();
+  newNoteButton.disabled = off;
+  newNoteButton.title = off ? uiText('blankNote') : `${uiText('newNote')}（⌘N）`;
 }
 
 async function selectNote(id: string | null, fromHistory?: number) {
   if (movingInHistory && fromHistory === undefined) return false;
+  const target = id && notebook.data.notes.find(note => note.id === id);
+  if (target && !documentWindow && !notebook.external && !target.trashed && isMemo(notebook.data, target)) return false;
   if (!await saveDraft(true)) return false;
   if (id === notebook.data.activeId && showingNote) {
     if (fromHistory !== undefined) visitIndex = fromHistory;
@@ -1010,10 +1059,12 @@ if (mobile) Object.assign(window, { qingyuBack() {
   if (popover) { popover.hidePopover(); return true; }
   if (closeFormatPanel) { closeFormatPanel(); return true; }
   if (!menu.hidden) { closeMenu(); return true; }
+  if (memoView.closeComposer()) return true;
   return Boolean(sidebar?.cancelSearch());
 } });
 function findInNote(direction?: 'next' | 'previous') {
   if (document.querySelector('dialog[open], .search-picker:popover-open') || richEditor.composing) return false;
+  if ($('#app-shell').dataset.view === 'memos') { memoView.focusSearch(); return true; }
   if (!showingNote) {
     if (direction) return false;
     $('#library-search-button').click();
@@ -1039,7 +1090,7 @@ function toggleQuickOpen() {
   const root = notebook.root;
   closeMenu();
   quickOpen = openQuickOpen({
-    library: notebook.data,
+    library: { ...notebook.data, notes: regularNotes(notebook.data) },
     commands() {
       const rows: QuickCommand[] = [
         { title: '新建笔记', icon: SquarePen, shortcut: '⌘N', keywords: ['new note', 'create'], run: () => { const compose = $<HTMLButtonElement>('#new-note-button'); if (compose.disabled) focusEditor(); else compose.click(); } },
@@ -1071,7 +1122,8 @@ function toggleQuickOpen() {
     },
     async openNote(note) {
       if (notebook.root !== root || !notebook.data.notes.some(item => item.id === note.id && !item.trashed) || !await selectNote(note.id)) return;
-      sidebar?.revealCurrent();
+      if ($('#app-shell').dataset.view === 'memos') sidebar?.openCurrent();
+      else sidebar?.revealCurrent();
       focusEditor();
     },
     showAll: query => sidebar?.searchAll(query),
@@ -1182,7 +1234,13 @@ document.addEventListener('keydown', event => {
   if (event.isComposing) return;
   if (event.key === 'Escape') closeMenu();
   if (!event.metaKey && !event.ctrlKey) return;
-  if (event.key.toLowerCase() === 's') { event.preventDefault(); clearTimeout(saveTimer); void saveDraft(true, true); }
+  if (event.key.toLowerCase() !== 's' || event.defaultPrevented) return;
+  event.preventDefault();
+  if ($('#app-shell').dataset.view === 'memos') {
+    if (!popupMenuOpen() && !document.querySelector('dialog[open]')) memoView.save();
+    return;
+  }
+  clearTimeout(saveTimer); void saveDraft(true, true);
 });
 function preserveOnLeave() {
   if (!showingNote) return true;
@@ -1240,8 +1298,43 @@ if ((mobile || !native || document.documentElement.dataset.platform === 'macos')
     void refreshAccount();
   }
 }
+const memoView = createMemoView(() => notebook, {
+  async openNote(id, folderId) { await sidebar?.openConvertedMemo(id, folderId); },
+  filterChanged: filter => sidebar?.memoFilterChanged(filter),
+  changed: () => sidebar?.refresh(),
+  status: setStatus,
+  error: message => setStatus(message, true),
+  pickAttachments: !usesGlisse(document.documentElement) ? pickMemoAttachments : undefined,
+  copyText: async text => {
+    if (native && desktop && document.documentElement.dataset.platform === 'macos') {
+      await invoke<void>('table_clipboard', { text });
+      return;
+    }
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const area = document.createElement('textarea');
+      area.value = text; area.style.position = 'fixed'; area.style.opacity = '0';
+      document.body.append(area); area.select();
+      try { if (!document.execCommand('copy')) throw new Error('无法复制到剪贴板'); }
+      finally { area.remove(); }
+    }
+  },
+  async openLink(id, target) {
+    if (isLocalAsset(target)) { await ensureAttachment(id, target); await openAttachment(notebook, id, target); }
+    else if (native && desktop && document.documentElement.dataset.platform === 'macos') await invoke('open_external_link', { target });
+    else window.open(target, '_blank', 'noopener,noreferrer');
+  },
+  readAudio: native ? async (noteId, source) => {
+    const root = notebook.root;
+    await ensureAttachment(noteId, source, fetchAttachment);
+    if (notebook.root !== root) throw new Error(uiText('memoChanged'));
+    return invoke<ArrayBuffer>('note_audio_asset', { noteId, path: decodeURIComponent(source.split(/[?#]/)[0]) });
+  } : undefined,
+  mountImage: mountNoteAssetImage,
+});
 sidebar = createSidebar(() => notebook, {
   select: selectNote, create: createNote, openToday: openTodayNote, focusEditor, blankNote, save: () => saveDraft(true),
+  memoView, restoreTitle: () => refreshTitle(true),
   share: shareNote,
   quickOpen: toggleQuickOpen,
   thumbnail(note) {
@@ -1262,6 +1355,7 @@ sidebar = createSidebar(() => notebook, {
 }, mobile);
 if (mobile) mountGlassButton($<HTMLButtonElement>('#new-note-button'));
 showCurrentNote(showingNote);
+$('#app-shell').removeAttribute('data-starting');
 window.addEventListener('ui-language-change', () => {
   localizeLabels();
   if (lastSyncState) renderSyncState(lastSyncState);
@@ -1280,7 +1374,21 @@ if (!notebook.loadError) {
 }
 refreshTitle();
 updateViewport();
+// 手机桌面图标长按菜单：随记打开输入面板，语音速记顺带开始录音，新建笔记直接进编辑器。
+// 原生端在页面通知就绪之后才调用，所以要在 showAndroidWindowWhenReady 之前挂上。
+async function runShortcut(kind: string) {
+  if (notebook.loadError || documentWindow || notebook.external) return;
+  if (kind === 'note') { await sidebar?.newNote(); return; }
+  if (kind !== 'memo' && kind !== 'voice') return;
+  await sidebar?.openMemos();
+  memoView.openComposer();
+  if (kind === 'voice') await memoView.startRecording();
+}
+if (mobile) Object.assign(window, {
+  qingyuShortcut(kind: string) { void runShortcut(kind).catch(error => setStatus(error instanceof Error ? error.message : String(error), true)); },
+});
 if (native && desktop) showWindowWhenPainted();
+else if (native) showAndroidWindowWhenReady();
 watchWebSession(async expired => {
   if (expired && notebook.server) {
     if (richEditor.composing || document.querySelector<HTMLInputElement>('#rename-note')?.dataset.composing === 'true') return false;
@@ -1394,6 +1502,12 @@ if ('__TAURI_INTERNALS__' in window) {
   }
 }
 window.addEventListener('preferences-applied', richEditor.requestMeasure);
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a'
+    && !(document.activeElement instanceof Element && document.activeElement.closest('input, textarea, [contenteditable]:not([contenteditable=false]), .cm-editor, [data-selectable]'))) {
+    event.preventDefault();
+  }
+});
 window.addEventListener('settings-error', event => setStatus((event as CustomEvent<string>).detail, true));
 if (native && desktop && !documentWindow) void listen<string>('note-text-size', ({ payload }) => {
   if (payload === 'bigger' || payload === 'smaller' || payload === 'actual') resizeNoteText(payload);

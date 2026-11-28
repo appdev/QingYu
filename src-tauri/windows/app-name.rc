@@ -1,0 +1,15 @@
+// Explorer resolves the shortcut name from the executable in the user's UI language.
+#pragma code_page(65001)
+#define APP_NAME 1001
+LANGUAGE 0, 0
+STRINGTABLE { APP_NAME, "QingYu" }
+LANGUAGE 4, 2
+STRINGTABLE { APP_NAME, "轻羽" }
+LANGUAGE 4, 4
+STRINGTABLE { APP_NAME, "轻羽" }
+LANGUAGE 4, 1
+STRINGTABLE { APP_NAME, "輕羽" }
+LANGUAGE 4, 3
+STRINGTABLE { APP_NAME, "輕羽" }
+LANGUAGE 4, 5
+STRINGTABLE { APP_NAME, "輕羽" }

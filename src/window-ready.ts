@@ -9,3 +9,20 @@ export function showWindowWhenPainted() {
     .then(() => requestAnimationFrame(() => requestAnimationFrame(() => void invoke('workspace_window_ready'))))
     .catch(() => {});
 }
+
+export function showAndroidWindowWhenReady() {
+  const splash = window.nativeSplash;
+  if (!splash) return;
+  const root = document.documentElement;
+  const pendingInsets = 'data-android-inset-pending';
+  if (!root.hasAttribute(pendingInsets)) {
+    splash.postMessage('ready');
+    return;
+  }
+  const observer = new MutationObserver(() => {
+    if (root.hasAttribute(pendingInsets)) return;
+    observer.disconnect();
+    splash.postMessage('ready');
+  });
+  observer.observe(root, { attributes: true, attributeFilter: [pendingInsets] });
+}

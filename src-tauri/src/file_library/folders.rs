@@ -664,6 +664,7 @@ pub async fn library_folder_action(
     folder_id: Option<String>,
     revision: u64,
     value: Option<String>,
+    excluded_move_destinations: Option<Vec<String>>,
 ) -> Result<Snapshot> {
     if window.label() != "main" {
         return Err("请在主窗口操作文件夹".into());
@@ -766,6 +767,23 @@ pub async fn library_folder_action(
         if store.revision != revision || store.root != expected_root {
             return Err("操作期间笔记库已变化，未修改文件夹，请重试".into());
         }
+        if action == "move" {
+            if let (Some(excluded), Ok(destination)) =
+                (excluded_move_destinations, fs::canonicalize(&value))
+            {
+                if store.data.folders.iter().any(|folder| {
+                    excluded.contains(&folder.id)
+                        && fs::canonicalize(store.root.join(&folder.path))
+                            .map(|path| destination == path || destination.starts_with(&path))
+                            .unwrap_or_else(|_| {
+                                let path = store.root.join(&folder.path);
+                                destination == path || destination.starts_with(&path)
+                            })
+                }) {
+                    return Err("不能移动到这个位置，「随记」和「Jots」已保留给随记使用".into());
+                }
+            }
+        }
         if ["reveal", "terminal"].contains(&action.as_str()) {
             let path = if folder_id.as_deref() == Some("trash") {
                 if action == "terminal" {
@@ -799,6 +817,7 @@ pub async fn library_folder_action(
     }
     #[cfg(mobile)]
     {
+        let _ = excluded_move_destinations;
         if !matches!(
             action.as_str(),
             "create" | "rename" | "duplicate" | "move-to-folder" | "trash-local" | "restore-folder"

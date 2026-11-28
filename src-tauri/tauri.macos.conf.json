@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "macOS": {
+      "files": {
+        "Resources/en.lproj/InfoPlist.strings": "gen/apple/apple-locales/en.lproj/InfoPlist.strings",
+        "Resources/zh-Hans.lproj/InfoPlist.strings": "gen/apple/apple-locales/zh-Hans.lproj/InfoPlist.strings",
+        "Resources/zh-Hant.lproj/InfoPlist.strings": "gen/apple/apple-locales/zh-Hant.lproj/InfoPlist.strings"
+      }
+    }
+  }
+}

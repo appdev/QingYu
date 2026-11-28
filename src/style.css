@@ -1,6 +1,7 @@
 @import '@fluidkit/core/style.css';
 @import './theme.css';
 @import './buttons.css';
+@import './memo.css';
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .qingyu-glass { background: var(--lb-fill); }
@@ -16,7 +17,7 @@
   background: color-mix(in srgb, var(--web-glass-fill) 74%, transparent);
   backdrop-filter: blur(14px) saturate(1.25);
 }
-:is([data-glass-host], .note-context-menu.toolbar-context-menu.web-glass-frost):has(> .web-glisse) {
+:is([data-glass-host]:not(.web-glass-knob), .note-context-menu.toolbar-context-menu.web-glass-frost):has(> .web-glisse) {
   isolation: isolate; background-color: transparent; backdrop-filter: none;
 }
 .web-glisse.lg-glass {
@@ -291,9 +292,11 @@ body.keyboard-open .mobile-tools { padding-bottom: 5px; }
 :root[data-mobile] .alert-dialog { width: min(320px, calc(100vw - 40px)); padding: 22px 16px 16px; border: 0; border-radius: 34px; background: var(--context-menu-fill); font-size: 15px; line-height: 20px; }
 :root[data-mobile] .alert-dialog h2 { margin: 0 14px 6px; font-size: 17px; font-weight: 600; line-height: 22px; }
 :root[data-mobile] .alert-dialog p { margin: 0 14px; color: var(--muted); }
-/* 手机上界面文字不能长按选中复制，和原生应用一样；编辑区、输入框和个别需要复制的错误信息、链接除外。 */
-html[data-mobile] body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=false]), .cm-editor) { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+/* 全平台界面文字默认不可选中，像原生应用一样；仅输入控件、编辑器、随记正文和显式标注 [data-selectable] 的区域放开。 */
+body { -webkit-user-select: none; user-select: none; }
+:is(input, textarea, [contenteditable]:not([contenteditable=false]), .cm-editor, .memo-card-body, [data-selectable]) { -webkit-user-select: text; user-select: text; }
+html[data-mobile] body { -webkit-touch-callout: none; }
+html[data-mobile] :is(input, textarea, [contenteditable]:not([contenteditable=false]), .cm-editor, .memo-card-body, [data-selectable]) { -webkit-touch-callout: default; }
 .share-popover {
   position: fixed; inset: auto; margin: 0; width: min(316px, calc(100vw - 16px)); padding: 12px 15px 15px;
   max-height: var(--share-available-height, calc(100dvh - 80px)); overflow: visible;

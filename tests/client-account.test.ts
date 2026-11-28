@@ -108,6 +108,7 @@ it('submits only after the password step and updates or clears the account card'
     email.value = 'qa@example.invalid'; submit();
     expect(email.readOnly).toBe(true);
     expect(document.activeElement).toBe(password);
+    expect(form.querySelector('input[type=checkbox]')).toBeNull();
     expect(ipc).toHaveBeenCalledTimes(2);
     password.value = 'incorrect'; submit();
     expect(password.value).toBe('');
@@ -120,7 +121,7 @@ it('submits only after the password step and updates or clears the account card'
     window.addEventListener('client-profile-changed', profileChanged, { once: true });
     entry.click(); email.value = 'qa@example.invalid'; submit(); password.value = 'fixture-value'; submit();
     await vi.waitFor(() => expect(tab.ariaLabel).toBe('测试账号'));
-    expect(ipc).toHaveBeenCalledWith('account_login', { username: 'qa@example.invalid', password: 'fixture-value', rememberDevice: false });
+    expect(ipc).toHaveBeenCalledWith('account_login', { username: 'qa@example.invalid', password: 'fixture-value' });
     expect(profileChanged).toHaveBeenCalledOnce();
     expect(dialog.open).toBe(false);
     expect(entry.hidden).toBe(true);

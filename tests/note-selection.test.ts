@@ -38,6 +38,26 @@ function fixture(mobile = false) {
   return { book, notes, sidebar, save, error, select, row, selected, click, menu, item };
 }
 
+it('labels root notes as All Notes and preserves a real folder called 备忘录', async () => {
+  const { book, notes, sidebar, row, click } = fixture();
+  const location = document.querySelector('#note-location')!;
+  const rowFolder = (index: number) => row(index).querySelector('.note-row-folder')?.textContent?.trim();
+  expect(location.textContent).toBe('全部笔记');
+  expect(rowFolder(0)).toBe('全部笔记');
+
+  book.data.folders = [{ id: 'legacy-root', name: '备忘录', path: '' }, { id: 'real-folder', name: '备忘录', path: '备忘录' }];
+  notes.forEach(note => { note.folderId = 'legacy-root'; });
+  notes[1].folderId = 'real-folder';
+  sidebar.refresh();
+  expect(rowFolder(0)).toBe('全部笔记');
+  expect(rowFolder(1)).toBe('备忘录');
+  expect(document.querySelector('.folder-row[data-folder-id="real-folder"]')?.textContent).toContain('备忘录');
+  click(1);
+  await vi.waitFor(() => expect(location.textContent).toBe('备忘录'));
+  click(0);
+  await vi.waitFor(() => expect(location.textContent).toBe('全部笔记'));
+});
+
 it('selects and shrinks a Shift range across date groups without opening another note', async () => {
   const { notes, sidebar, selected, click, select } = fixture();
   expect(document.querySelector('#notes-list')!.getAttribute('aria-multiselectable')).toBe('true');

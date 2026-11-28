@@ -36,6 +36,7 @@ const actionIcons: Record<string, string> = {
   置顶: 'M8 3h8l-1 6 3 4v2H6v-2l3-4zm4 12v7',
   取消置顶: 'M4 4l16 16M9 3h7l-1 6 3 4M6 13v2h7m-1 0v7',
   复制笔记: 'M8 16H3V3h13v5M8 8h13v13H8zM15 11v7m-4-3h7',
+  '版本历史…': 'M3 12a9 9 0 1 0 2.6-6.4L3 8m0-5v5h5m4-1v5l3 2',
   新建笔记: 'M12 4H4v16h16v-8m-10 2 1-4 8-8 3 3-8 8z',
   新建文件夹: 'M3 6h7l2 2h9v12H3zm9 4v7m-4-3h8',
   重命名文件夹: 'm4 20 1-5L17 3l4 4L9 19z',
@@ -350,7 +351,8 @@ async function openMenu(entries: MenuItem[] | Promise<MenuItem[]>, x: number, y:
       }
     };
     container.append(menu);
-    if (glass && !dropdown) menuGlass.set(menu, mountWebGlass(menu, { tint: 82, blur: 14 }));
+    // 长按预览菜单不挂玻璃层：Android WebView 上它只剩一层灰色模糊，菜单和遮罩糊成一片。
+    if (glass && !dropdown && !preview) menuGlass.set(menu, mountWebGlass(menu, { tint: 82, blur: 14 }));
     const bottom = anchor ? window.visualViewport?.height ?? innerHeight : innerHeight;
     if (anchor && !trigger) {
       if (toolbar?.above) {

@@ -6,6 +6,8 @@ import type { AssetPlaceholders, AssetStat, AssetSync, StagedAsset } from './syn
 import { ServerLibrary, ServerVersionConflict, type ServerSnapshot } from './server-library';
 import { uiText } from './ui-language';
 import { retargetNoteLinks } from './note-links';
+import { findMemoFolder, isInsideMemoFolder, isMemo, isMemoFolderName, memoFileTitle, memoFolderName } from './memo';
+import { rebaseMarkdownLocalLinks } from './vendor/markra/markdown/links';
 
 export const libraryKey = 'miaoyan-editor.notebook.v1';
 export const legacyDraftKey = 'miaoyan-editor.draft.v1';
@@ -44,6 +46,7 @@ type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 export class SyncSnapshotChanged extends Error {
   constructor() { super('同步期间本机笔记发生变化，已保留新内容，请再次同步'); }
 }
+export class NoteSaveConflict extends Error {}
 
 function encodeAsset(bytes: Uint8Array) {
   const encoded: string[] = [];
@@ -140,7 +143,8 @@ export class Notebook {
     }
     this.externalRevision++;
   }); }
-  importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> { return this.run(async () => {
+  importAttachment(id: string, upload: { name: string; bytes: number[] }): Promise<{ name: string; path: string; image: boolean }> { const root = this.root; return this.run(async () => {
+    if (root !== this.root) throw new Error('笔记库位置已更改，未添加附件');
     const note = this.data.notes.find(note => note.id === id);
     if (!note || note.readOnly || note.trashed) throw new Error('此笔记不可添加附件');
     if (this.remote) return this.remote.importAttachment(id, upload);
@@ -218,16 +222,16 @@ export class Notebook {
     if (changed) this.onLocalChange?.();
   }
   save(source: string, id = this.data.activeId, expectedSource?: string, confirmTitle = false) { const externalRevision = this.externalRevision, root = this.disk?.root; return this.run(async () => {
-    if (externalRevision !== this.externalRevision) throw new Error('文件已在外部变化，旧的延迟保存已取消');
+    if (externalRevision !== this.externalRevision) throw new NoteSaveConflict('文件已在外部变化，旧的延迟保存已取消');
     if (root !== this.disk?.root) throw new Error('笔记库位置已更改，旧的延迟保存已取消');
     const current = this.data.notes.find(note => note.id === id);
     if (!current) { if (!id) return; throw new Error('笔记不存在'); }
     if (expectedSource !== undefined && (current.source !== expectedSource || current.trashed)) {
-      throw new Error('笔记正文已更新，请重新查看引用');
+      throw new NoteSaveConflict('笔记正文已更新，请重新查看引用');
     }
     if (expectedSource !== undefined && !this.disk && !this.remote && this.persisted
       && this.storage.getItem(libraryKey) !== JSON.stringify(this.data)) {
-      throw new Error('笔记库已在其他窗口更新，请刷新后重试');
+      throw new NoteSaveConflict('笔记库已在其他窗口更新，请刷新后重试');
     }
     const changed = current.source !== source;
     if (changed && current.readOnly) throw new Error('文件内容损坏或不可读，已阻止覆盖');
@@ -251,6 +255,13 @@ export class Notebook {
       return;
     }
     await this.commit(changed ? { ...this.data, notes: this.data.notes.map(note => note.id === current.id ? { ...note, source, updatedAt: Date.now() } : note) } : this.data);
+  }).catch((error: unknown) => {
+    if (error instanceof ServerVersionConflict) throw new NoteSaveConflict(error.message, { cause: error });
+    if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' && 'code' in error) {
+      if (error.code === 'conflict') throw new NoteSaveConflict(error.message);
+      if (error.code === 'failure') throw new Error(error.message);
+    }
+    throw error;
   }); }
   saveDraftAfterSync(note: Note, source: string, applied?: Note) { return this.run(async () => {
     const current = this.data.notes.find(entry => entry.id === note.id);
@@ -305,11 +316,36 @@ export class Notebook {
       return true;
     });
   }
-  private async insertNote(folderId: string, title: string, source: string, id: string = crypto.randomUUID(), now = Date.now()) {
+  private async insertNote(folderId: string, title: string, source: string, id: string = crypto.randomUUID(), now = Date.now(), activeId = id) {
     if (!this.data.folders.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
-    await this.commit({ ...this.data, notes: [{ id, folderId, source, createdAt: now, updatedAt: now, ...(title ? { title } : {}) }, ...this.data.notes], activeId: id }, 'create');
+    await this.commit({ ...this.data, notes: [{ id, folderId, source, createdAt: now, updatedAt: now, ...(title ? { title } : {}) }, ...this.data.notes], activeId }, 'create');
   }
   createNote(folderId: string, title = '') { return this.run(() => this.insertNote(folderId, title, '')); }
+  createMemo(source: string, now = new Date()) { const root = this.root; return this.run(async () => {
+    if (this.external || this.noteWindow) throw new Error(uiText('memoReturnToLibrary'));
+    if (this.loadError) throw new Error(uiText('memoLoadError'));
+    if (root !== this.root) throw new Error('笔记库位置已更改，旧的延迟保存已取消');
+    let folderId = findMemoFolder(this.data)?.id;
+    for (let attempt = 0; !folderId; attempt++) {
+      try { folderId = await this.insertFolder(memoFolderName, 'default'); }
+      catch (error) {
+        if (!this.remote || attempt >= 2) throw error;
+        const snapshot = await this.remote.load().catch(() => undefined);
+        if (!snapshot) throw error;
+        const folder = findMemoFolder({ ...this.data, folders: snapshot.folders });
+        if (!folder) throw error;
+        this.adoptServer(snapshot); folderId = folder.id;
+      }
+    }
+    const id = crypto.randomUUID(), stem = memoFileTitle(now);
+    let title = stem;
+    if (!this.disk && !this.remote) {
+      const names = new Set(this.data.notes.filter(note => !note.trashed && note.folderId === folderId).map(note => note.title));
+      for (let suffix = 1; names.has(title); suffix++) title = `${stem} ${suffix}`;
+    }
+    await this.insertNote(folderId, title, source, id, now.getTime(), this.data.activeId || id);
+    return id;
+  }); }
   openToday(settings: DailyNoteSettings, now = new Date()) { return this.run(async () => {
     if (this.external) throw new Error('请返回笔记库打开今日笔记');
     for (let attempt = 0; ; attempt++) {
@@ -337,7 +373,15 @@ export class Notebook {
     }
   }); }
 
-  createFolder(name: string, parentId = 'default') { return this.run(() => this.insertFolder(name, parentId)); }
+  private checkFolderDestination(name: string, parentId: string) {
+    const destination = this.data.folders.find(folder => folder.id === parentId);
+    if (destination && isInsideMemoFolder(destination)) throw new Error(uiText('memoFolderDestination'));
+    if (parentId === 'default' && isMemoFolderName(name)) throw new Error(uiText('memoFolderReserved'));
+  }
+  createFolder(name: string, parentId = 'default') { return this.run(() => {
+    this.checkFolderDestination(name, parentId);
+    return this.insertFolder(name, parentId);
+  }); }
   private async insertFolder(name: string, parentId: string) {
     if (this.external) throw new Error('临时文件模式不管理文件夹，请返回笔记库操作');
     name = name.trim();
@@ -361,28 +405,38 @@ export class Notebook {
     return folder.id;
   }
   folderAction(action: 'rename' | 'move' | 'move-to-folder' | 'duplicate' | 'trash' | 'trash-local' | 'restore-folder' | 'reveal' | 'terminal', folderId: string | null, value?: string) { return this.run(async () => {
+    const validate = () => {
+      const target = this.data.folders.find(folder => folder.id === folderId);
+      if (action === 'rename' && target && target.id !== 'default' && !(target.path ?? target.name).includes('/') && isMemoFolderName(value ?? '')) {
+        throw new Error(uiText('memoFolderReserved'));
+      }
+      if ((action === 'move' || action === 'move-to-folder') && target && value) this.checkFolderDestination(target.name, value);
+      return target;
+    };
     if (this.remote) {
+      const remote = this.remote;
       if (action === 'duplicate' || action === 'move-to-folder' || action === 'trash-local' || action === 'restore-folder') {
-        const remote = this.remote;
-        await this.changeServer(() => remote.folderAction(action, folderId, value));
+        await this.changeServer(() => { validate(); return remote.folderAction(action, folderId, value); });
       } else {
         // 在 Finder 或终端中打开需要本机系统，网页客户端不提供；桌面端的系统废纸篓在网页上用笔记库废纸篓代替
         if (!folderId || !value || !['rename', 'move'].includes(action)) throw new Error('网页客户端不支持此文件夹操作');
-        const remote = this.remote;
-        await this.changeServer(() => remote.folder(action as 'rename' | 'move', folderId, value));
+        await this.changeServer(() => { validate(); return remote.folder(action as 'rename' | 'move', folderId, value); });
       }
       this.onLocalChange?.();
       return;
     }
     if (this.external) throw new Error('临时文件模式不管理文件夹，请返回笔记库操作');
+    const target = validate();
     if (this.disk) {
       const revision = this.disk.revision;
-      this.adopt(await invoke('library_folder_action', { action, folderId, value, revision }));
+      const excludedMoveDestinations = action === 'move' ? this.data.folders.filter(folder =>
+        isInsideMemoFolder(folder) || folder.id === 'default' && Boolean(target && isMemoFolderName(target.name))).map(folder => folder.id) : undefined;
+      this.adopt(await invoke('library_folder_action', { action, folderId, value, revision, ...(excludedMoveDestinations?.length ? { excludedMoveDestinations } : {}) }));
       if (this.disk.revision !== revision) this.onLocalChange?.();
       return;
     }
     if (action !== 'rename') throw new Error('请在桌面应用中操作本地文件夹');
-    const folder = this.data.folders.find(folder => folder.id === folderId);
+    const folder = target;
     if (!folder || folder.id === 'default' || folder.path === '') throw new Error('不能修改笔记库根文件夹');
     const name = value?.trim();
     if (!name || name.startsWith('.') || /[\\/:\x00-\x1f]/.test(name)) throw new Error('文件夹名称无效');
@@ -390,7 +444,7 @@ export class Notebook {
     if (this.data.folders.some(other => other.id !== folderId && (other.path ?? other.name).toLocaleLowerCase() === to.toLocaleLowerCase())) throw new Error('已有同名文件夹');
     await this.commit({ ...this.data, folders: this.data.folders.map(other => other.id === folderId ? { ...other, name, path: to } : other.path?.startsWith(from + '/') ? { ...other, path: to + other.path.slice(from.length) } : other) });
   }); }
-  private async updateNote(id: string, patch: Partial<Pick<Note, 'title' | 'pinned' | 'trashed' | 'folderId' | 'share'>>) {
+  private async updateNote(id: string, patch: Partial<Pick<Note, 'title' | 'pinned' | 'trashed' | 'folderId' | 'share' | 'source'>>) {
     if (this.external && ('trashed' in patch || 'folderId' in patch)) throw new Error('临时文件模式不移动或删除文件，请在文件管理器中操作');
     if (!this.data.notes.some(note => note.id === id)) throw new Error('笔记不存在');
     await this.commit({ ...this.data, notes: this.data.notes.map(note => note.id === id ? { ...note, ...patch } : note) });
@@ -448,8 +502,13 @@ export class Notebook {
     await this.updateNote(id, { pinned: !note.pinned });
   }); }
   moveNote(id: string, folderId: string) { return this.run(async () => {
-    if (!this.data.folders.some(folder => folder.id === folderId)) throw new Error('文件夹不存在');
-    await this.updateNote(id, { folderId, trashed: false });
+    const folder = this.data.folders.find(candidate => candidate.id === folderId);
+    if (!folder) throw new Error('文件夹不存在');
+    const note = this.data.notes.find(candidate => candidate.id === id);
+    const source = note?.path && !note.trashed && note.folderId !== folderId && isMemo(this.data, note)
+      ? rebaseMarkdownLocalLinks(note.source, note.path, [folder.path ?? (folder.id === 'default' ? '' : folder.name), 'note.md'].filter(Boolean).join('/'))
+      : undefined;
+    await this.updateNote(id, { folderId, trashed: false, ...(source !== undefined ? { source } : {}) });
   }); }
   trashNote(id: string, trashed = true) { return this.run(() => this.updateNote(id, { trashed })); }
   purgeNotes(ids: readonly string[]) { return this.run(async () => {
@@ -572,10 +631,11 @@ export class Notebook {
 
 export type NoteOrder = { key: 'updatedAt' | 'createdAt' | 'title'; reverse: boolean; grouped: boolean };
 export const defaultNoteOrder: NoteOrder = { key: 'updatedAt', reverse: false, grouped: true };
+const titleCollator = new Intl.Collator(undefined, { numeric: true });
 function compareNotes(order: NoteOrder, a: Note, b: Note) {
   const pinned = Number(Boolean(b.pinned && !b.trashed)) - Number(Boolean(a.pinned && !a.trashed));
   if (pinned) return pinned;
-  const difference = order.key === 'title' ? noteTitle(a).localeCompare(noteTitle(b), undefined, { numeric: true }) : b[order.key] - a[order.key];
+  const difference = order.key === 'title' ? titleCollator.compare(noteTitle(a), noteTitle(b)) : b[order.key] - a[order.key];
   if (!difference && order.key === 'title') return b.updatedAt - a.updatedAt;
   return order.reverse ? -difference : difference;
 }
@@ -591,29 +651,37 @@ export function visibleNotes(library: Library, folderId: string | null, query: s
 
 /**
  * 每个文件夹（含子文件夹）里未删除笔记的数量，和 visibleNotes(library, id, '').length 一致。
- * 先按文件夹数一遍笔记，再按路径把子文件夹加上去，不用每个文件夹都把全部笔记筛选、排序一次。
+ * 先按文件夹数一遍笔记，再按路径前缀向上累加，避免 O(F²) 扫描。
  */
 export function folderNoteCounts(library: Library) {
   const direct = new Map<string, number>();
   for (const note of library.notes) if (!note.trashed) direct.set(note.folderId, (direct.get(note.folderId) ?? 0) + 1);
+  const descendants = new Map<string, number>();
+  for (const other of library.folders) {
+    const count = direct.get(other.id) ?? 0;
+    if (!count) continue;
+    const otherPath = other.path ?? other.name;
+    for (let slash = otherPath.indexOf('/'); slash !== -1; slash = otherPath.indexOf('/', slash + 1)) {
+      if (slash === 0) continue;
+      const ancestor = otherPath.slice(0, slash);
+      descendants.set(ancestor, (descendants.get(ancestor) ?? 0) + count);
+    }
+  }
   const counts = new Map<string, number>();
   for (const folder of library.folders) {
     const path = folder.path ?? folder.name;
-    let count = 0;
-    for (const other of library.folders) {
-      if (other.id === folder.id || path && (other.path ?? other.name).startsWith(path + '/')) count += direct.get(other.id) ?? 0;
-    }
-    counts.set(folder.id, count);
+    counts.set(folder.id, (direct.get(folder.id) ?? 0) + (path ? (descendants.get(path) ?? 0) : 0));
   }
   return counts;
 }
 
 const localDay = (now: Date, offset: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime();
+const capitalizeLabel = (text: string, locale: string) => text ? text[0].toLocaleUpperCase(locale) + text.slice(1) : text;
 export function noteListDate(now: Date, locale = 'zh-CN') {
   const listClock = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const listWeekday = new Intl.DateTimeFormat(locale, { weekday: 'long' });
   const listDate = new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'numeric', day: 'numeric' });
-  const yesterdayLabel = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day');
+  const yesterdayLabel = capitalizeLabel(new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day'), locale);
   const [sixDaysAgo, yesterday, today, tomorrow] = [-6, -1, 0, 1].map(offset => localDay(now, offset));
   return (timestamp: number, previous?: number) => {
     if ((timestamp >= today && timestamp < tomorrow)
@@ -623,19 +691,21 @@ export function noteListDate(now: Date, locale = 'zh-CN') {
   };
 }
 
-export function groupNotes(notes: Note[], order = defaultNoteOrder, now = new Date(), locale = 'zh-CN') {
+export function groupNotes(notes: Note[], order = defaultNoteOrder, now = new Date(), locale = 'zh-CN', presorted = false) {
   const currentYear = now.getFullYear();
   const [today, yesterday, week, month30] = [0, -1, -7, -30].map(offset => localDay(now, offset));
-  const yesterdayLabel = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day');
+  const yesterdayLabel = capitalizeLabel(new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-1, 'day'), locale);
+  const monthStyle = /^\d+$/.test(now.toLocaleDateString(locale, { month: 'numeric' })) ? 'long' : 'numeric';
   const pastDays = (count: number) => uiText('pastDays', locale).replace('{count}', count.toLocaleString(locale));
   const groups: { year: number; month: number; label: string; notes: Note[] }[] = [];
-  for (const note of [...notes].sort((a, b) => compareNotes(order, a, b))) {
+  const ordered = presorted ? notes : [...notes].sort((a, b) => compareNotes(order, a, b));
+  for (const note of ordered) {
     const timestamp = order.key === 'createdAt' ? note.createdAt : note.updatedAt;
     const date = new Date(timestamp), year = note.pinned && !note.trashed ? 0 : date.getFullYear();
     const month = year ? date.getMonth() + 1 : 0;
-    const label = !year ? uiText('pin', locale) : !order.grouped || order.key === 'title' ? '' : timestamp >= today ? uiText('menu.today', locale) : timestamp >= yesterday ? yesterdayLabel
+    const label = !year ? uiText('pinned', locale) : !order.grouped || order.key === 'title' ? '' : timestamp >= today ? uiText('menu.today', locale) : timestamp >= yesterday ? yesterdayLabel
       : timestamp >= week ? pastDays(7) : timestamp >= month30 ? pastDays(30)
-      : date.toLocaleDateString(locale, { month: 'numeric', ...(year !== currentYear ? { year: 'numeric' } as const : {}) });
+      : capitalizeLabel(date.toLocaleDateString(locale, { month: monthStyle, ...(year !== currentYear ? { year: 'numeric' } as const : {}) }), locale);
     const last = groups.at(-1);
     if (last?.label === label) last.notes.push(note);
     else groups.push({ year, month, label, notes: [note] });

@@ -1,4 +1,6 @@
 <resources>
-    <string name="app_name">"轻羽"</string>
-    <string name="main_activity_title">"轻羽 QingYu"</string>
+    <string name="app_name">QingYu</string>
+    <string name="shortcut_memo">Jot</string>
+    <string name="shortcut_voice">Voice Jot</string>
+    <string name="shortcut_note">New Note</string>
 </resources>

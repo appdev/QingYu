@@ -587,7 +587,10 @@ async fn asset(
             .collect();
         let disposition = format!(
             "{}; filename*=UTF-8''{filename}",
-            if mime.starts_with("image/") || ["application/pdf", "text/plain"].contains(&mime) {
+            if mime.starts_with("image/")
+                || mime.starts_with("audio/")
+                || ["video/webm", "application/pdf", "text/plain"].contains(&mime)
+            {
                 "inline"
             } else {
                 "attachment"

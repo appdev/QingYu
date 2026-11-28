@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">輕羽</string>
+    <string name="shortcut_memo">隨記</string>
+    <string name="shortcut_voice">語音速記</string>
+    <string name="shortcut_note">新增筆記</string>
+</resources>

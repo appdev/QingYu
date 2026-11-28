@@ -3,6 +3,14 @@ import { localizeStatus, localizeSyncError, markupLabel, workflowText, type Work
 import { supportedLanguages } from '../src/vendor/markra/shared/i18n';
 import { localizedWorkflowCopy, traditionalWorkflowCopy, workflowCopy, workflowLocales } from '../src/workflow-copy';
 
+it('uses the localized app name in the editor and login titles', () => {
+  for (const { code } of supportedLanguages) {
+    const name = code === 'zh-CN' ? '轻羽' : code === 'zh-TW' ? '輕羽' : 'QingYu';
+    expect(workflowText('轻羽', code)).toBe(name);
+    expect(workflowText('登录 · 轻羽', code)).toContain(name);
+  }
+});
+
 it('provides workflow copy in every supported language and preserves interpolation tokens', () => {
   const tokens = (text: string) => (text.match(/\{\w+\}/g) ?? []).sort();
   for (const [key, english] of Object.entries(workflowCopy)) {
@@ -14,7 +22,7 @@ it('provides workflow copy in every supported language and preserves interpolati
       for (const [index, locale] of workflowLocales.entries()) {
         expect(localized?.[index]?.trim(), `${locale} ${key}`).toBeTruthy();
       }
-      if (key !== '轻羽' && key !== '轻羽 QingYu') {
+      if (key !== '轻羽') {
         expect(localized?.every(translation => translation.trim() === english.trim()), key).toBe(false);
       }
     }

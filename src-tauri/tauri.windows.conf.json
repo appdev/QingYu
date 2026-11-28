@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "windows": { "nsis": { "installerHooks": "windows/app-name.nsh" } }
+  }
+}

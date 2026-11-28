@@ -130,6 +130,18 @@ function snippets(body: string, spots: Range[], lineOffset: number, sourceOffset
   return result;
 }
 
+type RelationCache = { source: string; body: string; offset: number; folded?: string; ranges?: ReturnType<typeof sourceRanges> };
+const relationCache = new WeakMap<Note, RelationCache>();
+function cachedRelationData(note: Note) {
+  let entry = relationCache.get(note);
+  if (entry?.source !== note.source) {
+    const { body, offset } = markdownBody(note.source);
+    entry = { source: note.source, body, offset };
+    relationCache.set(note, entry);
+  }
+  return entry;
+}
+
 export async function findNoteRelations(library: Library, target: Note, signal: AbortSignal): Promise<NoteRelations> {
   const related: NoteRelations = { linked: [], mentions: [] };
   const needles = names(target);
@@ -141,10 +153,11 @@ export async function findNoteRelations(library: Library, target: Note, signal: 
   let chunk = performance.now();
   for (const note of peers) {
     if (signal.aborted) break;
-    const { body, offset } = markdownBody(note.source);
-    const searchable = needles.length ? folded(body) : '';
+    const entry = cachedRelationData(note);
+    const { body, offset } = entry;
+    const searchable = needles.length ? (entry.folded ??= folded(body)) : '';
     if (body.includes('[[') || needles.some(name => searchable.includes(name))) {
-      const { links, excluded } = sourceRanges(body);
+      const { links, excluded } = (entry.ranges ??= sourceRanges(body));
       const references = links.filter(link => {
         const written = key(link.target);
         const hash = written.indexOf('#');

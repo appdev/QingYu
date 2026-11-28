@@ -104,7 +104,7 @@ export function mountMenuBar(root: HTMLElement, host: MenuBarPanelHost) {
     } else if (!sections.pinned.length && !sections.recent.length) {
       const empty = list.appendChild(doc.createElement('p')); empty.className = 'menu-bar-empty'; empty.textContent = workflowText('置顶或编辑过的笔记会显示在这里。');
     } else {
-      if (sections.pinned.length) list.append(header(uiText('pin')));
+      if (sections.pinned.length) list.append(header(uiText('pinned')));
       sections.pinned.forEach((note, index) => list.append(noteRow(note, index)));
       if (sections.recent.length) list.append(header(workflowText('最近')));
       sections.recent.forEach((note, index) => list.append(noteRow(note, sections.pinned.length + index)));

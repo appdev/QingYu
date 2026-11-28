@@ -183,6 +183,7 @@ impl DiskLibrary {
     ) -> Result<()> {
         let source = self.note_version_source(note_id, version)?;
         self.save_note_body(root, note_id, expected_source, source, RESTORE)
+            .map_err(String::from)
     }
 }
 

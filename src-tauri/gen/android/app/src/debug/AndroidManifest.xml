@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Debug uses the manifest's cleartext setting for the local Vite server. -->
+    <application tools:remove="android:networkSecurityConfig" />
+</manifest>

@@ -401,42 +401,115 @@
   overflow: auto; overscroll-behavior: contain;
 }
 .client-sign-in::backdrop { background: var(--overlay); }
+/* 平板：居中弹窗，键盘弹起时在键盘上方的区域里居中。 */
 .settings-mobile .client-sign-in {
   --client-field-height: 50px;
-  --client-mark-size: 72px;
-  inset: calc(var(--safe-area-top) + 40px) 0 auto; margin: 0 auto; padding: 28px;
-  width: min(380px, calc(100vw - 40px));
-  max-height: calc(var(--client-viewport-height, 100dvh) - var(--safe-area-top) - 60px);
+  --client-mark-size: 64px;
+  inset: 0 0 var(--client-keyboard-inset, 0px); margin: auto; padding: 32px 28px 24px;
+  width: min(420px, calc(100vw - 40px));
+  border-radius: 34px; background: var(--settings-sheet); box-shadow: 0 24px 72px var(--shadow-modal);
+  max-height: calc(var(--client-viewport-height, 100dvh) - var(--safe-area-top) - 40px);
+  transition: opacity .2s ease-out, transform .28s cubic-bezier(.2, .9, .3, 1), display .28s allow-discrete, overlay .28s allow-discrete;
+}
+.settings-mobile .client-sign-in[open] { opacity: 1; transform: none; }
+.settings-mobile .client-sign-in:not([open]) { opacity: 0; transform: scale(.96); }
+@starting-style { .settings-mobile .client-sign-in[open] { opacity: 0; transform: scale(.96); } }
+/* 手机：底部弹窗，贴底并跟着键盘一起上移。 */
+@media (width < 780px) {
+  .settings-mobile .client-sign-in {
+    inset: auto 0 var(--client-keyboard-inset, 0px); margin: 0; width: 100%; max-width: none;
+    padding: 28px 20px calc(20px + var(--safe-area-bottom));
+    border-radius: 32px 32px 0 0; box-shadow: none;
+    max-height: calc(var(--client-viewport-height, 100dvh) - var(--safe-area-top) - 12px);
+    transition: transform .36s cubic-bezier(.2, .9, .3, 1), display .36s allow-discrete, overlay .36s allow-discrete;
+  }
+  .settings-mobile .client-sign-in[open] { opacity: 1; transform: none; }
+  .settings-mobile .client-sign-in:not([open]) { opacity: 1; transform: translateY(100%); }
+  @starting-style { .settings-mobile .client-sign-in[open] { opacity: 1; transform: translateY(100%); } }
+  /* 键盘弹起后底部安全区由键盘占住，不再额外留白。 */
+  .settings-mobile .client-sign-in[data-keyboard] { padding-bottom: 16px; }
+}
+.settings-mobile .client-sign-in::backdrop { transition: opacity .28s ease-out, display .28s allow-discrete, overlay .28s allow-discrete; }
+.settings-mobile .client-sign-in[open]::backdrop { opacity: 1; }
+.settings-mobile .client-sign-in:not([open])::backdrop { opacity: 0; }
+@starting-style { .settings-mobile .client-sign-in[open]::backdrop { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .settings-mobile .client-sign-in, .settings-mobile .client-sign-in::backdrop { transition: none; }
 }
 .client-sign-in form { display: grid; gap: 20px; }
-.settings-mobile .client-sign-in form { gap: 24px; }
+.settings-mobile .client-sign-in form { gap: 20px; }
 .client-sign-in header img { display: block; width: var(--client-mark-size); height: var(--client-mark-size); margin: 0 auto 12px; }
 .client-sign-in h2 { margin: 0; font-size: 19px; }
-/* Pinto 的登录标题：title2 特粗、收紧字距、正文色，不跟设置分组标题的灰色。 */
-.settings-mobile .client-sign-in h2 { font-size: 22px; font-weight: 800; letter-spacing: -.6px; color: var(--ink); }
-.client-sign-in footer p { margin: 0; font-size: 12px; }
+/* 标题：title3 粗体、正文色，不跟设置分组标题的灰色。 */
+.settings-mobile .client-sign-in h2 { font-size: 20px; font-weight: 700; letter-spacing: -.3px; color: var(--ink); }
+.client-sign-in-identity {
+  display: flex; justify-content: center; align-items: center; gap: 4px; margin: 10px 0 0; min-width: 0;
+  color: var(--muted); font-size: 14px;
+}
+.client-sign-in-identity[hidden] { display: none; }
+.client-sign-in-identity > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-mobile .client-sign-in-identity { font-size: 16px; }
+.settings .client-sign-in-identity .client-text-button { flex: none; padding-inline: 4px; font-weight: 600; font-size: inherit; }
+/* 「更改」只占一行字高，点击区用伪元素补到 44px，两步之间面板高度基本不变。 */
+.settings-mobile .client-sign-in .client-sign-in-identity .client-text-button { position: relative; min-height: 0; padding-block: 0; line-height: 1.3; }
+.settings-mobile .client-sign-in-identity .client-text-button::after { content: ""; position: absolute; inset: -12px -8px; }
+.client-sign-in footer { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; column-gap: 4px; }
+.client-sign-in footer p { flex-basis: 100%; margin: 0; font-size: 12px; }
+.client-sign-in footer [hidden] { display: none; }
 .client-sign-in fieldset { display: grid; gap: 12px; margin: 0; padding: 0; border: 0; min-width: 0; }
-.client-sign-in [data-change-email] { justify-self: start; }
+.settings-mobile .client-sign-in fieldset { gap: 14px; }
+/* 第二步邮箱框不显示，但留在表单里，方便系统密码管理器配对账号。 */
+.client-sign-in[data-step=password] [name=username] {
+  position: absolute; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none;
+}
 .settings .client-sign-in input:not([type=checkbox]) {
   box-sizing: border-box; width: 100%; min-width: 0; height: var(--client-field-height, 36px); padding: 0 12px;
   border: 1px solid var(--field-hairline); border-radius: 14px; color: var(--ink); background: var(--field-fill); font-size: 14px;
 }
-/* 和 Pinto 一样：白底细边框，输入时换成 2px 的品牌色描边。 */
+.settings-mobile .client-sign-in input:not([type=checkbox]) { padding-inline: 16px; background: var(--settings-card); border-color: transparent; }
+/* 白底细边框，输入时换成 2px 的品牌色描边。 */
 .settings .client-sign-in input:not([type=checkbox]):focus { outline: none; border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
-.client-remember-device { color: var(--muted); font-size: 13px; }
 .settings .client-sign-in input::placeholder { color: color-mix(in srgb, var(--muted) 85%, transparent); }
 .settings-mobile .client-sign-in input { font-size: 17px; }
-/* 登录表单的按钮是 Pinto 的表单尺寸：桌面 40px、圆角 14、15px 字，和输入框同高。 */
-.settings .client-sign-in .primary-button { height: var(--client-field-height, 40px); border-radius: 14px; font-size: 15px; }
-/* 手机是 Pinto 的大号表单按钮：50 高、18 字。 */
-.settings-mobile .client-sign-in .primary-button { font-size: 18px; }
-.settings-mobile .client-sign-in footer :is(p, .client-text-button) { font-size: 13px; }
+.client-password { position: relative; }
+.client-password:has(> input[hidden]) { display: none; }
+.settings .client-sign-in .client-password input { padding-inline-end: 48px; }
+.settings .client-password-toggle {
+  position: absolute; inset: 0 0 0 auto; display: grid; place-items: center; width: 44px; padding: 0;
+  border: 0; border-radius: 0 14px 14px 0; background: transparent; color: var(--muted);
+}
+.settings .client-password-toggle:hover { color: var(--ink); }
+.client-password-toggle .eye-slash { display: none; }
+.client-password-toggle[aria-pressed=true] .eye-slash { display: inline; }
+/* 登录表单的按钮和输入框同高：桌面 40px、手机和平板 50px。 */
+.settings .client-sign-in .primary-button { position: relative; height: var(--client-field-height, 40px); border-radius: 14px; font-size: 15px; }
+.settings-mobile .client-sign-in .primary-button { font-size: 17px; }
+.client-sign-in-spinner { display: none; }
+.client-sign-in [data-busy] .client-sign-in-spinner {
+  display: block; position: absolute; inset: 0; width: 18px; height: 18px; margin: auto; box-sizing: border-box;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: client-sign-in-spin .8s linear infinite;
+}
+.client-sign-in [data-busy] [data-submit-label] { visibility: hidden; }
+@keyframes client-sign-in-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .client-sign-in [data-busy] .client-sign-in-spinner { animation-duration: 2.4s; } }
+.settings-mobile .client-sign-in footer :is(p, .client-text-button) { font-size: 14px; }
+.settings-mobile .client-sign-in footer .client-text-button { font-weight: 600; }
 .settings .client-text-button { min-height: 36px; padding: 4px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--link); font-size: 14px; }
 .settings .client-sign-in .client-text-button { min-height: 24px; }
-.settings .client-sign-in .client-sign-in-close { position: absolute; inset: 8px 8px auto auto; min-width: 28px; color: var(--muted); font-size: 19px; }
+.settings .client-sign-in .client-sign-in-close {
+  position: absolute; inset: 12px 12px auto auto; display: grid; place-items: center; width: 24px; height: 24px; padding: 0;
+  border: 0; border-radius: 50%; background: var(--control-fill); color: var(--ink);
+}
+/* 手机和平板跟设置面板的返回按钮一样：44px 白色圆形浮起按钮，距边 16px。 */
+.settings-mobile .client-sign-in .client-sign-in-close {
+  inset: 16px 16px auto auto; width: 44px; height: 44px;
+  background: var(--settings-card); box-shadow: 0 8px 24px var(--shadow);
+}
+.settings-mobile .client-sign-in .client-sign-in-close svg { width: 16px; height: 16px; }
+.settings .client-sign-in .client-sign-in-close:active { transform: scale(.94); }
+@media (prefers-reduced-motion: reduce) { .settings .client-sign-in .client-sign-in-close:active { transform: none; } }
 .settings-mobile .client-sign-in .client-text-button,
 .settings-mobile .client-text-button { min-height: 44px; }
-.settings-mobile .client-sign-in .client-sign-in-close { min-width: 44px; }
 .client-logout-confirmation {
   --logout-surface: color-mix(in srgb, var(--card), var(--ink) 7%);
   position: fixed; inset: 0; margin: auto; box-sizing: border-box;
@@ -468,7 +541,18 @@
 .settings .client-list .settings-row.client-sign-out { color: var(--error); }
 .settings .client-sign-out { color: var(--error); }
 .client-account-status { margin-bottom: 0; }
-.client-sign-in .client-account-status { margin: 0; font-size: 12px; }
+.client-sign-in .client-account-status { margin: 0; font-size: 12px; text-align: start; }
+.settings-mobile .client-sign-in .client-account-status { font-size: 14px; }
+/* 进行中的提示只给读屏，按钮上的转圈已经说明了状态。 */
+.client-sign-in .client-account-status:not([data-error]):has(~ [data-busy]) {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+/* 出错时在框下方左对齐显示红字，前面带一个实心感叹号。 */
+.client-sign-in .client-account-status[data-error] { display: flex; align-items: center; gap: 6px; color: var(--error); }
+.client-sign-in .client-account-status[data-error]::before {
+  content: "!"; flex: none; display: grid; place-items: center; width: 1.2em; height: 1.2em; border-radius: 50%;
+  background: var(--error); color: var(--card); font-size: .85em; font-weight: 800; line-height: 1;
+}
 .client-account-status:empty { display: none; }
 .settings-mobile .settings-account-link + button { border-radius: 24px 24px 0 0; }
 .settings-mobile .settings-account-link + button::before { display: none; }

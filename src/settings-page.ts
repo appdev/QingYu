@@ -10,6 +10,12 @@ const root = document.querySelector<HTMLElement>('#settings-root')!;
 const localizeLabels = bindLabels(document);
 localizeLabels();
 window.addEventListener('ui-language-change', localizeLabels);
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a'
+    && !(document.activeElement instanceof Element && document.activeElement.closest('input, textarea, [contenteditable]:not([contenteditable=false]), [data-selectable]'))) {
+    event.preventDefault();
+  }
+});
 void connectEditorHistoryMenu().catch(console.warn);
 await mountFeatureWindow(root, async close => {
   let view: ReturnType<typeof mountSettings> | undefined;

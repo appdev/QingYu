@@ -306,7 +306,7 @@ it.each([false, true])('opens GitHub Issues from help (native: %s)', native => {
     view.select('help');
     const page = root.querySelector('#settings-panel-help')!;
     expect(page.querySelector('img')?.getAttribute('src')).toBe('/brand/qingyu-app.png');
-    expect(page.textContent).toContain('QingYu — 轻量的所见即所得 Markdown 编辑器。');
+    expect(page.textContent).toContain('轻羽 — 轻量的所见即所得 Markdown 编辑器。');
     for (const [label, path] of [['问题反馈', 'issues/new'], ['常见问题', 'issues']]) {
       const button = [...page.querySelectorAll('button')].find(item => item.querySelector('.settings-label')?.textContent === label)!;
       button.click();

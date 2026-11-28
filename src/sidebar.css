@@ -526,7 +526,8 @@ html[data-mobile] .folder-row input { -webkit-user-select: text; user-select: te
 label.mobile-library-search > svg { width: 18px; height: 18px; flex: none; stroke-width: 1.8; pointer-events: none; }
 #app-shell:not([data-mobile-search]) .mobile-search-cancel { display: none; }
 #app-shell[data-mobile-search]:not([data-mobile-wide]) .mobile-library-tools :is(#today-note-button, #new-note-button) { display: none; }
-#app-shell[data-mobile-search]:not([data-mobile-wide]) #notes-pane .notes-toolbar { visibility: hidden; }
+#app-shell[data-mobile-search]:not([data-mobile-wide]) #notes-pane { --notes-top: var(--safe-area-top); }
+#app-shell[data-mobile-search]:not([data-mobile-wide]) #notes-pane .notes-toolbar { visibility: hidden; padding-bottom: 0; }
 #app-shell[data-mobile-page] .mobile-library-search #note-search { height: 100%; padding: 0; border: 0; font-size: 17px; box-shadow: none; }
 #app-shell[data-mobile-page] .mobile-library-tools .icon-button { width: 48px; height: 48px; padding: 12px; border-radius: 50%; background: var(--mobile-row); color: var(--ink); box-shadow: 0 8px 28px 8px var(--toolbar-shadow); font-weight: 700; font-size: 16px; }
 #app-shell[data-mobile-page] .mobile-library-tools .icon-button:disabled { opacity: .45; }

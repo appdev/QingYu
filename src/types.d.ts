@@ -1,5 +1,6 @@
 interface Window {
   nativeAppearance?: { postMessage(theme: string): void };
+  nativeSplash?: { postMessage(message: 'ready'): void };
   MiaoYanHeadingLinks: {
     find(root: ParentNode, href: string): HTMLElement | null;
     follow(root: ParentNode, href: string): boolean;

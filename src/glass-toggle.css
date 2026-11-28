@@ -16,7 +16,9 @@
   transition: scale var(--fk-interactive), --lb-lens var(--fk-interactive), --lb-transparency var(--fk-interactive),
     translate 230ms cubic-bezier(.2,.8,.3,1.2);
 }
-.glass-toggle-thumb.web-glass-knob { --web-glass-fill: var(--switch-knob); background: var(--web-glass-fill); }
+/* 挂上玻璃层后也保留实底（style.css 里清底色的规则排除了它）：
+   部分 Android WebView（如 138）画不出带 SVG 背景滤镜的玻璃层，没有实底时滑块会整个消失。 */
+.glass-toggle-thumb.web-glass-knob { --web-glass-fill: var(--switch-knob); isolation: isolate; background: var(--web-glass-fill); }
 /* Outside a drag the native checkbox also reflects programmatic preference changes. */
 .glass-toggle-thumb:not([data-dragging]) { translate: var(--glass-toggle-rest-x, 0px) !important; }
 .glass-toggle-thumb[data-dragging] {

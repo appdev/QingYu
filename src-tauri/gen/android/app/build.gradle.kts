@@ -71,7 +71,16 @@ rust {
     rootDirRel = "../../../"
 }
 
-val rustlsAndroidAar = run {
+repositories {
+    exclusiveContent {
+        forRepository {
+            maven { url = uri("https://raw.githubusercontent.com/rustls/rustls-platform-verifier/maven-archive/android-release-support/maven/") }
+        }
+        filter { includeModule("org.rustls", "rustls-platform-verifier") }
+    }
+}
+
+val rustlsAndroidVersion = run {
     val metadata = providers.exec {
         workingDir = file("../../..")
         commandLine("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", "aarch64-linux-android")
@@ -79,16 +88,15 @@ val rustlsAndroidAar = run {
     val packages = (JsonSlurper().parseText(metadata) as Map<*, *>)["packages"] as List<*>
     val verifier = packages.filterIsInstance<Map<*, *>>()
         .single { it["name"] == "rustls-platform-verifier-android" }
-    val version = verifier["version"]
-    val manifest = file(verifier["manifest_path"] as String)
-    manifest.parentFile.resolve("maven/rustls/rustls-platform-verifier/$version/rustls-platform-verifier-$version.aar")
+    verifier["version"] as String
 }
 
 dependencies {
-    implementation(files(rustlsAndroidAar))
+    implementation("org.rustls:rustls-platform-verifier:$rustlsAndroidVersion")
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation("androidx.core:core-splashscreen:1.2.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     testImplementation("junit:junit:4.13.2")

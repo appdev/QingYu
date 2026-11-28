@@ -27,7 +27,7 @@ afterEach(() => {
 
 it('uses the application name as the menu trigger and moves existing actions into the bar', async () => {
   vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32');
-  document.title = '轻羽 QingYu';
+  document.title = '轻羽';
   const today = document.body.appendChild(document.createElement('button'));
   const search = document.body.appendChild(document.createElement('button'));
   const { mountDesktopWindowBar } = await import('../src/desktop-window');
@@ -36,7 +36,7 @@ it('uses the application name as the menu trigger and moves existing actions int
   await vi.waitFor(() => expect(handle.onResized).toHaveBeenCalledOnce());
 
   const trigger = document.querySelector<HTMLButtonElement>('.desktop-window-menu')!;
-  expect(trigger.textContent).toBe('轻羽 QingYu');
+  expect(trigger.textContent).toBe('轻羽');
   expect(today.parentElement).toBe(trigger.nextElementSibling);
   expect(search.parentElement?.nextElementSibling?.className).toBe('desktop-window-caption');
   trigger.click();

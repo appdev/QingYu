@@ -2,7 +2,7 @@
 import './fixtures/chinese-ui';
 import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { folderMenuItems } from '../src/folder-menu';
+import { createFolderMenu, folderMenuItems } from '../src/folder-menu';
 import { Notebook } from '../src/notebook';
 import { createSidebar } from '../src/sidebar';
 import { dismissPopupMenu } from '../src/popup-menu';
@@ -103,5 +103,31 @@ it('opens an icon menu and compact preview without selecting the long-pressed fo
     HTMLDialogElement.prototype.showModal = showModal;
     document.body.replaceChildren();
     vi.unstubAllGlobals();
+  }
+});
+
+it.each([false, true])('omits memo folders from move destinations (mobile: %s)', async mobile => {
+  const book = new Notebook({ getItem: () => null, setItem() {} }, '# 原文');
+  const from = await book.createFolder('来源');
+  await book.createFolder('目标');
+  book.data.folders.push({ id: 'memo-alias', name: 'JÓTS', path: 'JÓTS' },
+    { id: 'memo-child', name: '隐藏子目录', path: 'JÓTS/隐藏子目录' });
+  vi.spyOn(book, 'server', 'get').mockReturnValue(true);
+  const { showModal } = HTMLDialogElement.prototype;
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  try {
+    const menu = createFolderMenu(() => book, { mobile, create: async () => {}, createNote: async () => {},
+      error: vi.fn(), change: async () => {}, reorder: () => false });
+    await menu.open(from, 'folder', true, { at: { x: 40, y: 40 }, keyboard: true });
+    document.querySelector<HTMLButtonElement>('[role=menuitem][aria-label="移动到…"]')!.click();
+    const destination = mobile ? '.note-move-sheet button' : '[role=menuitem]';
+    await vi.waitFor(() => expect([...document.querySelectorAll(destination)].some(row => row.textContent?.trim() === '目标')).toBe(true));
+    const labels = [...document.querySelectorAll(destination)].map(row => row.textContent?.trim());
+    expect(labels).not.toContain('JÓTS');
+    expect(labels).not.toContain('隐藏子目录');
+  } finally {
+    dismissPopupMenu();
+    HTMLDialogElement.prototype.showModal = showModal;
+    document.body.replaceChildren();
   }
 });

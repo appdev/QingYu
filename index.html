@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#FFFFFF" />
-    <title data-i18n="轻羽 QingYu">轻羽 QingYu</title>
+    <title data-i18n="轻羽">轻羽</title>
     <link rel="icon" type="image/png" href="/brand/qingyu-app.png" />
+    <style>
+      #app-shell[data-starting], #app-shell[data-starting] + .statusbar { visibility: hidden; }
+    </style>
   </head>
   <body>
     <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -20,7 +23,7 @@
         <feDisplacementMap in="SourceGraphic" in2="rim" scale="12" xChannelSelector="R" yChannelSelector="G" />
       </filter>
     </svg>
-    <div id="app-shell" data-sidebar="all">
+    <div id="app-shell" data-sidebar="all" data-starting>
       <aside id="library-sidebar" aria-label="笔记库" data-i18n-aria-label="library">
         <div class="sidebar-panes">
         <section id="folder-pane" aria-label="文件夹" data-i18n-aria-label="folders">
@@ -73,6 +76,7 @@
       <span id="note-location" data-tauri-drag-region></span>
       <button id="note-undo" class="icon-button" title="撤销" data-i18n-title="menu.undo" aria-label="撤销" data-i18n-aria-label="menu.undo" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 5 4 11l6 6M4 11h10a5 5 0 0 1 0 10h-2"/></svg></button>
       <nav class="actions" aria-label="编辑器工具栏" data-i18n-aria-label="editorToolbar">
+        <button id="memo-search-button" type="button" class="icon-button" hidden data-i18n-title="memoSearch" data-i18n-aria-label="memoSearch"></button>
         <button id="calendar-button" class="icon-button" hidden title="创建日程" aria-label="创建日程" aria-haspopup="dialog" data-i18n-title="创建日程" data-i18n-aria-label="创建日程"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18M12 14v4M10 16h4"/></svg></button>
         <button id="sidebar-button" class="icon-button" title="切换笔记列表" aria-label="列表" aria-controls="library-sidebar" aria-expanded="true" aria-pressed="false" data-i18n-title="切换笔记列表" data-i18n-aria-label="列表"></button>
         <button id="format-button" class="icon-button" title="格式" data-i18n-title="menu.format" aria-label="格式" data-i18n-aria-label="menu.format" aria-expanded="false" aria-controls="format-menu">
@@ -123,6 +127,7 @@
     <main id="workspace">
       <section id="rich-pane" aria-label="所见即所得编辑区" data-i18n-aria-label="editor"><div id="rich-editor"></div></section>
     </main>
+    <section id="memo-pane" hidden aria-label="随记" data-i18n-aria-label="memos"></section>
     <section id="empty-note" hidden><p data-i18n="noNotes">此文件夹还没有笔记</p><button id="new-empty-note" class="button secondary-button" data-i18n="newNote">新建笔记</button></section>
       </div>
     </div>

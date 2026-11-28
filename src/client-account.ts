@@ -126,25 +126,27 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     <div class="client-list client-storage-link">
       <button type="button" class="settings-row settings-disclosure" data-settings-target="storage"><span class="settings-label"><span data-i18n="存储与同步">存储与同步</span><small data-account-usage hidden></small></span></button>
     </div>
-    <dialog class="client-sign-in" aria-label="登录轻羽" data-i18n-aria-label="登录轻羽">
-      <button type="button" class="client-text-button client-sign-in-close" aria-label="关闭登录" data-i18n-aria-label="关闭登录">×</button>
+    <dialog class="client-sign-in" aria-label="登录轻羽" data-i18n-aria-label="登录轻羽" data-step="email">
+      <button type="button" class="client-sign-in-close" aria-label="关闭登录" data-i18n-aria-label="关闭登录"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="m3 3 6 6m0-6-6 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
       <form novalidate>
         <header>
           <img src="/brand/qingyu-app.png" alt="">
-          <h2 data-i18n="登录轻羽">登录轻羽</h2>
+          <h2 data-sign-in-title>${markupLabel('登录轻羽')}</h2>
+          <p class="client-sign-in-identity" hidden><span data-sign-in-email></span><button type="button" class="client-text-button" data-change-email aria-label="更改邮箱" data-i18n-aria-label="更改邮箱" data-i18n="更改">更改</button></p>
         </header>
         <fieldset>
           <input type="email" name="username" aria-label="邮箱" data-i18n-aria-label="邮箱" placeholder="邮箱" data-i18n-placeholder="邮箱" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="320" required>
-          <button type="button" class="client-text-button" data-change-email hidden data-i18n="更改邮箱">更改邮箱</button>
-          <input type="password" name="password" aria-label="密码" data-i18n-aria-label="密码" placeholder="密码" data-i18n-placeholder="密码" autocomplete="current-password" maxlength="4096" hidden>
-          <label class="client-remember-device" hidden><input type="checkbox" name="rememberDevice"> <span data-i18n="记住登录">记住登录</span></label>
+          <div class="client-password">
+            <input type="password" name="password" aria-label="密码" data-i18n-aria-label="密码" placeholder="密码" data-i18n-placeholder="密码" autocomplete="current-password" maxlength="4096" hidden>
+            <button type="button" class="client-password-toggle" aria-pressed="false"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/><path class="eye-slash" d="m4 4 16 16"/></svg></button>
+          </div>
           <p class="client-account-status" role="status"></p>
-          <button type="submit" class="button primary-button" disabled>${markupLabel('继续')}</button>
+          <button type="submit" class="button primary-button" disabled><span class="client-sign-in-spinner" aria-hidden="true"></span><span data-submit-label>${markupLabel('继续')}</span></button>
         </fieldset>
         <footer>
-          <p data-i18n="通过轻羽门户管理账号。">通过轻羽门户管理账号。</p>
-          <button type="button" class="client-text-button" data-portal="register" data-i18n="创建账号">创建账号</button>
-          <button type="button" class="client-text-button" data-portal="reset" data-i18n="找回密码">找回密码</button>
+          <p data-email-step data-i18n="通过轻羽门户管理账号。">通过轻羽门户管理账号。</p>
+          <button type="button" class="client-text-button" data-email-step data-portal="register" data-i18n="创建账号">创建账号</button>
+          <button type="button" class="client-text-button" data-password-step hidden data-portal="reset" data-i18n="找回密码">找回密码</button>
         </footer>
       </form>
     </dialog>`);
@@ -194,10 +196,12 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   const fields = form.querySelector('fieldset')!;
   const email = form.querySelector<HTMLInputElement>('[name=username]')!;
   const password = form.querySelector<HTMLInputElement>('[name=password]')!;
-  const remember = form.querySelector<HTMLInputElement>('[name=rememberDevice]')!;
-  const rememberToggle = decorateGlisseToggle(remember);
   const submit = form.querySelector<HTMLButtonElement>('[type=submit]')!;
   const change = form.querySelector<HTMLButtonElement>('[data-change-email]')!;
+  const identity = form.querySelector<HTMLElement>('.client-sign-in-identity')!;
+  const signInTitle = form.querySelector<HTMLElement>('[data-sign-in-title]')!;
+  const submitLabel = submit.querySelector<HTMLElement>('[data-submit-label]')!;
+  const reveal = form.querySelector<HTMLButtonElement>('.client-password-toggle')!;
   const closeSignIn = signIn.querySelector<HTMLButtonElement>('.client-sign-in-close')!;
   const signInMessage = signIn.querySelector<HTMLElement>('[role=status]')!;
 
@@ -266,31 +270,60 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   }
 
   function updateSubmit() {
+    // 登录请求进行中按钮保持主色并转圈，而不是变成禁用的浅色。
+    submit.toggleAttribute('data-busy', busy && signIn.open);
     submit.disabled = busy || !(email.readOnly ? password.value : email.value.trim());
   }
 
+  function showPassword(visible: boolean) {
+    password.type = visible ? 'text' : 'password';
+    reveal.ariaPressed = String(visible);
+    reveal.ariaLabel = workflowText(visible ? '隐藏密码' : '显示密码');
+  }
+
+  function stepLabels() {
+    const next = email.readOnly;
+    signInTitle.textContent = workflowText(next ? '欢迎回来' : '登录轻羽');
+    submitLabel.textContent = workflowText(next ? '登录' : '继续');
+    showPassword(password.type === 'text');
+  }
+
   function passwordStep(next: boolean, focus = false) {
+    // 先让要去的输入框可见可编辑并拿到焦点，再收起另一个。
+    // 反过来的话，聚焦中的框先被隐藏或设成只读，键盘会收起再弹出，面板跟着跳。
+    if (focus) {
+      if (next) password.hidden = false;
+      else { signIn.dataset.step = 'email'; email.readOnly = false; }
+      (next ? password : email).focus({ preventScroll: true });
+    }
+    signIn.dataset.step = next ? 'password' : 'email';
     email.readOnly = next;
     email.tabIndex = next ? -1 : 0;
     password.required = next;
     password.value = '';
     password.hidden = !next;
-    remember.closest('label')!.hidden = !next;
-    change.hidden = !next;
-    submit.textContent = workflowText(next ? '登录' : '继续');
+    identity.hidden = !next;
+    identity.querySelector('[data-sign-in-email]')!.textContent = next ? email.value : '';
+    for (const item of form.querySelectorAll<HTMLElement>('[data-email-step]')) item.hidden = next;
+    for (const item of form.querySelectorAll<HTMLElement>('[data-password-step]')) item.hidden = !next;
+    showPassword(false);
+    stepLabels();
     updateSubmit();
-    if (focus) (next ? password : email).focus();
   }
 
   function fitSignIn() {
-    if (viewport) signIn.style.setProperty('--client-viewport-height', viewport.height + 'px');
+    if (!viewport) return;
+    signIn.style.setProperty('--client-viewport-height', viewport.height + 'px');
+    // 键盘弹起后把面板托到键盘上方；布局视口跟着缩的系统上这里算出来是 0。
+    const keyboard = Math.max(0, document.documentElement.clientHeight - viewport.height - viewport.offsetTop);
+    signIn.style.setProperty('--client-keyboard-inset', keyboard + 'px');
+    signIn.toggleAttribute('data-keyboard', keyboard > 80);
   }
 
   function resetSignIn() {
     if (signIn.open) return;
     viewport?.removeEventListener('resize', fitSignIn);
     email.value = '';
-    remember.checked = false;
     passwordStep(false);
     signInMessage.textContent = '';
   }
@@ -311,6 +344,10 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
   });
   signIn.onclose = resetSignIn;
   closeSignIn.onclick = () => signIn.close();
+  reveal.onclick = () => {
+    showPassword(password.type === 'password');
+    password.focus();
+  };
   signIn.onclick = event => {
     if (event.target !== signIn || busy) return;
     const { left, right, top, bottom } = signIn.getBoundingClientRect();
@@ -506,18 +543,27 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       return;
     }
     if (!password.value) return;
-    const username = email.value, secret = password.value, rememberDevice = remember.checked;
+    const username = email.value, secret = password.value;
     password.value = '';
     updateSubmit();
     void run(async () => {
-      setInfo(await callAccount<AccountInfo>('account_login', { username, password: secret, rememberDevice }));
+      setInfo(await callAccount<AccountInfo>('account_login', { username, password: secret }));
       if (disposed) return;
       signIn.close();
       resetSignIn();
       showMessage('已登录。');
-    }, '正在登录…');
+    }, '正在登录…').then(() => {
+      // 密码不对时留在密码框里，直接重输。
+      if (!disposed && signIn.open && email.readOnly) password.focus();
+    });
   };
   change.onclick = () => { showMessage(); passwordStep(false, true); };
+  // 点「继续」「登录」「更改」时焦点留在输入框里，键盘不收起。
+  for (const button of [submit, change]) {
+    button.addEventListener('mousedown', event => {
+      if (form.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement) event.preventDefault();
+    });
+  }
 
   function updateLogoutLabels(everywhere: boolean) {
     confirmation.querySelector('h2')!.textContent = workflowText(everywhere ? '退出所有客户端？' : '退出登录？');
@@ -632,7 +678,7 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
     },
     refreshLanguage() {
       for (const apply of applyLabels) apply();
-      submit.textContent = workflowText(email.readOnly ? '登录' : '继续');
+      stepLabels();
       for (const container of [...accountSections, confirmation]) {
         for (const label of container.querySelectorAll('[role=status], .client-redemptions li')) {
           const source = statusCopy.get(label);
@@ -653,7 +699,6 @@ export function mountClientAccount(pages: Record<AccountPage, HTMLElement>, tab:
       }
       if (next === 'storage') void readHistory();
     },
-    destroy() { disposed = true; rememberToggle?.destroy(); leave(); confirmation.remove(); redeemDialog.remove(); window.removeEventListener('focus', refreshOnFocus); },
+    destroy() { disposed = true; leave(); confirmation.remove(); redeemDialog.remove(); window.removeEventListener('focus', refreshOnFocus); },
   };
 }
-import { decorateGlisseToggle } from './glass-controls';

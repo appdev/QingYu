@@ -112,10 +112,11 @@ it('combines editor actions with actions for only the displayed note', async () 
 it.each(['sidebar', 'toolbar'])('moves from the desktop %s using the sidebar folder hierarchy and order', async surface => {
   vi.stubGlobal('CSS', { escape: (text: string) => text });
   const book = new Notebook({ getItem: () => null, setItem: () => undefined }, '# Note');
+  book.data.folders[0].path = '';
   const parent = await book.createFolder('Alpha');
   const first = await book.createFolder('First', parent);
   const second = await book.createFolder('Second', parent);
-  const sibling = await book.createFolder('Beta');
+  const sibling = await book.createFolder('备忘录');
   const note = book.current!;
   await book.moveNote(note.id, parent);
   const error = vi.fn();
@@ -130,7 +131,7 @@ it.each(['sidebar', 'toolbar'])('moves from the desktop %s using the sidebar fol
   await menu(note.id, 200, 100, surface === 'toolbar' ? { anchor } : undefined);
   buttons(submenu('笔记操作')).find(button => button.ariaLabel === '移动到…')!.click();
   const destinations = buttons(submenu('移动到…'));
-  expect(destinations.map(button => button.ariaLabel)).toEqual(['备忘录', 'Beta', 'Alpha']);
+  expect(destinations.map(button => button.ariaLabel)).toEqual(['笔记库顶层', '备忘录', 'Alpha']);
   destinations[2]!.click();
   const nested = buttons(submenu('Alpha'));
   expect(nested.map(button => button.ariaLabel)).toEqual(['Alpha', 'Second', 'First']);
@@ -182,7 +183,7 @@ it.each([false, true])('opens a mobile folder sheet with working cancel and move
     let dialog = await open();
     expect(document.querySelector('.context-sheet')).toBeNull();
     const destinations = [...dialog.querySelectorAll<HTMLButtonElement>('li > button')];
-    expect(destinations.map(button => button.textContent?.trim())).toEqual(['备忘录', '父目录', '子目录']);
+    expect(destinations.map(button => button.textContent?.trim())).toEqual(['笔记库顶层', '父目录', '子目录']);
     expect(destinations[1]!.disabled).toBe(!trashed);
     expect(destinations[2]!.style.getPropertyValue('--folder-depth')).toBe('1');
     if (!trashed) {

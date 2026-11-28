@@ -36,9 +36,9 @@ export async function attachmentPlaceholder(book: Notebook, noteId: string, sour
   }
 }
 
-export function assetBase(book: Notebook) {
-  if (!native || !book.current) return undefined;
-  return `${convertFileSrc(book.current.id, 'qingyu-asset')}?v=${book.assetRevision}`;
+export function assetBase(book: Notebook, noteId = book.current?.id) {
+  if (!native || !noteId) return undefined;
+  return `${convertFileSrc(noteId, 'qingyu-asset')}?v=${book.assetRevision}`;
 }
 
 /** 某篇笔记里相对路径附件的地址：桌面走资源协议，服务器笔记库走 Web 接口。 */
@@ -54,6 +54,18 @@ export function attachmentMarkdown(file: { name: string; path: string; image: bo
   const label = file.name.replace(/[\\[\]]/g, '\\$&');
   const path = file.path.split('/').map(part => encodeURIComponent(part).replace(/[()']/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)).join('/');
   return `${file.image ? '!' : ''}[${label}](${path})`;
+}
+
+export async function pickMemoAttachments(images: boolean, remaining: number) {
+  const bytes = await invoke<ArrayBuffer>('memo_pick_attachments', { images, remaining });
+  const index = new DataView(bytes).getUint32(0, true);
+  const files: { name: string; type: string; size: number }[] = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes, index)));
+  let offset = 4;
+  return files.map(({ name, type, size }) => {
+    const file = new File([new Uint8Array(bytes, offset, size)], name, { type });
+    offset += size;
+    return file;
+  });
 }
 
 export async function openAttachment(book: Notebook, id: string, value: string) {

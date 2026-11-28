@@ -599,7 +599,7 @@ export function mountSettings(root: HTMLElement, syncSource: SyncClient | undefi
     }
   }
   const help = pages.get('help')!;
-  help.insertAdjacentHTML('beforeend', '<div class="settings-help-intro"><img src="/brand/qingyu-app.png" width="52" height="52" alt=""><p><strong>QingYu</strong> — <span data-i18n="轻量的所见即所得 Markdown 编辑器。"></span></p></div>');
+  help.insertAdjacentHTML('beforeend', '<div class="settings-help-intro"><img src="/brand/qingyu-app.png" width="52" height="52" alt=""><p><strong data-i18n="轻羽">轻羽</strong> — <span data-i18n="轻量的所见即所得 Markdown 编辑器。"></span></p></div>');
   function openGithub(path: string) {
     const url = `https://github.com/${githubRepo}/${path}`;
     if (native) void invoke('plugin:opener|open_url', { url }).catch(() => error('无法打开 GitHub 链接。'));

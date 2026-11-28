@@ -170,9 +170,9 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
   const tabs = document.createElement('div'); tabs.className = 'share-tabs'; tabs.role = 'tablist'; tabs.ariaLabel = translatedLabel('分享方式');
   const content = document.createElement('div'); content.role = 'tabpanel'; content.id = 'share-content';
   const modes = [
-    { index: 0, title: '发送' },
-    { index: 1, title: '网页' },
-    ...(picture ? [{ index: 2, title: '图片' }] : []),
+    { index: 0, title: translatedLabel('发送') },
+    { index: 1, title: translatedLabel('网页') },
+    ...(picture ? [{ index: 2, title: translatedLabel('图片') }] : []),
   ];
   const buttons: HTMLButtonElement[] = [];
   let disposePicture: (() => void) | undefined;
@@ -187,7 +187,7 @@ export function showShare(anchor: HTMLElement, title: string, text: string, repo
     indicator?.select(buttons[position]);
     content.replaceChildren();
     const detail = document.createElement('p'); detail.className = 'share-description';
-    detail.textContent = ['发送笔记此刻的内容，之后的修改不会同步给收件人。', '模拟创建网页链接。', '将笔记转成图片，方便发送或发布。'][index]; content.append(detail);
+    detail.textContent = translatedLabel((['发送笔记此刻的内容，之后的修改不会同步给收件人。', '模拟创建网页链接。', '将笔记转成图片，方便发送或发布。'] as const)[index]); content.append(detail);
     if (index === 0) {
       if (nativeShare || typeof navigator.share === 'function') {
         const send = document.createElement('button'); send.textContent = translatedLabel('share') + '…'; send.className = 'button primary-button share-send';

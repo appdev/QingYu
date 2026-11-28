@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="editor_background">#000000</color>
+    <color name="splash_background">@color/editor_background</color>
+    <color name="splash_branding_text">#F6EFE7</color>
     <color name="editor_accent">#F4AD33</color>
 </resources>

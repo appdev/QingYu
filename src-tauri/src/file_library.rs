@@ -12,6 +12,33 @@ use tauri::{Manager, State};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, String>;
+#[derive(Debug, Serialize)]
+#[serde(tag = "code", content = "message", rename_all = "snake_case")]
+pub enum NoteSaveError {
+    Conflict(String),
+    Failure(String),
+}
+
+impl From<String> for NoteSaveError {
+    fn from(message: String) -> Self {
+        Self::Failure(message)
+    }
+}
+
+impl From<&str> for NoteSaveError {
+    fn from(message: &str) -> Self {
+        Self::Failure(message.into())
+    }
+}
+
+impl From<NoteSaveError> for String {
+    fn from(error: NoteSaveError) -> Self {
+        match error {
+            NoteSaveError::Conflict(message) | NoteSaveError::Failure(message) => message,
+        }
+    }
+}
+
 const META: &str = ".miaoyan";
 const INDEX: &str = ".miaoyan/library.json";
 const JOURNAL: &str = ".miaoyan/transaction.json";
@@ -640,7 +667,8 @@ fn unique(
     } else {
         raw
     };
-    let regex = regex::Regex::new(r"(.+)\s(\d)+").unwrap();
+    static COPY_NUMBER_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let regex = COPY_NUMBER_RE.get_or_init(|| regex::Regex::new(r"(.+)\s(\d)+").unwrap());
     let mut current = raw.clone();
     let mut number = 0;
     loop {
@@ -1057,13 +1085,73 @@ impl DiskLibrary {
         }
     }
     fn persist_index(&self, library: &Library, generation: u64) -> Result<()> {
-        let mut metadata = library.clone();
-        for note in &mut metadata.notes {
-            note.source.clear();
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct NoteMetaRef<'a> {
+            id: &'a str,
+            folder_id: &'a str,
+            source: &'static str,
+            created_at: f64,
+            updated_at: f64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            title: Option<&'a str>,
+            pinned: bool,
+            trashed: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            conflict_of: Option<&'a str>,
+            path: &'a str,
+            read_only: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            filename: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            share: Option<&'a NoteShare>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            follow_title: Option<&'a str>,
         }
-        let bytes = serde_json::to_vec_pretty(&Index {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LibraryRef<'a> {
+            version: u8,
+            folders: &'a [Folder],
+            notes: Vec<NoteMetaRef<'a>>,
+            active_id: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sync: Option<&'a serde_json::Value>,
+        }
+        #[derive(Serialize)]
+        struct IndexRef<'a> {
+            generation: u64,
+            library: LibraryRef<'a>,
+        }
+        let notes = library
+            .notes
+            .iter()
+            .map(|note| NoteMetaRef {
+                id: &note.id,
+                folder_id: &note.folder_id,
+                source: "",
+                created_at: note.created_at,
+                updated_at: note.updated_at,
+                title: note.title.as_deref(),
+                pinned: note.pinned,
+                trashed: note.trashed,
+                conflict_of: note.conflict_of.as_deref(),
+                path: &note.path,
+                read_only: note.read_only,
+                filename: note.filename.as_deref(),
+                share: note.share.as_ref(),
+                follow_title: note.follow_title.as_deref(),
+            })
+            .collect();
+        let bytes = serde_json::to_vec(&IndexRef {
             generation,
-            library: metadata,
+            library: LibraryRef {
+                version: library.version,
+                folders: &library.folders,
+                notes,
+                active_id: &library.active_id,
+                sync: library.sync.as_ref(),
+            },
         })
         .map_err(error)?;
         let path = checked(&self.root, INDEX)?;
@@ -1391,6 +1479,17 @@ impl DiskLibrary {
         self.commit_bytes(next, intent, &HashMap::new(), None)
     }
 
+    fn check_note_bytes(&self, note: &Note) -> std::result::Result<(), NoteSaveError> {
+        let bytes = self.bytes.get(&note.id).ok_or("文件不可读，未覆盖原文件")?;
+        match fs::read(checked(&self.root, &note.path)?) {
+            Ok(current) if current == *bytes => Ok(()),
+            Err(reason) if reason.kind() != io::ErrorKind::NotFound => Err(error(reason).into()),
+            _ => Err(NoteSaveError::Conflict(
+                "磁盘文件已被外部修改，未覆盖，请重新读取笔记文件夹".into(),
+            )),
+        }
+    }
+
     fn save_note_body(
         &mut self,
         root: &str,
@@ -1398,7 +1497,7 @@ impl DiskLibrary {
         expected_source: &str,
         source: String,
         intent: &str,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), NoteSaveError> {
         if root != self.root.to_string_lossy() {
             return Err("笔记库位置已更改，未保存旧窗口中的正文".into());
         }
@@ -1413,19 +1512,23 @@ impl DiskLibrary {
             return Err("文件内容损坏或不可读，已阻止保存".into());
         }
         if note.source == source {
-            let bytes = self.bytes.get(note_id).ok_or("文件不可读，未覆盖原文件")?;
-            if fs::read(checked(&self.root, &note.path)?).map_err(error)? != *bytes {
-                return Err("磁盘文件已被外部修改，未覆盖，请重新读取笔记文件夹".into());
-            }
-            return Ok(());
+            return self.check_note_bytes(note);
         }
         if note.source != expected_source {
-            return Err("笔记正文已更新，未覆盖磁盘版本，当前草稿仍保留在编辑器".into());
+            return Err(NoteSaveError::Conflict(
+                "笔记正文已更新，未覆盖磁盘版本，当前草稿仍保留在编辑器".into(),
+            ));
         }
         let mut next = self.data.clone();
         next.notes[index].source = source;
         next.notes[index].updated_at = now();
-        self.commit(next, intent)
+        self.commit(next, intent).map_err(|reason| {
+            // Classify an external write from the file contents, even when the transaction detected it.
+            match self.check_note_bytes(&self.data.notes[index]) {
+                Err(NoteSaveError::Conflict(_)) => NoteSaveError::Conflict(reason),
+                _ => NoteSaveError::Failure(reason),
+            }
+        })
     }
 
     fn commit_bytes(
@@ -2232,7 +2335,7 @@ pub async fn library_save_note(
     expected_source: String,
     source: String,
     revision: Option<u64>,
-) -> Result<SavedNote> {
+) -> std::result::Result<SavedNote, NoteSaveError> {
     let mut lock = state.0.lock().map_err(error)?;
     let store = lock.as_mut().ok_or("请先打开本地笔记库")?;
     workspace::check_library_window(window.app_handle(), window.label(), &store.root)?;

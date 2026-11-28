@@ -40,6 +40,8 @@ targets:
       - path: Externals
         excludes: ["**/*.a"]
       - path: qingyu_iOS
+      - path: apple-locales
+        buildPhase: resources
       - path: assets
         buildPhase: resources
         type: folder
@@ -48,6 +50,7 @@ targets:
       path: qingyu_iOS/Info.plist
       properties:
         LSRequiresIPhoneOS: true
+        NSMicrophoneUsageDescription: 在随记中录制音频附件。
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:

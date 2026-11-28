@@ -9,6 +9,7 @@ import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { alertActions, showAlert } from './alert-dialog';
 import { formatLabel, markupLabel, translatedLabel, uiText } from './ui-language';
 import { bindVerticalPull } from './panel-pull';
+import { findMemoFolder } from './memo';
 
 const newWindowIcon: typeof Pin = [
   ['path', { d: 'M11 19H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5M2 8h20M6 5.5h.01M9 5.5h.01' }],
@@ -35,7 +36,7 @@ export function noteInformation(library: Library, id: string) {
   return { words, modified: date.format(note.updatedAt), created: date.format(note.createdAt), backlinks };
 }
 
-export function showMoveFolderSheet(rows: { name: string; depth: number; current: boolean; disabled?: boolean; run: () => void }[], restoreFocus: () => void) {
+export function showMoveFolderSheet(rows: { name: string; depth: number; current: boolean; preferred?: boolean; disabled?: boolean; run: () => void }[], restoreFocus: () => void) {
   const dialog = document.createElement('dialog');
   dialog.className = 'note-move-sheet';
   dialog.setAttribute('aria-labelledby', 'note-move-title');
@@ -87,14 +88,14 @@ export function showMoveFolderSheet(rows: { name: string; depth: number; current
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dismiss();
   });
   const list = dialog.querySelector('ul')!;
-  for (const { name, depth, current, disabled, run } of rows) {
+  for (const { name, depth, current, preferred, disabled, run } of rows) {
     const item = document.createElement('li'), button = document.createElement('button');
     button.type = 'button'; button.disabled = current || Boolean(disabled);
     button.style.setProperty('--folder-depth', String(depth));
     button.innerHTML = `<span class="sidebar-icon" aria-hidden="true">${folderIcon}</span><span></span>`;
     button.lastElementChild!.textContent = name;
-    if (current) {
-      button.setAttribute('aria-current', 'location');
+    if (current || preferred) {
+      button.setAttribute('aria-current', current ? 'location' : 'true');
       button.insertAdjacentHTML('beforeend', '<svg class="note-move-current" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>');
     }
     button.onclick = () => dismiss(run);
@@ -214,7 +215,9 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     if (getBook().data.activeId !== id && !await actions.activate?.(id)) return;
     rename(id);
   }
-  document.querySelector('#note-title')?.addEventListener('dblclick', () => { if (getBook().current && !getBook().loadError) rename(getBook().current.id); });
+  document.querySelector('#note-title')?.addEventListener('dblclick', () => {
+    if (!document.querySelector('#app-shell[data-view="memos"]') && getBook().current && !getBook().loadError) rename(getBook().current.id);
+  });
 
   async function showInfo(id: string, toolbar = false) {
     if (!await actions.save()) return;
@@ -298,7 +301,8 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
     } };
     const pin: Item = { text: uiText(note.pinned ? 'unpin' : 'pin'), shortcut: '⇧⌘P', enabled: !getBook().external, run: () => change(() => getBook().togglePin(id)) };
     const duplicate: Item = { text: uiText('duplicate'), shortcut: '⌘D', enabled: !note.readOnly, run: () => change(() => getBook().duplicateNote(id), true) };
-    const { folders } = getBook().data;
+    const data = getBook().data, memoId = findMemoFolder(data)?.id;
+    const folders = data.folders.filter(folder => folder.id !== memoId);
     const canMoveTo = (folderId: string) => notes.some(note => note.trashed || folderId !== note.folderId);
     const moveTo = (folderId: string) => changeNotes(notes.filter(note => note.trashed || folderId !== note.folderId), note => getBook().moveNote(note.id, folderId));
     const pickDestination = (folderId: string) => { void moveTo(folderId).catch(reason => actions.error(reason instanceof Error ? reason.message : String(reason))); };
@@ -307,7 +311,9 @@ export function createNoteMenu(getBook: () => Notebook, actions: {
       ...(multiple ? { icon: createLucideIcon(document, FolderIcon, '') } : {}),
     });
     const orderedFolders = () => [
-      ...folders.filter(folder => folder.id === 'default' || folder.path === '').map(folder => ({ folder, depth: 0, parentId: null, hasChildren: false })),
+      ...folders.filter(folder => folder.id === 'default' || folder.path === '').map(folder => ({
+        folder: { ...folder, name: uiText('libraryRoot') }, depth: 0, parentId: null, hasChildren: false,
+      })),
       ...folderRows(folders, new Set(folders.map(folder => folder.id)), actions.folderOrder?.()),
     ];
     const move: Item = { text: multiple ? `移动 ${notes.length} 篇笔记到…` : compact ? '移动' : '移动到…', enabled: folders.some(folder => canMoveTo(folder.id)) };

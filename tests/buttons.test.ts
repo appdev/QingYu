@@ -42,7 +42,7 @@ it('draws the three Pinto button kinds in its three sizes, without borders or sh
 });
 
 it('keeps buttons from restyling themselves anywhere else', () => {
-  for (const path of ['src/sidebar.css', 'src/settings.css', 'src/calendar.css', 'src/note-picture.css', 'src/menu-bar.css', 'src/rich-editor.css']) {
+  for (const path of ['src/sidebar.css', 'src/settings.css', 'src/calendar.css', 'src/note-picture.css', 'src/menu-bar.css', 'src/rich-editor.css', 'src/memo.css']) {
     postcss.parse(readFileSync(path, 'utf8')).walkRules(rule => {
       // 只看真正选中按钮的规则；:not(.primary-button) 这类是把按钮排除在外。
       if (!/\.(primary|secondary|quiet)-button/.test(rule.selector.replace(/:not\([^)]*\)/g, ''))) return;

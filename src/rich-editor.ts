@@ -41,6 +41,7 @@ import './rich-editor.css';
 type NoteLinkSuggestion = { title: string; target: string; detail?: string };
 type EditorOptions = {
   readOnly?: boolean;
+  fieldLabel?: () => string;
   sortCheckedItems?: () => boolean;
   openAsset?: (noteId: string, path: string) => void | Promise<void>;
   mountAssetImage?: (noteId: string, ...args: Parameters<NonNullable<ImagePreviewPluginOptions['mountImage']>>) => (() => void) | undefined;
@@ -75,8 +76,11 @@ const imageSizes = { small: '小图', fit: '适应宽度', cover: '封面' } as 
 // 色块会伸出正文栏，在代码块灰底两边尤其明显。这里把选区层裁到正文栏以内。
 const selectionInColumn = ViewPlugin.fromClass(class {
   clip = '';
+  layer: HTMLElement | null = null;
   constructor(readonly view: EditorView) { this.measure(); }
-  update(update: ViewUpdate) { if (update.geometryChanged || update.selectionSet) this.measure(); }
+  update(update: ViewUpdate) {
+    if (update.geometryChanged || (update.selectionSet && (!this.layer || !this.layer.isConnected))) this.measure();
+  }
   measure() {
     this.view.requestMeasure({
       key: this,
@@ -88,7 +92,8 @@ const selectionInColumn = ViewPlugin.fromClass(class {
       write: ({ left, right }, view) => {
         const layer = view.scrollDOM.querySelector<HTMLElement>('.cm-selectionLayer');
         const clip = `polygon(${left}px -1e7px, ${right}px -1e7px, ${right}px 1e7px, ${left}px 1e7px)`;
-        if (!layer || clip === this.clip) return;
+        if (!layer || (layer === this.layer && clip === this.clip)) return;
+        this.layer = layer;
         layer.style.clipPath = this.clip = clip;
       },
     });
@@ -201,13 +206,15 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
     onChange(changes);
   }
   const language = new Compartment();
+  const editability = new Compartment();
+  const editorEditability = () => [EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)];
   const editorLabels = () => [
-    readOnly ? [] : placeholder(uiText('noteTitleHint')),
-    EditorView.contentAttributes.of({ 'aria-label': readOnly ? 'Markdown 预览' : uiText('editor'), spellcheck: 'false', autocapitalize: 'off' }),
+    readOnly ? [] : placeholder(options.fieldLabel?.() ?? uiText('noteTitleHint')),
+    EditorView.contentAttributes.of({ 'aria-label': options.fieldLabel?.() ?? (readOnly ? 'Markdown 预览' : uiText('editor')), spellcheck: 'false', autocapitalize: 'off' }),
   ];
   const extensions = () => [
     noteLinkExists ? wikiLinkAvailability.of(noteLinkExists) : [],
-    EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly),
+    editability.of(editorEditability()),
     EditorView.lineWrapping, drawSelection(), selectionInColumn,
     // 对应 Pinto 的 titleHintText：空笔记里提示第一行就是标题，只在光标在里面时显示（样式见 rich-editor.css）。
     language.of(editorLabels()),
@@ -352,7 +359,7 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
           labels: { mermaidDiagram: 'Mermaid 图表', mermaidError: '无法渲染 Mermaid 图表' },
           renderMermaid: renderEditorDiagram,
         }), footnotePreviewPlugin(), frontmatterPreviewPlugin(),
-        formattingPlugin({ keybindings: false }), horizontalRulePlugin(), imagePreviewPlugin(images), linksPlugin(links),
+        formattingPlugin({ keybindings: Boolean(options.fieldLabel) }), horizontalRulePlugin(), imagePreviewPlugin(images), linksPlugin(links),
         mathPreviewPlugin(), markdownEditingPlugin(), rawHtmlPreviewPlugin({ resolveImageSrc: source => resolveImage(source) ?? '' }),
         tablePreviewPlugin({ images, links }), trailingSpacePlugin(),
       ],
@@ -454,8 +461,8 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
         if (!specialized && options.showNoteMenu) return false;
         const selected = readOnly ? undefined : pictureSelection(editor);
         const picture = pictureMenu(editor, selected);
-        if (!specialized && !picture.length) return false;
         const clipboard = readOnly || embed ? [] : textMenu(editor, Boolean(selected));
+        if (!specialized && !picture.length && !clipboard.length) return false;
         const restyle = !readOnly && standalone ? otherLinkStyles(standalone.form).map(style => ({
           text: linkStyles[style], run: () => rewrite(linkStyleSource(standalone.form, style, anchor?.dataset.webTitle)),
         })) : [];
@@ -517,6 +524,16 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
     const picture = readOnly ? [] : pictureMenu(view, selection);
     showNoteMenu(documentId, event, [...picture, ...textMenu(view, Boolean(selection))]);
   });
+  else view.dom.addEventListener('contextmenu', event => {
+    if (event.defaultPrevented || view.compositionStarted) return;
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest('button, input, textarea, select')) return;
+    if (target !== view.dom && target !== view.scrollDOM && !view.contentDOM.contains(target)) return;
+    event.preventDefault();
+    view.focus();
+    const items = textMenu(view, false);
+    if (items.length) void showMenu(items, { label: '编辑操作', at: { x: event.clientX, y: event.clientY }, onError: message => options.onError?.(message), restoreFocus: () => view.focus() });
+  });
   function missingWikiLink(link: HTMLAnchorElement) {
     const target = wikiLinkTarget(link.getAttribute('href') ?? '');
     return target !== null && noteLinkExists?.(target) === false;
@@ -566,6 +583,12 @@ export function createRichEditor(parent: HTMLElement, onChange: (changes: Change
       options.relations?.refresh(view);
     },
     deactivate() { checklist.cancel(); closeTablePanel?.(); closeNoteDatePicker(view); view.plugin(editorHistoryMenuUpdates)?.dismissNotice(); flush(); active = false; },
+    setReadOnly(value: boolean) {
+      if (readOnly === value) return;
+      readOnly = value;
+      parent.dataset.readOnly = String(value);
+      view.dispatch({ effects: editability.reconfigure(editorEditability()) });
+    },
     refreshNoteLinks() {
       if (!active) return;
       options.relations?.refresh(view);

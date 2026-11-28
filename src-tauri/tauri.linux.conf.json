@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "linux": { "deb": { "desktopTemplate": "linux.desktop.hbs" } }
+  }
+}

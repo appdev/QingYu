@@ -171,8 +171,11 @@ pub fn run() {
             file_library::assets::library_release_asset_stage,
             file_library::storage_usage::library_storage_usage,
             file_library::attachments::attachment_import,
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            file_library::attachments::memo_pick_attachments,
             file_library::attachments::attachment_open,
             file_library::attachments::note_picture_asset,
+            file_library::attachments::note_audio_asset,
             file_library::library_import,
             file_library::library_choose,
             file_library::library_reload,

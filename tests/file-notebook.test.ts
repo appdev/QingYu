@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { Notebook, noteTitle, type Library } from '../src/notebook';
+import { Notebook, NoteSaveConflict, noteTitle, type Library } from '../src/notebook';
 import { SyncFiles } from '../src/sync-files';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
@@ -28,6 +28,27 @@ beforeEach(() => {
   });
 });
 function fixture() { const storage = { getItem: () => null, setItem: vi.fn() }; return { storage, book: new Notebook(storage, '# 旧草稿') }; }
+
+it('reads the native save conflict code independently of the error copy', async () => {
+  const { book } = fixture();
+  await book.openFiles();
+  vi.mocked(invoke).mockRejectedValueOnce({ code: 'conflict', message: 'Changed on disk' });
+  await expect(book.save('unsaved', book.current.id, book.current.source)).rejects.toBeInstanceOf(NoteSaveConflict);
+  vi.mocked(invoke).mockRejectedValueOnce({ code: 'failure', message: 'Read-only volume' });
+  await expect(book.save('unsaved', book.current.id, book.current.source)).rejects.toThrow('Read-only volume');
+});
+
+it('passes the reserved destination IDs to the native destination picker', async () => {
+  const { book } = fixture();
+  disk.folders.push({ id: 'reserved', name: 'Jóts', path: 'Jóts' },
+    { id: 'reserved-child', name: 'Child', path: 'Jóts/Child' },
+    { id: 'from', name: 'Source', path: 'Source' });
+  await book.openFiles();
+  await book.folderAction('move', 'from');
+  expect(invoke).toHaveBeenLastCalledWith('library_folder_action', expect.objectContaining({
+    action: 'move', folderId: 'from', excludedMoveDestinations: ['reserved', 'reserved-child'],
+  }));
+});
 
 describe('file-backed Notebook contract', () => {
   it('switches notes in memory and writes the active note to disk once the user settles', async () => {

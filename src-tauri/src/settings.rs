@@ -202,6 +202,9 @@ pub fn apply_preferences(
             .apply(&labels)
             .map_err(|error| error.to_string())?;
         crate::menu_bar::apply_labels(&app, &labels)?;
+        if let (Some(main), Some(name)) = (app.get_webview_window("main"), labels.get("轻羽")) {
+            main.set_title(name).map_err(|error| error.to_string())?;
+        }
         if let (Some(window), Some(title)) =
             (app.get_webview_window("settings"), labels.get("设置…"))
         {

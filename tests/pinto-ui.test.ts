@@ -214,6 +214,11 @@ it('uses local calendar boundaries for Today, Yesterday, 7 days and 30 days', ()
     expect(groupNotes(notes).map(group => [group.label, group.notes.map(note => note.id)])).toEqual([
       ['今天', ['0']], ['昨天', ['1']], ['过去 7 天', ['2','7']], ['过去 30 天', ['8','30']], ['10月', ['31']],
     ]);
+    const enNotes = [{ id: 'pin', pinned: true, updatedAt: new Date(2025, 9, 5).getTime() } as Note, ...notes, { id: 'old', updatedAt: new Date(2025, 9, 5).getTime() } as Note];
+    expect(groupNotes(enNotes, undefined, new Date(), 'en').map(group => [group.label, group.notes.map(note => note.id)])).toEqual([
+      ['Pinned', ['pin']], ['Today', ['0']], ['Yesterday', ['1']], ['Last 7 Days', ['2','7']], ['Last 30 Days', ['8','30']], ['October', ['31']], ['October 2025', ['old']],
+    ]);
+    expect(noteListDate(new Date(2026, 10, 17, 12), 'en')(+new Date(2026, 10, 16, 23, 59))).toBe('Yesterday');
   } finally { vi.useRealTimers(); }
 });
 

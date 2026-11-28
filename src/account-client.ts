@@ -7,7 +7,7 @@ import { isServerLibrary } from './server-library';
 
 type Commands = {
   account_status: { force?: boolean };
-  account_login: { username: string; password: string; rememberDevice: boolean };
+  account_login: { username: string; password: string };
   account_logout: { accountId: string; everywhere: boolean };
   account_redeem: { accountId: string; activationCode: string };
   account_redemptions: { accountId: string; force?: boolean };

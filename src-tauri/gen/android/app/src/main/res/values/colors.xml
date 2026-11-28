@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="editor_background">#FFFFFF</color>
+    <color name="splash_background">#EFEBE9</color>
+    <color name="splash_branding_text">#2A1D10</color>
     <color name="editor_accent">#A85700</color>
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>

@@ -95,6 +95,14 @@ pub(super) fn mime(path: &Path) -> &'static str {
         "svg" => "image/svg+xml",
         "bmp" => "image/bmp",
         "ico" => "image/x-icon",
+        "m4a" => "audio/mp4",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "opus" => "audio/ogg",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "webm" => "video/webm",
         "pdf" => "application/pdf",
         "zip" => "application/zip",
         "txt" => "text/plain",
@@ -264,6 +272,67 @@ pub async fn attachment_import(
     })
 }
 
+#[cfg(all(feature = "app", any(target_os = "macos", target_os = "ios")))]
+#[tauri::command]
+pub async fn memo_pick_attachments(
+    window: tauri::WebviewWindow,
+    images: bool,
+    remaining: u64,
+) -> Result<tauri::ipc::Response> {
+    use tauri_plugin_dialog::{DialogExt, PickerMode};
+    if window.label() != "main" {
+        return Err("请在主窗口中选择附件".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = window.dialog().file();
+        #[cfg(target_os = "macos")]
+        let dialog = dialog.set_parent(&window);
+        let dialog = if images {
+            dialog.set_picker_mode(PickerMode::Image).add_filter(
+                "Images",
+                &[
+                    "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "ico",
+                ],
+            )
+        } else {
+            dialog
+        };
+        let mut response = vec![0; 4];
+        let mut files = Vec::new();
+        let limit = remaining.min(4 * MAX_FILE);
+        for selected in dialog.blocking_pick_files().unwrap_or_default() {
+            let path = selected.into_path().map_err(error)?;
+            let info = fs::metadata(&path).map_err(error)?;
+            if !info.is_file() || info.len() > MAX_FILE {
+                return Err("附件不可读取或超过 64 MiB".into());
+            }
+            let used = (response.len() - 4) as u64;
+            if info.len() > limit - used {
+                return Err("附件总大小超过上限".into());
+            }
+            let bytes = read(&path)?;
+            if bytes.len() as u64 > limit - used {
+                return Err("附件总大小超过上限".into());
+            }
+            let name = path
+                .file_name()
+                .ok_or("无法读取附件名称")?
+                .to_string_lossy();
+            files.push(
+                serde_json::json!({ "name": name, "type": mime(&path), "size": bytes.len() }),
+            );
+            response.extend(bytes);
+        }
+        // Record the start of the file index so the selected bytes can be returned without JSON encoding.
+        let index = response.len() as u32;
+        response[..4].copy_from_slice(&index.to_le_bytes());
+        serde_json::to_writer(&mut response, &files).map_err(error)?;
+        Ok(tauri::ipc::Response::new(response))
+    })
+    .await
+    .map_err(error)?
+}
+
 #[cfg(feature = "app")]
 #[tauri::command]
 pub async fn note_picture_asset(
@@ -278,6 +347,23 @@ pub async fn note_picture_asset(
             "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/bmp"
         ) {
             return Err("无法将此附件作为图片导出".into());
+        }
+        Ok(tauri::ipc::Response::new(read(&file)?))
+    })
+}
+
+#[cfg(feature = "app")]
+#[tauri::command]
+pub async fn note_audio_asset(
+    window: tauri::WebviewWindow,
+    note_id: String,
+    path: String,
+) -> Result<tauri::ipc::Response> {
+    with_store(window.app_handle(), window.label(), |store| {
+        let file = resolve(store, &note_id, &path)?;
+        let kind = mime(&file);
+        if !kind.starts_with("audio/") && kind != "video/webm" {
+            return Err("此附件不是受支持的音频".into());
         }
         Ok(tauri::ipc::Response::new(read(&file)?))
     })

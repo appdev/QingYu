@@ -1,6 +1,6 @@
 [package]
 name = "qingyu"
-version = "0.1.5"
+version = "0.1.6"
 description = "QingYu (轻羽), a focused Markdown editor"
 edition = "2021"
 default-run = "qingyu"
@@ -63,7 +63,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22"
-rustls-platform-verifier = "0.7"
+rustls-platform-verifier = "0.7.1"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 tauri-plugin-editor-menu = { path = "plugins/editor-menu", optional = true }
@@ -80,6 +80,11 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
 
 [patch.crates-io]
 # shortcut: local copy of 2.12.3 for iOS Simulator startup, remove once upstream fixes the WebKit probe.

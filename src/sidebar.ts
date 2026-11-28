@@ -12,11 +12,13 @@ import { createFolderMenu } from './folder-menu';
 import { folderRows } from './folder-tree';
 import { setupSidebarResize } from './sidebar-resize';
 import { dismissPopupMenu, showMenu, type MenuItem, type MenuOptions } from './popup-menu';
-import { ArrowUpDown, CalendarDays, Check, Folder as FolderIcon, FolderPlus, Inbox, Link as LinkIcon, Search, SquarePen, Trash2, X } from 'lucide';
+import { ArrowUpDown, CalendarDays, Check, ChevronRight, Folder as FolderIcon, FolderPlus, Hash, Inbox, Link as LinkIcon, ListTodo, NotebookPen, Search, SquarePen, Trash2, X } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { formatLabel, translatedLabel, uiText } from './ui-language';
+import { allMemos, findMemoFolder, memoNotes, memoTagCounts, memoTagKey, regularNotes, type MemoFilter } from './memo';
+import type { createMemoView } from './memo-view';
 
-const pageDepth = { folders: 0, notes: 1, note: 2 } as const;
+const pageDepth = { folders: 0, notes: 1, memos: 1, note: 2 } as const;
 type MobilePage = keyof typeof pageDepth;
 type MobileRoute = { page: MobilePage; folderId: string | null; trash: boolean };
 const backIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>';
@@ -41,6 +43,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
   reload(): void;
   error(message: string): void;
   status?(message: string): void;
+  memoView?: ReturnType<typeof createMemoView>;
+  restoreTitle?(): void;
   openNoteWindow?(id: string): Promise<void>;
   /** 列表行尾缩略图的图片地址，没有可显示的图片时返回 undefined。 */
   thumbnail?(note: Note): string | undefined;
@@ -49,6 +53,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
 }, mobile = false) {
   const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
   const shell = $('#app-shell'), list = $('#notes-list'), folders = $('#folder-list');
+  const folderHeading = $('.sidebar-brand');
   const externalWindow = shell.hasAttribute('data-external-window');
   const folderPane = $('#folder-pane'), notesPane = $('#notes-pane'), documentColumn = $('#document-column');
   const folderToolbar = $('.folder-toolbar'), notesToolbar = $('.notes-toolbar');
@@ -56,8 +61,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   const services = $('.sidebar-services'), footer = $('.sidebar-footer');
   const account = $<HTMLButtonElement>('#sidebar-account'), settings = $<HTMLButtonElement>('#settings-button');
   const logout = $('#logout-button');
-  const tablet = mobile && !/iPhone|iPod|Android.*Mobile/i.test(navigator.userAgent)
-    ? matchMedia('(min-width: 780px)') : undefined;
+  const tablet = mobile ? matchMedia('(min-width: 780px)') : undefined;
   const restored = mobile ? history.state?.qingyuNavigation as MobileRoute | undefined : undefined;
   let page: MobilePage = restored?.page ?? 'folders';
   const search = $<HTMLInputElement>('#note-search'), dialog = $<HTMLDialogElement>('#folder-dialog');
@@ -66,6 +70,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
   folderName.addEventListener('input', () => { createFolder.disabled = !folderName.value.trim(); folderError.textContent = ''; });
   let folderId = restored?.folderId ?? null;
   let trash = restored?.trash ?? Boolean(getBook().current?.trashed);
+  let memoFilter: MemoFilter | undefined, memoFolders = false;
+  const memoExpandedKey = 'qingyu.memo.expanded';
+  let memoExpanded = localStorage.getItem(memoExpandedKey) === 'true';
   const orderKey = 'miaoyan-editor.note-order.v1';
   const hideSummaryKey = 'qingyu.list.hideSummary';
   window.addEventListener('storage', event => { if (event.key === hideSummaryKey || event.key === null) refresh(); });
@@ -82,7 +89,15 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const saved = localStorage.getItem(key);
     return saved === 'true' || (saved !== 'false' && order.grouped);
   };
-  const notesIn = (id: string | null, query = search.value, isTrash = trash) => visibleNotes(getBook().data, id, query, isTrash, order);
+  const notesIn = (id: string | null, query = search.value, isTrash = trash) => {
+    const book = getBook(), data = book.data;
+    return visibleNotes(book.external || isTrash ? data : { ...data, notes: regularNotes(data) }, id, query, isTrash, order);
+  };
+  const hasMemos = () => Boolean(actions.memoView) && !externalWindow && !actions.noteWindow && !getBook().external;
+  const libraryFolders = () => {
+    const data = getBook().data, memoId = hasMemos() ? findMemoFolder(data)?.id : undefined;
+    return memoId ? data.folders.filter(folder => folder.id !== memoId) : data.folders;
+  };
   let newFolderParent = 'default';
   let treeRoot = getBook().root;
   let displayedLibrary = getBook().data;
@@ -175,7 +190,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     document.querySelector<HTMLElement>('#library-search-button')?.setAttribute('hidden', '');
     search.addEventListener('focus', () => {
       if (!shell.hasAttribute('data-mobile-search')) { searchFrom = page; shell.toggleAttribute('data-mobile-search', true); }
-      if (page !== 'folders') return;
+      if (page !== 'folders' && page !== 'memos') return;
       folderId = null; trash = false; list.scrollTop = 0;
       refresh(); navigate('notes');
     });
@@ -206,7 +221,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     }
   } });
   const folderMenu = createFolderMenu(getBook, { create: newFolder, createNote: id => newNote('', id), error: actions.error, change: changeFolder, mobile, reorder(id, direction, apply) {
-    const rows = folderRows(getBook().data.folders, expanded, folderOrder);
+    const rows = folderRows(libraryFolders(), expanded, folderOrder);
     const target = rows.find(row => row.folder.id === id);
     if (!target) return false;
     const siblings = rows.filter(row => row.parentId === target.parentId).map(row => row.folder.id);
@@ -246,12 +261,13 @@ export function createSidebar(getBook: () => Notebook, actions: {
   function renderLayout(next: SidebarLayout) {
     const restoringList = layout.columns === 'note' && next.columns !== 'note';
     const active = document.activeElement;
-    const hiddenFocus = next.columns === 'note' ? $('#library-sidebar').contains(active) : next.columns === 'list' && $('#folder-pane').contains(active);
+    const columns = memoFilter ? memoFolders ? 'all' : 'note' : next.columns;
+    const hiddenFocus = columns === 'note' ? $('#library-sidebar').contains(active) : columns === 'list' && $('#folder-pane').contains(active);
     layout = next;
-    shell.dataset.sidebar = layout.columns;
+    shell.dataset.sidebar = columns;
     let restoreFooterFocus: HTMLElement | undefined;
-    const wideList = innerWidth > 900 && layout.columns === 'list';
-    const showServices = innerWidth > 900 && layout.columns !== 'note';
+    const wideList = innerWidth > 900 && columns === 'list';
+    const showServices = innerWidth > 900 && columns !== 'note';
     if (desktopWeb) {
       const servicesOwner = wideList ? notesPane : folderPane;
       if (services.parentElement !== servicesOwner) {
@@ -263,22 +279,27 @@ export function createSidebar(getBook: () => Notebook, actions: {
       if (logout.parentElement !== owner) {
         if (showServices) owner.append(logout);
         else owner.prepend(logout);
-        if (active === logout && layout.columns !== 'note') restoreFooterFocus = logout;
-        else if (active === account && layout.columns === 'list') restoreFooterFocus = settings;
+        if (active === logout && columns !== 'note') restoreFooterFocus = logout;
+        else if (active === account && columns === 'list') restoreFooterFocus = settings;
         else if (active === settings && showServices) restoreFooterFocus = account;
       }
     }
     resizing.update();
     const toolbarOwner = wideList ? notesToolbar : folderPane;
-    const restoreToolFocus = folderToolbar.parentElement !== toolbarOwner && folderToolbar.contains(active) && (wideList || layout.columns === 'all');
+    const restoreToolFocus = folderToolbar.parentElement !== toolbarOwner && folderToolbar.contains(active) && (wideList || columns === 'all');
     if (folderToolbar.parentElement !== toolbarOwner) toolbarOwner.prepend(folderToolbar);
-    const parent = titlebarTools ?? (externalWindow ? shell : innerWidth <= 900
-      ? layout.columns === 'note' ? $('.titlebar') : $('.notes-navigation')
-      : layout.columns === 'note' ? $('.titlebar') : folderToolbar);
+    const parent = titlebarTools ?? (externalWindow ? shell : memoFilter ? memoFolders && innerWidth > 900 ? folderToolbar : $('.titlebar')
+      : innerWidth <= 900 ? columns === 'note' ? $('.titlebar') : $('.notes-navigation')
+        : columns === 'note' ? $('.titlebar') : folderToolbar);
     if (toggle.parentElement !== parent) {
       parent.prepend(toggle);
     }
-    if (externalWindow) {
+    if (memoFilter) {
+      toggle.ariaLabel = toggle.title = translatedLabel(memoFolders ? '隐藏文件夹栏' : '显示文件夹栏');
+      toggle.setAttribute('aria-expanded', String(memoFolders));
+      toggle.setAttribute('aria-controls', 'folder-pane');
+      toggle.removeAttribute('aria-pressed');
+    } else if (externalWindow) {
       toggle.ariaLabel = toggle.title = translatedLabel('切换笔记列表');
       toggle.setAttribute('aria-expanded', String(layout.columns === 'list'));
       toggle.setAttribute('aria-controls', 'notes-pane');
@@ -295,10 +316,12 @@ export function createSidebar(getBook: () => Notebook, actions: {
       toggle.setAttribute('aria-controls', 'library-sidebar');
       toggle.setAttribute('aria-pressed', String(layout.columns !== 'all'));
     }
-    const overlay = layout.columns !== 'note' && innerWidth <= 900;
+    const overlay = columns !== 'note' && innerWidth <= 900;
     $('#workspace').inert = $('#empty-note').inert = overlay;
+    const memoPane = document.querySelector<HTMLElement>('#memo-pane');
+    if (memoPane) memoPane.inert = overlay;
     for (const button of document.querySelectorAll<HTMLButtonElement>('.actions button')) if (button !== toggle) button.inert = overlay;
-    if (restoringList) {
+    if (restoringList && !memoFilter) {
       const selected = list.querySelector<HTMLElement>('[aria-selected="true"]');
       selected?.scrollIntoView({ block: 'nearest' });
       if (selected) {
@@ -316,6 +339,9 @@ export function createSidebar(getBook: () => Notebook, actions: {
   function fitDesktopLayout() {
     const previousWidth = lastWidth;
     lastWidth = innerWidth;
+    if (memoFilter && (previousWidth >= folderFit.hideBelow) !== (lastWidth >= folderFit.hideBelow)) {
+      memoFolders = lastWidth >= folderFit.hideBelow;
+    }
     if (autoHidden && lastWidth >= folderFit.restoreAt) {
       autoHidden = false;
       renderLayout({ columns: 'all', unfolding: false });
@@ -340,18 +366,24 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (next === 'folders') endMobileSearch(false);
     const active = document.activeElement;
     page = next;
+    if (next === 'memos' && hasMemos()) {
+      if (!memoFilter) setMemoView(allMemos);
+    } else if (memoFilter) { closeMemos(); refresh(); }
     if (page !== 'folders' && editingFolders()) setFolderEditing(false);
     const wide = Boolean(tablet?.matches);
     shell.toggleAttribute('data-mobile-motion', animate);
     shell.toggleAttribute('data-mobile-wide', wide);
     shell.dataset.mobilePage = page;
-    folderPane.inert = page !== 'folders';
-    notesPane.inert = page === 'folders' || !wide && page === 'note';
-    documentColumn.inert = !wide && page !== 'note';
+    folderPane.inert = page !== 'folders' && !(wide && page === 'memos');
+    notesPane.inert = page === 'folders' || page === 'memos' || !wide && page === 'note';
+    documentColumn.inert = !wide && page !== 'note' && page !== 'memos';
     toggle.hidden = wide;
+    toggle.ariaLabel = toggle.title = translatedLabel(page === 'memos' ? '返回文件夹' : '返回笔记列表');
+    toggle.setAttribute('aria-controls', page === 'memos' ? 'folder-pane' : 'notes-pane');
     if (active === search && page === 'notes') return;
     if (page !== previous || documentColumn.inert && documentColumn.contains(active) || notesPane.inert && notesPane.contains(active)) {
-      if (page === 'folders') folders.querySelector<HTMLElement>('.folder-row[aria-pressed=true]')?.focus({ preventScroll: true });
+      if (page === 'folders') (previous === 'memos' ? folders.querySelector<HTMLElement>('[data-memo-filter="all"]') : folders.querySelector<HTMLElement>('.folder-row[aria-pressed=true]'))?.focus({ preventScroll: true });
+      else if (page === 'memos') { if (!wide) toggle.focus({ preventScroll: true }); }
       else if (page === 'notes' || wide) {
         const selected = page === 'note' || previous === 'note' ? list.querySelector<HTMLElement>('[aria-selected=true]') : null;
         const target = selected ?? foldersBack;
@@ -370,15 +402,28 @@ export function createSidebar(getBook: () => Notebook, actions: {
   function navigate(next: MobilePage) {
     if (page === next) return;
     if (pageDepth[next] < pageDepth[page]) { history.go(pageDepth[next] - pageDepth[page]); return; }
-    if (page === 'folders' && next === 'note') history.pushState(routeState('notes'), '');
+    if (page === 'memos' && next === 'notes' || page === 'notes' && next === 'memos') {
+      history.replaceState(routeState(next), '');
+      renderMobile(next, true); return;
+    }
+    if (next === 'note') {
+      if (page === 'folders') history.pushState(routeState('notes'), '');
+      else if (page === 'memos') history.replaceState(routeState('notes'), '');
+    }
     history.pushState(routeState(next), '');
     renderMobile(next, true);
   }
   const changeLayout = (command: SidebarCommand) => {
     if (externalWindow && command === 'folders') return;
+    if (memoFilter) { memoFolders = !memoFolders; renderLayout(layout); return; }
     applyLayout(nextSidebarLayout(layout, externalWindow ? 'notes' : command));
   };
-  const resizing = setupSidebarResize(shell, () => layout, applyLayout, actions.error, externalWindow, () => autoHidden ? 'all' : layout.columns);
+  const resizing = setupSidebarResize(shell,
+    () => memoFilter ? { columns: memoFolders ? 'all' : 'note', unfolding: false } : layout,
+    next => {
+      if (memoFilter) { memoFolders = next.columns === 'all'; renderLayout(layout); }
+      else applyLayout(next);
+    }, actions.error, externalWindow, () => autoHidden ? 'all' : layout.columns);
   if (!mobile && innerWidth > 900 && !actions.noteWindow) layout = { ...layout, columns: resizing.columns };
   async function selectFolder(id: string | null, isTrash = false, openList = false) {
     if (!await folderMenu.finishRename()) return false;
@@ -391,6 +436,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     const notes = notesIn(id, '', isTrash);
     const next = notes.find(note => note.id === getBook().data.activeId) ?? notes[0];
     if (!await actions.select(next?.id ?? null)) return false;
+    closeMemos();
     folderId = id; trash = isTrash; search.value = ''; refresh(); return true;
   }
   async function toggleFolder(id: string) {
@@ -407,7 +453,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   function folderRow(id: string | null, name: string, count: number, isTrash = false) {
     const button = document.createElement('button');
     button.className = 'folder-row';
-    button.setAttribute('aria-pressed', String(folderId === id && trash === isTrash));
+    button.setAttribute('aria-pressed', String(!memoFilter && folderId === id && trash === isTrash));
     button.dataset.folderId = id ?? '';
     button.dataset.folderPath = getBook().data.folders.find(folder => folder.id === id)?.path ?? '';
     const icon = document.createElement('span');
@@ -437,6 +483,75 @@ export function createSidebar(getBook: () => Notebook, actions: {
     };
     return button;
   }
+  function setMemoView(filter: MemoFilter) {
+    memoFilter = filter; shell.dataset.view = 'memos';
+    actions.memoView?.show(filter);
+    memoTitle();
+  }
+  function closeMemos() {
+    if (!memoFilter) return;
+    memoFilter = undefined; delete shell.dataset.view;
+    actions.memoView?.hide(); actions.restoreTitle?.();
+    if (!mobile) renderLayout(layout);
+  }
+  function memoTitle() {
+    if (!memoFilter) return;
+    const name = memoFilter.kind === 'tag' ? '#' + memoFilter.tag : memoFilter.kind === 'todo' ? uiText('memoTodo') : '';
+    $('#note-title').textContent = uiText('memos') + (name ? ' · ' + name : '');
+    $('#note-location').textContent = '';
+  }
+  async function openMemos(filter: MemoFilter) {
+    if (!hasMemos() || !await folderMenu.finishRename()) return;
+    if (!memoFilter && !getBook().loadError && !await actions.save()) return;
+    if (!memoFilter) memoFolders = layout.columns === 'all' && innerWidth >= folderFit.hideBelow;
+    setMemoView(filter);
+    if (mobile) navigate('memos');
+    else {
+      renderLayout(layout);
+      // 进入随记就能直接打字；放到下一帧，等侧栏刷新和点击后的焦点处理都结束，免得被抢回到侧栏行上。
+      requestAnimationFrame(() => { if (memoFilter) actions.memoView?.focusComposer(); });
+    }
+  }
+  const memoFilterId = (filter: MemoFilter) => filter.kind === 'tag' ? 'tag:' + memoTagKey(filter.tag) : filter.kind;
+  function toggleMemos() {
+    memoExpanded = !memoExpanded;
+    try { localStorage.setItem(memoExpandedKey, String(memoExpanded)); } catch { /* Keep this window's setting. */ }
+    refresh();
+    folders.querySelector<HTMLElement>('[data-memo-filter="all"]')?.focus({ preventScroll: true });
+  }
+  function memoRows(count: number) {
+    const { data } = getBook();
+    const entry = document.createElement('div'); entry.className = 'memo-sidebar';
+    const head = document.createElement('div'); head.className = 'folder-entry';
+    const row = (filter: MemoFilter, name: string, total: number, glyph: Parameters<typeof createLucideIcon>[1]) => {
+      const item = document.createElement('button'); item.type = 'button';
+      item.className = 'folder-row ' + (filter.kind === 'all' ? 'memo-row' : 'memo-subrow');
+      item.dataset.memoFilter = memoFilterId(filter);
+      item.setAttribute('aria-pressed', String(memoFilter !== undefined && memoFilterId(memoFilter) === item.dataset.memoFilter));
+      item.disabled = editingFolders();
+      const icon = document.createElement('span'); icon.className = 'sidebar-icon'; icon.ariaHidden = 'true';
+      icon.append(createLucideIcon(document, glyph, ''));
+      const text = document.createElement('span'); text.className = 'folder-name'; text.textContent = name;
+      const counter = document.createElement('span'); counter.className = 'folder-count'; counter.textContent = total ? String(total) : '';
+      item.append(icon, text, counter);
+      item.onclick = () => { void openMemos(filter); };
+      return item;
+    };
+    const primary = row(allMemos, uiText('memos'), count, NotebookPen);
+    head.append(primary); entry.append(head);
+    const todos = memoNotes(data, { kind: 'todo' }, '').length, tags = memoTagCounts(data);
+    if (!todos && !tags.length) return entry;
+    const disclosure = document.createElement('button'); disclosure.type = 'button'; disclosure.className = 'folder-disclosure memo-disclosure';
+    disclosure.disabled = editingFolders();
+    disclosure.ariaLabel = formatLabel(memoExpanded ? '折叠文件夹 {name}' : '展开文件夹 {name}', { name: uiText('memos') });
+    primary.ariaExpanded = disclosure.ariaExpanded = String(memoExpanded);
+    disclosure.append(createLucideIcon(document, ChevronRight, ''));
+    disclosure.onclick = toggleMemos; head.append(disclosure);
+    if (!memoExpanded) return entry;
+    if (todos) entry.append(row({ kind: 'todo' }, uiText('memoTodo'), todos, ListTodo));
+    for (const [tag, total] of tags) entry.append(row({ kind: 'tag', tag }, tag, total, Hash));
+    return entry;
+  }
   function revealAncestors(id: string) {
     const rows = folderRows(getBook().data.folders, new Set(getBook().data.folders.map(folder => folder.id)));
     let parent = rows.find(row => row.folder.id === id)?.parentId;
@@ -444,80 +559,109 @@ export function createSidebar(getBook: () => Notebook, actions: {
     saveExpansion();
   }
   const thumbnailCleanups: (() => void)[] = [];
+  const folderIconTemplate = document.createElement('span');
+  folderIconTemplate.className = 'sidebar-icon'; folderIconTemplate.ariaHidden = 'true';
+  folderIconTemplate.innerHTML = folderIcon;
   function refresh() {
     clearTimeout(searchTimer); searchTimer = undefined; lastSearchRefresh = performance.now();
     const now = new Date();
     listDay = now.toDateString();
     updateToday();
-    if (displayedLibrary !== getBook().data) {
-      displayedLibrary = getBook().data;
+    const book = getBook();
+    if (displayedLibrary !== book.data) {
+      displayedLibrary = book.data;
       actions.libraryChanged?.();
     }
+    const allNotes = uiText('allNotes');
+    const folderNames = new Map(book.data.folders.map(folder => [folder.id, folder.id === 'default' || folder.path === '' ? allNotes : folder.name]));
     const location = document.querySelector('#note-location');
-    if (location) location.textContent = getBook().data.folders.find(folder => folder.id === getBook().current?.folderId)?.name ?? '';
+    if (memoFilter && !hasMemos()) closeMemos();
+    if (memoFilter) { memoTitle(); actions.memoView?.refresh(); }
+    else if (location) location.textContent = (book.current ? folderNames.get(book.current.folderId) : undefined) ?? '';
     if (actions.noteWindow) return;
     const listTop = list.scrollTop, foldersTop = folders.scrollTop;
-    $('#new-folder-button').hidden = getBook().external;
-    if (editFolders) editFolders.hidden = getBook().external;
-    if (treeRoot !== getBook().root) {
-      treeRoot = getBook().root;
+    $('#new-folder-button').hidden = book.external;
+    if (editFolders) editFolders.hidden = book.external;
+    if (treeRoot !== book.root) {
+      treeRoot = book.root;
       expanded = new Set(readFolderIds(expansionKey())); folderOrder = readFolderIds(folderOrderKey());
     }
-    if (folderId && !getBook().data.folders.some(folder => folder.id === folderId)) { folderId = null; trash = false; }
+    if (folderId && !folderNames.has(folderId)) { folderId = null; trash = false; }
     const previous = folders.querySelector<HTMLElement>('.folder-row[aria-pressed=true]');
-    if (folderId && previous?.dataset.folderId === folderId && previous.dataset.folderPath !== getBook().data.folders.find(folder => folder.id === folderId)?.path) revealAncestors(folderId);
+    if (folderId && previous?.dataset.folderId === folderId && previous.dataset.folderPath !== book.data.folders.find(folder => folder.id === folderId)?.path) revealAncestors(folderId);
     const focusedNote = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-note-id]')?.dataset.noteId;
     // 正在侧栏里改文件夹名时不重建列表，否则输入框会被换掉；改完会再刷新一次。
     const renaming = Boolean(folders.querySelector('.renaming:not([data-committing]) .rename-folder'));
-    if (!renaming) folders.replaceChildren(folderRow(null, uiText('allNotes'), getBook().data.notes.filter(note => !note.trashed).length));
-    const counts = folderNoteCounts(getBook().data);
-    if (!renaming) for (const { folder, depth, hasChildren } of folderRows(getBook().data.folders, expanded, folderOrder)) {
-      const entry = document.createElement('div'); entry.className = 'folder-entry';
-      const row = folderRow(folder.id, folder.name, counts.get(folder.id) ?? 0);
-      row.style.setProperty('--folder-depth', String(depth)); entry.style.setProperty('--folder-depth', String(depth));
-      entry.append(row);
-      if (hasChildren) {
-        row.setAttribute('aria-expanded', String(expanded.has(folder.id)));
-        const disclosure = document.createElement('button'); disclosure.type = 'button'; disclosure.className = 'folder-disclosure';
-        disclosure.ariaLabel = formatLabel(expanded.has(folder.id) ? '折叠文件夹 {name}' : '展开文件夹 {name}', { name: folder.name }); disclosure.setAttribute('aria-expanded', String(expanded.has(folder.id)));
-        disclosure.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 2 4 4-4 4"/></svg>';
-        disclosure.onclick = () => { void toggleFolder(folder.id); };
-        entry.append(disclosure);
-      }
-      if (!mobile && !editingFolders() && !getBook().external) {
-        // Pinto 的 RowMenuButton：鼠标移到行上时，计数的位置换成「⋯」，打开和右键相同的菜单。
-        const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-row-more';
-        more.tabIndex = -1; more.ariaHidden = 'true'; more.title = translatedLabel('文件夹选项');
-        more.innerHTML = '<svg viewBox="0 0 17 17" aria-hidden="true"><circle cx="8.5" cy="8.5" r="7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="5.1" cy="8.5" r="1.05" fill="currentColor"/><circle cx="8.5" cy="8.5" r="1.05" fill="currentColor"/><circle cx="11.9" cy="8.5" r="1.05" fill="currentColor"/></svg>';
-        more.onclick = event => openFolderMenu(row, { anchor: more, keyboard: event.detail === 0 });
-        entry.append(more);
-      }
-      folders.append(entry);
+    const memoId = hasMemos() ? findMemoFolder(book.data)?.id : undefined;
+    const focusedMemo = (document.activeElement as HTMLElement | null)?.dataset.memoFilter;
+    const focusedHeading = document.activeElement instanceof HTMLElement && folderHeading.contains(document.activeElement) ? document.activeElement : undefined;
+    let activeCount = 0, trashedCount = 0, memoCount = 0;
+    for (const note of book.data.notes) {
+      if (note.trashed) trashedCount++;
+      else if (note.folderId === memoId) memoCount++;
+      else activeCount++;
     }
     if (!renaming) {
-      const trashRow = folderRow(null, uiText('trash'), getBook().data.notes.filter(note => note.trashed).length, true);
-      trashRow.dataset.trash = 'true'; folders.append(trashRow);
+      if (!hasMemos() || mobile) {
+        if (folderHeading.parentElement === folders) folders.before(folderHeading);
+      }
+      folders.replaceChildren();
+      if (hasMemos()) folders.append(memoRows(memoCount));
+      if (hasMemos() && !mobile) folders.append(folderHeading);
+      folders.append(folderRow(null, allNotes, activeCount));
+    }
+    const counts = folderNoteCounts(book.data);
+    if (!renaming) {
+      const folderFragment = document.createDocumentFragment();
+      for (const { folder, depth, hasChildren } of folderRows(libraryFolders(), expanded, folderOrder)) {
+        const entry = document.createElement('div'); entry.className = 'folder-entry';
+        const row = folderRow(folder.id, folder.name, counts.get(folder.id) ?? 0);
+        row.style.setProperty('--folder-depth', String(depth)); entry.style.setProperty('--folder-depth', String(depth));
+        entry.append(row);
+        if (hasChildren) {
+          row.setAttribute('aria-expanded', String(expanded.has(folder.id)));
+          const disclosure = document.createElement('button'); disclosure.type = 'button'; disclosure.className = 'folder-disclosure';
+          disclosure.ariaLabel = formatLabel(expanded.has(folder.id) ? '折叠文件夹 {name}' : '展开文件夹 {name}', { name: folder.name }); disclosure.setAttribute('aria-expanded', String(expanded.has(folder.id)));
+          disclosure.innerHTML = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 2 4 4-4 4"/></svg>';
+          disclosure.onclick = () => { void toggleFolder(folder.id); };
+          entry.append(disclosure);
+        }
+        if (!mobile && !editingFolders() && !book.external) {
+          // Pinto 的 RowMenuButton：鼠标移到行上时，计数的位置换成「⋯」，打开和右键相同的菜单。
+          const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-row-more';
+          more.tabIndex = -1; more.ariaHidden = 'true'; more.title = translatedLabel('文件夹选项');
+          more.innerHTML = '<svg viewBox="0 0 17 17" aria-hidden="true"><circle cx="8.5" cy="8.5" r="7.6" fill="none" stroke="currentColor" stroke-width="1.1"/><circle cx="5.1" cy="8.5" r="1.05" fill="currentColor"/><circle cx="8.5" cy="8.5" r="1.05" fill="currentColor"/><circle cx="11.9" cy="8.5" r="1.05" fill="currentColor"/></svg>';
+          more.onclick = event => openFolderMenu(row, { anchor: more, keyboard: event.detail === 0 });
+          entry.append(more);
+        }
+        folderFragment.append(entry);
+      }
+      const trashRow = folderRow(null, uiText('trash'), trashedCount, true);
+      trashRow.dataset.trash = 'true'; folderFragment.append(trashRow);
+      folders.append(folderFragment);
+      if (focusedMemo) [...folders.querySelectorAll<HTMLElement>('[data-memo-filter]')].find(row => row.dataset.memoFilter === focusedMemo)?.focus({ preventScroll: true });
+      else focusedHeading?.focus({ preventScroll: true });
     }
     const notes = notesIn(folderId);
-    const scope = JSON.stringify([getBook().root, folderId, trash, search.value]);
-    if (selectionBook !== getBook() || selectionScope !== scope || selectionActive !== getBook().data.activeId) {
-      selectedNotes = new Set([getBook().data.activeId]);
-      selectionAnchor = getBook().data.activeId;
+    const scope = JSON.stringify([book.root, folderId, trash, search.value]);
+    if (selectionBook !== book || selectionScope !== scope || selectionActive !== book.data.activeId) {
+      selectedNotes = new Set([book.data.activeId]);
+      selectionAnchor = book.data.activeId;
     }
-    selectionBook = getBook(); selectionScope = scope; selectionActive = getBook().data.activeId;
+    selectionBook = book; selectionScope = scope; selectionActive = book.data.activeId;
     const visibleIds = new Set(notes.map(note => note.id));
     selectedNotes = new Set([...selectedNotes].filter(id => visibleIds.has(id)));
     if (selectionAnchor && !visibleIds.has(selectionAnchor)) selectionAnchor = null;
-    const name = trash ? uiText('trash') : getBook().data.folders.find(folder => folder.id === folderId)?.name ?? uiText('allNotes');
+    const name = trash ? uiText('trash') : (folderId ? folderNames.get(folderId) : undefined) ?? allNotes;
     $('#notes-heading').textContent = name;
     const locale = document.documentElement.lang || 'zh-CN';
     $('#notes-count').textContent = uiText('notesCount').replace('{count}', notes.length.toLocaleString(locale));
     for (const cleanup of thumbnailCleanups.splice(0)) cleanup();
-    list.replaceChildren();
     list.toggleAttribute('data-show-folders', !folderId);
-    const archived = getBook().trashedFolders;
+    const listFragment = document.createDocumentFragment();
+    const archived = book.trashedFolders;
     // 移到笔记库废纸篓的文件夹：App 移动端和网页客户端都在这里恢复（桌面 App 用的是系统废纸篓）
-    if ((mobile || getBook().server) && trash && archived.length) {
+    if ((mobile || book.server) && trash && archived.length) {
       const group = document.createElement('section'), heading = document.createElement('h3');
       heading.className = 'notes-year'; heading.textContent = uiText('folders');
       group.append(heading);
@@ -535,12 +679,12 @@ export function createSidebar(getBook: () => Notebook, actions: {
         row.append(createLucideIcon(document, FolderIcon, 'sidebar-icon'), title, restore);
         group.append(row);
       }
-      if (group.childElementCount > 1) list.append(group);
+      if (group.childElementCount > 1) listFragment.append(group);
     }
     const date = noteListDate(now, locale);
     const fullDate = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' });
     const hideSummary = localStorage.getItem(hideSummaryKey) === 'true';
-    for (const { label, notes: grouped } of groupNotes(notes, { ...order, grouped: groupsByDate(groupingKey()) }, now, locale)) {
+    for (const { label, notes: grouped } of groupNotes(notes, { ...order, grouped: groupsByDate(groupingKey()) }, now, locale, true)) {
       let previous: number | undefined;
       const group = document.createElement('section'); group.role = 'group'; group.setAttribute('aria-label', label);
       if (label) {
@@ -578,8 +722,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
         // 已经在这个文件夹里浏览时，文件夹那一行就不用再显示了。
         if (mobile || folderId !== note.folderId) {
           const location = document.createElement('span'); location.className = 'note-row-folder';
-          const icon = document.createElement('span'); icon.className = 'sidebar-icon'; icon.ariaHidden = 'true'; icon.innerHTML = folderIcon;
-          const folderLabel = document.createElement('span'); folderLabel.textContent = getBook().data.folders.find(folder => folder.id === note.folderId)!.name;
+          const icon = folderIconTemplate.cloneNode(true);
+          const folderLabel = document.createElement('span'); folderLabel.textContent = folderNames.get(note.folderId) ?? '';
           location.append(icon, folderLabel); row.append(location);
         }
         const picture = actions.thumbnail?.(note);
@@ -611,7 +755,8 @@ export function createSidebar(getBook: () => Notebook, actions: {
           if (after.notes === before.notes && after.folders === before.folders && displayedLibrary === before) {
             displayedLibrary = after; selectionActive = after.activeId; renderSelection();
             const location = document.querySelector('#note-location');
-            if (location) location.textContent = after.folders.find(folder => folder.id === getBook().current?.folderId)?.name ?? '';
+            const current = getBook().current;
+            if (location) location.textContent = (current ? folderNames.get(current.folderId) : undefined) ?? '';
           } else refresh();
           if (!mobile || tablet?.matches) list.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(note.id)}"]`)?.focus({ preventScroll: true });
           if (mobile) { if (page !== 'folders') navigate('note'); return; }
@@ -623,12 +768,13 @@ export function createSidebar(getBook: () => Notebook, actions: {
         };
         group.append(row);
       }
-      list.append(group);
+      listFragment.append(group);
     }
     if (!notes.length) {
       const empty = document.createElement('p'); empty.className = 'notes-empty';
-      empty.textContent = uiText(search.value.trim() ? 'noMatch' : trash ? 'emptyTrash' : 'noNotes'); list.append(empty);
+      empty.textContent = uiText(search.value.trim() ? 'noMatch' : trash ? 'emptyTrash' : 'noNotes'); listFragment.append(empty);
     }
+    list.replaceChildren(listFragment);
     if (focusedNote) list.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(focusedNote)}"]`)?.focus({ preventScroll: true });
     if (mobile) { list.scrollTop = listTop; folders.scrollTop = foldersTop; }
   }
@@ -637,11 +783,13 @@ export function createSidebar(getBook: () => Notebook, actions: {
   async function newNote(title = '', targetFolder = folderId) {
     if (!await folderMenu.finishRename()) return;
     if (!title && actions.blankNote?.()) {
+      closeMemos(); refresh();
       if (mobile) navigate('note');
       actions.focusEditor?.();
       return;
     }
     if (!await actions.create(newNoteFolder(targetFolder), title)) return;
+    closeMemos();
     folderId = targetFolder; trash = false; search.value = '';
     if (mobile) {
       refresh(); navigate('note');
@@ -744,20 +892,33 @@ export function createSidebar(getBook: () => Notebook, actions: {
     let frame = 0;
     const markStuck = () => {
       frame = 0;
-      const top = list.getBoundingClientRect().top + parseFloat(getComputedStyle(list).paddingTop);
-      // 所有分组标题吸在同一处：到顶的标题里最后一个是当前标题，前面的被它盖住。
-      // 还没滚动时不算吸顶，标题只是普通的一行。
+      const scrolled = list.scrollTop > 0;
       const headings = [...list.querySelectorAll<HTMLElement>('.notes-year')];
-      const atTop = headings.filter(heading => list.scrollTop > 0
-        && heading.getBoundingClientRect().top <= top + (parseFloat(getComputedStyle(heading).top) || 0) + .5);
-      const current = atTop.at(-1);
+      // 读阶段：集中读取几何信息，避免与写属性交替触发强制同步布局。
+      const listTop = list.getBoundingClientRect().top + (parseFloat(getComputedStyle(list).paddingTop) || 0);
+      const paneTop = notesPane.getBoundingClientRect().top;
+      const headingTop = headings.length ? (parseFloat(getComputedStyle(headings[0]).top) || 0) : 0;
+      const threshold = listTop + headingTop + 0.5;
+      const atTop = new Set<HTMLElement>();
+      let current: HTMLElement | undefined;
+      let currentBottom = 0;
+      if (scrolled) {
+        for (const heading of headings) {
+          const rect = heading.getBoundingClientRect();
+          if (rect.top <= threshold) {
+            atTop.add(heading);
+            current = heading;
+            currentBottom = rect.bottom;
+          }
+        }
+      }
+      // 写阶段：批量更新属性与 CSS 变量。
       for (const heading of headings) {
         heading.toggleAttribute('data-stuck', heading === current);
-        heading.toggleAttribute('data-covered', heading !== current && atTop.includes(heading));
+        heading.toggleAttribute('data-covered', heading !== current && atTop.has(heading));
       }
-      const pinned = current?.getBoundingClientRect();
       // 和 Pinto 一样，标题栏和吸顶的分组标题共用一片渐进模糊，延伸到细线下方 14px。
-      if (pinned) notesPane.style.setProperty('--notes-edge', `${Math.round(pinned.bottom - notesPane.getBoundingClientRect().top + 14)}px`);
+      if (current) notesPane.style.setProperty('--notes-edge', `${Math.round(currentBottom - paneTop + 14)}px`);
       else notesPane.style.removeProperty('--notes-edge');
     };
     list.addEventListener('scroll', () => { frame ||= requestAnimationFrame(markStuck); }, { passive: true });
@@ -765,7 +926,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
   }
   toggle.onclick = event => {
     if (shell.inert) return;
-    if (mobile) return navigate('notes');
+    if (mobile) return navigate(page === 'memos' ? 'folders' : 'notes');
     changeLayout(externalWindow || innerWidth <= 900 ? 'cycle' : layout.columns === 'note' ? 'notes' : 'folders');
     if (externalWindow && event.detail > 0) toggle.blur();
   };
@@ -801,7 +962,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
       cancelPress(); held = false;
       if (!event.isPrimary || event.pointerType !== 'touch') return;
       const row = (event.target as HTMLElement).closest('.note-row, .folder-row');
-      if (!row || !$('#library-sidebar').contains(row)) return;
+      if (!row || row.matches('[data-memo-filter]') || !$('#library-sidebar').contains(row)) return;
       const { pointerId, clientX: x, clientY: y } = event;
       const timer = window.setTimeout(() => {
         press = undefined;
@@ -833,7 +994,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     await openFolderMenu(row, { at: { x: event.clientX, y: event.clientY } }, touchMenus.has(event));
   };
   async function openFolderMenu(row: HTMLElement | null | undefined, position: Pick<MenuOptions, 'anchor' | 'at' | 'keyboard'>, preview = false) {
-    if (getBook().external || editingFolders() && !row?.dataset.folderId) return;
+    if (getBook().external || row?.dataset.memoFilter || editingFolders() && !row?.dataset.folderId) return;
     if (document.body.dataset.libraryBusy === 'true' || document.body.dataset.syncBusy === 'true') return;
     const id = row?.dataset.folderId || null;
     if (!await folderMenu.finishRename() || !await actions.save()) return;
@@ -851,19 +1012,22 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (!row) return;
     if (!event.metaKey && !event.ctrlKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
-      const id = row.dataset.folderId, item = folderRows(getBook().data.folders, expanded, folderOrder).find(item => item.folder.id === id);
+      const id = row.dataset.folderId, item = folderRows(libraryFolders(), expanded, folderOrder).find(item => item.folder.id === id);
       if (event.key === 'ArrowLeft') {
-        if (id && expanded.has(id)) void toggleFolder(id);
+        if (row.dataset.memoFilter === 'all' && memoExpanded) toggleMemos();
+        else if (row.dataset.memoFilter && row.dataset.memoFilter !== 'all') folders.querySelector<HTMLElement>('[data-memo-filter="all"]')?.focus();
+        else if (id && expanded.has(id)) void toggleFolder(id);
         else if (item?.parentId) {
           const parent = folders.querySelector<HTMLButtonElement>(`.folder-row[data-folder-id="${CSS.escape(item.parentId)}"]`);
           if (mobile) parent?.focus(); else parent?.click();
         }
       } else if (event.key === 'ArrowRight') {
-        if (item?.hasChildren && !expanded.has(item.folder.id)) void toggleFolder(item.folder.id);
+        if (row.dataset.memoFilter === 'all' && row.hasAttribute('aria-expanded') && !memoExpanded) toggleMemos();
+        else if (item?.hasChildren && !expanded.has(item.folder.id)) void toggleFolder(item.folder.id);
       } else {
         const rows = [...folders.querySelectorAll<HTMLButtonElement>('.folder-row')], index = rows.indexOf(row as HTMLButtonElement);
         const next = rows[event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))];
-        if (mobile) next?.focus(); else next?.click();
+        if (mobile || row.dataset.memoFilter || next?.dataset.memoFilter) next?.focus(); else next?.click();
       }
       return;
     }
@@ -911,7 +1075,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (event.key === 'Escape') {
       if (event.defaultPrevented) return;
       if (mobile && page !== 'folders') navigate(page === 'note' && !tablet?.matches ? 'notes' : 'folders');
-      else if (!mobile && innerWidth <= 900 && layout.columns !== 'note') changeLayout('notes');
+      else if (!mobile && innerWidth <= 900 && (memoFilter ? memoFolders : layout.columns !== 'note')) changeLayout('notes');
     }
     if (!event.metaKey && !event.ctrlKey) return;
     if (event.key.toLowerCase() === 'n') { event.preventDefault(); if (event.shiftKey) newFolder(); else newNote(); }
@@ -958,7 +1122,7 @@ export function createSidebar(getBook: () => Notebook, actions: {
     if (!note || !row || actions.noteWindow || search.value.trim()) { refresh(); return; }
     const now = new Date(), locale = document.documentElement.lang || 'zh-CN';
     if (now.toDateString() !== listDay) { refresh(); return; }
-    const groups = groupNotes(notesIn(folderId), { ...order, grouped: groupsByDate(groupingKey()) }, now, locale);
+    const groups = groupNotes(notesIn(folderId), { ...order, grouped: groupsByDate(groupingKey()) }, now, locale, true);
     const expected = groups.flatMap(({ label, notes }) => notes.map(entry => `${label}\n${entry.id}`));
     const shown = noteRows().map(entry => `${entry.closest('section')?.getAttribute('aria-label') ?? ''}\n${entry.dataset.noteId}`);
     const picture = actions.thumbnail?.(note) ?? '';
@@ -988,17 +1152,38 @@ export function createSidebar(getBook: () => Notebook, actions: {
   refresh();
   return {
     noteSaved,
-    updateDraftTitle(note: Note) {
+    updateDraftTitle(note: Note, resolvedTitle?: string) {
       const title = list.querySelector(`[data-note-id="${CSS.escape(note.id)}"] .note-row-title`);
-      if (title) title.textContent = noteTitle(note) + (note.conflictOf ? '（冲突副本）' : '');
+      if (title) title.textContent = (resolvedTitle ?? noteTitle(note)) + (note.conflictOf ? '（冲突副本）' : '');
     },
     refresh,
+    /** 桌面图标长按菜单的入口：打开随记、新建笔记。 */
+    openMemos: (filter: MemoFilter = allMemos) => openMemos(filter),
+    newNote: () => newNote(),
+    memoFilterChanged(filter: MemoFilter) {
+      memoFilter = filter; memoTitle();
+      const key = memoFilterId(filter);
+      for (const row of folders.querySelectorAll<HTMLElement>('.folder-row')) row.ariaPressed = String(row.dataset.memoFilter === key);
+    },
+    async openConvertedMemo(id: string, target: string) {
+      if (!await actions.select(id)) return;
+      closeMemos();
+      folderId = target === 'default' ? null : target;
+      if (folderId) revealAncestors(folderId);
+      trash = false; search.value = '';
+      if (mobile) navigate('note');
+      refresh();
+      actions.focusEditor?.();
+    },
     searchAll(query: string) {
+      closeMemos();
       folderId = null; trash = false; search.value = query;
       refresh(); list.scrollTop = 0; focusSearch(); search.select();
     },
     openCurrent() {
+      closeMemos();
       const note = getBook().current;
+      if (!note) return;
       if (folderId && !notesIn(folderId, '', false).some(item => item.id === note.id)) {
         folderId = note.folderId;
         revealAncestors(folderId);
@@ -1017,6 +1202,6 @@ export function createSidebar(getBook: () => Notebook, actions: {
     moveCurrentNote() { const note = getBook().current; if (note) return contextMenu(note.id, 0, 0, 'move'); },
     revealCurrent() { folderId = null; trash = Boolean(getBook().current?.trashed); search.value = ''; refresh(); },
     /** 安卓返回键：搜索中先退出搜索。 */
-    cancelSearch: () => mobile && page !== 'note' && endMobileSearch(true),
+    cancelSearch: () => mobile && (page === 'memos' ? Boolean(actions.memoView?.closeSearch()) : page !== 'note' && endMobileSearch(true)),
   };
 }

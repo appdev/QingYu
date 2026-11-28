@@ -40,6 +40,10 @@ pub fn apply_labels(
     if let Some(menu) = menu {
         menu.apply(labels).map_err(|error| error.to_string())?;
     }
+    if let (Some(tray), Some(name)) = (app.tray_by_id(TRAY), labels.get("轻羽")) {
+        tray.set_tooltip(Some(name))
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 

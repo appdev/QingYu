@@ -1,21 +1,31 @@
 package com.apkdv.qingyu.editor
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.SystemBarStyle
 import androidx.annotation.Keep
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.Insets
+import androidx.core.graphics.drawable.IconCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+
+private const val SHORTCUT_ACTION = "com.apkdv.qingyu.editor.SHORTCUT"
+private const val SHORTCUT_EXTRA = "shortcut"
+private val SHORTCUT_KINDS = setOf("memo", "voice", "note")
 
 class MainActivity : TauriActivity() {
   @Keep
@@ -26,8 +36,12 @@ class MainActivity : TauriActivity() {
   private var appBackground: Int? = null
   private var verticalInsets: String? = null
   private var insetReply: JavaScriptReplyProxy? = null
-  private val webHandlesInsets = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) &&
-    WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+  private var splashReady = false
+  // 桌面图标长按菜单带进来的入口，等页面说就绪后再交给网页处理。
+  private var pendingShortcut: String? = null
+  private var pageReady = false
+  private val webMessageListener = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+  private val webHandlesInsets = webMessageListener && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
   private val webOrigins = setOf("http://tauri.localhost")
   private val appearanceMessage = Regex("(light|dark)(?::(#[0-9a-fA-F]{6}))?")
 
@@ -55,11 +69,18 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    val splash = installSplashScreen()
     System.loadLibrary("miaoyan_editor_lib")
     initTlsVerifier(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    if (webMessageListener) {
+      val splashDeadline = SystemClock.uptimeMillis() + 4_000L
+      splash.setKeepOnScreenCondition { !splashReady && SystemClock.uptimeMillis() < splashDeadline }
+    }
     applyAppearance()
+    publishShortcuts()
+    if (savedInstanceState == null) takeShortcut(intent)
     val content = findViewById<View>(android.R.id.content)
     ViewCompat.setOnApplyWindowInsetsListener(content) { view, insets ->
       val systemTypes = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
@@ -91,7 +112,16 @@ class MainActivity : TauriActivity() {
     // 在 WryActivity 的回调之后注册，所以先收到返回键。
     onBackPressedDispatcher.addCallback(this, backCallback)
     if (webHandlesInsets) installInsetBridge(webView)
-    if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+    if (webMessageListener) {
+      WebViewCompat.addWebMessageListener(webView, "nativeSplash", webOrigins) { view, message, _, isMainFrame, _ ->
+        if (!isMainFrame || message.data != "ready") return@addWebMessageListener
+        pageReady = true
+        deliverShortcut()
+        if (splashReady) return@addWebMessageListener
+        view.postVisualStateCallback(0L, object : WebView.VisualStateCallback() {
+          override fun onComplete(requestId: Long) { splashReady = true }
+        })
+      }
       WebViewCompat.addWebMessageListener(webView, "nativeAppearance", webOrigins) { _, message, _, isMainFrame, _ ->
         if (!isMainFrame) return@addWebMessageListener
         val (theme, color) = message.data?.let(appearanceMessage::matchEntire)?.destructured ?: return@addWebMessageListener
@@ -104,6 +134,7 @@ class MainActivity : TauriActivity() {
       }
     }
     ViewCompat.requestApplyInsets(findViewById(android.R.id.content))
+    deliverShortcut()
   }
 
   private fun installInsetBridge(webView: WebView) {
@@ -143,6 +174,47 @@ class MainActivity : TauriActivity() {
       })();
     """.trimIndent()
     WebViewCompat.addDocumentStartJavaScript(webView, script, webOrigins)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    if (takeShortcut(intent)) deliverShortcut()
+  }
+
+  // 动态注册，不写在 shortcuts.xml 里：静态入口要写死包名，debug 包带 .debug 后缀会对不上。
+  // 每次启动都重设一遍，切换系统语言后标题也会跟着更新。
+  private fun publishShortcuts() {
+    val items = listOf(
+      Triple("memo", R.string.shortcut_memo, R.drawable.ic_shortcut_memo),
+      Triple("voice", R.string.shortcut_voice, R.drawable.ic_shortcut_voice),
+      Triple("note", R.string.shortcut_note, R.drawable.ic_shortcut_note),
+    ).map { (kind, title, icon) ->
+      ShortcutInfoCompat.Builder(this, kind)
+        .setShortLabel(getString(title))
+        .setIcon(IconCompat.createWithResource(this, icon))
+        .setIntent(Intent(this, MainActivity::class.java).setAction(SHORTCUT_ACTION).putExtra(SHORTCUT_EXTRA, kind))
+        .build()
+    }
+    runCatching { ShortcutManagerCompat.setDynamicShortcuts(this, items) }
+  }
+
+  private fun takeShortcut(intent: Intent?): Boolean {
+    if (intent?.action != SHORTCUT_ACTION) return false
+    val kind = intent.getStringExtra(SHORTCUT_EXTRA)?.takeIf { it in SHORTCUT_KINDS } ?: return false
+    pendingShortcut = kind
+    // 同一个 Intent 在旋转屏幕等重建时还会再来一次，用过就清掉。
+    intent.action = Intent.ACTION_MAIN
+    return true
+  }
+
+  private fun deliverShortcut() {
+    val kind = pendingShortcut ?: return
+    val webView = editorWebView ?: return
+    // 老版本 WebView 没有就绪消息，页面加载完的时间猜不准，只能稍等再发。
+    if (!pageReady && webMessageListener) return
+    pendingShortcut = null
+    val run = { webView.evaluateJavascript("window.qingyuShortcut?.('$kind')", null) }
+    if (pageReady) run() else webView.postDelayed(run, 1_500L)
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {

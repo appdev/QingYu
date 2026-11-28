@@ -354,26 +354,22 @@ fn saving_a_note_body_preserves_other_notes_and_the_active_selection() {
         )
         .unwrap();
     assert_eq!(store.revision, latest.revision);
-    assert!(store
-        .save_note_body(
-            &root,
-            &first.id,
-            &first.source,
-            "同一篇旧草稿".into(),
-            "edit"
-        )
-        .unwrap_err()
-        .contains("正文已更新"));
-    assert!(store
-        .save_note_body(
-            "/another-library",
-            &first.id,
-            "第一篇窗口\n",
-            "旧笔记库内容".into(),
-            "edit"
-        )
-        .unwrap_err()
-        .contains("位置已更改"));
+    let conflict = store.save_note_body(
+        &root,
+        &first.id,
+        &first.source,
+        "同一篇旧草稿".into(),
+        "edit",
+    );
+    assert!(matches!(conflict, Err(NoteSaveError::Conflict(_))));
+    let wrong_root = store.save_note_body(
+        "/another-library",
+        &first.id,
+        "第一篇窗口\n",
+        "旧笔记库内容".into(),
+        "edit",
+    );
+    assert!(matches!(wrong_root, Err(NoteSaveError::Failure(_))));
     assert_eq!(store.data, latest.library);
 }
 
@@ -388,10 +384,8 @@ fn saving_a_note_body_checks_disk_bytes_even_on_retry() {
     fs::write(&path, "外部文件改写").unwrap();
 
     for source in ["当前窗口草稿", note.source.as_str()] {
-        assert!(store
-            .save_note_body(&root, &note.id, &note.source, source.into(), "edit")
-            .unwrap_err()
-            .contains("磁盘文件已被外部修改"));
+        let saved = store.save_note_body(&root, &note.id, &note.source, source.into(), "edit");
+        assert!(matches!(saved, Err(NoteSaveError::Conflict(_))));
     }
     assert_eq!(fs::read_to_string(path).unwrap(), "外部文件改写");
     assert_eq!(store.revision, revision);

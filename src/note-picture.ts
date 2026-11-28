@@ -158,7 +158,7 @@ async function renderPicture(source: PictureSource, look: Look) {
   const body = document.createElement('article'); body.className = 'note-picture-content';
   body.append(source.fragment.cloneNode(true)); card.append(body);
   if (look.mark) {
-    const mark = document.createElement('div'); mark.className = 'note-picture-mark'; mark.textContent = translatedLabel('轻羽 QingYu'); card.append(mark);
+    const mark = document.createElement('div'); mark.className = 'note-picture-mark'; mark.textContent = translatedLabel('轻羽'); card.append(mark);
   }
   scene.append(card); document.body.append(scene);
   try {
@@ -250,7 +250,11 @@ export function mountNotePicture(root: HTMLElement, request: PictureRequest, det
     : nativeImageShare ? ['share', 'copy'] as const : ['save', 'share', 'copy'] as const;
   const actions = actionOrder.map(action => {
     const button = document.createElement('button'); button.type = 'button'; button.disabled = true;
-    const title = { copy: closeMacDialog ? '复制' : '复制图片', save: '保存…', share: !detailed || closeMacDialog ? '分享…' : '分享' }[action];
+    const title = {
+      copy: translatedLabel(closeMacDialog ? '复制' : '复制图片'),
+      save: translatedLabel('保存…'),
+      share: translatedLabel('share') + (!detailed || closeMacDialog ? '…' : ''),
+    }[action];
     const label = document.createTextNode(title);
     if (detailed && action === 'copy') button.append(createLucideIcon(document, Copy, 'note-picture-copy-icon'));
     button.append(label); button.dataset.pictureAction = action;

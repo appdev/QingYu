@@ -6,6 +6,7 @@ import { CopyPlus, Folder, SquarePen, Trash2 } from 'lucide';
 import { createLucideIcon } from './vendor/markra/shared/lucide';
 import { folderRows } from './folder-tree';
 import { showMoveFolderSheet } from './note-menu';
+import { isInsideMemoFolder, isMemoFolderName } from './memo';
 import { alertActions, showAlert } from './alert-dialog';
 import folderPlusIcon from '../public/miaoyan/icons/folder-badge-plus.svg?raw';
 
@@ -125,7 +126,9 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
       if (item.text === '移动到…' && book.server && !actions.mobile) {
         const folder = book.data.folders.find(folder => folder.id === id)!;
         const parent = folder.path?.includes('/') ? folder.path.slice(0, folder.path.lastIndexOf('/')) : '';
-        item.items = book.data.folders.filter(other => other.id !== id && other.path !== parent && !other.path?.startsWith(folder.path + '/'))
+        item.items = book.data.folders.filter(other => other.id !== id && (other.path ?? other.name) !== parent
+          && !other.path?.startsWith((folder.path ?? folder.name) + '/') && !isInsideMemoFolder(other)
+          && !(other.id === 'default' && isMemoFolderName(folder.name)))
           .map(other => ({ text: other.path || other.name, run: () => actions.change(() => getBook().folderAction('move', id, other.id)) }));
         item.enabled = item.items.length > 0;
         continue;
@@ -136,10 +139,11 @@ export function createFolderMenu(getBook: () => Notebook, actions: {
         if (item.text === '移动到…') {
           const path = folder.path ?? folder.name;
           const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+          const destinations = book.data.folders.filter(folder => !isInsideMemoFolder(folder));
           const rows = [{ folder: { id: 'default', name: '笔记库顶层', path: '' }, depth: 0 },
-            ...folderRows(book.data.folders, new Set(book.data.folders.map(folder => folder.id)))].map(({ folder, depth }) => ({
+            ...folderRows(destinations, new Set(destinations.map(folder => folder.id)))].map(({ folder, depth }) => ({
             name: folder.name, depth, current: folder.path === parent,
-            disabled: folder.id === id || folder.path?.startsWith(path + '/'),
+            disabled: folder.id === id || folder.path?.startsWith(path + '/') || folder.id === 'default' && isMemoFolderName(path.split('/').at(-1)!),
             run: () => { void run('move-to-folder', folder.id).catch(report); },
           }));
           item.enabled = rows.some(row => !row.current && !row.disabled);
